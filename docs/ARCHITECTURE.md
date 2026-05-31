@@ -135,7 +135,8 @@ symbols (
   kind TEXT NOT NULL,                -- class|module|method|function
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
-  parent_id INTEGER                  -- enclosing symbol (lexical nesting only)
+  parent TEXT                        -- enclosing symbol's qualified NAME
+                                     -- (lexical nesting only), e.g. Foo::Bar
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 

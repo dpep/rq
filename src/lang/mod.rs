@@ -17,3 +17,26 @@ pub trait LanguagePlugin {
     /// recorded on each emitted [`Symbol`].
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol>;
 }
+
+/// The registered language plugins. Adding a language is one line here.
+pub fn registry() -> Vec<Box<dyn LanguagePlugin>> {
+    vec![Box::new(ruby::Ruby)]
+}
+
+/// The plugin handling files with the given extension (without the dot), if any.
+pub fn plugin_for_extension(ext: &str) -> Option<Box<dyn LanguagePlugin>> {
+    registry()
+        .into_iter()
+        .find(|p| p.extensions().contains(&ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ruby_is_registered_for_rb() {
+        assert!(plugin_for_extension("rb").is_some());
+        assert!(plugin_for_extension("py").is_none());
+    }
+}

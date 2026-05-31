@@ -5,6 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+use crate::store::Store;
+
 #[derive(Parser)]
 #[command(
     name = "rq",
@@ -41,17 +43,8 @@ pub fn run() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Index { path }) => {
-            let path = path.unwrap_or_else(|| PathBuf::from("."));
-            // TODO(phase-1): drive crate::index.
-            eprintln!("rq index {}: not yet implemented", path.display());
-            ExitCode::FAILURE
-        }
-        Some(Command::Status) => {
-            // TODO(phase-1): report crate::store coverage.
-            eprintln!("rq status: not yet implemented");
-            ExitCode::FAILURE
-        }
+        Some(Command::Index { path }) => cmd_index(path),
+        Some(Command::Status) => cmd_status(),
         None => {
             if cli.query.is_empty() {
                 eprintln!("rq: no query given (try `rq --help`)");
@@ -66,4 +59,68 @@ pub fn run() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn cmd_index(path: Option<PathBuf>) -> ExitCode {
+    let path = path.unwrap_or_else(|| PathBuf::from("."));
+    let mut store = match open_store() {
+        Ok(s) => s,
+        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+    };
+    match crate::index::index_path(&mut store, &path) {
+        Ok(stats) => {
+            println!(
+                "indexed {} file(s) ({} seen), {} symbol(s)",
+                stats.files_indexed, stats.files_seen, stats.symbols
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(format_args!("rq index: {e}")),
+    }
+}
+
+fn cmd_status() -> ExitCode {
+    let store = match open_store() {
+        Ok(s) => s,
+        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+    };
+    match store.coverage_overview() {
+        Ok(rows) if rows.is_empty() => {
+            println!("no repositories indexed yet (try `rq index`)");
+            ExitCode::SUCCESS
+        }
+        Ok(rows) => {
+            for r in rows {
+                println!(
+                    "{:<10} {:>6} symbols  {}/{} files  {}",
+                    r.status, r.symbols, r.files_indexed, r.files_seen, r.identity
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(format_args!("rq status: {e}")),
+    }
+}
+
+/// Open the rq database, honoring `RQ_DB` and creating parent dirs.
+fn open_store() -> Result<Store, Box<dyn std::error::Error>> {
+    let path = db_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(Store::open(&path)?)
+}
+
+/// Resolve the database path: `$RQ_DB`, else `$HOME/.local/share/rq/rq.db`.
+fn db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(p) = std::env::var("RQ_DB") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = std::env::var("HOME")?;
+    Ok(PathBuf::from(home).join(".local/share/rq/rq.db"))
+}
+
+fn fail(args: std::fmt::Arguments) -> ExitCode {
+    eprintln!("{args}");
+    ExitCode::FAILURE
 }

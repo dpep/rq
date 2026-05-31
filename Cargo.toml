@@ -15,3 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tree-sitter = "0.25"
+tree-sitter-ruby = "0.23"
