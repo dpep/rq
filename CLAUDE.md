@@ -105,7 +105,12 @@ abstraction leaked and the design doc needs revisiting.
 update to the schema block in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — keep
 them in sync in the same PR.
 
-## Pull requests
+## Landing changes
 
-Small, focused, logically-connected changes. Change behavior or structure, not
-both at once. Open in draft; PRs aren't ready for review until CI is green.
+No pull requests for this repo — commit or merge directly to `main` and push.
+It's a solo project; the PR ceremony is overhead we skip here.
+
+Keep changes small, focused, and logically connected; change behavior or
+structure, not both at once. Make sure CI is green
+(`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`)
+before pushing.
