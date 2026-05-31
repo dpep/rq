@@ -1,0 +1,17 @@
+[package]
+name = "rq"
+version = "0.1.0"
+edition = "2024"
+description = "A code navigation engine — reach the definition you want, fast."
+license = "MIT"
+
+[[bin]]
+name = "rq"
+path = "src/main.rs"
+
+[lib]
+name = "rq"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
