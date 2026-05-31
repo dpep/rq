@@ -85,7 +85,7 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
 }
 
 /// Best-effort repository identity: upstream git remote, else the local path.
-fn detect_identity(root: &Path) -> RepoIdentity {
+pub fn detect_identity(root: &Path) -> RepoIdentity {
     for remote in ["origin", "upstream"] {
         if let Some(url) = git_output(root, &["remote", "get-url", remote])
             && let Some(id) = RepoIdentity::from_remote_url(&url)

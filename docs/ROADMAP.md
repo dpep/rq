@@ -15,19 +15,21 @@ actually run. Earlier phases must not assume later ones exist.
 
 The smallest thing that delivers the core promise. Layers 1–3 done well.
 
-- [ ] `store/` — SQLite schema + migrations, WAL mode
-- [ ] `core/` — common `Symbol` model, repository identity normalization
+- [x] `store/` — SQLite schema + migrations, WAL mode, trigram FTS
+- [x] `core/` — common `Symbol` model, repository identity normalization
       (git remote → `github.com/org/repo`, `local:/path` fallback)
-- [ ] `lang/ruby/` — Tree-sitter Ruby plugin: classes, modules, methods
-- [ ] `index/` — incremental walker (respects `.gitignore`), coverage tracking
-- [ ] `search/` — Layers 1–3 (exact/prefix, fuzzy, path) + additive scorer
-- [ ] abbreviation-aware fuzzy matcher (`refundproc → RefundProcessor`)
-- [ ] `rq <query>` default command, `rq index`, `rq status`
-- [ ] `--explain` score breakdown
+- [x] `lang/ruby/` — Tree-sitter Ruby plugin: classes, modules, methods
+- [x] `index/` — incremental walker (respects `.gitignore`), coverage tracking
+- [x] `search/` — Layers 1–2 (exact/prefix, fuzzy) + additive scorer
+- [ ] `search/` — Layer 3 (path / filename matching)
+- [x] abbreviation-aware fuzzy matcher (`refundproc → RefundProcessor`)
+- [x] current-repo boost in ranking
+- [x] `rq <query>` default command, `rq index`, `rq status`
+- [x] `--explain` score breakdown
 - [ ] benchmark harness; verify < 50 ms on an indexed mid-size repo
 
 Exit criteria: `rq refund` returns the right Ruby definition first, sub-50 ms,
-on an indexed repo.
+on an indexed repo. _(Path matching and the latency benchmark remain.)_
 
 ## Phase 2 — Partial indexing + streaming
 

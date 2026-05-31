@@ -5,6 +5,7 @@
 
 mod schema;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +14,28 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::core::{RepoIdentity, Symbol};
 
 pub type Result<T> = rusqlite::Result<T>;
+
+/// A symbol as returned by search candidate queries (joined with its file and
+/// repository for display and ranking).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolRow {
+    pub name: String,
+    pub kind: String,
+    pub language: String,
+    pub file: String,
+    pub line: i64,
+    pub parent: Option<String>,
+    pub repository_id: i64,
+    pub repo_identity: String,
+}
+
+/// Column projection shared by the candidate queries. Column order is consumed
+/// by [`row_to_candidate`].
+const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
+    s.parent, s.repository_id, r.identity";
+const CANDIDATE_FROM: &str = "FROM symbols s \
+    JOIN files fi ON fi.id = s.file_id \
+    JOIN repositories r ON r.id = s.repository_id";
 
 /// A handle to the rq database.
 pub struct Store {
@@ -205,6 +228,107 @@ impl Store {
             .collect::<Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    /// The id of a repository by its normalized identity, if known.
+    pub fn repository_id(&self, identity: &str) -> Result<Option<i64>> {
+        self.conn
+            .query_row(
+                "SELECT id FROM repositories WHERE identity = ?1",
+                params![identity],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
+    /// Candidate symbols for a query, drawn from two cheap layers and merged:
+    /// exact/prefix on `name_lower`, plus a trigram-FTS pass for fuzzy recall.
+    /// Ranking happens in `crate::search`; this only narrows the field.
+    pub fn search_candidates(&self, query: &str, limit: usize) -> Result<Vec<SymbolRow>> {
+        let q = query.to_ascii_lowercase();
+        let mut found: HashMap<i64, SymbolRow> = HashMap::new();
+
+        // Layer 1: first-character anchor (index-backed prefix scan) plus the
+        // exact name. Anchoring on the first character — rather than the whole
+        // query as a prefix — is what lets short skip-abbreviations like
+        // `usr → user` reach the scorer; the scorer filters and ranks them.
+        if let Some(first) = q.chars().next() {
+            let like = format!("{}%", escape_like(&first.to_string()));
+            let sql = format!(
+                "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
+                 WHERE s.name_lower = ?1 OR s.name_lower LIKE ?2 ESCAPE '\\' LIMIT ?3"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![q, like, limit as i64], row_to_candidate)?;
+            for row in rows {
+                let (id, cand) = row?;
+                found.insert(id, cand);
+            }
+        }
+
+        // Layer 2: trigram FTS (OR of the query's trigrams) for fuzzy recall.
+        if let Some(match_expr) = trigram_or_query(&q) {
+            let sql = format!(
+                "SELECT {CANDIDATE_COLS} FROM symbols_fts f \
+                 JOIN symbols s ON s.id = f.rowid \
+                 JOIN files fi ON fi.id = s.file_id \
+                 JOIN repositories r ON r.id = s.repository_id \
+                 WHERE symbols_fts MATCH ?1 LIMIT ?2"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![match_expr, limit as i64], row_to_candidate)?;
+            for row in rows {
+                let (id, cand) = row?;
+                found.entry(id).or_insert(cand);
+            }
+        }
+
+        Ok(found.into_values().collect())
+    }
+}
+
+fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
+    Ok((
+        r.get(0)?,
+        SymbolRow {
+            name: r.get(1)?,
+            kind: r.get(2)?,
+            language: r.get(3)?,
+            file: r.get(4)?,
+            line: r.get(5)?,
+            parent: r.get(6)?,
+            repository_id: r.get(7)?,
+            repo_identity: r.get(8)?,
+        },
+    ))
+}
+
+/// Escape LIKE wildcards so identifier characters (`_`) are matched literally.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Build an FTS5 `MATCH` expression that ORs the query's trigrams, giving broad
+/// recall (any shared trigram makes a candidate). `None` if the query is too
+/// short to form a trigram.
+fn trigram_or_query(q: &str) -> Option<String> {
+    let cleaned: Vec<char> = q
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if cleaned.len() < 3 {
+        return None;
+    }
+    let mut grams: Vec<String> = Vec::new();
+    for w in cleaned.windows(3) {
+        let gram: String = w.iter().collect();
+        let quoted = format!("\"{gram}\"");
+        if !grams.contains(&quoted) {
+            grams.push(quoted);
+        }
+    }
+    Some(grams.join(" OR "))
 }
 
 fn now_unix() -> i64 {

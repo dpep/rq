@@ -1,9 +1,11 @@
 rq — Reference Query
 ====================
 
-> **Status: design stage.** The architecture is settled (see
-> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)); implementation has not started.
-> Commands below describe the intended surface, not shipped behavior.
+> **Status: early, working.** Phase 1 is functional — `rq index` builds a
+> SQLite index of Ruby definitions, and `rq <query>` returns ranked results
+> (with `--explain`). Streaming / partial-indexing (phase 2) and behavioral
+> learning (phase 3) are not built yet. See
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 **A code navigation engine, not a code search engine.** `rq` helps you reach
 the file, symbol, or definition you are *most likely* looking for as fast as
@@ -54,17 +56,27 @@ which results you actually choose. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and
 [docs/ROADMAP.md](docs/ROADMAP.md) for what ships when.
 
-## Planned CLI surface
+## CLI
 
 ```sh
-rq <query>              # search definitions; ranked, streamed
+rq <query>              # search definitions; ranked
 rq <query> --explain    # show the score breakdown for each result
 rq index [PATH]         # index a repository (incremental; safe to re-run)
 rq status               # coverage per known repository
 ```
 
 Each result is a navigable `path:line` location, intended to open directly in
-an editor.
+an editor:
+
+```sh
+$ rq corpus --explain
+lib/iriq/corpus.rb:14  class Corpus · Iriq
+    score 1015 = exact 1000 + kind 15
+lib/iriq/corpus.rb:431  method corpus_token · Iriq::Corpus
+    score 694 = prefix 694
+```
+
+The index lives at `$RQ_DB`, or `~/.local/share/rq/rq.db` by default.
 
 ## Install
 

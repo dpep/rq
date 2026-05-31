@@ -16,8 +16,8 @@ use crate::store::Store;
 )]
 struct Cli {
     /// Search query (the default action when no subcommand is given).
-    #[arg(value_name = "QUERY", trailing_var_arg = true)]
-    query: Vec<String>,
+    #[arg(value_name = "QUERY")]
+    query: Option<String>,
 
     /// Show the score breakdown for each result.
     #[arg(long)]
@@ -45,20 +45,55 @@ pub fn run() -> ExitCode {
     match cli.command {
         Some(Command::Index { path }) => cmd_index(path),
         Some(Command::Status) => cmd_status(),
-        None => {
-            if cli.query.is_empty() {
+        None => match cli.query {
+            Some(query) => cmd_search(&query, cli.explain),
+            None => {
                 eprintln!("rq: no query given (try `rq --help`)");
-                return ExitCode::FAILURE;
+                ExitCode::FAILURE
             }
-            let query = cli.query.join(" ");
-            // TODO(phase-1): drive crate::search and stream ranked results.
-            eprintln!(
-                "rq {query}: search not yet implemented (explain={})",
-                cli.explain
-            );
-            ExitCode::FAILURE
+        },
+    }
+}
+
+/// Default action: search the index and print ranked results.
+fn cmd_search(query: &str, explain: bool) -> ExitCode {
+    let store = match open_store() {
+        Ok(s) => s,
+        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+    };
+    let current = current_repo_id(&store);
+    let hits = match crate::search::search(&store, query, current, 10) {
+        Ok(h) => h,
+        Err(e) => return fail(format_args!("rq: {e}")),
+    };
+    if hits.is_empty() {
+        eprintln!("no matches for {query:?}");
+        return ExitCode::FAILURE;
+    }
+    for hit in &hits {
+        let qualified = match &hit.parent {
+            Some(p) => format!("{} · {p}", hit.name),
+            None => hit.name.clone(),
+        };
+        println!("{}:{}  {} {}", hit.file, hit.line, hit.kind, qualified);
+        if explain {
+            let parts: Vec<String> = hit
+                .features
+                .iter()
+                .map(|f| format!("{} {:.0}", f.name, f.value))
+                .collect();
+            println!("    score {:.0} = {}", hit.score, parts.join(" + "));
         }
     }
+    ExitCode::SUCCESS
+}
+
+/// The repository id for the current working directory, if it's indexed —
+/// used to boost results from the repo you're in.
+fn current_repo_id(store: &Store) -> Option<i64> {
+    let cwd = std::env::current_dir().ok()?;
+    let identity = crate::index::detect_identity(&cwd);
+    store.repository_id(&identity.to_string()).ok().flatten()
 }
 
 fn cmd_index(path: Option<PathBuf>) -> ExitCode {
