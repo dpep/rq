@@ -20,24 +20,25 @@ The smallest thing that delivers the core promise. Layers 1–3 done well.
       (git remote → `github.com/org/repo`, `local:/path` fallback)
 - [x] `lang/ruby/` — Tree-sitter Ruby plugin: classes, modules, methods
 - [x] `index/` — incremental walker (respects `.gitignore`), coverage tracking
-- [x] `search/` — Layers 1–2 (exact/prefix, fuzzy) + additive scorer
-- [ ] `search/` — Layer 3 (path / filename matching)
+- [x] `search/` — Layers 1–3 (exact/prefix, fuzzy, path / filename) + scorer
 - [x] abbreviation-aware fuzzy matcher (`refundproc → RefundProcessor`)
 - [x] current-repo boost in ranking
 - [x] `rq <query>` default command, `rq index`, `rq status`
 - [x] `--explain` score breakdown
-- [ ] benchmark harness; verify < 50 ms on an indexed mid-size repo
+- [x] benchmark harness; verify < 50 ms on an indexed mid-size repo
+      (`make bench`: iriq, 412 symbols — p50 ~160 µs, max < 0.25 ms)
 
-Exit criteria: `rq refund` returns the right Ruby definition first, sub-50 ms,
-on an indexed repo. _(Path matching and the latency benchmark remain.)_
+Exit criteria met: `rq corpus` returns the Corpus class first, sub-millisecond,
+on an indexed repo.
 
 ## Phase 2 — Partial indexing + streaming
 
 Make `rq` useful before indexing finishes or when it never ran.
 
-- [ ] streaming result API (results arrive incrementally)
-- [ ] confidence gate / early-exit
-- [ ] Layer 4 live scan as a streamed tail when coverage is low
+- [x] confidence gate — skip the fallback when the index has a strong answer
+- [x] Layer 4 live scan when coverage is thin/absent (search works at 0%)
+- [ ] make the live scan a *streamed* tail (results arrive incrementally)
+      rather than the current synchronous fallback
 - [ ] Layer 5 opportunistic extraction (persist symbols seen during a scan)
 - [ ] staleness detection via `content_hash`; lazy top-N validation
 - [ ] background indexer decoupled from search

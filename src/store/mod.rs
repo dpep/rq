@@ -282,6 +282,22 @@ impl Store {
             }
         }
 
+        // Layer 3: primary definitions in files whose path matches the query,
+        // so `billing` can surface the class defined in `billing.rb`.
+        let path_like = format!("%{}%", escape_like(&q));
+        let sql = format!(
+            "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
+             WHERE fi.path LIKE ?1 ESCAPE '\\' AND s.kind IN ('class', 'module') LIMIT ?2"
+        );
+        {
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![path_like, limit as i64], row_to_candidate)?;
+            for row in rows {
+                let (id, cand) = row?;
+                found.entry(id).or_insert(cand);
+            }
+        }
+
         Ok(found.into_values().collect())
     }
 }

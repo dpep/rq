@@ -35,41 +35,23 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
 
     let mut stats = Stats::default();
     for result in WalkBuilder::new(root).build() {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        let path = entry.path();
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            continue;
-        };
-        let Some(plugin) = lang::plugin_for_extension(ext) else {
+        let Ok(entry) = result else { continue };
+        let Some((rel, source, plugin)) = source_for(&entry, root) else {
             continue;
         };
         stats.files_seen += 1;
 
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
-        let Ok(source) = std::fs::read_to_string(path) else {
-            continue;
-        };
         let hash = content_hash(&source);
         if store.file_unchanged(repo_id, &rel, &hash)? {
             continue;
         }
 
         let symbols = plugin.extract(&rel, &source);
-        let mtime = file_mtime(path);
+        let mtime = file_mtime(entry.path());
         let language = symbols
             .first()
             .map(|s| s.language.clone())
-            .unwrap_or_else(|| ext.to_string());
+            .unwrap_or_else(|| "unknown".to_string());
         store.replace_file_symbols(repo_id, &rel, &language, mtime, &hash, &symbols)?;
         stats.files_indexed += 1;
         stats.symbols += symbols.len();
@@ -82,6 +64,42 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
         "complete",
     )?;
     Ok(stats)
+}
+
+/// Walk `root` and extract every symbol in-memory, without touching the store.
+/// This is search Layer 4's live scan — it lets `rq` answer even when a
+/// repository has never been indexed.
+pub fn scan_symbols(root: &Path) -> Vec<crate::core::Symbol> {
+    let mut out = Vec::new();
+    for result in WalkBuilder::new(root).build() {
+        let Ok(entry) = result else { continue };
+        let Some((rel, source, plugin)) = source_for(&entry, root) else {
+            continue;
+        };
+        out.extend(plugin.extract(&rel, &source));
+    }
+    out
+}
+
+/// If `entry` is a source file rq can parse, return its repo-relative path,
+/// contents, and the matching plugin.
+fn source_for(
+    entry: &ignore::DirEntry,
+    root: &Path,
+) -> Option<(String, String, Box<dyn lang::LanguagePlugin>)> {
+    if !entry.file_type().is_some_and(|t| t.is_file()) {
+        return None;
+    }
+    let path = entry.path();
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    let plugin = lang::plugin_for_extension(ext)?;
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    let source = std::fs::read_to_string(path).ok()?;
+    Some((rel, source, plugin))
 }
 
 /// Best-effort repository identity: upstream git remote, else the local path.

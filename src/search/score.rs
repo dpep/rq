@@ -28,26 +28,53 @@ pub fn score(query: &str, cand: &SymbolRow, current_repo_id: Option<i64>) -> Opt
 
     let mut features = Vec::new();
 
-    // Match quality — the dominant term.
-    if name_lower == q {
+    // Match quality on the symbol name — the dominant term.
+    let name_matched = if name_lower == q {
         features.push(Feature {
             name: "exact",
             value: 1000.0,
         });
+        true
     } else if name_lower.starts_with(&q) {
         // shorter remaining tail ranks higher
         let tail = cand.name.chars().count().saturating_sub(q.chars().count());
-        let value = 700.0 - (tail as f64).min(100.0);
         features.push(Feature {
             name: "prefix",
-            value,
+            value: 700.0 - (tail as f64).min(100.0),
         });
-    } else {
-        let s = subsequence_score(&q, &cand.name)?;
+        true
+    } else if let Some(s) = subsequence_score(&q, &cand.name) {
         features.push(Feature {
             name: "fuzzy",
             value: s.min(600.0),
         });
+        true
+    } else {
+        false
+    };
+
+    // Layer 3: path / filename matching.
+    let stem = path_stem(&cand.file);
+    let path_match = subsequence_score(&q, stem);
+    if name_matched {
+        // a file named after the query reinforces a name match (small bonus)
+        if let Some(ps) = path_match {
+            features.push(Feature {
+                name: "path",
+                value: (ps * 0.2).min(50.0),
+            });
+        }
+    } else {
+        // no name match: a path hit only surfaces a file's primary definitions
+        match path_match {
+            Some(ps) if matches!(cand.kind.as_str(), "class" | "module") => {
+                features.push(Feature {
+                    name: "path",
+                    value: (ps * 0.6).min(300.0),
+                });
+            }
+            _ => return None,
+        }
     }
 
     // Kind weight — definitions you navigate to most sit slightly higher.
@@ -118,6 +145,16 @@ fn subsequence_score(query: &str, name: &str) -> Option<f64> {
         Some(score.max(0.0))
     } else {
         None
+    }
+}
+
+/// The filename stem of a repo-relative path: last segment, extension dropped.
+/// `app/models/user.rb` → `user`.
+fn path_stem(path: &str) -> &str {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    match base.rfind('.') {
+        Some(i) if i > 0 => &base[..i],
+        _ => base,
     }
 }
 
@@ -194,6 +231,31 @@ mod tests {
         let aligned = total("rp", "RefundProcessor").unwrap();
         let scattered = total("rp", "wrapper").unwrap();
         assert!(aligned > scattered, "{aligned} > {scattered}");
+    }
+
+    #[test]
+    fn path_only_match_surfaces_a_class_in_a_named_file() {
+        // name "Invoice" doesn't match "billing", but the file does
+        let mut cand = row("Invoice", "class", 1);
+        cand.file = "app/models/billing.rb".into();
+        let s = score("billing", &cand, None).expect("path match");
+        assert!(s.features.iter().any(|f| f.name == "path"));
+
+        // a method (not a primary definition) in the same file does NOT surface
+        let mut method = row("compute", "method", 1);
+        method.file = "app/models/billing.rb".into();
+        assert!(score("billing", &method, None).is_none());
+    }
+
+    #[test]
+    fn path_bonus_reinforces_a_name_match() {
+        let mut named = row("User", "class", 1);
+        named.file = "app/models/user.rb".into();
+        let mut elsewhere = row("User", "class", 1);
+        elsewhere.file = "app/lib/misc.rb".into();
+        let with_path = score("user", &named, None).unwrap().total;
+        let without = score("user", &elsewhere, None).unwrap().total;
+        assert!(with_path > without, "{with_path} > {without}");
     }
 
     #[test]

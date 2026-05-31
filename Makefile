@@ -6,6 +6,7 @@
 #   make install    - cargo install --path . (into ~/.cargo/bin)
 #   make uninstall  - cargo uninstall rq
 #   make test       - cargo test
+#   make bench      - search-latency benchmark over REPO (default: .)
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
 #   make fmt        - cargo fmt
 #   make clean      - cargo clean
@@ -27,6 +28,7 @@ help:
 	@echo "  make install    cargo install --path . (→ ~/.cargo/bin)"
 	@echo "  make uninstall  cargo uninstall $(BIN)"
 	@echo "  make test       cargo test"
+	@echo "  make bench      search-latency benchmark (REPO=. by default)"
 	@echo "  make lint       cargo fmt --check && cargo clippy"
 	@echo "  make fmt        cargo fmt"
 	@echo "  make clean      cargo clean"
@@ -45,6 +47,10 @@ uninstall:
 
 test:
 	$(CARGO) test
+
+REPO ?= .
+bench:
+	$(CARGO) run --release --example bench -- $(REPO)
 
 lint:
 	$(CARGO) fmt --check

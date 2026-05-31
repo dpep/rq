@@ -62,10 +62,20 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
     let current = current_repo_id(&store);
-    let hits = match crate::search::search(&store, query, current, 10) {
+    let mut hits = match crate::search::search(&store, query, current, 10) {
         Ok(h) => h,
         Err(e) => return fail(format_args!("rq: {e}")),
     };
+
+    // Layer 4: if the index has no confident answer (thin or absent coverage),
+    // fall back to a live scan of the current repository and blend results.
+    if !confident(&hits)
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        let live = crate::search::live_search(&cwd, query, 10);
+        hits = crate::search::merge(hits, live, 10);
+    }
+
     if hits.is_empty() {
         eprintln!("no matches for {query:?}");
         return ExitCode::FAILURE;
@@ -86,6 +96,12 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// A result set is "confident" when its top hit is at least prefix-quality —
+/// good enough to skip the Layer 4 live-scan fallback.
+fn confident(hits: &[crate::search::Hit]) -> bool {
+    hits.first().is_some_and(|h| h.score >= 700.0)
 }
 
 /// The repository id for the current working directory, if it's indexed —

@@ -9,10 +9,16 @@ mod score;
 
 pub use score::{Feature, Scored};
 
+use std::path::Path;
+
 use crate::store::{Store, SymbolRow};
 
 /// How many candidates to pull from the store before ranking.
 const CANDIDATE_LIMIT: usize = 4000;
+
+/// Sentinel repository id for live-scan (Layer 4) results — distinct from any
+/// real row id, and treated as "the current repo" so the boost applies.
+const LIVE_REPO_ID: i64 = -1;
 
 /// A ranked search result.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +48,56 @@ pub fn search(
         .filter_map(|c| rank_one(query, c, current_repo_id))
         .collect();
 
-    // Highest score first; break ties toward shorter (more specific) names.
+    sort_and_truncate(&mut hits, limit);
+    Ok(hits)
+}
+
+/// Layer 4: scan `root` live (no index required) and return ranked hits.
+/// Results are treated as the current repo, so the current-repo boost applies.
+pub fn live_search(root: &Path, query: &str, limit: usize) -> Vec<Hit> {
+    let identity = crate::index::detect_identity(root).to_string();
+    let mut hits: Vec<Hit> = crate::index::scan_symbols(root)
+        .into_iter()
+        .filter_map(|s| {
+            let row = SymbolRow {
+                name: s.name,
+                kind: s.kind.as_str().to_string(),
+                language: s.language,
+                file: s.file,
+                line: s.line as i64,
+                parent: s.parent,
+                repository_id: LIVE_REPO_ID,
+                repo_identity: identity.clone(),
+            };
+            rank_one(query, row, Some(LIVE_REPO_ID))
+        })
+        .collect();
+    sort_and_truncate(&mut hits, limit);
+    hits
+}
+
+/// Merge two ranked lists, de-duplicating by location and name (keeping the
+/// higher score), then re-rank and truncate. Used to blend index and live-scan
+/// results.
+pub fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize) -> Vec<Hit> {
+    use std::collections::HashMap;
+    let mut by_key: HashMap<(String, i64, String), Hit> = HashMap::new();
+    for hit in a.into_iter().chain(b) {
+        let key = (hit.file.clone(), hit.line, hit.name.clone());
+        match by_key.get(&key) {
+            Some(existing) if existing.score >= hit.score => {}
+            _ => {
+                by_key.insert(key, hit);
+            }
+        }
+    }
+    let mut hits: Vec<Hit> = by_key.into_values().collect();
+    sort_and_truncate(&mut hits, limit);
+    hits
+}
+
+/// Highest score first; ties broken toward shorter (more specific) names.
+fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) {
     hits.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -51,7 +106,6 @@ pub fn search(
             .then_with(|| a.name.cmp(&b.name))
     });
     hits.truncate(limit);
-    Ok(hits)
 }
 
 fn rank_one(query: &str, c: SymbolRow, current_repo_id: Option<i64>) -> Option<Hit> {
