@@ -1,0 +1,93 @@
+rq — Reference Query
+====================
+
+> **Status: design stage.** The architecture is settled (see
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)); implementation has not started.
+> Commands below describe the intended surface, not shipped behavior.
+
+**A code navigation engine, not a code search engine.** `rq` helps you reach
+the file, symbol, or definition you are *most likely* looking for as fast as
+possible — not to enumerate every technically-correct match.
+
+A good `rq` result feels like *"that's exactly the file I wanted"* even when
+hundreds of other matches exist.
+
+```sh
+rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
+rq perform       # → the perform you actually meant, ranked first
+rq usr           # → User              app/models/user.rb:1
+rq refundproc    # → RefundProcessor   (fuzzy, abbreviation-aware)
+```
+
+Search is the default command — `rq <query>`, not `rq search <query>`. The
+tool aims to feel as immediate as `rg`, `fd`, and `fzf`.
+
+## Design goals
+
+- **Relevance over completeness** — fewer, better results beat many mediocre ones.
+- **Navigation over discovery** — get to the answer, don't survey the space.
+- **Speed over exhaustiveness** — initial results in < 50 ms whenever possible,
+  then progressively improved.
+- **Learned over static** — ranking improves from what you actually open and select.
+
+Users should never think about indexes, scan state, or storage. The system
+degrades gracefully: it is useful when 0%, 5%, or 100% of a repository has been
+indexed.
+
+## How it works (overview)
+
+Search is a staged, streaming pipeline that stops early once confidence is high:
+
+1. exact / prefix symbol match (indexed) — fastest, highest confidence
+2. fuzzy symbol match (abbreviation-aware)
+3. path / filename match
+4. live repository scan (streamed when the index is thin)
+5. opportunistic symbol extraction from newly-scanned files (persisted)
+
+Symbols come from Tree-sitter. **Ruby is the first language**, but the core is
+language-agnostic — a plugin emits a common symbol model and the core never
+contains language-specific assumptions. Go, TypeScript, Python, and Java are
+addable without redesigning the core.
+
+Every interaction (search / open / select) is recorded so ranking can learn
+which results you actually choose. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and
+[docs/ROADMAP.md](docs/ROADMAP.md) for what ships when.
+
+## Planned CLI surface
+
+```sh
+rq <query>              # search definitions; ranked, streamed
+rq <query> --explain    # show the score breakdown for each result
+rq index [PATH]         # index a repository (incremental; safe to re-run)
+rq status               # coverage per known repository
+```
+
+Each result is a navigable `path:line` location, intended to open directly in
+an editor.
+
+## Install
+
+`rq` is a single static Rust binary. Install instructions land once the first
+release ships.
+
+## Repository identity
+
+Every symbol belongs to a repository. Identity is normalized from git remotes:
+
+- `github.com/org/repo` — derived from the upstream remote (preferred)
+- `local:/absolute/path` — fallback when there is no remote
+- or an explicit user-defined name
+
+`rq` is built for **many** repositories and millions of symbols from day one;
+it never assumes all indexed symbols belong to a single project.
+
+## Non-goals (MVP)
+
+`rq` indexes **definitions only** — classes, modules, methods, functions. It
+does **not** build call graphs, type inference, reference tracking, inheritance
+analysis, or LSP features. The MVP is useful with definitions alone.
+
+## License
+
+TBD.
