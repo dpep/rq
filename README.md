@@ -1,10 +1,10 @@
 rq — Reference Query
 ====================
 
-> **Status: early, working.** Phase 1 is functional — `rq index` builds a
-> SQLite index of Ruby definitions, and `rq <query>` returns ranked results
-> (with `--explain`). Streaming / partial-indexing (phase 2) and behavioral
-> learning (phase 3) are not built yet. See
+> **Status: early, working.** Phases 1–2 are functional — `rq <query>` returns
+> ranked Ruby results (with `--explain`), the index warms opportunistically on
+> first use, and stale results self-heal. Behavioral learning (phase 3) and
+> editor integration (phase 5) are not built yet. See
 > [docs/ROADMAP.md](docs/ROADMAP.md).
 
 **A code navigation engine, not a code search engine.** `rq` helps you reach
@@ -76,10 +76,12 @@ lib/iriq/corpus.rb:431  method corpus_token · Iriq::Corpus
     score 694 = prefix 694
 ```
 
-The index lives at `$RQ_DB`, or `~/.local/share/rq/rq.db` by default. When the
-current repository isn't indexed (or the index has no confident answer), `rq`
-falls back to a live scan of the working directory — so it still works at 0%
-coverage, just without the index's speed.
+The index lives at `$RQ_DB`, or `~/.local/share/rq/rq.db` by default. You rarely
+need `rq index` explicitly: the first query inside a git repository indexes it
+opportunistically, and results self-heal — the files behind the top hits are
+revalidated on each search, so edited files are re-read and deleted ones drop
+out. Outside a git repository, `rq` falls back to a live scan so it still
+answers at zero coverage.
 
 ## Performance
 

@@ -189,4 +189,24 @@ mod tests {
         let hits = search(&store, "zzzzz", None, 10).unwrap();
         assert!(hits.is_empty());
     }
+
+    #[test]
+    fn merge_dedups_by_location_keeping_higher_score() {
+        let mk = |name: &str, score: f64| Hit {
+            name: name.into(),
+            kind: "class".into(),
+            file: "a.rb".into(),
+            line: 1,
+            parent: None,
+            repo_identity: "r".into(),
+            score,
+            features: vec![],
+        };
+        let from_index = vec![mk("User", 100.0)];
+        let from_live = vec![mk("User", 500.0), mk("Account", 200.0)];
+        let merged = merge(from_index, from_live, 10);
+        assert_eq!(merged.len(), 2, "the duplicate User is collapsed");
+        assert_eq!(merged[0].name, "User");
+        assert_eq!(merged[0].score, 500.0, "the higher-scored duplicate wins");
+    }
 }

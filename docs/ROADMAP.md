@@ -35,16 +35,25 @@ on an indexed repo.
 
 Make `rq` useful before indexing finishes or when it never ran.
 
-- [x] confidence gate — skip the fallback when the index has a strong answer
-- [x] Layer 4 live scan when coverage is thin/absent (search works at 0%)
-- [ ] make the live scan a *streamed* tail (results arrive incrementally)
-      rather than the current synchronous fallback
-- [ ] Layer 5 opportunistic extraction (persist symbols seen during a scan)
-- [ ] staleness detection via `content_hash`; lazy top-N validation
-- [ ] background indexer decoupled from search
+- [x] Layer 4 live scan (`search::live_search`) — search answers at 0% coverage;
+      the CLI uses it for non-git directories it won't persist
+- [x] Layer 5 opportunistic indexing — the first query in a git repo warms the
+      index (gated to git work trees so a stray query never walks a random dir)
+- [x] staleness detection via `content_hash` + lazy top-N validation — the files
+      behind the top hits are revalidated; changed files re-extracted, deleted
+      files forgotten, results re-ranked
+- [x] indexing decoupled from search — `rq index` is explicit, and search never
+      requires a prior full index (Layers 4/5 cover the cold path)
 
-Exit criteria: search works at 0%, 5%, and 100% coverage with graceful
-degradation; the user can't tell which layer answered.
+Deferred to Phase 5 (editor / daemon), where they actually pay off — a one-shot
+CLI completes faster than these would help:
+
+- [ ] streamed result tail (results arrive incrementally) — only matters for a
+      long-lived consumer; the CLI search is sub-millisecond
+- [ ] background indexing daemon — a resident process watching for changes
+
+Exit criteria met: search works at 0%, partial, and 100% coverage; the user
+doesn't have to know which layer answered.
 
 ## Phase 3 — Behavioral learning
 

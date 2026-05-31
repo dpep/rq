@@ -57,23 +57,47 @@ pub fn run() -> ExitCode {
 
 /// Default action: search the index and print ranked results.
 fn cmd_search(query: &str, explain: bool) -> ExitCode {
-    let store = match open_store() {
+    let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
+    let cwd = std::env::current_dir().ok();
+    let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
+
+    // Layer 5: opportunistically index the working repo the first time we see
+    // it, so the index warms through normal use. Gated to git repos so a stray
+    // query never walks an arbitrary directory.
+    if let Some(cwd) = &cwd
+        && cwd_is_git
+    {
+        let identity = crate::index::detect_identity(cwd).to_string();
+        if store.coverage_status(&identity).ok().flatten().as_deref() != Some("complete") {
+            let _ = crate::index::index_path(&mut store, cwd);
+        }
+    }
+
     let current = current_repo_id(&store);
     let mut hits = match crate::search::search(&store, query, current, 10) {
         Ok(h) => h,
         Err(e) => return fail(format_args!("rq: {e}")),
     };
 
-    // Layer 4: if the index has no confident answer (thin or absent coverage),
-    // fall back to a live scan of the current repository and blend results.
-    if !confident(&hits)
-        && let Ok(cwd) = std::env::current_dir()
+    // Staleness: lazily revalidate the files behind the top hits; if any changed
+    // on disk, refresh them and re-rank once.
+    if !hits.is_empty() && revalidate_top(&mut store, &hits) {
+        hits = match crate::search::search(&store, query, current, 10) {
+            Ok(h) => h,
+            Err(e) => return fail(format_args!("rq: {e}")),
+        };
+    }
+
+    // Layer 4: a non-git directory isn't persisted, so fall back to a live scan
+    // there — search still answers at zero coverage.
+    if hits.is_empty()
+        && !cwd_is_git
+        && let Some(cwd) = &cwd
     {
-        let live = crate::search::live_search(&cwd, query, 10);
-        hits = crate::search::merge(hits, live, 10);
+        hits = crate::search::live_search(cwd, query, 10);
     }
 
     if hits.is_empty() {
@@ -98,10 +122,30 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// A result set is "confident" when its top hit is at least prefix-quality —
-/// good enough to skip the Layer 4 live-scan fallback.
-fn confident(hits: &[crate::search::Hit]) -> bool {
-    hits.first().is_some_and(|h| h.score >= 700.0)
+/// Revalidate the files behind the top hits against disk, refreshing any that
+/// changed and forgetting any that were deleted. Returns true if anything
+/// changed (so the caller re-runs the search).
+fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut changed = false;
+    for hit in hits {
+        if !seen.insert((hit.repo_identity.clone(), hit.file.clone())) {
+            continue;
+        }
+        let Some(repo_id) = store.repository_id(&hit.repo_identity).ok().flatten() else {
+            continue;
+        };
+        let Some(root) = store.checkout_root(repo_id).ok().flatten() else {
+            continue;
+        };
+        if let Ok(crate::index::Refresh::Updated | crate::index::Refresh::Deleted) =
+            crate::index::refresh_file(store, repo_id, std::path::Path::new(&root), &hit.file)
+        {
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// The repository id for the current working directory, if it's indexed —

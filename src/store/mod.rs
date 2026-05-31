@@ -240,6 +240,49 @@ impl Store {
             .optional()
     }
 
+    /// Coverage status for a repository's full scope (`never`/`partial`/
+    /// `complete`), or `None` if the repository is unknown.
+    pub fn coverage_status(&self, identity: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT c.status FROM coverage c
+                 JOIN repositories r ON r.id = c.repository_id
+                 WHERE r.identity = ?1 AND c.scope = 'full'",
+                params![identity],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
+    /// The on-disk root of a repository's checkout, used to resolve relative
+    /// paths when validating staleness.
+    pub fn checkout_root(&self, repository_id: i64) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT root_path FROM checkouts WHERE repository_id = ?1 ORDER BY id LIMIT 1",
+                params![repository_id],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
+    /// Drop a file and its symbols — used when a file has been deleted on disk.
+    pub fn forget_file(&mut self, repository_id: i64, path: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let file_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM files WHERE repository_id = ?1 AND path = ?2",
+                params![repository_id, path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(fid) = file_id {
+            tx.execute("DELETE FROM symbols WHERE file_id = ?1", params![fid])?;
+            tx.execute("DELETE FROM files WHERE id = ?1", params![fid])?;
+        }
+        tx.commit()
+    }
+
     /// Candidate symbols for a query, drawn from two cheap layers and merged:
     /// exact/prefix on `name_lower`, plus a trigram-FTS pass for fuzzy recall.
     /// Ranking happens in `crate::search`; this only narrows the field.

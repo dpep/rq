@@ -102,6 +102,61 @@ fn source_for(
     Some((rel, source, plugin))
 }
 
+/// Result of revalidating a single file against what's on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refresh {
+    /// Content hash still matches the index.
+    Unchanged,
+    /// File changed; its symbols were re-extracted.
+    Updated,
+    /// File no longer on disk; its symbols were forgotten.
+    Deleted,
+}
+
+/// Whether `root` is inside a git work tree. Implicit (opportunistic) indexing
+/// is gated on this so a stray query never walks a non-repo directory.
+pub fn is_git_repo(root: &Path) -> bool {
+    git_output(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
+}
+
+/// Lazily revalidate one indexed file against disk: re-extract it if its
+/// content changed, forget it if it's gone. This is the staleness check search
+/// runs over its top results.
+pub fn refresh_file(
+    store: &mut Store,
+    repository_id: i64,
+    root: &Path,
+    rel: &str,
+) -> Result<Refresh, Box<dyn std::error::Error>> {
+    let path = root.join(rel);
+    let source = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => {
+            store.forget_file(repository_id, rel)?;
+            return Ok(Refresh::Deleted);
+        }
+    };
+    let hash = content_hash(&source);
+    if store.file_unchanged(repository_id, rel, &hash)? {
+        return Ok(Refresh::Unchanged);
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    let symbols = match lang::plugin_for_extension(ext) {
+        Some(plugin) => plugin.extract(rel, &source),
+        None => Vec::new(),
+    };
+    let language = symbols
+        .first()
+        .map(|s| s.language.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mtime = file_mtime(&path);
+    store.replace_file_symbols(repository_id, rel, &language, mtime, &hash, &symbols)?;
+    Ok(Refresh::Updated)
+}
+
 /// Best-effort repository identity: upstream git remote, else the local path.
 pub fn detect_identity(root: &Path) -> RepoIdentity {
     for remote in ["origin", "upstream"] {
