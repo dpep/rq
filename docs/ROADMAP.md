@@ -45,12 +45,15 @@ Make `rq` useful before indexing finishes or when it never ran.
 - [x] indexing decoupled from search — `rq index` is explicit, and search never
       requires a prior full index (Layers 4/5 cover the cold path)
 
-Deferred to Phase 5 (editor / daemon), where they actually pay off — a one-shot
-CLI completes faster than these would help:
+No daemon — instead of a resident process, deferred work is amortized across
+interactions: each `rq` invocation prints results, then does a small bounded
+chunk of background work (event rollup, opportunistic index warming) before
+exiting. See "No daemon — amortized post-interaction work" in ARCHITECTURE.
 
-- [ ] streamed result tail (results arrive incrementally) — only matters for a
-      long-lived consumer; the CLI search is sub-millisecond
-- [ ] background indexing daemon — a resident process watching for changes
+Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
+
+- [ ] streamed result tail (results arrive incrementally)
+- [ ] proactive indexing of files adjacent to a result, in the deferred pass
 
 Exit criteria met: search works at 0%, partial, and 100% coverage; the user
 doesn't have to know which layer answered.
@@ -59,10 +62,14 @@ doesn't have to know which layer answered.
 
 The differentiator.
 
-- [ ] `events` capture from the CLI (search / open / select)
-- [ ] async rollup → `selection_stats`
-- [ ] learned boost as an additive feature with evidence-ramped weight
-- [ ] time-decay + exploration
+- [x] `events` capture — `rq <query>` logs a search; the `rq record` hook logs
+      open/select with query + file + line
+- [x] rollup → `selection_stats`, amortized in the post-interaction pass; keyed
+      by `(query_norm, file, name)` so it survives reindexing
+- [x] learned boost as an additive feature with evidence-ramped weight
+- [x] time-decay (recency, ~30-day half-life)
+- [ ] exploration (avoid freezing on past choices) — not yet
+- [ ] prefix/related-query learning (today only the exact query_norm matches)
 - [ ] measure: does learned ranking beat static on real usage?
 
 ## Phase 4 — Git awareness

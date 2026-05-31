@@ -36,6 +36,22 @@ enum Command {
     },
     /// Show indexing coverage per known repository.
     Status,
+    /// Record an interaction (editor/shell hook): which result you opened for a
+    /// query. Feeds ranking's behavioral learning.
+    Record {
+        /// File that was opened/selected (absolute or relative to the cwd).
+        #[arg(long)]
+        file: String,
+        /// The query that led there, if any.
+        #[arg(long)]
+        query: Option<String>,
+        /// Line landed on (used to attribute the selection to a definition).
+        #[arg(long)]
+        line: Option<i64>,
+        /// Event kind.
+        #[arg(long, default_value = "select")]
+        kind: String,
+    },
 }
 
 /// Parse arguments and dispatch. Returns the process exit code.
@@ -45,6 +61,12 @@ pub fn run() -> ExitCode {
     match cli.command {
         Some(Command::Index { path }) => cmd_index(path),
         Some(Command::Status) => cmd_status(),
+        Some(Command::Record {
+            file,
+            query,
+            line,
+            kind,
+        }) => cmd_record(&kind, query.as_deref(), &file, line),
         None => match cli.query {
             Some(query) => cmd_search(&query, cli.explain),
             None => {
@@ -119,7 +141,66 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
             println!("    score {:.0} = {}", hit.score, parts.join(" + "));
         }
     }
+
+    // Results are out — now do the cheap deferred work, amortized across
+    // interactions: log this search and roll a batch of events into the
+    // learning rollup. Best-effort; never fail the command on it.
+    let _ = store.record_event(
+        "search",
+        Some(&query.to_ascii_lowercase()),
+        current,
+        None,
+        None,
+        None,
+    );
+    let _ = store.aggregate_events(AGGREGATE_BATCH);
+
     ExitCode::SUCCESS
+}
+
+/// How many events to roll up per interaction. Bounded so the deferred pass
+/// after a command stays quick.
+const AGGREGATE_BATCH: usize = 256;
+
+/// Hook entry point: record that `file` was opened/selected for `query`, then
+/// amortize a chunk of event aggregation.
+fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) -> ExitCode {
+    let mut store = match open_store() {
+        Ok(s) => s,
+        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let identity = crate::index::detect_identity(&cwd).to_string();
+    let repo_id = store.repository_id(&identity).ok().flatten();
+
+    // Store the path repo-relative so the rollup can resolve it against indexed
+    // files.
+    let rel = match repo_id.and_then(|id| store.checkout_root(id).ok().flatten()) {
+        Some(root) => repo_relative(std::path::Path::new(&root), &cwd, file),
+        None => file.to_string(),
+    };
+    let query_norm = query.map(|q| q.to_ascii_lowercase());
+
+    if let Err(e) = store.record_event(kind, query_norm.as_deref(), repo_id, Some(&rel), line, None)
+    {
+        return fail(format_args!("rq record: {e}"));
+    }
+    let _ = store.aggregate_events(AGGREGATE_BATCH);
+    ExitCode::SUCCESS
+}
+
+/// Resolve a possibly-absolute or cwd-relative path to a repo-relative one.
+fn repo_relative(root: &std::path::Path, cwd: &std::path::Path, file: &str) -> String {
+    let p = std::path::Path::new(file);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
+    let abs = abs.canonicalize().unwrap_or(abs);
+    abs.strip_prefix(root)
+        .map(|r| r.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| file.to_string())
 }
 
 /// Revalidate the files behind the top hits against disk, refreshing any that

@@ -159,20 +159,29 @@ coverage (
 -- raw, append-only interaction log
 events (
   id INTEGER PRIMARY KEY,
-  type TEXT NOT NULL,                -- search | open | select | focus
-  query TEXT, repository_id INTEGER, file_id INTEGER, symbol_id INTEGER,
+  type TEXT NOT NULL,                -- search | open | select
+  query TEXT,                       -- normalized query, when applicable
+  repository_id INTEGER,
+  path TEXT, line INTEGER,          -- the file/line for open/select
   branch TEXT, ts INTEGER NOT NULL
 );
 
--- rollup the hot path reads; never scan raw events at query time
+-- rollup the hot path reads; never scan raw events at query time.
+-- Keyed by (file, name), NOT symbol_id: symbol ids are recreated whenever a
+-- file is re-extracted, so keying on the stable file+name keeps learning across
+-- reindexing.
 selection_stats (
   repository_id INTEGER NOT NULL,
   query_norm TEXT NOT NULL,
-  symbol_id INTEGER NOT NULL,
+  file TEXT NOT NULL,
+  name TEXT NOT NULL,
   selections INTEGER NOT NULL,
   last_selected_at INTEGER,
-  PRIMARY KEY (repository_id, query_norm, symbol_id)
+  PRIMARY KEY (repository_id, query_norm, file, name)
 );
+
+-- small key/value store (e.g. the event-rollup high-water mark)
+meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 ```
 
 Decisions worth calling out:
@@ -275,15 +284,27 @@ The user never needs to know which layer a result came from.
 
 The long-term differentiator: ranking learns from what users actually choose.
 
-- Every interaction appends to `events` — from the CLI and from editor adapters.
-- An **async rollup** aggregates events into `selection_stats` keyed by
-  `(repository_id, query_norm, symbol_id)`, so ranking does one indexed lookup
-  and never scans the raw log.
+- Every interaction appends to `events`. `rq <query>` logs a `search`; the
+  `rq record` hook logs an `open`/`select` with the query, file, and line — the
+  decoupled ingestion point editors and shells call.
+- A rollup aggregates events into `selection_stats`. It resolves the chosen
+  symbol from `(repo, path, line)` at rollup time and keys on `(query_norm,
+  file, name)`, so ranking does one indexed lookup and never scans the raw log.
 - The **learned boost** is one additive feature whose weight **ramps with
-  evidence** — few selections → low confidence → the static prior dominates.
-  This is what solves cold start (new user / new repo / never indexed).
-- **Time-decay** on selections so stale habits fade, plus a little
-  **exploration** so results aren't frozen on past choices.
+  evidence** (saturates ~5 selections) and **decays** with recency (~30-day
+  half-life, floored). Few selections → low weight → the static prior dominates,
+  which solves cold start (new user / new repo / never indexed).
+
+### No daemon — amortized post-interaction work
+
+Aggregation (and other proactive work like warming the index) is **not** a
+resident daemon. Each `rq` invocation prints results first, then does a small,
+bounded chunk of deferred work before exiting — rolling a batch of events into
+`selection_stats`, warming the index opportunistically. Cost amortizes across
+interactions, with no process to manage. A high-water mark in `meta` tracks
+which events have been rolled up so each pass only touches new ones. (Proactive
+indexing of files adjacent to a result is a natural future addition to this
+same deferred pass.)
 
 Git-awareness (current branch, recent commits, ownership, recently-modified
 areas) enters later as additional **ranking hints — never hard filters**.

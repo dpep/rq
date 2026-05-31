@@ -1,10 +1,10 @@
 rq — Reference Query
 ====================
 
-> **Status: early, working.** Phases 1–2 are functional — `rq <query>` returns
+> **Status: early, working.** Phases 1–3 are functional — `rq <query>` returns
 > ranked Ruby results (with `--explain`), the index warms opportunistically on
-> first use, and stale results self-heal. Behavioral learning (phase 3) and
-> editor integration (phase 5) are not built yet. See
+> first use, stale results self-heal, and ranking learns from the results you
+> pick. Editor integration (phase 5) is next. See
 > [docs/ROADMAP.md](docs/ROADMAP.md).
 
 **A code navigation engine, not a code search engine.** `rq` helps you reach
@@ -92,6 +92,22 @@ max < 0.25 ms — roughly 200× under the 50 ms target. Re-run with:
 ```sh
 make bench REPO=/path/to/repo
 ```
+
+## Learning from what you pick
+
+Ranking improves as you use it. `rq` logs each search, and a thin hook reports
+which result you opened so a `learned` boost lifts that result next time you run
+the same query:
+
+```sh
+rq record --query refund --file app/services/refund_processor.rb --line 7
+```
+
+Editors and shell wrappers call `rq record` after you jump to a result — it's
+the editor-independent ingestion point. Aggregation isn't a background daemon:
+each `rq` invocation does a small, bounded chunk of deferred work (rolling up
+events, warming the index) after printing results, so the cost amortizes across
+normal use.
 
 ## Install
 

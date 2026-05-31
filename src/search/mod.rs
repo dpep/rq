@@ -9,7 +9,9 @@ mod score;
 
 pub use score::{Feature, Scored};
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::store::{Store, SymbolRow};
 
@@ -42,14 +44,54 @@ pub fn search(
     limit: usize,
 ) -> crate::store::Result<Vec<Hit>> {
     let candidates = store.search_candidates(query, CANDIDATE_LIMIT)?;
+    let boosts = learned_boosts(store, query)?;
 
     let mut hits: Vec<Hit> = candidates
         .into_iter()
-        .filter_map(|c| rank_one(query, c, current_repo_id))
+        .filter_map(|c| {
+            let key = (c.repository_id, c.file.clone(), c.name.clone());
+            let boost = boosts.get(&key).copied().unwrap_or(0.0);
+            rank_one(query, c, current_repo_id, boost)
+        })
         .collect();
 
     sort_and_truncate(&mut hits, limit);
     Ok(hits)
+}
+
+/// Decay-weighted learned boosts for a query, keyed by `(repo, file, name)`.
+fn learned_boosts(
+    store: &Store,
+    query: &str,
+) -> crate::store::Result<HashMap<(i64, String, String), f64>> {
+    let now = now_unix();
+    let q = query.to_ascii_lowercase();
+    let mut map = HashMap::new();
+    for s in store.selections_for(&q)? {
+        let boost = learned_boost(s.selections, s.last_selected_at, now);
+        map.insert((s.repository_id, s.file, s.name), boost);
+    }
+    Ok(map)
+}
+
+/// Turn a selection count + recency into a ranking boost. Evidence ramps over
+/// ~5 selections; recency decays with a ~30-day half-life, floored so old picks
+/// still count for something.
+fn learned_boost(selections: i64, last_selected_at: i64, now: i64) -> f64 {
+    if selections <= 0 {
+        return 0.0;
+    }
+    let strength = (selections.min(5) as f64) / 5.0;
+    let age_days = (now - last_selected_at).max(0) as f64 / 86_400.0;
+    let recency = 0.5_f64.powf(age_days / 30.0).max(0.25);
+    260.0 * strength * recency
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Layer 4: scan `root` live (no index required) and return ranked hits.
@@ -69,7 +111,7 @@ pub fn live_search(root: &Path, query: &str, limit: usize) -> Vec<Hit> {
                 repository_id: LIVE_REPO_ID,
                 repo_identity: identity.clone(),
             };
-            rank_one(query, row, Some(LIVE_REPO_ID))
+            rank_one(query, row, Some(LIVE_REPO_ID), 0.0)
         })
         .collect();
     sort_and_truncate(&mut hits, limit);
@@ -108,8 +150,13 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) {
     hits.truncate(limit);
 }
 
-fn rank_one(query: &str, c: SymbolRow, current_repo_id: Option<i64>) -> Option<Hit> {
-    let scored = score::score(query, &c, current_repo_id)?;
+fn rank_one(
+    query: &str,
+    c: SymbolRow,
+    current_repo_id: Option<i64>,
+    learned_boost: f64,
+) -> Option<Hit> {
+    let scored = score::score(query, &c, current_repo_id, learned_boost)?;
     Some(Hit {
         name: c.name,
         kind: c.kind,

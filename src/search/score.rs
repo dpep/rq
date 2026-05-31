@@ -22,7 +22,15 @@ pub struct Scored {
 
 /// Score `cand` for `query`. Returns `None` when the candidate doesn't match at
 /// all (not even as a subsequence), filtering FTS trigram noise.
-pub fn score(query: &str, cand: &SymbolRow, current_repo_id: Option<i64>) -> Option<Scored> {
+///
+/// `learned_boost` is the (already decay-weighted) behavioral signal for this
+/// candidate — see [`crate::search`], which owns the time math.
+pub fn score(
+    query: &str,
+    cand: &SymbolRow,
+    current_repo_id: Option<i64>,
+    learned_boost: f64,
+) -> Option<Scored> {
     let q = query.to_ascii_lowercase();
     let name_lower = cand.name.to_ascii_lowercase();
 
@@ -97,6 +105,14 @@ pub fn score(query: &str, cand: &SymbolRow, current_repo_id: Option<i64>) -> Opt
         features.push(Feature {
             name: "current_repo",
             value: 200.0,
+        });
+    }
+
+    // Learned boost — results you've chosen before for this query rank higher.
+    if learned_boost > 0.0 {
+        features.push(Feature {
+            name: "learned",
+            value: learned_boost,
         });
     }
 
@@ -198,7 +214,7 @@ mod tests {
     }
 
     fn total(query: &str, name: &str) -> Option<f64> {
-        score(query, &row(name, "class", 1), None).map(|s| s.total)
+        score(query, &row(name, "class", 1), None, 0.0).map(|s| s.total)
     }
 
     #[test]
@@ -238,13 +254,13 @@ mod tests {
         // name "Invoice" doesn't match "billing", but the file does
         let mut cand = row("Invoice", "class", 1);
         cand.file = "app/models/billing.rb".into();
-        let s = score("billing", &cand, None).expect("path match");
+        let s = score("billing", &cand, None, 0.0).expect("path match");
         assert!(s.features.iter().any(|f| f.name == "path"));
 
         // a method (not a primary definition) in the same file does NOT surface
         let mut method = row("compute", "method", 1);
         method.file = "app/models/billing.rb".into();
-        assert!(score("billing", &method, None).is_none());
+        assert!(score("billing", &method, None, 0.0).is_none());
     }
 
     #[test]
@@ -253,17 +269,26 @@ mod tests {
         named.file = "app/models/user.rb".into();
         let mut elsewhere = row("User", "class", 1);
         elsewhere.file = "app/lib/misc.rb".into();
-        let with_path = score("user", &named, None).unwrap().total;
-        let without = score("user", &elsewhere, None).unwrap().total;
+        let with_path = score("user", &named, None, 0.0).unwrap().total;
+        let without = score("user", &elsewhere, None, 0.0).unwrap().total;
         assert!(with_path > without, "{with_path} > {without}");
     }
 
     #[test]
     fn current_repo_boost_applies() {
         let cand = row("User", "class", 7);
-        let in_repo = score("user", &cand, Some(7)).unwrap().total;
-        let out_repo = score("user", &cand, Some(99)).unwrap().total;
+        let in_repo = score("user", &cand, Some(7), 0.0).unwrap().total;
+        let out_repo = score("user", &cand, Some(99), 0.0).unwrap().total;
         assert!(in_repo > out_repo);
         assert_eq!(in_repo - out_repo, 200.0);
+    }
+
+    #[test]
+    fn learned_boost_adds_to_the_score() {
+        let cand = row("User", "class", 1);
+        let base = score("user", &cand, None, 0.0).unwrap().total;
+        let boosted = score("user", &cand, None, 150.0).unwrap();
+        assert_eq!(boosted.total - base, 150.0);
+        assert!(boosted.features.iter().any(|f| f.name == "learned"));
     }
 }

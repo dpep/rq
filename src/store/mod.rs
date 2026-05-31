@@ -29,6 +29,17 @@ pub struct SymbolRow {
     pub repo_identity: String,
 }
 
+/// A learned selection signal for ranking: how often a `(file, name)` was
+/// chosen for a query, and when it was last chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionStat {
+    pub repository_id: i64,
+    pub file: String,
+    pub name: String,
+    pub selections: i64,
+    pub last_selected_at: i64,
+}
+
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
@@ -69,8 +80,15 @@ impl Store {
     fn init(conn: Connection) -> Result<Store> {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version < schema::VERSION {
+        if version == 0 {
+            // fresh database — SCHEMA is already at the current version
             conn.execute_batch(schema::SCHEMA)?;
+        }
+        // cumulative migrations for existing databases (each guards its version)
+        if version != 0 && version < 2 {
+            conn.execute_batch(schema::MIGRATION_V2)?;
+        }
+        if version != schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
         }
         Ok(Store { conn })
@@ -281,6 +299,173 @@ impl Store {
             tx.execute("DELETE FROM files WHERE id = ?1", params![fid])?;
         }
         tx.commit()
+    }
+
+    // ----- behavioral learning -----
+
+    /// Append a raw interaction event (the cheap write on the hot path; rollup
+    /// happens later in [`Store::aggregate_events`]).
+    pub fn record_event(
+        &self,
+        kind: &str,
+        query: Option<&str>,
+        repository_id: Option<i64>,
+        path: Option<&str>,
+        line: Option<i64>,
+        branch: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO events (type, query, repository_id, path, line, branch, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![kind, query, repository_id, path, line, branch, now_unix()],
+        )?;
+        Ok(())
+    }
+
+    /// Learned selections for a query (across repositories), read by ranking.
+    pub fn selections_for(&self, query_norm: &str) -> Result<Vec<SelectionStat>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT repository_id, file, name, selections, last_selected_at
+             FROM selection_stats WHERE query_norm = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![query_norm], |r| {
+                Ok(SelectionStat {
+                    repository_id: r.get(0)?,
+                    file: r.get(1)?,
+                    name: r.get(2)?,
+                    selections: r.get(3)?,
+                    last_selected_at: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Roll up to `batch` new `open`/`select` events into `selection_stats`.
+    /// Returns how many events were processed. Resolves the chosen symbol from
+    /// `(repo, path, line)` at rollup time, turning a selection into a
+    /// `(query, file, name)` signal. This is the amortized post-processing run
+    /// after a user interaction.
+    pub fn aggregate_events(&mut self, batch: usize) -> Result<usize> {
+        let hwm = self.meta_get_i64("events_hwm")?.unwrap_or(0);
+
+        type Pending = (
+            i64,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+            i64,
+        );
+        let pending: Vec<Pending> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, query, repository_id, path, line, ts FROM events
+                 WHERE id > ?1 AND type IN ('select', 'open')
+                 ORDER BY id LIMIT ?2",
+            )?;
+            stmt.query_map(params![hwm, batch as i64], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>>>()?
+        };
+
+        if pending.is_empty() {
+            // advance past trailing non-selection events so we don't rescan them
+            let max_id: Option<i64> =
+                self.conn
+                    .query_row("SELECT MAX(id) FROM events", [], |r| r.get(0))?;
+            if let Some(m) = max_id.filter(|m| *m > hwm) {
+                self.meta_set_i64("events_hwm", m)?;
+            }
+            return Ok(0);
+        }
+
+        let drained = pending.len() < batch;
+        let max_pending_id = pending.iter().map(|p| p.0).max().unwrap_or(hwm);
+
+        let tx = self.conn.transaction()?;
+        let mut processed = 0;
+        for (_id, query, repo, path, line, ts) in &pending {
+            processed += 1;
+            let (Some(query), Some(repo), Some(path)) = (query, repo, path) else {
+                continue;
+            };
+            let name: Option<String> = match line {
+                Some(line) => tx
+                    .query_row(
+                        "SELECT s.name FROM symbols s JOIN files fi ON fi.id = s.file_id
+                         WHERE s.repository_id = ?1 AND fi.path = ?2 AND s.line <= ?3
+                         ORDER BY s.line DESC LIMIT 1",
+                        params![repo, path, line],
+                        |r| r.get(0),
+                    )
+                    .optional()?,
+                None => tx
+                    .query_row(
+                        "SELECT s.name FROM symbols s JOIN files fi ON fi.id = s.file_id
+                         WHERE s.repository_id = ?1 AND fi.path = ?2
+                           AND s.kind IN ('class', 'module')
+                         ORDER BY s.line ASC LIMIT 1",
+                        params![repo, path],
+                        |r| r.get(0),
+                    )
+                    .optional()?,
+            };
+            if let Some(name) = name {
+                tx.execute(
+                    "INSERT INTO selection_stats
+                       (repository_id, query_norm, file, name, selections, last_selected_at)
+                     VALUES (?1, ?2, ?3, ?4, 1, ?5)
+                     ON CONFLICT(repository_id, query_norm, file, name) DO UPDATE SET
+                       selections = selections + 1,
+                       last_selected_at = max(last_selected_at, excluded.last_selected_at)",
+                    params![repo, query, path, name, ts],
+                )?;
+            }
+        }
+
+        let new_hwm = if drained {
+            tx.query_row("SELECT MAX(id) FROM events", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })?
+            .unwrap_or(max_pending_id)
+        } else {
+            max_pending_id
+        };
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('events_hwm', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![new_hwm.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(processed)
+    }
+
+    fn meta_get_i64(&self, key: &str) -> Result<Option<i64>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(raw.and_then(|s| s.parse().ok()))
+    }
+
+    fn meta_set_i64(&self, key: &str, value: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value.to_string()],
+        )?;
+        Ok(())
     }
 
     /// Candidate symbols for a query, drawn from two cheap layers and merged:
