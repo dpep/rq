@@ -61,9 +61,12 @@ which results you actually choose. See
 ```sh
 rq <query>              # search definitions; ranked
 rq <query> --explain    # show the score breakdown for each result
-rq index [PATH]         # index a repository (incremental; safe to re-run)
-rq status               # coverage per known repository
+rq --index [PATH]       # index a repository (incremental; safe to re-run)
+rq --status             # coverage per known repository
 ```
+
+Operations are flags, not subcommands, so no word is reserved — `rq index`,
+`rq status`, and `rq record` search for those symbols like any other query.
 
 Each result is a navigable `path:line` location, intended to open directly in
 an editor:
@@ -100,14 +103,18 @@ which result you opened so a `learned` boost lifts that result next time you run
 the same query:
 
 ```sh
-rq record --query refund --file app/services/refund_processor.rb --line 7
+rq --record --file app/services/refund_processor.rb --line 7 refund
 ```
 
-Editors and shell wrappers call `rq record` after you jump to a result — it's
-the editor-independent ingestion point. Aggregation isn't a background daemon:
-each `rq` invocation does a small, bounded chunk of deferred work (rolling up
-events, warming the index) after printing results, so the cost amortizes across
-normal use.
+Editors and shell wrappers call `rq --record` after you jump to a result — it's
+the editor-independent ingestion point. A pick for a shorter query (`ref`) also
+informs longer ones (`refund`). And repeating a search without opening anything
+is read as a miss: that query's learned boost decays, so a stale favorite stops
+dominating and alternatives resurface.
+
+Aggregation isn't a background daemon: each `rq` invocation does a small,
+bounded chunk of deferred work (rolling up events, warming the index) after
+printing results, so the cost amortizes across normal use.
 
 ## Install
 

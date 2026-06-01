@@ -68,9 +68,15 @@ The differentiator.
       by `(query_norm, file, name)` so it survives reindexing
 - [x] learned boost as an additive feature with evidence-ramped weight
 - [x] time-decay (recency, ~30-day half-life)
-- [ ] exploration (avoid freezing on past choices) — not yet
-- [ ] prefix/related-query learning (today only the exact query_norm matches)
+- [x] exploration via repeat-as-miss: a repeated search (nothing opened since)
+      decays that query's learned boost, so a stale favorite stops dominating
+- [x] prefix/related-query learning — a pick for `han` informs `handler`
 - [ ] measure: does learned ranking beat static on real usage?
+- [ ] prune the raw `events` log (currently grows unbounded)
+
+CLI shape: operations are flags (`--index`, `--status`, `--record`), not
+subcommands, so no word is reserved — every term stays searchable, matching the
+rg/fd feel.
 
 ## Phase 4 — Git awareness
 

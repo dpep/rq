@@ -322,11 +322,13 @@ impl Store {
         Ok(())
     }
 
-    /// Learned selections for a query (across repositories), read by ranking.
+    /// Learned selections relevant to a query, read by ranking. Matches not just
+    /// the exact query but any *shorter* query the user has selected for — a pick
+    /// for `han` informs `handler` — so typing more keeps the benefit.
     pub fn selections_for(&self, query_norm: &str) -> Result<Vec<SelectionStat>> {
         let mut stmt = self.conn.prepare(
             "SELECT repository_id, file, name, selections, last_selected_at
-             FROM selection_stats WHERE query_norm = ?1",
+             FROM selection_stats WHERE ?1 LIKE query_norm || '%'",
         )?;
         let rows = stmt
             .query_map(params![query_norm], |r| {
@@ -340,6 +342,37 @@ impl Store {
             })?
             .collect::<Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Whether the most recent event for this repo is a `search` for the same
+    /// query — i.e. the query was repeated with no selection in between, a
+    /// signal that the last results missed.
+    pub fn is_repeat_search(&self, repository_id: i64, query_norm: &str) -> Result<bool> {
+        let last: Option<(String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT type, query FROM events WHERE repository_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![repository_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(matches!(last, Some((kind, Some(q))) if kind == "search" && q == query_norm))
+    }
+
+    /// Decay the learned boost for a query — a repeated search signals the
+    /// learned pick didn't satisfy. Rows that reach zero are dropped.
+    pub fn decay_selections(&self, repository_id: i64, query_norm: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE selection_stats SET selections = selections - 1
+             WHERE repository_id = ?1 AND query_norm = ?2",
+            params![repository_id, query_norm],
+        )?;
+        self.conn.execute(
+            "DELETE FROM selection_stats
+             WHERE repository_id = ?1 AND query_norm = ?2 AND selections <= 0",
+            params![repository_id, query_norm],
+        )?;
+        Ok(())
     }
 
     /// Roll up to `batch` new `open`/`select` events into `selection_stats`.
@@ -596,6 +629,52 @@ mod tests {
             line,
             parent: parent.map(String::from),
         }
+    }
+
+    #[test]
+    fn aggregates_a_selection_and_decays_on_repeat() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/x"), None)
+            .unwrap();
+        store
+            .replace_file_symbols(
+                repo,
+                "a.rb",
+                "ruby",
+                None,
+                "h",
+                &[sym("Foo", Kind::Class, 1, None)],
+            )
+            .unwrap();
+
+        // a selection for "foo" rolls up into one learned stat
+        store
+            .record_event(
+                "select",
+                Some("foo"),
+                Some(repo),
+                Some("a.rb"),
+                Some(1),
+                None,
+            )
+            .unwrap();
+        assert_eq!(store.aggregate_events(10).unwrap(), 1);
+        assert_eq!(store.selections_for("foo").unwrap().len(), 1);
+        // ...and a longer query still benefits (prefix learning)
+        assert_eq!(store.selections_for("foobar").unwrap().len(), 1);
+
+        // last event is the select → not a repeat
+        assert!(!store.is_repeat_search(repo, "foo").unwrap());
+        // re-search "foo" without opening anything → repeat
+        store
+            .record_event("search", Some("foo"), Some(repo), None, None, None)
+            .unwrap();
+        assert!(store.is_repeat_search(repo, "foo").unwrap());
+
+        // decaying the lone selection drops it
+        store.decay_selections(repo, "foo").unwrap();
+        assert!(store.selections_for("foo").unwrap().is_empty());
     }
 
     #[test]

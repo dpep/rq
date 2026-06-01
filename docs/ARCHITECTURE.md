@@ -294,6 +294,14 @@ The long-term differentiator: ranking learns from what users actually choose.
   evidence** (saturates ~5 selections) and **decays** with recency (~30-day
   half-life, floored). Few selections → low weight → the static prior dominates,
   which solves cold start (new user / new repo / never indexed).
+- **Prefix learning:** a pick for a shorter query (`han`) informs longer ones
+  (`handler`) — `selections_for` matches any stored query that is a prefix of
+  the current one, so typing more keeps the benefit.
+- **Repeat-as-miss (exploration):** if the most recent event for a repo is a
+  `search` for the same query (nothing opened since), the query was repeated —
+  a signal the last results missed. That query's learned boost is decayed
+  before ranking, so a stale favorite stops dominating and alternatives
+  resurface. Opening a result reinforces it again.
 
 ### No daemon — amortized post-interaction work
 

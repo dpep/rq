@@ -3,77 +3,76 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 use crate::store::Store;
 
+/// Search is the default action (`rq <query>`). Operations are flags rather
+/// than subcommands so no word is reserved — `rq index`, `rq status`, and
+/// `rq record` all search for those symbols. This also matches the rg/fd feel.
 #[derive(Parser)]
 #[command(
     name = "rq",
     version,
-    about = "A code navigation engine — reach the definition you want, fast.",
-    args_conflicts_with_subcommands = true
+    about = "A code navigation engine — reach the definition you want, fast."
 )]
 struct Cli {
-    /// Search query (the default action when no subcommand is given).
-    #[arg(value_name = "QUERY")]
-    query: Option<String>,
+    /// Search query. With --index, the path to index; with --record, the query
+    /// the selection was made for.
+    #[arg(value_name = "TARGET")]
+    target: Option<String>,
 
     /// Show the score breakdown for each result.
     #[arg(long)]
     explain: bool,
 
-    #[command(subcommand)]
-    command: Option<Command>,
-}
+    /// Index a repository (TARGET path, or the current directory).
+    #[arg(long, conflicts_with_all = ["status", "record"])]
+    index: bool,
 
-#[derive(Subcommand)]
-enum Command {
-    /// Index a repository (incremental; safe to re-run).
-    Index {
-        /// Path to index (defaults to the current directory).
-        path: Option<PathBuf>,
-    },
     /// Show indexing coverage per known repository.
-    Status,
-    /// Record an interaction (editor/shell hook): which result you opened for a
-    /// query. Feeds ranking's behavioral learning.
-    Record {
-        /// File that was opened/selected (absolute or relative to the cwd).
-        #[arg(long)]
-        file: String,
-        /// The query that led there, if any.
-        #[arg(long)]
-        query: Option<String>,
-        /// Line landed on (used to attribute the selection to a definition).
-        #[arg(long)]
-        line: Option<i64>,
-        /// Event kind.
-        #[arg(long, default_value = "select")]
-        kind: String,
-    },
+    #[arg(long, conflicts_with_all = ["index", "record"])]
+    status: bool,
+
+    /// Record an interaction (editor/shell hook): the result opened for a query.
+    /// Requires --file.
+    #[arg(long, requires = "file", conflicts_with_all = ["index", "status"])]
+    record: bool,
+
+    /// (--record) File that was opened/selected.
+    #[arg(long)]
+    file: Option<String>,
+
+    /// (--record) Line landed on (attributes the selection to a definition).
+    #[arg(long)]
+    line: Option<i64>,
+
+    /// (--record) Event kind.
+    #[arg(long, default_value = "select")]
+    kind: String,
 }
 
 /// Parse arguments and dispatch. Returns the process exit code.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
 
-    match cli.command {
-        Some(Command::Index { path }) => cmd_index(path),
-        Some(Command::Status) => cmd_status(),
-        Some(Command::Record {
-            file,
-            query,
-            line,
-            kind,
-        }) => cmd_record(&kind, query.as_deref(), &file, line),
-        None => match cli.query {
-            Some(query) => cmd_search(&query, cli.explain),
-            None => {
-                eprintln!("rq: no query given (try `rq --help`)");
-                ExitCode::FAILURE
-            }
-        },
+    if cli.index {
+        return cmd_index(cli.target.map(PathBuf::from));
+    }
+    if cli.status {
+        return cmd_status();
+    }
+    if cli.record {
+        // clap guarantees --file is present via `requires`
+        let file = cli.file.expect("--record requires --file");
+        return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
+    }
+    match cli.target {
+        Some(query) => cmd_search(&query, cli.explain),
+        None => {
+            eprintln!("rq: no query given (try `rq --help`)");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -99,6 +98,17 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
     }
 
     let current = current_repo_id(&store);
+
+    // A repeated search (same query, nothing opened since) means last time
+    // missed — decay this query's learned boost before ranking so a stale
+    // learned pick stops dominating and alternatives surface.
+    if let Some(repo) = current {
+        let qn = query.to_ascii_lowercase();
+        if store.is_repeat_search(repo, &qn).unwrap_or(false) {
+            let _ = store.decay_selections(repo, &qn);
+        }
+    }
+
     let mut hits = match crate::search::search(&store, query, current, 10) {
         Ok(h) => h,
         Err(e) => return fail(format_args!("rq: {e}")),

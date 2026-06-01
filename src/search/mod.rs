@@ -66,10 +66,13 @@ fn learned_boosts(
 ) -> crate::store::Result<HashMap<(i64, String, String), f64>> {
     let now = now_unix();
     let q = query.to_ascii_lowercase();
-    let mut map = HashMap::new();
+    let mut map: HashMap<(i64, String, String), f64> = HashMap::new();
     for s in store.selections_for(&q)? {
+        // several stored queries can match (e.g. "han" and "handler"); keep the
+        // strongest boost for each candidate
         let boost = learned_boost(s.selections, s.last_selected_at, now);
-        map.insert((s.repository_id, s.file, s.name), boost);
+        let entry = map.entry((s.repository_id, s.file, s.name)).or_insert(0.0);
+        *entry = entry.max(boost);
     }
     Ok(map)
 }
