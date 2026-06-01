@@ -28,6 +28,7 @@ rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
+rq perform -k method      restrict to a symbol kind (c/mod/m/f)\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n\n\
 RECORDING (editor/shell hook):\n  \
@@ -71,6 +72,11 @@ struct Cli {
     #[arg(short = 'l', long, value_name = "N", default_value_t = 10)]
     limit: usize,
 
+    /// Restrict to symbol kinds: class, module, method, function
+    /// (shortcuts: c, mod, m, f). Repeatable or comma-separated.
+    #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
+    kind: Vec<String>,
+
     /// Index a repository (TARGET path, or the current directory).
     #[arg(long, conflicts_with_all = ["status", "record"])]
     index: bool,
@@ -92,9 +98,9 @@ struct Cli {
     #[arg(long)]
     line: Option<i64>,
 
-    /// (--record) Event kind.
+    /// (--record) Event kind (select or open).
     #[arg(long, default_value = "select")]
-    kind: String,
+    event: String,
 
     /// Print a shell completion script (bash, zsh, fish, elvish, powershell).
     #[arg(long, value_name = "SHELL")]
@@ -119,14 +125,23 @@ pub fn run() -> ExitCode {
     if cli.record {
         // clap guarantees --file is present via `requires`
         let file = cli.file.expect("--record requires --file");
-        return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
+        return cmd_record(&cli.event, cli.target.as_deref(), &file, cli.line);
     }
     let out = output_format(&cli);
     // path filters: trailing positionals (rg-style) plus any --path flags
     let mut paths = cli.path.clone();
     paths.extend(cli.dirs.clone());
+    let kinds: Vec<String> = cli.kind.iter().map(|k| canonical_kind(k)).collect();
     match cli.target {
-        Some(query) => cmd_search(&query, cli.explain, out, &paths, cli.limit, cli.no_record),
+        Some(query) => cmd_search(
+            &query,
+            cli.explain,
+            out,
+            &paths,
+            &kinds,
+            cli.limit,
+            cli.no_record,
+        ),
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -159,16 +174,19 @@ const PATH_HEADROOM: usize = 200;
 
 /// Default action: search the index and print ranked results. `want` is the
 /// number of results to show (`--limit`).
+#[allow(clippy::too_many_arguments)]
 fn cmd_search(
     query: &str,
     explain: bool,
     out: Output,
     paths: &[String],
+    kinds: &[String],
     want: usize,
     no_record: bool,
 ) -> ExitCode {
-    // with --path we rank extra, then filter down to `want`
-    let limit = if paths.is_empty() {
+    // post-filters (--path, --kind) need headroom before the cutoff so a
+    // filtered-in result isn't lost to the top-N truncation
+    let limit = if paths.is_empty() && kinds.is_empty() {
         want
     } else {
         (want * 20).max(PATH_HEADROOM)
@@ -239,9 +257,15 @@ fn cmd_search(
         hits = crate::search::live_search(cwd, query, limit);
     }
 
-    // --path: keep only results under one of the given directories, then trim.
+    // post-filters: keep only results under a --path dir and/or of a --kind,
+    // then trim to the requested count.
     if !paths.is_empty() {
         hits.retain(|h| under_any(&h.file, paths));
+    }
+    if !kinds.is_empty() {
+        hits.retain(|h| kinds.iter().any(|k| k == &h.kind));
+    }
+    if !paths.is_empty() || !kinds.is_empty() {
         hits.truncate(want);
     }
 
@@ -374,6 +398,19 @@ fn read_signature(
     let idx = usize::try_from(hit.line).ok()?.checked_sub(1)?;
     let line = content.lines().nth(idx)?.trim();
     (!line.is_empty()).then(|| line.to_string())
+}
+
+/// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.
+/// Unknown values pass through lowercased (so they simply match nothing).
+fn canonical_kind(s: &str) -> String {
+    match s.to_ascii_lowercase().as_str() {
+        "c" | "class" => "class",
+        "m" | "method" => "method",
+        "f" | "fn" | "func" | "function" => "function",
+        "mod" | "module" => "module",
+        other => return other.to_string(),
+    }
+    .to_string()
 }
 
 /// Whether a repo-relative `file` sits under one of the `--path` directories

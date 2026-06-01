@@ -42,6 +42,7 @@ rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
+rq <query> -k/--kind KIND   # restrict to class|module|method|function (c/mod/m/f)
 rq <query> -l/--limit N     # cap the number of results (default 10)
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # index only a subtree (partial — for big monorepos)

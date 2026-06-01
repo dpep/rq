@@ -273,6 +273,29 @@ fn no_record_still_returns_results() {
 }
 
 #[test]
+fn kind_filter_scopes_by_symbol_kind() {
+    let (dir, db) = scratch("kind");
+    fs::write(dir.join("a.rb"), "class Charge\n  def charge\n  end\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // both a class and a method match "charge"
+    let (_, out) = rq(&db, &dir, &["charge", "--ndjson"]);
+    assert!(out.contains("\"kind\":\"class\""), "class present: {out}");
+    assert!(out.contains("\"kind\":\"method\""), "method present: {out}");
+
+    // -k m (shortcut for method) keeps only the method
+    let (ok, out) = rq(&db, &dir, &["charge", "-k", "m", "--ndjson"]);
+    assert!(ok, "kind search failed: {out}");
+    assert!(out.contains("\"kind\":\"method\""), "method kept: {out}");
+    assert!(
+        !out.contains("\"kind\":\"class\""),
+        "class filtered out: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

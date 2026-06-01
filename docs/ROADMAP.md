@@ -118,6 +118,7 @@ Each is a new `lang/` plugin implementing `LanguagePlugin`; no core change.
 - `-j/--json`, `-J/--ndjson` — structured output for editors, scripts, agents;
   each result carries a `signature` (the definition's source line)
 - path filters — trailing positionals (rg-style `rq query dir…`) or `-p/--path`
+- `-k/--kind` — restrict to class/module/method/function (names or c/mod/m/f)
 - `-l/--limit N` — cap the number of results
 - `--no-record` — search without recording a behavioral signal (for agents)
 - `-e/--explain` — per-result score breakdown
