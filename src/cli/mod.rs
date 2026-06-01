@@ -279,13 +279,10 @@ fn cmd_search(
         return ExitCode::FAILURE;
     }
 
-    // For machine-readable output, attach each result's definition line so a
-    // consumer sees `def perform(refund)`, not just the name. Cheap: only the
-    // displayed results, only in JSON modes.
-    if matches!(out, Output::Json | Output::Ndjson) {
-        for hit in &mut hits {
-            hit.signature = read_signature(&store, hit, cwd.as_deref());
-        }
+    // Attach each result's definition line (e.g. `def perform(refund)`) — shown
+    // in text output and carried in JSON. Cheap: only the displayed results.
+    for hit in &mut hits {
+        hit.signature = read_signature(&store, hit, cwd.as_deref());
     }
 
     match out {
@@ -303,18 +300,25 @@ fn cmd_search(
         },
         Output::Text => {
             let color = match_color();
+            let c = color.as_deref();
             for hit in &hits {
-                // highlight the chars the query actually matched (great for fuzzy)
-                let positions = crate::search::match_positions(query, &hit.name);
-                let name = match &color {
-                    Some(c) => highlight(&hit.name, &positions, c),
-                    None => hit.name.clone(),
-                };
+                // highlight the chars the query matched — in the name, the
+                // filename, and the definition line (great for fuzzy matches)
+                let name = hl(&hit.name, query, c);
                 let qualified = match &hit.parent {
                     Some(p) => format!("{name} · {p}"),
                     None => name,
                 };
-                println!("{}:{}  {} {}", hit.file, hit.line, hit.kind, qualified);
+                println!(
+                    "{}:{}  {} {}",
+                    hl_path(&hit.file, query, c),
+                    hit.line,
+                    hit.kind,
+                    qualified
+                );
+                if let Some(sig) = &hit.signature {
+                    println!("    {}", hl(sig, query, c));
+                }
                 if explain {
                     let parts: Vec<String> = hit
                         .features
@@ -437,6 +441,30 @@ fn match_color() -> Option<String> {
         })
     });
     Some(style.unwrap_or_else(|| "1;31".to_string()))
+}
+
+/// Highlight the chars of `text` that `query` matched (no-op when `color` is
+/// `None`, e.g. piped output).
+fn hl(text: &str, query: &str, color: Option<&str>) -> String {
+    match color {
+        Some(c) => highlight(text, &crate::search::match_positions(query, text), c),
+        None => text.to_string(),
+    }
+}
+
+/// Like [`hl`], but only over a path's filename — so matched chars light up in
+/// `payrolls_controller.rb`, not scattered across the directory parts.
+fn hl_path(path: &str, query: &str, color: Option<&str>) -> String {
+    let Some(c) = color else {
+        return path.to_string();
+    };
+    let base_byte = path.rfind('/').map(|b| b + 1).unwrap_or(0);
+    let base_start = path[..base_byte].chars().count();
+    let positions: Vec<usize> = crate::search::match_positions(query, &path[base_byte..])
+        .into_iter()
+        .map(|p| p + base_start)
+        .collect();
+    highlight(path, &positions, c)
 }
 
 /// Wrap the matched character positions of `text` in an ANSI color run.

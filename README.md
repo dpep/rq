@@ -70,8 +70,9 @@ rq perform app/services --json            # ...scoped to a subtree (rg-style)
 Pass `--no-record` for speculative/agent searches so they don't perturb the
 learned ranking (which is meant to reflect deliberate, human picks).
 
-Text results highlight the characters your query matched — handy for fuzzy
-queries, where it shows exactly what `rq` latched onto. Color is on only when
+Text results show each definition's source line and highlight the characters
+your query matched — in the name, the filename, and that line (handy for fuzzy
+queries, where it shows exactly what `rq` latched onto). Color is on only when
 output is a terminal, honors `NO_COLOR`, and takes its style from `GREP_COLORS`
 (`mt`/`ms`) if set.
 
