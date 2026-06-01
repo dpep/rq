@@ -154,8 +154,12 @@ pub fn score(
 /// boundaries (camelCase / underscore) and contiguous runs. `None` if `query`
 /// is not a subsequence. Handles abbreviations like `refproc → RefundProcessor`,
 /// `usr → User`, `paymnt → Payments`.
+///
+/// Separators in the query are ignored, so a snake_case (or kebab) query matches
+/// a CamelCase name: `widget_controller` → `WidgetsController`. Candidate
+/// separators are skipped naturally as the scan walks the name.
 fn subsequence_score(query: &str, name: &str) -> Option<f64> {
-    let q: Vec<char> = query.chars().collect();
+    let q: Vec<char> = query.chars().filter(|c| c.is_alphanumeric()).collect();
     if q.is_empty() {
         return None;
     }
@@ -265,6 +269,16 @@ mod tests {
         assert!(total("paymnt", "Payments").is_some());
         assert!(total("perf", "perform").is_some());
         assert!(total("usr", "User").is_some());
+    }
+
+    #[test]
+    fn snake_case_query_matches_camelcase_name() {
+        // typed a snake_case query, want the CamelCase class — even when the
+        // class is plural and you forgot the `s`
+        assert!(total("widget_controller", "WidgetsController").is_some());
+        assert!(total("widget_controller", "WidgetController").is_some());
+        // unrelated controller still doesn't match
+        assert!(total("widget_controller", "AdminController").is_none());
     }
 
     #[test]

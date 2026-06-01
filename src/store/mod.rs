@@ -57,13 +57,13 @@ pub struct Store {
     conn: Connection,
 }
 
-/// One row of `rq status` output.
+/// One row of `rq status` output — the current indexed totals for a repo (not
+/// any single run's incremental counts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageRow {
     pub identity: String,
     pub status: String,
-    pub files_indexed: i64,
-    pub files_seen: i64,
+    pub files: i64,
     pub symbols: i64,
 }
 
@@ -246,13 +246,12 @@ impl Store {
         tx.commit()
     }
 
-    /// All known repositories with their coverage and symbol count.
+    /// All known repositories with their coverage status and current totals.
     pub fn coverage_overview(&self) -> Result<Vec<CoverageRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.identity,
                     COALESCE(c.status, 'never'),
-                    COALESCE(c.files_indexed, 0),
-                    COALESCE(c.files_seen, 0),
+                    (SELECT COUNT(*) FROM files fi WHERE fi.repository_id = r.id),
                     (SELECT COUNT(*) FROM symbols s WHERE s.repository_id = r.id)
              FROM repositories r
              LEFT JOIN coverage c ON c.repository_id = r.id AND c.scope = 'full'
@@ -263,9 +262,8 @@ impl Store {
                 Ok(CoverageRow {
                     identity: r.get(0)?,
                     status: r.get(1)?,
-                    files_indexed: r.get(2)?,
-                    files_seen: r.get(3)?,
-                    symbols: r.get(4)?,
+                    files: r.get(2)?,
+                    symbols: r.get(3)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -295,6 +293,21 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()
+    }
+
+    /// Current indexed totals for a repository: (files, symbols).
+    pub fn repo_totals(&self, repository_id: i64) -> Result<(i64, i64)> {
+        let files = self.conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE repository_id = ?1",
+            params![repository_id],
+            |r| r.get(0),
+        )?;
+        let symbols = self.conn.query_row(
+            "SELECT COUNT(*) FROM symbols WHERE repository_id = ?1",
+            params![repository_id],
+            |r| r.get(0),
+        )?;
+        Ok((files, symbols))
     }
 
     /// The on-disk root of a repository's checkout, used to resolve relative

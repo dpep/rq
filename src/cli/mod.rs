@@ -479,10 +479,22 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
     match crate::index::index_under(&mut store, &root, subdirs) {
         Ok(stats) => {
             let scope = if subdirs.is_empty() { "" } else { " (partial)" };
-            println!(
-                "indexed{scope} {} file(s) ({} seen), {} symbol(s)",
-                stats.files_indexed, stats.files_seen, stats.symbols
-            );
+            // distinguish this run's incremental work from the index totals
+            let totals = store
+                .repository_id(&crate::index::detect_identity(&root).to_string())
+                .ok()
+                .flatten()
+                .and_then(|id| store.repo_totals(id).ok());
+            match totals {
+                Some((files, symbols)) => println!(
+                    "{} file(s)/{} symbol(s) added this run; index{scope} now {files} files, {symbols} symbols",
+                    stats.files_indexed, stats.symbols
+                ),
+                None => println!(
+                    "{} file(s)/{} symbol(s) added this run{scope}",
+                    stats.files_indexed, stats.symbols
+                ),
+            }
             ExitCode::SUCCESS
         }
         Err(e) => fail(format_args!("rq index: {e}")),
@@ -502,8 +514,8 @@ fn cmd_status() -> ExitCode {
         Ok(rows) => {
             for r in rows {
                 println!(
-                    "{:<10} {:>6} symbols  {}/{} files  {}",
-                    r.status, r.symbols, r.files_indexed, r.files_seen, r.identity
+                    "{:<10} {:>6} files  {:>7} symbols  {}",
+                    r.status, r.files, r.symbols, r.identity
                 );
             }
             ExitCode::SUCCESS
