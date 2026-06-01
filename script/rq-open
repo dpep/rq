@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# rq-open: search with rq, open the chosen result in your editor, and record
+# the choice so ranking learns which result you wanted.
+#
+#   rq-open <query>
+#
+# Picking: uses fzf if available (auto-selects a lone match); otherwise opens
+# the top-ranked result. Opening: VS Code (`code --goto`) if present, else
+# $EDITOR, else just prints the location.
+#
+# This is the reference "shell hook" — it's all `rq` plus `rq --record`, so any
+# editor or launcher can do the same. See docs/EDITORS.md.
+
+set -euo pipefail
+
+query="$*"
+if [ -z "$query" ]; then
+  echo "usage: rq-open <query>" >&2
+  exit 1
+fi
+
+results="$(rq "$query" || true)"
+if [ -z "$results" ]; then
+  echo "no matches for: $query" >&2
+  exit 1
+fi
+
+if command -v fzf >/dev/null 2>&1; then
+  choice="$(printf '%s\n' "$results" | fzf --select-1 --exit-0 --prompt='rq> ')" || exit 0
+else
+  choice="$(printf '%s\n' "$results" | head -1)"
+fi
+[ -z "$choice" ] && exit 0
+
+# A result line looks like:  path/to/file.rb:42  kind Name · Parent
+loc="${choice%% *}"          # first token: path:line
+file="${loc%:*}"
+line="${loc##*:}"
+
+# Record the pick so ranking learns (best-effort; never block the open).
+rq --record --file "$file" --line "$line" "$query" || true
+
+# Open at the line.
+if command -v code >/dev/null 2>&1; then
+  exec code --goto "$file:$line"
+elif [ -n "${EDITOR:-}" ]; then
+  case "$EDITOR" in
+    *vim*|*nvim*) exec "$EDITOR" "+$line" "$file" ;;
+    *)            exec "$EDITOR" "$file" ;;
+  esac
+else
+  echo "$file:$line"
+fi

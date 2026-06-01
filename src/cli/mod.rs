@@ -14,7 +14,23 @@ use crate::store::Store;
 #[command(
     name = "rq",
     version,
-    about = "A code navigation engine — reach the definition you want, fast."
+    about = "A code navigation engine — reach the definition you want, fast.",
+    long_about = "rq is a code navigation engine: it ranks aggressively to surface the \
+one definition you most likely want, rather than listing every match.\n\n\
+Search is the default action — operations are flags, not subcommands, so every \
+word (including \"index\", \"status\", \"record\") stays searchable. Ranking \
+learns from the results you open (see --record) and favors your current repo \
+and recently-active files. Run `rq --explain <query>` to see the score behind \
+each result.",
+    after_help = "EXAMPLES:\n  \
+rq refund                       search for a definition\n  \
+rq refundproc --explain         fuzzy/abbreviation match, with score breakdown\n  \
+rq --index                      index the current repository\n  \
+rq -C ~/code/app user           search another checkout, without cd-ing there\n  \
+rq --status                     show indexing coverage\n  \
+rq --record --file app/models/user.rb --line 5 user   record an opened result (editor hook)\n\n\
+The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms \
+automatically on first search in a git repo."
 )]
 struct Cli {
     /// Search query. With --index, the path to index; with --record, the query

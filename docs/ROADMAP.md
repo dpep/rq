@@ -93,9 +93,12 @@ signal slots into the scorer without threading new parameters.
 
 ## Phase 5 — Editor integration
 
-- [ ] thin local event-ingestion endpoint
-- [ ] result-opening protocol (`path:line`)
-- [ ] reference adapters (VS Code, Neovim)
+- [x] ingestion point — `rq --record` (plus `-C` to target a workspace); no
+      daemon, just CLI calls
+- [x] result-opening protocol — every result is a `path:line`
+- [x] reference shell wrapper — `script/rq-open` (search → pick → open → record)
+- [x] integration guide — docs/EDITORS.md (VS Code task + extension sketch, Neovim)
+- [ ] a packaged VS Code extension (the doc has the sketch; not yet shipped)
 
 ## Later — more languages
 

@@ -113,6 +113,11 @@ informs longer ones (`refund`). And repeating a search without opening anything
 is read as a miss: that query's learned boost decays, so a stale favorite stops
 dominating and alternatives resurface.
 
+The reference wrapper [`script/rq-open`](script/rq-open) does search → pick →
+open → record in one step (`rq-open <query>`). See
+[docs/EDITORS.md](docs/EDITORS.md) for VS Code and Neovim integration — it's
+just `rq` plus `rq --record`, no daemon or socket.
+
 Aggregation isn't a background daemon: each `rq` invocation does a small,
 bounded chunk of deferred work (rolling up events, warming the index) after
 printing results, so the cost amortizes across normal use.
