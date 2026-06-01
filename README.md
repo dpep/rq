@@ -144,6 +144,16 @@ it never assumes all indexed symbols belong to a single project.
 does **not** build call graphs, type inference, reference tracking, inheritance
 analysis, or LSP features. The MVP is useful with definitions alone.
 
+## Shell completions
+
+`rq --completions <shell>` prints a completion script (`bash`, `zsh`, `fish`,
+`elvish`, `powershell`). Homebrew installs bash/zsh completions automatically;
+otherwise, e.g.:
+
+```sh
+rq --completions zsh > "${fpath[1]}/_rq"
+```
+
 ## License
 
-TBD.
+[MIT](LICENSE.txt) © Daniel Pepper.

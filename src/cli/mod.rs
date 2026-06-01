@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::Shell;
 
 use crate::store::Store;
 
@@ -71,12 +72,20 @@ struct Cli {
     /// (--record) Event kind.
     #[arg(long, default_value = "select")]
     kind: String,
+
+    /// Print a shell completion script (bash, zsh, fish, elvish, powershell).
+    #[arg(long, value_name = "SHELL")]
+    completions: Option<Shell>,
 }
 
 /// Parse arguments and dispatch. Returns the process exit code.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
 
+    if let Some(shell) = cli.completions {
+        clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
+        return ExitCode::SUCCESS;
+    }
     if cli.index {
         // index TARGET if given, else -C dir, else the current directory
         return cmd_index(cli.target.map(PathBuf::from).or(cli.cwd));
