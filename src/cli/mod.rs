@@ -27,7 +27,7 @@ behind each result.",
 rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
-rq thing --path app/web   restrict to a directory\n  \
+rq thing app/web          restrict to a directory (rg-style)\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n\n\
 RECORDING (editor/shell hook):\n  \
@@ -43,9 +43,17 @@ struct Cli {
     #[arg(value_name = "TARGET")]
     target: Option<String>,
 
+    /// Directories to restrict results to (rg-style; same as repeated --path).
+    #[arg(value_name = "PATH")]
+    dirs: Vec<String>,
+
     /// Show the score breakdown for each result.
     #[arg(short = 'e', long)]
     explain: bool,
+
+    /// Don't record this search as a behavioral signal (for agents/scripts).
+    #[arg(long)]
+    no_record: bool,
 
     /// Emit results as a JSON array (for editors and scripts).
     #[arg(short = 'j', long)]
@@ -101,10 +109,9 @@ pub fn run() -> ExitCode {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
         return ExitCode::SUCCESS;
     }
-    let paths = cli.path.clone();
     if cli.index {
         // index TARGET (else cwd); with --path, only those subtrees (partial)
-        return cmd_index(cli.target.map(PathBuf::from), &paths);
+        return cmd_index(cli.target.map(PathBuf::from), &cli.path);
     }
     if cli.status {
         return cmd_status();
@@ -115,8 +122,11 @@ pub fn run() -> ExitCode {
         return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
     }
     let out = output_format(&cli);
+    // path filters: trailing positionals (rg-style) plus any --path flags
+    let mut paths = cli.path.clone();
+    paths.extend(cli.dirs.clone());
     match cli.target {
-        Some(query) => cmd_search(&query, cli.explain, out, &paths, cli.limit),
+        Some(query) => cmd_search(&query, cli.explain, out, &paths, cli.limit, cli.no_record),
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -149,7 +159,14 @@ const PATH_HEADROOM: usize = 200;
 
 /// Default action: search the index and print ranked results. `want` is the
 /// number of results to show (`--limit`).
-fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String], want: usize) -> ExitCode {
+fn cmd_search(
+    query: &str,
+    explain: bool,
+    out: Output,
+    paths: &[String],
+    want: usize,
+    no_record: bool,
+) -> ExitCode {
     // with --path we rank extra, then filter down to `want`
     let limit = if paths.is_empty() {
         want
@@ -190,8 +207,9 @@ fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String], want: u
 
     // A repeated search (same query, nothing opened since) means last time
     // missed — decay this query's learned boost before ranking so a stale
-    // learned pick stops dominating and alternatives surface.
-    if let Some(repo) = current {
+    // learned pick stops dominating and alternatives surface. Skipped under
+    // --no-record so an agent's searches don't perturb the learned signal.
+    if !no_record && let Some(repo) = current {
         let qn = query.to_ascii_lowercase();
         if store.is_repeat_search(repo, &qn).unwrap_or(false) {
             let _ = store.decay_selections(repo, &qn);
@@ -278,16 +296,19 @@ fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String], want: u
     }
 
     // Results are out — now do the cheap deferred work, amortized across
-    // interactions: log this search and roll a batch of events into the
-    // learning rollup. Best-effort; never fail the command on it.
-    let _ = store.record_event(
-        "search",
-        Some(&query.to_ascii_lowercase()),
-        current,
-        None,
-        None,
-        None,
-    );
+    // interactions. Under --no-record we skip logging this search (so it isn't a
+    // behavioral signal) but still run maintenance, which only rolls up and
+    // prunes pre-existing events.
+    if !no_record {
+        let _ = store.record_event(
+            "search",
+            Some(&query.to_ascii_lowercase()),
+            current,
+            None,
+            None,
+            None,
+        );
+    }
     deferred_maintenance(&mut store);
 
     ExitCode::SUCCESS

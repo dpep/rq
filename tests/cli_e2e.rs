@@ -232,6 +232,47 @@ fn index_a_subset_of_a_repo() {
 }
 
 #[test]
+fn positional_paths_filter_like_rg() {
+    let (dir, db) = scratch("pospath");
+    fs::create_dir_all(dir.join("app/services")).unwrap();
+    fs::create_dir_all(dir.join("app/models")).unwrap();
+    fs::write(
+        dir.join("app/services/widget.rb"),
+        "class WidgetService\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("app/models/widget.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // path given positionally after the query, rg-style
+    let (ok, out) = rq(&db, &dir, &["widget", "app/services", "--ndjson"]);
+    assert!(ok, "positional-path search failed: {out}");
+    assert!(
+        out.contains("app/services/widget.rb"),
+        "services hit kept: {out}"
+    );
+    assert!(
+        !out.contains("app/models/widget.rb"),
+        "models hit filtered out: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_record_still_returns_results() {
+    let (dir, db) = scratch("norec");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["widget", "--no-record", "--ndjson"]);
+    assert!(ok, "no-record search failed: {out}");
+    assert!(out.contains("\"name\":\"Widget\""), "result present: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

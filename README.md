@@ -41,7 +41,7 @@ cargo install --path .          # or: make install
 rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
-rq <query> -p/--path DIR    # restrict to a directory (repeatable)
+rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
 rq <query> -l/--limit N     # cap the number of results (default 10)
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # index only a subtree (partial — for big monorepos)
@@ -63,8 +63,11 @@ Narrow with `--path` when you know the area:
 
 ```sh
 rq RefundProcessor --json                 # jump to the definition
-rq perform --path app/services --json     # ...scoped to a subtree
+rq perform app/services --json            # ...scoped to a subtree (rg-style)
 ```
+
+Pass `--no-record` for speculative/agent searches so they don't perturb the
+learned ranking (which is meant to reflect deliberate, human picks).
 
 Run `rq` with no arguments for help. Operations are flags, not subcommands, so
 no word is reserved — `rq index`, `rq status`, and `rq record` search for those

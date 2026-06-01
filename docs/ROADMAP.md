@@ -117,8 +117,9 @@ Each is a new `lang/` plugin implementing `LanguagePlugin`; no core change.
 
 - `-j/--json`, `-J/--ndjson` — structured output for editors, scripts, agents;
   each result carries a `signature` (the definition's source line)
-- `-p/--path DIR` — restrict results to a subtree (repeatable)
+- path filters — trailing positionals (rg-style `rq query dir…`) or `-p/--path`
 - `-l/--limit N` — cap the number of results
+- `--no-record` — search without recording a behavioral signal (for agents)
 - `-e/--explain` — per-result score breakdown
 - `--completions <shell>` — shell completion scripts
 - `rq --index --path DIR` — partial index of a subtree (for big monorepos);
