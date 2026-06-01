@@ -122,6 +122,8 @@ Each is a new `lang/` plugin implementing `LanguagePlugin`; no core change.
 - `-l/--limit N` — cap the number of results
 - `--no-record` — search without recording a behavioral signal (for agents)
 - `-e/--explain` — per-result score breakdown
+- match highlighting — text results color the matched chars (TTY-only; honors
+  `NO_COLOR` and `GREP_COLORS`)
 - `--completions <shell>` — shell completion scripts
 - `rq --index --path DIR` — partial index of a subtree (for big monorepos);
   a later search won't silently full-index over it

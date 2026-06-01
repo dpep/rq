@@ -1,5 +1,6 @@
 //! Command-line surface. Search is the default action: `rq <query>`.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -301,10 +302,17 @@ fn cmd_search(
             Err(e) => return fail(format_args!("rq: {e}")),
         },
         Output::Text => {
+            let color = match_color();
             for hit in &hits {
-                let qualified = match &hit.parent {
-                    Some(p) => format!("{} · {p}", hit.name),
+                // highlight the chars the query actually matched (great for fuzzy)
+                let positions = crate::search::match_positions(query, &hit.name);
+                let name = match &color {
+                    Some(c) => highlight(&hit.name, &positions, c),
                     None => hit.name.clone(),
+                };
+                let qualified = match &hit.parent {
+                    Some(p) => format!("{name} · {p}"),
+                    None => name,
                 };
                 println!("{}:{}  {} {}", hit.file, hit.line, hit.kind, qualified);
                 if explain {
@@ -411,6 +419,55 @@ fn canonical_kind(s: &str) -> String {
         other => return other.to_string(),
     }
     .to_string()
+}
+
+/// The ANSI SGR code for highlighting matches, or `None` to disable color.
+/// Off unless stdout is a terminal; honors `NO_COLOR`; takes the match style
+/// from `GREP_COLORS` (`mt`/`ms`) when set, else grep's default bold red.
+fn match_color() -> Option<String> {
+    if std::env::var_os("NO_COLOR").is_some() || !std::io::stdout().is_terminal() {
+        return None;
+    }
+    let style = std::env::var("GREP_COLORS").ok().and_then(|gc| {
+        gc.split(':').find_map(|e| {
+            e.strip_prefix("mt=")
+                .or_else(|| e.strip_prefix("ms="))
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
+    });
+    Some(style.unwrap_or_else(|| "1;31".to_string()))
+}
+
+/// Wrap the matched character positions of `text` in an ANSI color run.
+/// Consecutive matched chars share one escape sequence.
+fn highlight(text: &str, positions: &[usize], color: &str) -> String {
+    if positions.is_empty() {
+        return text.to_string();
+    }
+    let matched: std::collections::HashSet<usize> = positions.iter().copied().collect();
+    let mut out = String::new();
+    let mut on = false;
+    for (i, c) in text.chars().enumerate() {
+        match (matched.contains(&i), on) {
+            (true, false) => {
+                out.push_str("\x1b[");
+                out.push_str(color);
+                out.push('m');
+                on = true;
+            }
+            (false, true) => {
+                out.push_str("\x1b[0m");
+                on = false;
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    if on {
+        out.push_str("\x1b[0m");
+    }
+    out
 }
 
 /// Whether a repo-relative `file` sits under one of the `--path` directories
@@ -545,4 +602,24 @@ fn db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 fn fail(args: std::fmt::Arguments) -> ExitCode {
     eprintln!("{args}");
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlight_wraps_matched_runs() {
+        assert_eq!(
+            highlight("FooThing", &[0, 1, 2], "1;31"),
+            "\u{1b}[1;31mFoo\u{1b}[0mThing"
+        );
+        // scattered matches get separate runs
+        assert_eq!(
+            highlight("FooThing", &[0, 3], "1"),
+            "\u{1b}[1mF\u{1b}[0moo\u{1b}[1mT\u{1b}[0mhing"
+        );
+        // nothing matched → unchanged
+        assert_eq!(highlight("FooThing", &[], "1;31"), "FooThing");
+    }
 }

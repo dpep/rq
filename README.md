@@ -70,6 +70,11 @@ rq perform app/services --json            # ...scoped to a subtree (rg-style)
 Pass `--no-record` for speculative/agent searches so they don't perturb the
 learned ranking (which is meant to reflect deliberate, human picks).
 
+Text results highlight the characters your query matched — handy for fuzzy
+queries, where it shows exactly what `rq` latched onto. Color is on only when
+output is a terminal, honors `NO_COLOR`, and takes its style from `GREP_COLORS`
+(`mt`/`ms`) if set.
+
 Run `rq` with no arguments for help. Operations are flags, not subcommands, so
 no word is reserved — `rq index`, `rq status`, and `rq record` search for those
 symbols like any other query. rq works on the current repository; to target

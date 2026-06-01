@@ -150,6 +150,33 @@ pub fn score(
     Some(Scored { total, features })
 }
 
+/// The char indices in `name` that `query` matched — greedy, left-to-right,
+/// separator-insensitive (same matching as the scorer). For highlighting *what*
+/// matched (exact/prefix yield a leading run; fuzzy yields the scattered chars).
+/// Empty if `query` isn't a subsequence of `name`.
+pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
+    let q: Vec<char> = query
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut positions = Vec::new();
+    let mut qi = 0;
+    for (i, c) in name.chars().enumerate() {
+        if qi >= q.len() {
+            break;
+        }
+        if c.to_ascii_lowercase() == q[qi] {
+            positions.push(i);
+            qi += 1;
+        }
+    }
+    if qi == q.len() { positions } else { Vec::new() }
+}
+
 /// Score `query` as a subsequence of `name`, rewarding matches at word
 /// boundaries (camelCase / underscore) and contiguous runs. `None` if `query`
 /// is not a subsequence. Handles abbreviations like `refproc → RefundProcessor`,
@@ -269,6 +296,15 @@ mod tests {
         assert!(total("paymnt", "Payments").is_some());
         assert!(total("perf", "perform").is_some());
         assert!(total("usr", "User").is_some());
+    }
+
+    #[test]
+    fn match_positions_report_what_matched() {
+        assert_eq!(match_positions("foo", "FooThing"), vec![0, 1, 2]);
+        assert_eq!(match_positions("ft", "FooThing"), vec![0, 3]); // F, T
+        // separator-insensitive: snake query highlights across CamelCase
+        assert_eq!(match_positions("wc", "WidgetController"), vec![0, 6]); // W, C
+        assert!(match_positions("xyz", "FooThing").is_empty());
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 mod score;
 
-pub use score::{Boosts, Feature, Scored};
+pub use score::{Boosts, Feature, Scored, match_positions};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
