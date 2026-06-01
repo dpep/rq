@@ -47,7 +47,8 @@ fn main() {
     for _ in 0..200 {
         for q in QUERIES {
             let start = Instant::now();
-            let _ = search::search(&store, q, None, &search::ActiveFiles::default(), 10).expect("search");
+            let _ = search::search(&store, q, None, &search::ActiveFiles::default(), 10)
+                .expect("search");
             times_us.push(start.elapsed().as_micros());
         }
     }

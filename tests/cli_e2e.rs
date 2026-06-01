@@ -97,6 +97,39 @@ fn record_is_a_searchable_word_not_a_subcommand() {
 }
 
 #[test]
+fn json_and_ndjson_output() {
+    let (dir, db) = scratch("json");
+    fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // --json: a pretty array with named fields
+    let (ok, out) = rq(&db, &dir, &["handler", "--json"]);
+    assert!(ok, "json search failed: {out}");
+    assert!(
+        out.trim_start().starts_with('['),
+        "expected a JSON array: {out}"
+    );
+    assert!(out.contains("\"name\": \"HandlerA\""), "name field: {out}");
+    assert!(out.contains("\"file\": \"alpha.rb\""), "file field: {out}");
+    assert!(out.contains("\"repo\":"), "repo field: {out}");
+
+    // --ndjson: one compact object per line
+    let (ok, out) = rq(&db, &dir, &["handler", "--ndjson"]);
+    assert!(ok, "ndjson search failed: {out}");
+    let first = out.lines().next().unwrap_or("");
+    assert!(
+        first.starts_with('{') && first.ends_with('}'),
+        "object per line: {out}"
+    );
+    assert!(
+        first.contains("\"name\":\"HandlerA\""),
+        "compact name: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

@@ -45,6 +45,14 @@ struct Cli {
     #[arg(long)]
     explain: bool,
 
+    /// Emit results as a JSON array (for editors and scripts).
+    #[arg(short = 'j', long)]
+    json: bool,
+
+    /// Emit results as newline-delimited JSON, one object per line.
+    #[arg(long, conflicts_with = "json")]
+    ndjson: bool,
+
     /// Index a repository (TARGET path, or the current directory).
     #[arg(long, conflicts_with_all = ["status", "record"])]
     index: bool,
@@ -95,8 +103,9 @@ pub fn run() -> ExitCode {
         let file = cli.file.expect("--record requires --file");
         return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
     }
+    let out = output_format(&cli);
     match cli.target {
-        Some(query) => cmd_search(&query, cli.explain),
+        Some(query) => cmd_search(&query, cli.explain, out),
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -105,8 +114,26 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// How results are rendered.
+#[derive(Clone, Copy, PartialEq)]
+enum Output {
+    Text,
+    Json,
+    Ndjson,
+}
+
+fn output_format(cli: &Cli) -> Output {
+    if cli.ndjson {
+        Output::Ndjson
+    } else if cli.json {
+        Output::Json
+    } else {
+        Output::Text
+    }
+}
+
 /// Default action: search the index and print ranked results.
-fn cmd_search(query: &str, explain: bool) -> ExitCode {
+fn cmd_search(query: &str, explain: bool, out: Output) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
@@ -171,22 +198,43 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
     }
 
     if hits.is_empty() {
-        eprintln!("no matches for {query:?}");
+        match out {
+            Output::Json => println!("[]"),
+            Output::Ndjson => {}
+            Output::Text => eprintln!("no matches for {query:?}"),
+        }
         return ExitCode::FAILURE;
     }
-    for hit in &hits {
-        let qualified = match &hit.parent {
-            Some(p) => format!("{} · {p}", hit.name),
-            None => hit.name.clone(),
-        };
-        println!("{}:{}  {} {}", hit.file, hit.line, hit.kind, qualified);
-        if explain {
-            let parts: Vec<String> = hit
-                .features
-                .iter()
-                .map(|f| format!("{} {:.0}", f.name, f.value))
-                .collect();
-            println!("    score {:.0} = {}", hit.score, parts.join(" + "));
+
+    match out {
+        Output::Ndjson => {
+            for hit in &hits {
+                match serde_json::to_string(hit) {
+                    Ok(line) => println!("{line}"),
+                    Err(e) => return fail(format_args!("rq: {e}")),
+                }
+            }
+        }
+        Output::Json => match serde_json::to_string_pretty(&hits) {
+            Ok(s) => println!("{s}"),
+            Err(e) => return fail(format_args!("rq: {e}")),
+        },
+        Output::Text => {
+            for hit in &hits {
+                let qualified = match &hit.parent {
+                    Some(p) => format!("{} · {p}", hit.name),
+                    None => hit.name.clone(),
+                };
+                println!("{}:{}  {} {}", hit.file, hit.line, hit.kind, qualified);
+                if explain {
+                    let parts: Vec<String> = hit
+                        .features
+                        .iter()
+                        .map(|f| format!("{} {:.0}", f.name, f.value))
+                        .collect();
+                    println!("    score {:.0} = {}", hit.score, parts.join(" + "));
+                }
+            }
         }
     }
 

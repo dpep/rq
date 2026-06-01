@@ -71,14 +71,15 @@ fn parent_dir(path: &str) -> Option<&str> {
     path.rfind('/').map(|i| &path[..i])
 }
 
-/// A ranked search result.
-#[derive(Debug, Clone, PartialEq)]
+/// A ranked search result. Serializes for `--json` / `--ndjson`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Hit {
     pub name: String,
     pub kind: String,
     pub file: String,
     pub line: i64,
     pub parent: Option<String>,
+    #[serde(rename = "repo")]
     pub repo_identity: String,
     pub score: f64,
     pub features: Vec<Feature>,

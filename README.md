@@ -40,9 +40,14 @@ cargo install --path .          # or: make install
 ```sh
 rq <query>              # search definitions; ranked
 rq <query> --explain    # show the score behind each result
+rq <query> --json       # JSON array (--ndjson for one object per line)
 rq --index [PATH]       # index a repository (incremental; safe to re-run)
 rq --status             # indexing coverage per known repository
 ```
+
+`--json`/`--ndjson` are for editors, scripts, and agents — each result is an
+object with `name`, `kind`, `file`, `line`, `parent`, `repo`, `score`, and the
+scoring `features`.
 
 Run `rq` with no arguments for help. Operations are flags, not subcommands, so
 no word is reserved — `rq index`, `rq status`, and `rq record` search for those

@@ -7,7 +7,7 @@
 use crate::store::SymbolRow;
 
 /// One named contribution to a score.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Feature {
     pub name: &'static str,
     pub value: f64,
