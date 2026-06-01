@@ -85,6 +85,10 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
   `tests/fixtures/` and assert on *ordering* (the right result ranks first),
   not just membership.
 - A new language plugin ships with a fixture file of source + expected symbols.
+- **Use generic, non-identifying test data** — neutral placeholders (`Widget`,
+  `Foo`, `HandlerA`, `Account`) over real class names, company/product terms, or
+  anything tied to a specific employer or codebase. This is a public repo; keep
+  fixtures and assertions domain-neutral.
 - Spec descriptions stay simple and resilient ("ranks the exact match first",
   not a brittle exact-string assertion).
 - **Verify through `cargo test`, not by hand-running the binary.** CLI behavior
