@@ -15,23 +15,25 @@ use crate::store::Store;
 #[command(
     name = "rq",
     version,
-    about = "A code navigation engine — reach the definition you want, fast.",
-    long_about = "rq is a code navigation engine: it ranks aggressively to surface the \
-one definition you most likely want, rather than listing every match.\n\n\
+    about = "Reference Query — find the code you're looking for.",
+    long_about = "Reference Query (rq) finds the code you're looking for. It ranks aggressively \
+to surface the one definition you most likely want, rather than listing every match.\n\n\
 Search is the default action — operations are flags, not subcommands, so every \
 word (including \"index\", \"status\", \"record\") stays searchable. Ranking \
-learns from the results you open (see --record) and favors your current repo \
-and recently-active files. Run `rq --explain <query>` to see the score behind \
-each result.",
+learns from the results you open (see RECORDING below) and favors your current \
+repo and recently-active files. Run `rq <query> --explain` to see the score \
+behind each result.",
     after_help = "EXAMPLES:\n  \
-rq refund                       search for a definition\n  \
-rq refundproc --explain         fuzzy/abbreviation match, with score breakdown\n  \
-rq --index                      index the current repository\n  \
-rq -C ~/code/app user           search another checkout, without cd-ing there\n  \
-rq --status                     show indexing coverage\n  \
-rq --record --file app/models/user.rb --line 5 user   record an opened result (editor hook)\n\n\
+rq thing                  search for a definition named or like \"thing\"\n  \
+rq wibble --explain       same, plus the score behind each result\n  \
+rq --index                index the current repository\n  \
+rq --status               show indexing coverage\n\n\
+RECORDING (editor/shell hook):\n  \
+rq --record --file <path> --line <n> <query>\n  \
+Tells rq which result you opened for a query, so ranking learns. Editors and \
+the script/rq-open wrapper call this for you.\n\n\
 The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms \
-automatically on first search in a git repo."
+automatically on the first search in a git repo."
 )]
 struct Cli {
     /// Search query. With --index, the path to index; with --record, the query
@@ -42,11 +44,6 @@ struct Cli {
     /// Show the score breakdown for each result.
     #[arg(long)]
     explain: bool,
-
-    /// Run as if invoked from DIR (like `git -C`) — sets which repository is
-    /// searched/indexed and where a recorded path is resolved.
-    #[arg(short = 'C', long, value_name = "DIR")]
-    cwd: Option<PathBuf>,
 
     /// Index a repository (TARGET path, or the current directory).
     #[arg(long, conflicts_with_all = ["status", "record"])]
@@ -87,8 +84,8 @@ pub fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if cli.index {
-        // index TARGET if given, else -C dir, else the current directory
-        return cmd_index(cli.target.map(PathBuf::from).or(cli.cwd));
+        // index TARGET if given, else the current directory
+        return cmd_index(cli.target.map(PathBuf::from));
     }
     if cli.status {
         return cmd_status();
@@ -96,24 +93,25 @@ pub fn run() -> ExitCode {
     if cli.record {
         // clap guarantees --file is present via `requires`
         let file = cli.file.expect("--record requires --file");
-        return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line, cli.cwd);
+        return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
     }
     match cli.target {
-        Some(query) => cmd_search(&query, cli.explain, cli.cwd),
+        Some(query) => cmd_search(&query, cli.explain),
+        // bare `rq` (or just flags like --explain with no query): show help
         None => {
-            eprintln!("rq: no query given (try `rq --help`)");
-            ExitCode::FAILURE
+            let _ = Cli::command().print_long_help();
+            ExitCode::SUCCESS
         }
     }
 }
 
 /// Default action: search the index and print ranked results.
-fn cmd_search(query: &str, explain: bool, cwd: Option<PathBuf>) -> ExitCode {
+fn cmd_search(query: &str, explain: bool) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
-    let cwd = cwd.or_else(|| std::env::current_dir().ok());
+    let cwd = std::env::current_dir().ok();
     let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
 
     // Layer 5: opportunistically index the working repo the first time we see
@@ -216,20 +214,12 @@ fn deferred_maintenance(store: &mut Store) {
 
 /// Hook entry point: record that `file` was opened/selected for `query`, then
 /// amortize a chunk of event aggregation.
-fn cmd_record(
-    kind: &str,
-    query: Option<&str>,
-    file: &str,
-    line: Option<i64>,
-    cwd: Option<PathBuf>,
-) -> ExitCode {
+fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
-    let cwd = cwd
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let identity = crate::index::detect_identity(&cwd).to_string();
     let repo_id = store.repository_id(&identity).ok().flatten();
 

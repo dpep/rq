@@ -63,8 +63,11 @@ rq <query>              # search definitions; ranked
 rq <query> --explain    # show the score breakdown for each result
 rq --index [PATH]       # index a repository (incremental; safe to re-run)
 rq --status             # coverage per known repository
-rq -C <dir> <query>     # run as if from <dir> (like `git -C`)
 ```
+
+Run `rq` with no arguments for help. `rq` works on the current repository; to
+target another, run it from there (or set the subprocess cwd when calling it
+from an editor).
 
 Operations are flags, not subcommands, so no word is reserved — `rq index`,
 `rq status`, and `rq record` search for those symbols like any other query.

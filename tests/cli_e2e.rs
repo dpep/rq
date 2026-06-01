@@ -1,9 +1,8 @@
 //! End-to-end: drive the real `rq` binary through index → search → learn.
 //!
-//! Hermetic and reproducible — no `cd`, no git required. Each run uses an
-//! isolated `RQ_DB` and a fresh temp repo, and invokes the compiled binary via
-//! `CARGO_BIN_EXE_rq`. `-C` points rq at the repo so the shell's cwd is
-//! irrelevant.
+//! Hermetic and reproducible — no shell `cd`, no git required. Each run uses an
+//! isolated `RQ_DB`, a fresh temp repo, and sets the subprocess working
+//! directory, so the shell's cwd is irrelevant.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,10 +21,11 @@ fn scratch(label: &str) -> (PathBuf, PathBuf) {
     (dir, db)
 }
 
-/// Run the built binary with an isolated db; return (success, stdout).
-fn rq(db: &Path, args: &[&str]) -> (bool, String) {
+/// Run the built binary with an isolated db and a set working directory.
+fn rq(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
         .args(args)
+        .current_dir(cwd)
         .env("RQ_DB", db)
         .output()
         .expect("run rq");
@@ -44,15 +44,14 @@ fn index_search_and_learn_through_the_cli() {
     let (dir, db) = scratch("learn");
     fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
     fs::write(dir.join("beta.rb"), "class HandlerB\nend\n").unwrap();
-    let dir_s = dir.to_str().unwrap();
 
-    // index
-    let (ok, out) = rq(&db, &["--index", dir_s]);
+    // index the working directory
+    let (ok, out) = rq(&db, &dir, &["--index"]);
     assert!(ok, "index failed: {out}");
     assert!(out.contains("symbol"), "index output: {out}");
 
     // search — the tie breaks alphabetically, so HandlerA leads
-    let (ok, out) = rq(&db, &["-C", dir_s, "handler"]);
+    let (ok, out) = rq(&db, &dir, &["handler"]);
     assert!(ok, "search failed: {out}");
     assert!(
         first_line(&out).contains("HandlerA"),
@@ -62,14 +61,13 @@ fn index_search_and_learn_through_the_cli() {
     // record that the user opened HandlerB for "handler"
     let (ok, _) = rq(
         &db,
-        &[
-            "-C", dir_s, "--record", "--file", "beta.rb", "--line", "1", "handler",
-        ],
+        &dir,
+        &["--record", "--file", "beta.rb", "--line", "1", "handler"],
     );
     assert!(ok, "record failed");
 
     // now HandlerB leads
-    let (ok, out) = rq(&db, &["-C", dir_s, "handler"]);
+    let (ok, out) = rq(&db, &dir, &["handler"]);
     assert!(ok, "second search failed: {out}");
     assert!(
         first_line(&out).contains("HandlerB"),
@@ -77,7 +75,7 @@ fn index_search_and_learn_through_the_cli() {
     );
 
     // status shows the repo
-    let (ok, out) = rq(&db, &["--status"]);
+    let (ok, out) = rq(&db, &dir, &["--status"]);
     assert!(ok, "status failed: {out}");
     assert!(out.contains("local:"), "status output: {out}");
 
@@ -88,13 +86,23 @@ fn index_search_and_learn_through_the_cli() {
 fn record_is_a_searchable_word_not_a_subcommand() {
     let (dir, db) = scratch("disambig");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
-    let dir_s = dir.to_str().unwrap();
-    rq(&db, &["--index", dir_s]);
+    rq(&db, &dir, &["--index"]);
 
     // `rq record` searches for the symbol "record" (no hook, no match here)
-    let (ok, out) = rq(&db, &["-C", dir_s, "record"]);
+    let (ok, out) = rq(&db, &dir, &["record"]);
     assert!(!ok, "no-match search should exit non-zero");
     assert!(out.is_empty(), "expected no result lines, got: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bare_invocation_prints_help() {
+    let (dir, db) = scratch("help");
+    let (ok, out) = rq(&db, &dir, &[]);
+    assert!(ok, "bare rq should exit 0");
+    assert!(out.contains("Reference Query"), "help banner: {out}");
+    assert!(out.contains("Usage:"), "usage in help: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }

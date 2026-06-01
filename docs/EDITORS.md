@@ -82,14 +82,15 @@ export function activate(ctx: vscode.ExtensionContext) {
 
 const run = (cmd: string, args: string[], cwd?: string) =>
   new Promise<string[]>((res, rej) =>
-    execFile(cmd, cwd ? ["-C", cwd, ...args] : args, (e, out) =>
+    execFile(cmd, args, { cwd }, (e, out) =>
       e && (e as any).code !== 1 ? rej(e) : res(out.trim().split("\n").filter(Boolean))
     )
   );
 ```
 
-Note the `-C <cwd>` so rq targets the workspace regardless of the extension
-host's working directory. A fuller extension could also record passive opens
+Note the `{ cwd }` option so rq runs against the workspace regardless of the
+extension host's working directory (rq resolves the repository from its own
+working directory). A fuller extension could also record passive opens
 (`onDidOpenTextDocument`) attributed to the last query — but explicit
 record-on-pick is the high-signal event and the place to start.
 
