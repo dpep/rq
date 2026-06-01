@@ -28,7 +28,7 @@ fn refresh_picks_up_edits_and_deletes() {
         .unwrap();
 
     assert_eq!(
-        search::search(&store, "Foo", None, 5).unwrap()[0].name,
+        search::search(&store, "Foo", None, &search::ActiveFiles::default(), 5).unwrap()[0].name,
         "Foo"
     );
 
@@ -38,9 +38,13 @@ fn refresh_picks_up_edits_and_deletes() {
         index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
         Refresh::Updated
     );
-    assert!(search::search(&store, "Foo", None, 5).unwrap().is_empty());
+    assert!(
+        search::search(&store, "Foo", None, &search::ActiveFiles::default(), 5)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
-        search::search(&store, "Bar", None, 5).unwrap()[0].name,
+        search::search(&store, "Bar", None, &search::ActiveFiles::default(), 5).unwrap()[0].name,
         "Bar"
     );
 
@@ -50,7 +54,11 @@ fn refresh_picks_up_edits_and_deletes() {
         index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
         Refresh::Deleted
     );
-    assert!(search::search(&store, "Bar", None, 5).unwrap().is_empty());
+    assert!(
+        search::search(&store, "Bar", None, &search::ActiveFiles::default(), 5)
+            .unwrap()
+            .is_empty()
+    );
 
     fs::remove_dir_all(&dir).ok();
 }

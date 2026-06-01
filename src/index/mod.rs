@@ -168,6 +168,56 @@ pub fn is_git_repo(root: &Path) -> bool {
     git_output(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
 }
 
+/// Repo-relative files you're working on this branch: committed changes since
+/// the branch diverged from the trunk, plus uncommitted edits. Empty on the
+/// trunk itself (where it isn't a useful signal) or outside git. Feeds the
+/// branch ranking boost — necessarily a few git calls, but gated to feature
+/// branches.
+pub fn branch_changed_files(root: &Path) -> Vec<String> {
+    let Some(branch) = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]) else {
+        return Vec::new();
+    };
+    if is_trunk(&branch) {
+        return Vec::new();
+    }
+    let Some(trunk) = trunk_ref(root) else {
+        return Vec::new();
+    };
+
+    let mut files: HashMap<String, ()> = HashMap::new();
+    // committed branch changes since divergence from the trunk (three-dot)
+    if let Some(out) = git_output(root, &["diff", "--name-only", &format!("{trunk}...HEAD")]) {
+        files.extend(
+            out.lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| (l.to_string(), ())),
+        );
+    }
+    // uncommitted edits to tracked files
+    if let Some(out) = git_output(root, &["diff", "--name-only", "HEAD"]) {
+        files.extend(
+            out.lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| (l.to_string(), ())),
+        );
+    }
+    files.into_keys().collect()
+}
+
+/// Branch names treated as the trunk — the "active files" signal doesn't apply
+/// there (you're not on a feature branch).
+fn is_trunk(branch: &str) -> bool {
+    matches!(branch, "main" | "master" | "trunk")
+}
+
+/// The trunk ref to diff against: `main` if it exists, else `master`.
+fn trunk_ref(root: &Path) -> Option<String> {
+    ["main", "master"]
+        .into_iter()
+        .find(|name| git_output(root, &["rev-parse", "--verify", "--quiet", name]).is_some())
+        .map(str::to_string)
+}
+
 /// Lazily revalidate one indexed file against disk: re-extract it if its
 /// content changed, forget it if it's gone. This is the staleness check search
 /// runs over its top results.
@@ -262,6 +312,14 @@ mod tests {
             content_hash("class Foo\nend"),
             content_hash("class Bar\nend")
         );
+    }
+
+    #[test]
+    fn trunk_names_are_recognized() {
+        assert!(is_trunk("main"));
+        assert!(is_trunk("master"));
+        assert!(!is_trunk("feature/x"));
+        assert!(!is_trunk("dpep/fix"));
     }
 
     #[test]

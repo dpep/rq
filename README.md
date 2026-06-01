@@ -68,6 +68,8 @@ query is matched and scored by an additive, explainable sum of signals:
 - **path** — the query also matches the file's name
 - **current repo** — the project you're in outranks others
 - **recency** — symbols in recently-edited or recently-committed files
+- **branch** — on a feature branch, files you're changing vs the trunk (and
+  their directory neighbors) — where you're most likely working
 - **learned** — results you've opened before for this query (see below)
 
 Returning fewer, better, ranked results is the goal — not completeness.

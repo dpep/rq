@@ -243,6 +243,12 @@ why a result ranked where it did:
 - **recency** — symbols in recently-active files (~14-day half-life), sourced
   from the more recent of file mtime and last git commit time (captured once per
   index, not on the search path)
+- **branch** — on a feature branch, symbols in files that differ from the trunk
+  (committed since divergence + uncommitted) get a strong boost; symbols in
+  those files' directories a smaller one. This is the one signal computed *at
+  search time* (a few `git diff --name-only` calls) because it tracks live
+  working state; it's gated to feature branches, so the trunk pays nothing.
+  The active-file set is also a natural input for proactive pre-indexing (future).
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`learned`, `recency`) are computed by the

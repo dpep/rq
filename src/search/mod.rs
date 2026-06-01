@@ -9,7 +9,7 @@ mod score;
 
 pub use score::{Boosts, Feature, Scored};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,55 @@ const CANDIDATE_LIMIT: usize = 4000;
 /// Sentinel repository id for live-scan (Layer 4) results — distinct from any
 /// real row id, and treated as "the current repo" so the boost applies.
 const LIVE_REPO_ID: i64 = -1;
+
+/// Boost for a symbol whose file you're actively changing on this branch.
+const BRANCH_FILE_BOOST: f64 = 180.0;
+/// Smaller boost for a symbol in a directory you're changing (a neighbor).
+const BRANCH_DIR_BOOST: f64 = 60.0;
+
+/// Files you're working on this branch — those that differ from the trunk —
+/// plus the directories holding them. Symbols in those files (or their
+/// directory neighbors) get a branch boost. Empty on the trunk / outside git.
+#[derive(Debug, Default, Clone)]
+pub struct ActiveFiles {
+    files: HashSet<String>,
+    dirs: HashSet<String>,
+}
+
+impl ActiveFiles {
+    /// Build from a list of repo-relative paths changed on the branch.
+    pub fn new<I: IntoIterator<Item = String>>(paths: I) -> Self {
+        let files: HashSet<String> = paths.into_iter().collect();
+        let dirs = files
+            .iter()
+            .filter_map(|f| parent_dir(f))
+            .map(str::to_string)
+            .collect();
+        ActiveFiles { files, dirs }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// The branch boost for a candidate's file: full if the file itself is
+    /// changing, smaller if a sibling in the same directory is.
+    fn boost(&self, path: &str) -> f64 {
+        if self.files.contains(path) {
+            BRANCH_FILE_BOOST
+        } else if parent_dir(path).is_some_and(|d| self.dirs.contains(d)) {
+            BRANCH_DIR_BOOST
+        } else {
+            0.0
+        }
+    }
+}
+
+/// The directory portion of a repo-relative path (`app/models/user.rb` →
+/// `app/models`), or `None` for a top-level file.
+fn parent_dir(path: &str) -> Option<&str> {
+    path.rfind('/').map(|i| &path[..i])
+}
 
 /// A ranked search result.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,11 +85,13 @@ pub struct Hit {
 }
 
 /// Search the index for `query`, returning up to `limit` ranked hits.
-/// `current_repo_id` (if any) boosts results from the repository you're in.
+/// `current_repo_id` (if any) boosts results from the repository you're in;
+/// `active` boosts files you're changing on the current branch.
 pub fn search(
     store: &Store,
     query: &str,
     current_repo_id: Option<i64>,
+    active: &ActiveFiles,
     limit: usize,
 ) -> crate::store::Result<Vec<Hit>> {
     let candidates = store.search_candidates(query, CANDIDATE_LIMIT)?;
@@ -56,6 +107,11 @@ pub fn search(
                 // prefer whichever recency signal is more recent: a recent edit
                 // (mtime) or a recent commit (git_ts)
                 recency: recency_boost(c.git_ts.max(c.mtime), now),
+                branch: if active.is_empty() {
+                    0.0
+                } else {
+                    active.boost(&c.file)
+                },
             };
             rank_one(query, c, current_repo_id, boosts)
         })
@@ -229,7 +285,7 @@ mod tests {
             sym("User", Kind::Class),
             sym("UserMailer", Kind::Class),
         ]);
-        let hits = search(&store, "user", None, 10).unwrap();
+        let hits = search(&store, "user", None, &ActiveFiles::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
     }
 
@@ -240,7 +296,7 @@ mod tests {
             sym("Refund", Kind::Class),
             sym("Payment", Kind::Class),
         ]);
-        let hits = search(&store, "refundproc", None, 10).unwrap();
+        let hits = search(&store, "refundproc", None, &ActiveFiles::default(), 10).unwrap();
         assert_eq!(hits[0].name, "RefundProcessor");
         assert!(!names(&hits).contains(&"Payment"));
     }
@@ -248,14 +304,14 @@ mod tests {
     #[test]
     fn short_fuzzy_query_still_resolves() {
         let store = store_with(&[sym("User", Kind::Class), sym("Account", Kind::Class)]);
-        let hits = search(&store, "usr", None, 10).unwrap();
+        let hits = search(&store, "usr", None, &ActiveFiles::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
     }
 
     #[test]
     fn no_match_returns_empty() {
         let store = store_with(&[sym("User", Kind::Class)]);
-        let hits = search(&store, "zzzzz", None, 10).unwrap();
+        let hits = search(&store, "zzzzz", None, &ActiveFiles::default(), 10).unwrap();
         assert!(hits.is_empty());
     }
 
@@ -277,5 +333,24 @@ mod tests {
         assert_eq!(merged.len(), 2, "the duplicate User is collapsed");
         assert_eq!(merged[0].name, "User");
         assert_eq!(merged[0].score, 500.0, "the higher-scored duplicate wins");
+    }
+
+    #[test]
+    fn active_files_boosts_the_file_and_its_neighbors() {
+        let active = ActiveFiles::new(["app/services/refund.rb".to_string()]);
+        // the changed file itself: full boost
+        assert_eq!(active.boost("app/services/refund.rb"), BRANCH_FILE_BOOST);
+        // a sibling in the same directory: neighbor boost
+        assert_eq!(active.boost("app/services/charge.rb"), BRANCH_DIR_BOOST);
+        // unrelated directory: nothing
+        assert_eq!(active.boost("app/models/user.rb"), 0.0);
+    }
+
+    #[test]
+    fn branch_boost_lifts_an_active_file() {
+        let store = store_with(&[sym("User", Kind::Class)]); // lives in app/x.rb
+        let active = ActiveFiles::new(["app/x.rb".to_string()]);
+        let hits = search(&store, "user", None, &active, 10).unwrap();
+        assert!(hits[0].features.iter().any(|f| f.name == "branch"));
     }
 }

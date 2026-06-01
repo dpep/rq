@@ -128,6 +128,15 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
 
     let current = current_repo_id(&store, cwd.as_deref());
 
+    // Branch awareness: files you're changing on this feature branch (and their
+    // directory neighbors) are where you're most likely looking.
+    let active = match &cwd {
+        Some(c) if cwd_is_git => {
+            crate::search::ActiveFiles::new(crate::index::branch_changed_files(c))
+        }
+        _ => crate::search::ActiveFiles::default(),
+    };
+
     // A repeated search (same query, nothing opened since) means last time
     // missed — decay this query's learned boost before ranking so a stale
     // learned pick stops dominating and alternatives surface.
@@ -138,7 +147,7 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
         }
     }
 
-    let mut hits = match crate::search::search(&store, query, current, 10) {
+    let mut hits = match crate::search::search(&store, query, current, &active, 10) {
         Ok(h) => h,
         Err(e) => return fail(format_args!("rq: {e}")),
     };
@@ -146,7 +155,7 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
     // Staleness: lazily revalidate the files behind the top hits; if any changed
     // on disk, refresh them and re-rank once.
     if !hits.is_empty() && revalidate_top(&mut store, &hits) {
-        hits = match crate::search::search(&store, query, current, 10) {
+        hits = match crate::search::search(&store, query, current, &active, 10) {
             Ok(h) => h,
             Err(e) => return fail(format_args!("rq: {e}")),
         };

@@ -88,7 +88,11 @@ signal slots into the scorer without threading new parameters.
       from the more recent of file mtime (recent edit) and last git commit time
       (recent commit). Commit times are captured once per index via a single
       `git log` (parsed by the pure `parse_git_log`), never on the search path.
-- [ ] current-branch awareness (boost files changed on the branch vs its base)
+- [x] branch awareness — on a feature branch, files that differ from the trunk
+      (committed + uncommitted) get a `branch` boost, and their directory
+      neighbors a smaller one; computed at search time via a few git calls,
+      gated so the trunk pays nothing
+- [ ] use the active-file set for proactive (pre-)indexing in the deferred pass
 - [ ] ownership / activity hints
 
 ## Phase 5 — Editor integration

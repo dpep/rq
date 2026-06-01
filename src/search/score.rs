@@ -29,6 +29,9 @@ pub struct Boosts {
     pub learned: f64,
     /// Git/filesystem signal: symbols in recently-modified files.
     pub recency: f64,
+    /// Branch signal: symbols in files you're changing on this branch (or their
+    /// directory neighbors) — where you're most likely working.
+    pub branch: f64,
 }
 
 /// Score `cand` for `query`. Returns `None` when the candidate doesn't match at
@@ -132,6 +135,14 @@ pub fn score(
         features.push(Feature {
             name: "recency",
             value: boosts.recency,
+        });
+    }
+
+    // Branch boost — symbols in files you're changing on this branch (or nearby).
+    if boosts.branch > 0.0 {
+        features.push(Feature {
+            name: "branch",
+            value: boosts.branch,
         });
     }
 
@@ -346,5 +357,23 @@ mod tests {
         .unwrap();
         assert_eq!(boosted.total - base, 80.0);
         assert!(boosted.features.iter().any(|f| f.name == "recency"));
+    }
+
+    #[test]
+    fn branch_boost_adds_to_the_score() {
+        let cand = row("User", "class", 1);
+        let base = score("user", &cand, None, Boosts::default()).unwrap().total;
+        let boosted = score(
+            "user",
+            &cand,
+            None,
+            Boosts {
+                branch: 180.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(boosted.total - base, 180.0);
+        assert!(boosted.features.iter().any(|f| f.name == "branch"));
     }
 }
