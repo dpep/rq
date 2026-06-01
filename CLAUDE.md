@@ -124,12 +124,16 @@ before pushing.
 
 ## Versioning / releasing
 
-Bump the version every time we ship something. Stay below 1.0 for now — **only
-minor or patch bumps**, never a major:
+Bump the version when a change reaches users — i.e. it alters the **built
+binary** (behavior, a flag, ranking, even `--help`/output wording). Stay below
+1.0 for now — **only minor or patch bumps**, never a major:
 
-- **patch** (`0.1.x`) — fixes, docs, internal cleanups
+- **patch** (`0.1.x`) — fixes, output/`--help` wording, internal cleanups
 - **minor** (`0.x.0`) — new user-facing capability (a flag, a ranking signal, a
   language plugin)
+
+Repo-only docs (README, CLAUDE.md, `docs/`) **don't** bump — they don't change
+what `brew` builds, so a bump would only force an identical rebuild.
 
 A bump is three edits, landed together:
 
