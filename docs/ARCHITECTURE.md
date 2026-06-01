@@ -316,9 +316,10 @@ resident daemon. Each `rq` invocation prints results first, then does a small,
 bounded chunk of deferred work before exiting — rolling a batch of events into
 `selection_stats`, warming the index opportunistically. Cost amortizes across
 interactions, with no process to manage. A high-water mark in `meta` tracks
-which events have been rolled up so each pass only touches new ones. (Proactive
-indexing of files adjacent to a result is a natural future addition to this
-same deferred pass.)
+which events have been rolled up so each pass only touches new ones, and the
+same pass prunes already-rolled-up events (keeping a small recent window for
+repeat detection) so the raw log stays bounded. (Proactive indexing of files
+adjacent to a result is a natural future addition to this same deferred pass.)
 
 Git-awareness (current branch, recent commits, ownership, recently-modified
 areas) enters later as additional **ranking hints — never hard filters**.

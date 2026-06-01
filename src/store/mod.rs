@@ -507,6 +507,28 @@ impl Store {
         Ok(processed)
     }
 
+    /// Keep the raw `events` log bounded. Deletes only events that have already
+    /// been rolled up (id ≤ the aggregation high-water mark) and are not among
+    /// the most recent `keep_recent` rows (which `is_repeat_search` needs).
+    /// Returns the number deleted.
+    pub fn prune_events(&self, keep_recent: i64) -> Result<usize> {
+        let hwm = self.meta_get_i64("events_hwm")?.unwrap_or(0);
+        let max_id: Option<i64> = self
+            .conn
+            .query_row("SELECT MAX(id) FROM events", [], |r| r.get(0))?;
+        let Some(max_id) = max_id else {
+            return Ok(0);
+        };
+        let cutoff = hwm.min(max_id - keep_recent);
+        if cutoff <= 0 {
+            return Ok(0);
+        }
+        let n = self
+            .conn
+            .execute("DELETE FROM events WHERE id <= ?1", params![cutoff])?;
+        Ok(n)
+    }
+
     fn meta_get_i64(&self, key: &str) -> Result<Option<i64>> {
         let raw: Option<String> = self
             .conn
@@ -656,6 +678,49 @@ mod tests {
             line,
             parent: parent.map(String::from),
         }
+    }
+
+    #[test]
+    fn prune_events_drops_aggregated_but_keeps_recent() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/x"), None)
+            .unwrap();
+        store
+            .replace_file_symbols(
+                repo,
+                "a.rb",
+                "ruby",
+                None,
+                "h",
+                &[sym("Foo", Kind::Class, 1, None)],
+            )
+            .unwrap();
+
+        // a select, then a run of searches (so the newest event is a search)
+        store
+            .record_event(
+                "select",
+                Some("foo"),
+                Some(repo),
+                Some("a.rb"),
+                Some(1),
+                None,
+            )
+            .unwrap();
+        for _ in 0..10 {
+            store
+                .record_event("search", Some("foo"), Some(repo), None, None, None)
+                .unwrap();
+        }
+        store.aggregate_events(100).unwrap(); // hwm advances to the last id (11)
+
+        // 11 events, all aggregated; keep the 3 newest → drop ids 1..=8
+        assert_eq!(store.prune_events(3).unwrap(), 8);
+        // idempotent: nothing left to prune
+        assert_eq!(store.prune_events(3).unwrap(), 0);
+        // the most recent event still drives repeat detection
+        assert!(store.is_repeat_search(repo, "foo").unwrap());
     }
 
     #[test]

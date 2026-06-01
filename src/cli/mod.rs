@@ -169,7 +169,7 @@ fn cmd_search(query: &str, explain: bool, cwd: Option<PathBuf>) -> ExitCode {
         None,
         None,
     );
-    let _ = store.aggregate_events(AGGREGATE_BATCH);
+    deferred_maintenance(&mut store);
 
     ExitCode::SUCCESS
 }
@@ -177,6 +177,17 @@ fn cmd_search(query: &str, explain: bool, cwd: Option<PathBuf>) -> ExitCode {
 /// How many events to roll up per interaction. Bounded so the deferred pass
 /// after a command stays quick.
 const AGGREGATE_BATCH: usize = 256;
+
+/// Recent raw events to retain after rollup (enough for repeat detection); the
+/// rest, once aggregated, are pruned to keep the log from growing unbounded.
+const KEEP_RECENT_EVENTS: i64 = 200;
+
+/// The bounded background work run after a user interaction, once results are
+/// out: roll new events into the learning rollup, then prune the raw log.
+fn deferred_maintenance(store: &mut Store) {
+    let _ = store.aggregate_events(AGGREGATE_BATCH);
+    let _ = store.prune_events(KEEP_RECENT_EVENTS);
+}
 
 /// Hook entry point: record that `file` was opened/selected for `query`, then
 /// amortize a chunk of event aggregation.
@@ -209,7 +220,7 @@ fn cmd_record(
     {
         return fail(format_args!("rq record: {e}"));
     }
-    let _ = store.aggregate_events(AGGREGATE_BATCH);
+    deferred_maintenance(&mut store);
     ExitCode::SUCCESS
 }
 

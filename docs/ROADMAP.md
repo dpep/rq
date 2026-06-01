@@ -71,8 +71,9 @@ The differentiator.
 - [x] exploration via repeat-as-miss: a repeated search (nothing opened since)
       decays that query's learned boost, so a stale favorite stops dominating
 - [x] prefix/related-query learning — a pick for `han` informs `handler`
+- [x] bound the raw `events` log — the deferred pass prunes events already
+      rolled up, keeping only the most recent few (for repeat detection)
 - [ ] measure: does learned ranking beat static on real usage?
-- [ ] prune the raw `events` log (currently grows unbounded)
 
 CLI shape: operations are flags (`--index`, `--status`, `--record`), not
 subcommands, so no word is reserved — every term stays searchable, matching the
