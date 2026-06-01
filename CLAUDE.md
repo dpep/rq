@@ -121,3 +121,23 @@ Keep changes small, focused, and logically connected; change behavior or
 structure, not both at once. Make sure CI is green
 (`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`)
 before pushing.
+
+## Versioning / releasing
+
+Bump the version every time we ship something. Stay below 1.0 for now — **only
+minor or patch bumps**, never a major:
+
+- **patch** (`0.1.x`) — fixes, docs, internal cleanups
+- **minor** (`0.x.0`) — new user-facing capability (a flag, a ranking signal, a
+  language plugin)
+
+A bump is three edits, landed together:
+
+1. `Cargo.toml` `version`
+2. `Cargo.lock` — run `cargo build` so the `rq` entry updates
+3. the Homebrew formula `version` in
+   `~/code/lib/homebrew-tools/Formula/rq.rb` (push the tap too)
+
+The formula tracks `branch: "main"` with a pinned `version`, so bumping it is
+what makes `brew upgrade` rebuild from the latest `main` — skip it and installs
+serve a stale cached build.
