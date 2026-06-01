@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub const SCHEMA: &str = r#"
@@ -32,6 +32,7 @@ CREATE TABLE files (
   path TEXT NOT NULL,
   language TEXT,
   mtime INTEGER,
+  git_ts INTEGER,                    -- last git commit time touching this file
   content_hash TEXT,
   indexed_at INTEGER,
   UNIQUE(repository_id, path)
@@ -146,4 +147,10 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+"#;
+
+/// Migration v2 → v3: add the per-file git last-commit time used by the recency
+/// ranking signal.
+pub const MIGRATION_V3: &str = r#"
+ALTER TABLE files ADD COLUMN git_ts INTEGER;
 "#;

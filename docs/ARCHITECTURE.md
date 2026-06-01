@@ -240,8 +240,9 @@ why a result ranked where it did:
 - **path** — query also matches the file's name (Layer 3)
 - **current-repo boost** — the repo you're in dominates other repos
 - **learned boost** — behavioral signal from `selection_stats` (see below)
-- **recency** — symbols in recently-modified files (file mtime, ~14-day
-  half-life)
+- **recency** — symbols in recently-active files (~14-day half-life), sourced
+  from the more recent of file mtime and last git commit time (captured once per
+  index, not on the search path)
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`learned`, `recency`) are computed by the

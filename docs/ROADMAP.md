@@ -83,10 +83,11 @@ rg/fd feel.
 Ranking hints, never hard filters. Added as fields on `search::Boosts` so each
 signal slots into the scorer without threading new parameters.
 
-- [x] recently-modified signal — a `recency` boost (file mtime, ~14-day
-      half-life) lifts symbols in files you've touched lately
-- [ ] recent-commit signal (git log) — distinct from mtime; "active area"
-- [ ] current-branch awareness
+- [x] recency boost — symbols in recently-active files rank higher, sourced
+      from the more recent of file mtime (recent edit) and last git commit time
+      (recent commit). Commit times are captured once per index via a single
+      `git log` (parsed by the pure `parse_git_log`), never on the search path.
+- [ ] current-branch awareness (boost files changed on the branch vs its base)
 - [ ] ownership / activity hints
 
 ## Phase 5 — Editor integration

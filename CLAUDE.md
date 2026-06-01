@@ -87,6 +87,13 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
 - A new language plugin ships with a fixture file of source + expected symbols.
 - Spec descriptions stay simple and resilient ("ranks the exact match first",
   not a brittle exact-string assertion).
+- **Verify through `cargo test`, not by hand-running the binary.** CLI behavior
+  is covered by `tests/cli_e2e.rs`, which drives the built binary
+  (`CARGO_BIN_EXE_rq`) with an isolated `RQ_DB` and a temp repo — reproducible,
+  CI-checked, and no permission prompts. Extend that test rather than running
+  ad-hoc `rq …` invocations to confirm a change. Logic that would otherwise
+  need a manual run (e.g. git-log parsing) is factored into a pure function with
+  its own unit test.
 
 ## Adding a language plugin
 

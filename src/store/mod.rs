@@ -27,8 +27,10 @@ pub struct SymbolRow {
     pub parent: Option<String>,
     pub repository_id: i64,
     pub repo_identity: String,
-    /// File mtime (unix seconds) — the recency signal.
+    /// File mtime (unix seconds) — a recency signal.
     pub mtime: Option<i64>,
+    /// Last git commit time touching the file — the stronger recency signal.
+    pub git_ts: Option<i64>,
 }
 
 /// A learned selection signal for ranking: how often a `(file, name)` was
@@ -45,7 +47,7 @@ pub struct SelectionStat {
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
-    s.parent, s.repository_id, r.identity, fi.mtime";
+    s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts";
 const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
@@ -89,6 +91,9 @@ impl Store {
         // cumulative migrations for existing databases (each guards its version)
         if version != 0 && version < 2 {
             conn.execute_batch(schema::MIGRATION_V2)?;
+        }
+        if version != 0 && version < 3 {
+            conn.execute_batch(schema::MIGRATION_V3)?;
         }
         if version != schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
@@ -221,6 +226,24 @@ impl Store {
             params![repository_id, files_seen, files_indexed, status, now],
         )?;
         Ok(())
+    }
+
+    /// Set the last-commit time for files in a repository, from a path → unix-ts
+    /// map (git log). Files not in the map are left untouched.
+    pub fn set_file_git_ts(
+        &mut self,
+        repository_id: i64,
+        times: &HashMap<String, i64>,
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("UPDATE files SET git_ts = ?3 WHERE repository_id = ?1 AND path = ?2")?;
+            for (path, ts) in times {
+                stmt.execute(params![repository_id, path, ts])?;
+            }
+        }
+        tx.commit()
     }
 
     /// All known repositories with their coverage and symbol count.
@@ -578,6 +601,7 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             repository_id: r.get(7)?,
             repo_identity: r.get(8)?,
             mtime: r.get(9)?,
+            git_ts: r.get(10)?,
         },
     ))
 }
@@ -632,6 +656,30 @@ mod tests {
             line,
             parent: parent.map(String::from),
         }
+    }
+
+    #[test]
+    fn git_ts_is_stored_and_surfaced_on_candidates() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/x"), None)
+            .unwrap();
+        store
+            .replace_file_symbols(
+                repo,
+                "a.rb",
+                "ruby",
+                None,
+                "h",
+                &[sym("Foo", Kind::Class, 1, None)],
+            )
+            .unwrap();
+
+        let times = HashMap::from([("a.rb".to_string(), 1_700_000_000_i64)]);
+        store.set_file_git_ts(repo, &times).unwrap();
+
+        let cands = store.search_candidates("foo", 10).unwrap();
+        assert_eq!(cands[0].git_ts, Some(1_700_000_000));
     }
 
     #[test]

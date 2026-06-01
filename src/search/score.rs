@@ -230,6 +230,7 @@ mod tests {
             repository_id: repo,
             repo_identity: "r".into(),
             mtime: None,
+            git_ts: None,
         }
     }
 

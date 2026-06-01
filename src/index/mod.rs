@@ -3,6 +3,7 @@
 //! Decoupled from search: it only writes. Unchanged files (same content hash)
 //! are skipped, and coverage is recorded so search can judge its own confidence.
 
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
@@ -57,6 +58,15 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
         stats.symbols += symbols.len();
     }
 
+    // Phase 4: capture per-file git last-commit times for the recency signal.
+    // One git call per index (not per search); best-effort.
+    if is_git_repo(root) {
+        let times = git_commit_times(root, 1000);
+        if !times.is_empty() {
+            let _ = store.set_file_git_ts(repo_id, &times);
+        }
+    }
+
     store.set_coverage(
         repo_id,
         stats.files_seen as i64,
@@ -64,6 +74,45 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
         "complete",
     )?;
     Ok(stats)
+}
+
+/// Map of repo-relative path → most-recent commit time (unix seconds), from the
+/// last `limit` commits. Paths are repo-root-relative, matching the indexed
+/// paths when `root` is the repository root.
+fn git_commit_times(root: &Path, limit: usize) -> HashMap<String, i64> {
+    match git_output(
+        root,
+        &[
+            "log",
+            &format!("-n{limit}"),
+            "--name-only",
+            "--pretty=format:%ct",
+        ],
+    ) {
+        Some(text) => parse_git_log(&text),
+        None => HashMap::new(),
+    }
+}
+
+/// Parse `git log --name-only --pretty=format:%ct` output into path → latest
+/// commit time. Newest-first, so the first time a path appears is its most
+/// recent commit.
+fn parse_git_log(text: &str) -> HashMap<String, i64> {
+    let mut map = HashMap::new();
+    let mut current_ts = 0i64;
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(ts) = line.parse::<i64>() {
+            // a commit-timestamp header (filenames that are pure integers don't
+            // occur in practice)
+            current_ts = ts;
+        } else {
+            map.entry(line.to_string()).or_insert(current_ts);
+        }
+    }
+    map
 }
 
 /// Walk `root` and extract every symbol in-memory, without touching the store.
@@ -213,5 +262,16 @@ mod tests {
             content_hash("class Foo\nend"),
             content_hash("class Bar\nend")
         );
+    }
+
+    #[test]
+    fn parses_git_log_keeping_most_recent_commit_per_file() {
+        // newest-first: a.rb appears in both commits; the newer ts wins
+        let log = "1700000000\n\na.rb\nb.rb\n1699990000\n\na.rb\nc.rb\n";
+        let map = parse_git_log(log);
+        assert_eq!(map.get("a.rb"), Some(&1700000000));
+        assert_eq!(map.get("b.rb"), Some(&1700000000));
+        assert_eq!(map.get("c.rb"), Some(&1699990000));
+        assert_eq!(map.len(), 3);
     }
 }

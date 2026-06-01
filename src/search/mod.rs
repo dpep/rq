@@ -53,7 +53,9 @@ pub fn search(
             let key = (c.repository_id, c.file.clone(), c.name.clone());
             let boosts = Boosts {
                 learned: learned.get(&key).copied().unwrap_or(0.0),
-                recency: recency_boost(c.mtime, now),
+                // prefer whichever recency signal is more recent: a recent edit
+                // (mtime) or a recent commit (git_ts)
+                recency: recency_boost(c.git_ts.max(c.mtime), now),
             };
             rank_one(query, c, current_repo_id, boosts)
         })
@@ -129,6 +131,7 @@ pub fn live_search(root: &Path, query: &str, limit: usize) -> Vec<Hit> {
                 repository_id: LIVE_REPO_ID,
                 repo_identity: identity.clone(),
                 mtime: None,
+                git_ts: None,
             };
             rank_one(query, row, Some(LIVE_REPO_ID), Boosts::default())
         })
