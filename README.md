@@ -38,16 +38,29 @@ cargo install --path .          # or: make install
 ## Usage
 
 ```sh
-rq <query>              # search definitions; ranked
-rq <query> --explain    # show the score behind each result
-rq <query> --json       # JSON array (--ndjson for one object per line)
-rq --index [PATH]       # index a repository (incremental; safe to re-run)
-rq --status             # indexing coverage per known repository
+rq <query>                  # search definitions; ranked
+rq <query> -e/--explain     # show the score behind each result
+rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
+rq <query> -p/--path DIR    # restrict to a directory (repeatable)
+rq --index [PATH]           # index a repository (incremental; safe to re-run)
+rq --status                 # indexing coverage per known repository
 ```
 
-`--json`/`--ndjson` are for editors, scripts, and agents — each result is an
-object with `name`, `kind`, `file`, `line`, `parent`, `repo`, `score`, and the
-scoring `features`.
+## For agents / scripts
+
+`-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
+surface for editors, scripts, and AI agents. Each result is an object with
+`name`, `kind`, `file`, `line`, `parent`, `repo`, `score`, and the scoring
+`features`. Exit code is `0` when something matched, non-zero when nothing did.
+
+Reach for `rq` over `grep`/`rg` when you want **where a symbol is defined** —
+it returns the most likely definition first instead of every textual mention.
+Narrow with `--path` when you know the area:
+
+```sh
+rq RefundProcessor --json                 # jump to the definition
+rq perform --path app/services --json     # ...scoped to a subtree
+```
 
 Run `rq` with no arguments for help. Operations are flags, not subcommands, so
 no word is reserved — `rq index`, `rq status`, and `rq record` search for those

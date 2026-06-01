@@ -130,6 +130,45 @@ fn json_and_ndjson_output() {
 }
 
 #[test]
+fn path_filter_restricts_results() {
+    let (dir, db) = scratch("path");
+    fs::create_dir_all(dir.join("app/services")).unwrap();
+    fs::create_dir_all(dir.join("app/models")).unwrap();
+    fs::write(
+        dir.join("app/services/widget.rb"),
+        "class WidgetService\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("app/models/widget.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // unfiltered: both files match "widget"
+    let (_, out) = rq(&db, &dir, &["widget", "--ndjson"]);
+    assert!(
+        out.contains("app/models/widget.rb"),
+        "expected models hit: {out}"
+    );
+    assert!(
+        out.contains("app/services/widget.rb"),
+        "expected services hit: {out}"
+    );
+
+    // --path app/services: only the services result survives
+    let (ok, out) = rq(&db, &dir, &["widget", "--path", "app/services", "--ndjson"]);
+    assert!(ok, "path search failed: {out}");
+    assert!(
+        out.contains("app/services/widget.rb"),
+        "services hit kept: {out}"
+    );
+    assert!(
+        !out.contains("app/models/widget.rb"),
+        "models hit filtered out: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

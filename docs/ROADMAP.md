@@ -113,6 +113,13 @@ Each is a new `lang/` plugin implementing `LanguagePlugin`; no core change.
 - [ ] Python
 - [ ] Java
 
+## Shipped CLI affordances
+
+- `-j/--json`, `-J/--ndjson` — structured output for editors, scripts, agents
+- `-p/--path DIR` — restrict results to a subtree (repeatable)
+- `-e/--explain` — per-result score breakdown
+- `--completions <shell>` — shell completion scripts
+
 ## Explicit non-goals
 
 Not in scope (revisit only with a strong reason):

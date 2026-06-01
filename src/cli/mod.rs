@@ -26,6 +26,8 @@ behind each result.",
     after_help = "EXAMPLES:\n  \
 rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
+rq thing --json           machine-readable results (for editors/agents)\n  \
+rq thing --path app/web   restrict to a directory\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n\n\
 RECORDING (editor/shell hook):\n  \
@@ -42,7 +44,7 @@ struct Cli {
     target: Option<String>,
 
     /// Show the score breakdown for each result.
-    #[arg(long)]
+    #[arg(short = 'e', long)]
     explain: bool,
 
     /// Emit results as a JSON array (for editors and scripts).
@@ -50,8 +52,12 @@ struct Cli {
     json: bool,
 
     /// Emit results as newline-delimited JSON, one object per line.
-    #[arg(long, conflicts_with = "json")]
+    #[arg(short = 'J', long, conflicts_with = "json")]
     ndjson: bool,
+
+    /// Restrict results to files under this repo-relative directory (repeatable).
+    #[arg(short = 'p', long, value_name = "DIR")]
+    path: Vec<String>,
 
     /// Index a repository (TARGET path, or the current directory).
     #[arg(long, conflicts_with_all = ["status", "record"])]
@@ -104,8 +110,9 @@ pub fn run() -> ExitCode {
         return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
     }
     let out = output_format(&cli);
+    let paths = cli.path.clone();
     match cli.target {
-        Some(query) => cmd_search(&query, cli.explain, out),
+        Some(query) => cmd_search(&query, cli.explain, out, &paths),
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -132,8 +139,18 @@ fn output_format(cli: &Cli) -> Output {
     }
 }
 
+/// How many results to show, and the headroom to rank before a `--path` filter
+/// (so filtered-in results aren't lost to the cutoff).
+const WANT: usize = 10;
+const PATH_HEADROOM: usize = 200;
+
 /// Default action: search the index and print ranked results.
-fn cmd_search(query: &str, explain: bool, out: Output) -> ExitCode {
+fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String]) -> ExitCode {
+    let limit = if paths.is_empty() {
+        WANT
+    } else {
+        PATH_HEADROOM
+    };
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
@@ -174,7 +191,7 @@ fn cmd_search(query: &str, explain: bool, out: Output) -> ExitCode {
         }
     }
 
-    let mut hits = match crate::search::search(&store, query, current, &active, 10) {
+    let mut hits = match crate::search::search(&store, query, current, &active, limit) {
         Ok(h) => h,
         Err(e) => return fail(format_args!("rq: {e}")),
     };
@@ -182,7 +199,7 @@ fn cmd_search(query: &str, explain: bool, out: Output) -> ExitCode {
     // Staleness: lazily revalidate the files behind the top hits; if any changed
     // on disk, refresh them and re-rank once.
     if !hits.is_empty() && revalidate_top(&mut store, &hits) {
-        hits = match crate::search::search(&store, query, current, &active, 10) {
+        hits = match crate::search::search(&store, query, current, &active, limit) {
             Ok(h) => h,
             Err(e) => return fail(format_args!("rq: {e}")),
         };
@@ -194,7 +211,13 @@ fn cmd_search(query: &str, explain: bool, out: Output) -> ExitCode {
         && !cwd_is_git
         && let Some(cwd) = &cwd
     {
-        hits = crate::search::live_search(cwd, query, 10);
+        hits = crate::search::live_search(cwd, query, limit);
+    }
+
+    // --path: keep only results under one of the given directories, then trim.
+    if !paths.is_empty() {
+        hits.retain(|h| under_any(&h.file, paths));
+        hits.truncate(WANT);
     }
 
     if hits.is_empty() {
@@ -294,6 +317,16 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
     }
     deferred_maintenance(&mut store);
     ExitCode::SUCCESS
+}
+
+/// Whether a repo-relative `file` sits under one of the `--path` directories
+/// (prefix match on a path boundary). `app/services` matches
+/// `app/services/refund.rb` but not `app/services_old/x.rb`.
+fn under_any(file: &str, paths: &[String]) -> bool {
+    paths.iter().any(|p| {
+        let p = p.trim_start_matches("./").trim_end_matches('/');
+        p.is_empty() || file == p || file.starts_with(&format!("{p}/"))
+    })
 }
 
 /// Resolve a possibly-absolute or cwd-relative path to a repo-relative one.
