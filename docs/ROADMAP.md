@@ -115,10 +115,14 @@ Each is a new `lang/` plugin implementing `LanguagePlugin`; no core change.
 
 ## Shipped CLI affordances
 
-- `-j/--json`, `-J/--ndjson` — structured output for editors, scripts, agents
+- `-j/--json`, `-J/--ndjson` — structured output for editors, scripts, agents;
+  each result carries a `signature` (the definition's source line)
 - `-p/--path DIR` — restrict results to a subtree (repeatable)
+- `-l/--limit N` — cap the number of results
 - `-e/--explain` — per-result score breakdown
 - `--completions <shell>` — shell completion scripts
+- `rq --index --path DIR` — partial index of a subtree (for big monorepos);
+  a later search won't silently full-index over it
 
 ## Explicit non-goals
 

@@ -26,36 +26,59 @@ pub struct Stats {
     pub symbols: usize,
 }
 
-/// Index the repository rooted at `root` into `store`.
+/// Index the whole repository rooted at `root`.
 pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::error::Error>> {
+    index_under(store, root, &[])
+}
+
+/// Index `root`, or — when `subdirs` is non-empty — only those repo-relative
+/// subtrees of it (a partial index of the repo). Paths stay repo-relative and
+/// the identity is still the repo's, so a subset slots into the same index;
+/// coverage is marked `partial` so a later search won't silently re-index the
+/// whole repo over your deliberate subset.
+pub fn index_under(
+    store: &mut Store,
+    root: &Path,
+    subdirs: &[String],
+) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
     let root_display = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
 
+    // walk the whole repo, or just the requested subtrees — paths are always
+    // taken relative to `root` so they're repo-relative either way
+    let walk_roots: Vec<std::path::PathBuf> = if subdirs.is_empty() {
+        vec![root.to_path_buf()]
+    } else {
+        subdirs.iter().map(|s| root.join(s)).collect()
+    };
+
     let mut stats = Stats::default();
-    for result in WalkBuilder::new(root).build() {
-        let Ok(entry) = result else { continue };
-        let Some((rel, source, plugin)) = source_for(&entry, root) else {
-            continue;
-        };
-        stats.files_seen += 1;
+    for walk_root in &walk_roots {
+        for result in WalkBuilder::new(walk_root).build() {
+            let Ok(entry) = result else { continue };
+            let Some((rel, source, plugin)) = source_for(&entry, root) else {
+                continue;
+            };
+            stats.files_seen += 1;
 
-        let hash = content_hash(&source);
-        if store.file_unchanged(repo_id, &rel, &hash)? {
-            continue;
+            let hash = content_hash(&source);
+            if store.file_unchanged(repo_id, &rel, &hash)? {
+                continue;
+            }
+
+            let symbols = plugin.extract(&rel, &source);
+            let mtime = file_mtime(entry.path());
+            let language = symbols
+                .first()
+                .map(|s| s.language.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            store.replace_file_symbols(repo_id, &rel, &language, mtime, &hash, &symbols)?;
+            stats.files_indexed += 1;
+            stats.symbols += symbols.len();
         }
-
-        let symbols = plugin.extract(&rel, &source);
-        let mtime = file_mtime(entry.path());
-        let language = symbols
-            .first()
-            .map(|s| s.language.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        store.replace_file_symbols(repo_id, &rel, &language, mtime, &hash, &symbols)?;
-        stats.files_indexed += 1;
-        stats.symbols += symbols.len();
     }
 
     // Phase 4: capture per-file git last-commit times for the recency signal.
@@ -67,11 +90,16 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
         }
     }
 
+    let status = if subdirs.is_empty() {
+        "complete"
+    } else {
+        "partial"
+    };
     store.set_coverage(
         repo_id,
         stats.files_seen as i64,
         stats.files_indexed as i64,
-        "complete",
+        status,
     )?;
     Ok(stats)
 }

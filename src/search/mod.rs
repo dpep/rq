@@ -83,6 +83,9 @@ pub struct Hit {
     pub repo_identity: String,
     pub score: f64,
     pub features: Vec<Feature>,
+    /// The definition's source line (trimmed) — filled for displayed results in
+    /// machine-readable output. `None` when unread or in text mode.
+    pub signature: Option<String>,
 }
 
 /// Search the index for `query`, returning up to `limit` ranked hits.
@@ -245,6 +248,7 @@ fn rank_one(
         repo_identity: c.repo_identity,
         score: scored.total,
         features: scored.features,
+        signature: None,
     })
 }
 
@@ -327,6 +331,7 @@ mod tests {
             repo_identity: "r".into(),
             score,
             features: vec![],
+            signature: None,
         };
         let from_index = vec![mk("User", 100.0)];
         let from_live = vec![mk("User", 500.0), mk("Account", 200.0)];

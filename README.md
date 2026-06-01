@@ -42,7 +42,9 @@ rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> -p/--path DIR    # restrict to a directory (repeatable)
+rq <query> -l/--limit N     # cap the number of results (default 10)
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
+rq --index --path DIR       # index only a subtree (partial — for big monorepos)
 rq --status                 # indexing coverage per known repository
 ```
 
@@ -50,8 +52,10 @@ rq --status                 # indexing coverage per known repository
 
 `-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
 surface for editors, scripts, and AI agents. Each result is an object with
-`name`, `kind`, `file`, `line`, `parent`, `repo`, `score`, and the scoring
-`features`. Exit code is `0` when something matched, non-zero when nothing did.
+`name`, `kind`, `file`, `line`, `parent`, `repo`, `score`, the scoring
+`features`, and `signature` (the definition's source line, so you can judge a
+result without opening the file). Exit code is `0` when something matched,
+non-zero when nothing did.
 
 Reach for `rq` over `grep`/`rg` when you want **where a symbol is defined** —
 it returns the most likely definition first instead of every textual mention.

@@ -39,6 +39,15 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
+/// `git init` a directory (no commits needed) so it reads as a git repo.
+fn git_init(dir: &Path) {
+    let _ = Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .current_dir(dir)
+        .output();
+}
+
 #[test]
 fn index_search_and_learn_through_the_cli() {
     let (dir, db) = scratch("learn");
@@ -112,6 +121,10 @@ fn json_and_ndjson_output() {
     assert!(out.contains("\"name\": \"HandlerA\""), "name field: {out}");
     assert!(out.contains("\"file\": \"alpha.rb\""), "file field: {out}");
     assert!(out.contains("\"repo\":"), "repo field: {out}");
+    assert!(
+        out.contains("\"signature\": \"class HandlerA\""),
+        "signature: {out}"
+    );
 
     // --ndjson: one compact object per line
     let (ok, out) = rq(&db, &dir, &["handler", "--ndjson"]);
@@ -163,6 +176,56 @@ fn path_filter_restricts_results() {
     assert!(
         !out.contains("app/models/widget.rb"),
         "models hit filtered out: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn limit_caps_the_number_of_results() {
+    let (dir, db) = scratch("limit");
+    fs::write(dir.join("a.rb"), "class HandlerA\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class HandlerB\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["handler", "--limit", "1", "--ndjson"]);
+    assert!(ok, "limited search failed: {out}");
+    assert_eq!(out.lines().count(), 1, "expected exactly one result: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn index_a_subset_of_a_repo() {
+    let (dir, db) = scratch("subset");
+    fs::create_dir_all(dir.join("app/services")).unwrap();
+    fs::create_dir_all(dir.join("app/models")).unwrap();
+    fs::write(dir.join("app/services/charge.rb"), "class Charge\nend\n").unwrap();
+    fs::write(dir.join("app/models/account.rb"), "class Account\nend\n").unwrap();
+    // a git repo, so a search won't live-scan the whole tree (defeating the point)
+    git_init(&dir);
+
+    // index only the services subtree
+    let (ok, out) = rq(&db, &dir, &["--index", "--path", "app/services"]);
+    assert!(ok, "subset index failed: {out}");
+    assert!(out.contains("(partial)"), "expected partial marker: {out}");
+
+    // the indexed subtree is searchable, with a repo-relative path
+    let (ok, out) = rq(&db, &dir, &["charge", "--ndjson"]);
+    assert!(ok, "charge search failed: {out}");
+    assert!(
+        out.contains("\"file\":\"app/services/charge.rb\""),
+        "subset hit: {out}"
+    );
+
+    // a symbol outside the subset isn't found — and a search does NOT silently
+    // full-index over the deliberate partial index
+    let (ok, _) = rq(&db, &dir, &["account"]);
+    assert!(!ok, "account is outside the indexed subset, should miss");
+    let (_, status) = rq(&db, &dir, &["--status"]);
+    assert!(
+        status.contains("partial"),
+        "coverage stays partial: {status}"
     );
 
     let _ = fs::remove_dir_all(&dir);

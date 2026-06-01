@@ -59,6 +59,10 @@ struct Cli {
     #[arg(short = 'p', long, value_name = "DIR")]
     path: Vec<String>,
 
+    /// Maximum number of results to show.
+    #[arg(short = 'l', long, value_name = "N", default_value_t = 10)]
+    limit: usize,
+
     /// Index a repository (TARGET path, or the current directory).
     #[arg(long, conflicts_with_all = ["status", "record"])]
     index: bool,
@@ -97,9 +101,10 @@ pub fn run() -> ExitCode {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
         return ExitCode::SUCCESS;
     }
+    let paths = cli.path.clone();
     if cli.index {
-        // index TARGET if given, else the current directory
-        return cmd_index(cli.target.map(PathBuf::from));
+        // index TARGET (else cwd); with --path, only those subtrees (partial)
+        return cmd_index(cli.target.map(PathBuf::from), &paths);
     }
     if cli.status {
         return cmd_status();
@@ -110,9 +115,8 @@ pub fn run() -> ExitCode {
         return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
     }
     let out = output_format(&cli);
-    let paths = cli.path.clone();
     match cli.target {
-        Some(query) => cmd_search(&query, cli.explain, out, &paths),
+        Some(query) => cmd_search(&query, cli.explain, out, &paths, cli.limit),
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -139,17 +143,18 @@ fn output_format(cli: &Cli) -> Output {
     }
 }
 
-/// How many results to show, and the headroom to rank before a `--path` filter
-/// (so filtered-in results aren't lost to the cutoff).
-const WANT: usize = 10;
+/// Minimum headroom to rank before a `--path` filter (so filtered-in results
+/// aren't lost to the cutoff).
 const PATH_HEADROOM: usize = 200;
 
-/// Default action: search the index and print ranked results.
-fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String]) -> ExitCode {
+/// Default action: search the index and print ranked results. `want` is the
+/// number of results to show (`--limit`).
+fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String], want: usize) -> ExitCode {
+    // with --path we rank extra, then filter down to `want`
     let limit = if paths.is_empty() {
-        WANT
+        want
     } else {
-        PATH_HEADROOM
+        (want * 20).max(PATH_HEADROOM)
     };
     let mut store = match open_store() {
         Ok(s) => s,
@@ -165,7 +170,9 @@ fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String]) -> Exit
         && cwd_is_git
     {
         let identity = crate::index::detect_identity(cwd).to_string();
-        if store.coverage_status(&identity).ok().flatten().as_deref() != Some("complete") {
+        // only auto-index a repo we've never seen — a deliberate partial index
+        // (`--index --path …`, status "partial") is respected, not clobbered
+        if store.coverage_status(&identity).ok().flatten().is_none() {
             let _ = crate::index::index_path(&mut store, cwd);
         }
     }
@@ -217,7 +224,7 @@ fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String]) -> Exit
     // --path: keep only results under one of the given directories, then trim.
     if !paths.is_empty() {
         hits.retain(|h| under_any(&h.file, paths));
-        hits.truncate(WANT);
+        hits.truncate(want);
     }
 
     if hits.is_empty() {
@@ -227,6 +234,15 @@ fn cmd_search(query: &str, explain: bool, out: Output, paths: &[String]) -> Exit
             Output::Text => eprintln!("no matches for {query:?}"),
         }
         return ExitCode::FAILURE;
+    }
+
+    // For machine-readable output, attach each result's definition line so a
+    // consumer sees `def perform(refund)`, not just the name. Cheap: only the
+    // displayed results, only in JSON modes.
+    if matches!(out, Output::Json | Output::Ndjson) {
+        for hit in &mut hits {
+            hit.signature = read_signature(&store, hit, cwd.as_deref());
+        }
     }
 
     match out {
@@ -319,6 +335,26 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
     ExitCode::SUCCESS
 }
 
+/// The definition's source line (trimmed) for a hit — read from disk, resolving
+/// the repo root from the store (or the cwd for live results). Best-effort.
+fn read_signature(
+    store: &Store,
+    hit: &crate::search::Hit,
+    cwd: Option<&std::path::Path>,
+) -> Option<String> {
+    let root = store
+        .repository_id(&hit.repo_identity)
+        .ok()
+        .flatten()
+        .and_then(|id| store.checkout_root(id).ok().flatten())
+        .map(PathBuf::from)
+        .or_else(|| cwd.map(std::path::Path::to_path_buf))?;
+    let content = std::fs::read_to_string(root.join(&hit.file)).ok()?;
+    let idx = usize::try_from(hit.line).ok()?.checked_sub(1)?;
+    let line = content.lines().nth(idx)?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
 /// Whether a repo-relative `file` sits under one of the `--path` directories
 /// (prefix match on a path boundary). `app/services` matches
 /// `app/services/refund.rb` but not `app/services_old/x.rb`.
@@ -376,16 +412,17 @@ fn current_repo_id(store: &Store, cwd: Option<&std::path::Path>) -> Option<i64> 
     store.repository_id(&identity.to_string()).ok().flatten()
 }
 
-fn cmd_index(path: Option<PathBuf>) -> ExitCode {
-    let path = path.unwrap_or_else(|| PathBuf::from("."));
+fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
+    let root = path.unwrap_or_else(|| PathBuf::from("."));
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
-    match crate::index::index_path(&mut store, &path) {
+    match crate::index::index_under(&mut store, &root, subdirs) {
         Ok(stats) => {
+            let scope = if subdirs.is_empty() { "" } else { " (partial)" };
             println!(
-                "indexed {} file(s) ({} seen), {} symbol(s)",
+                "indexed{scope} {} file(s) ({} seen), {} symbol(s)",
                 stats.files_indexed, stats.files_seen, stats.symbols
             );
             ExitCode::SUCCESS
