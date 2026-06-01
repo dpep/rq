@@ -80,9 +80,13 @@ rg/fd feel.
 
 ## Phase 4 — Git awareness
 
-Ranking hints, never hard filters.
+Ranking hints, never hard filters. Added as fields on `search::Boosts` so each
+signal slots into the scorer without threading new parameters.
 
-- [ ] current-branch, recent-commit, recently-modified signals
+- [x] recently-modified signal — a `recency` boost (file mtime, ~14-day
+      half-life) lifts symbols in files you've touched lately
+- [ ] recent-commit signal (git log) — distinct from mtime; "active area"
+- [ ] current-branch awareness
 - [ ] ownership / activity hints
 
 ## Phase 5 — Editor integration

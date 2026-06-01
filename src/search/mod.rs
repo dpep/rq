@@ -7,7 +7,7 @@
 
 mod score;
 
-pub use score::{Feature, Scored};
+pub use score::{Boosts, Feature, Scored};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -44,19 +44,34 @@ pub fn search(
     limit: usize,
 ) -> crate::store::Result<Vec<Hit>> {
     let candidates = store.search_candidates(query, CANDIDATE_LIMIT)?;
-    let boosts = learned_boosts(store, query)?;
+    let learned = learned_boosts(store, query)?;
+    let now = now_unix();
 
     let mut hits: Vec<Hit> = candidates
         .into_iter()
         .filter_map(|c| {
             let key = (c.repository_id, c.file.clone(), c.name.clone());
-            let boost = boosts.get(&key).copied().unwrap_or(0.0);
-            rank_one(query, c, current_repo_id, boost)
+            let boosts = Boosts {
+                learned: learned.get(&key).copied().unwrap_or(0.0),
+                recency: recency_boost(c.mtime, now),
+            };
+            rank_one(query, c, current_repo_id, boosts)
         })
         .collect();
 
     sort_and_truncate(&mut hits, limit);
     Ok(hits)
+}
+
+/// Symbols in recently-modified files rank higher. ~14-day half-life and no
+/// floor, so files untouched for a while contribute nothing.
+fn recency_boost(mtime: Option<i64>, now: i64) -> f64 {
+    let Some(mtime) = mtime else {
+        return 0.0;
+    };
+    let age_days = (now - mtime).max(0) as f64 / 86_400.0;
+    let boost = 120.0 * 0.5_f64.powf(age_days / 14.0);
+    if boost < 1.0 { 0.0 } else { boost }
 }
 
 /// Decay-weighted learned boosts for a query, keyed by `(repo, file, name)`.
@@ -113,8 +128,9 @@ pub fn live_search(root: &Path, query: &str, limit: usize) -> Vec<Hit> {
                 parent: s.parent,
                 repository_id: LIVE_REPO_ID,
                 repo_identity: identity.clone(),
+                mtime: None,
             };
-            rank_one(query, row, Some(LIVE_REPO_ID), 0.0)
+            rank_one(query, row, Some(LIVE_REPO_ID), Boosts::default())
         })
         .collect();
     sort_and_truncate(&mut hits, limit);
@@ -157,9 +173,9 @@ fn rank_one(
     query: &str,
     c: SymbolRow,
     current_repo_id: Option<i64>,
-    learned_boost: f64,
+    boosts: Boosts,
 ) -> Option<Hit> {
-    let scored = score::score(query, &c, current_repo_id, learned_boost)?;
+    let scored = score::score(query, &c, current_repo_id, boosts)?;
     Some(Hit {
         name: c.name,
         kind: c.kind,

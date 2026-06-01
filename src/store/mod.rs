@@ -27,6 +27,8 @@ pub struct SymbolRow {
     pub parent: Option<String>,
     pub repository_id: i64,
     pub repo_identity: String,
+    /// File mtime (unix seconds) — the recency signal.
+    pub mtime: Option<i64>,
 }
 
 /// A learned selection signal for ranking: how often a `(file, name)` was
@@ -43,7 +45,7 @@ pub struct SelectionStat {
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
-    s.parent, s.repository_id, r.identity";
+    s.parent, s.repository_id, r.identity, fi.mtime";
 const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
@@ -575,6 +577,7 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             parent: r.get(6)?,
             repository_id: r.get(7)?,
             repo_identity: r.get(8)?,
+            mtime: r.get(9)?,
         },
     ))
 }

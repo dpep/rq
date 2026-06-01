@@ -237,13 +237,18 @@ why a result ranked where it did:
 
 - **match quality** — exact > prefix > camel-hump abbreviation > subsequence
 - **kind weight** — tunable (e.g. class/module slightly above method)
+- **path** — query also matches the file's name (Layer 3)
 - **current-repo boost** — the repo you're in dominates other repos
-- **recency** — recently modified / recently opened
-- **learned boost** — from `selection_stats` (see below)
-- **path proximity** — closeness to the working directory
+- **learned boost** — behavioral signal from `selection_stats` (see below)
+- **recency** — symbols in recently-modified files (file mtime, ~14-day
+  half-life)
 
-Prefer understandable scoring over sophisticated algorithms. Tuning a weight
-must never require re-indexing.
+Match quality and the static features live in the pure `score()` function. The
+dynamic, context-dependent signals (`learned`, `recency`) are computed by the
+search layer — which owns the clock and store lookups — and passed in via a
+`Boosts` struct, so a new git signal (recent commit, branch, ownership) is a new
+field, not a new parameter. Prefer understandable scoring over sophisticated
+algorithms; tuning a weight must never require re-indexing.
 
 ### Abbreviation matching
 

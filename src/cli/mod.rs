@@ -26,6 +26,11 @@ struct Cli {
     #[arg(long)]
     explain: bool,
 
+    /// Run as if invoked from DIR (like `git -C`) — sets which repository is
+    /// searched/indexed and where a recorded path is resolved.
+    #[arg(short = 'C', long, value_name = "DIR")]
+    cwd: Option<PathBuf>,
+
     /// Index a repository (TARGET path, or the current directory).
     #[arg(long, conflicts_with_all = ["status", "record"])]
     index: bool,
@@ -57,7 +62,8 @@ pub fn run() -> ExitCode {
     let cli = Cli::parse();
 
     if cli.index {
-        return cmd_index(cli.target.map(PathBuf::from));
+        // index TARGET if given, else -C dir, else the current directory
+        return cmd_index(cli.target.map(PathBuf::from).or(cli.cwd));
     }
     if cli.status {
         return cmd_status();
@@ -65,10 +71,10 @@ pub fn run() -> ExitCode {
     if cli.record {
         // clap guarantees --file is present via `requires`
         let file = cli.file.expect("--record requires --file");
-        return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line);
+        return cmd_record(&cli.kind, cli.target.as_deref(), &file, cli.line, cli.cwd);
     }
     match cli.target {
-        Some(query) => cmd_search(&query, cli.explain),
+        Some(query) => cmd_search(&query, cli.explain, cli.cwd),
         None => {
             eprintln!("rq: no query given (try `rq --help`)");
             ExitCode::FAILURE
@@ -77,12 +83,12 @@ pub fn run() -> ExitCode {
 }
 
 /// Default action: search the index and print ranked results.
-fn cmd_search(query: &str, explain: bool) -> ExitCode {
+fn cmd_search(query: &str, explain: bool, cwd: Option<PathBuf>) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
-    let cwd = std::env::current_dir().ok();
+    let cwd = cwd.or_else(|| std::env::current_dir().ok());
     let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
 
     // Layer 5: opportunistically index the working repo the first time we see
@@ -97,7 +103,7 @@ fn cmd_search(query: &str, explain: bool) -> ExitCode {
         }
     }
 
-    let current = current_repo_id(&store);
+    let current = current_repo_id(&store, cwd.as_deref());
 
     // A repeated search (same query, nothing opened since) means last time
     // missed — decay this query's learned boost before ranking so a stale
@@ -174,12 +180,20 @@ const AGGREGATE_BATCH: usize = 256;
 
 /// Hook entry point: record that `file` was opened/selected for `query`, then
 /// amortize a chunk of event aggregation.
-fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) -> ExitCode {
+fn cmd_record(
+    kind: &str,
+    query: Option<&str>,
+    file: &str,
+    line: Option<i64>,
+    cwd: Option<PathBuf>,
+) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = cwd
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
     let identity = crate::index::detect_identity(&cwd).to_string();
     let repo_id = store.repository_id(&identity).ok().flatten();
 
@@ -239,11 +253,10 @@ fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
     changed
 }
 
-/// The repository id for the current working directory, if it's indexed —
-/// used to boost results from the repo you're in.
-fn current_repo_id(store: &Store) -> Option<i64> {
-    let cwd = std::env::current_dir().ok()?;
-    let identity = crate::index::detect_identity(&cwd);
+/// The repository id for the working directory, if it's indexed — used to
+/// boost results from the repo you're in.
+fn current_repo_id(store: &Store, cwd: Option<&std::path::Path>) -> Option<i64> {
+    let identity = crate::index::detect_identity(cwd?);
     store.repository_id(&identity.to_string()).ok().flatten()
 }
 
