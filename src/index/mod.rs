@@ -173,9 +173,11 @@ pub fn index_budgeted(
                 store.forget_file(repo_id, path)?;
             }
         }
-        // commit times feed the recency signal; one git call, only once a sweep
-        // finishes (a never-completing huge repo just leans on mtime recency)
-        if is_git_repo(root) {
+        // commit times feed the recency signal. Only worth the (relatively
+        // expensive) `git log` when this sweep actually (re)indexed something —
+        // a clean, already-complete repo re-sweeps every query and must not pay
+        // a git log each time. New/changed files (files_indexed > 0) refresh it.
+        if stats.files_indexed > 0 && is_git_repo(root) {
             let times = git_commit_times(root, 1000);
             if !times.is_empty() {
                 let _ = store.set_file_git_ts(repo_id, &times);
@@ -359,9 +361,22 @@ pub enum Refresh {
 }
 
 /// Whether `root` is inside a git work tree. Implicit (opportunistic) indexing
-/// is gated on this so a stray query never walks a non-repo directory.
+/// is gated on this so a stray query never walks a non-repo directory. Native
+/// (no `git` fork) — it runs on every search.
 pub fn is_git_repo(root: &Path) -> bool {
-    git_output(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
+    repo_root(root).is_some()
+}
+
+/// The git work-tree root at or above `path` — the nearest ancestor holding a
+/// `.git` entry — found without shelling out. `.git` may be a directory or a
+/// file (worktrees, submodules), so we test existence either way. `None` when
+/// `path` is not inside a work tree.
+pub fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
+    let start = path.canonicalize().ok()?;
+    start
+        .ancestors()
+        .find(|a| a.join(".git").exists())
+        .map(Path::to_path_buf)
 }
 
 /// Repo-relative files you're working on this branch: committed changes since
@@ -516,6 +531,24 @@ mod tests {
         assert!(is_trunk("master"));
         assert!(!is_trunk("feature/x"));
         assert!(!is_trunk("dpep/fix"));
+    }
+
+    #[test]
+    fn detects_git_work_tree_natively() {
+        let dir = std::env::temp_dir().join(format!("rq-reporoot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+
+        assert!(!is_git_repo(&dir), "no .git yet");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        assert!(is_git_repo(&dir), "a .git entry marks a work tree");
+        // from a subdirectory, repo_root walks up to the work-tree root
+        assert_eq!(
+            repo_root(&dir.join("sub")).unwrap(),
+            dir.canonicalize().unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

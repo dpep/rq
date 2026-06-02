@@ -287,6 +287,21 @@ impl Store {
         Ok(rows)
     }
 
+    /// The normalized identity of a repository by one of its checkout roots, if
+    /// known — lets the hot path resolve identity from the cache instead of
+    /// forking `git remote`. `root` should be the canonical work-tree path.
+    pub fn identity_for_root(&self, root: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT r.identity FROM repositories r
+                 JOIN checkouts c ON c.repository_id = r.id
+                 WHERE c.root_path = ?1",
+                params![root],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
     /// The id of a repository by its normalized identity, if known.
     pub fn repository_id(&self, identity: &str) -> Result<Option<i64>> {
         self.conn

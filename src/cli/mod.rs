@@ -208,18 +208,22 @@ fn cmd_search(
         _ => Vec::new(),
     };
 
+    // Resolve identity once, cache-first: a known repo is looked up by its
+    // checkout root (no `git remote` fork), falling back to git only the first
+    // time we see it. Reused for coverage and the current-repo boost below.
+    let identity = cwd
+        .as_deref()
+        .filter(|_| cwd_is_git)
+        .map(|c| resolve_identity(&store, c));
+
     // Opportunistic indexing (Layer 5), now time-bounded so the first query in a
     // large repo never blocks on a full walk. We never auto-index a deliberate
     // partial subset (`--index --path …`, status "partial"); for everything else
     // a small inline slice (active files first) makes *this* query useful, and
     // the rest warms in the deferred pass and across subsequent queries.
-    let coverage = cwd
+    let coverage = identity
         .as_deref()
-        .filter(|_| cwd_is_git)
-        .and_then(|c| {
-            let id = crate::index::detect_identity(c).to_string();
-            store.coverage_status(&id).ok()
-        })
+        .and_then(|id| store.coverage_status(id).ok())
         .flatten();
     let warming_ok = cwd_is_git && coverage.as_deref() != Some("partial");
     if warming_ok
@@ -229,7 +233,9 @@ fn cmd_search(
         let _ = crate::index::index_budgeted(&mut store, c, &active_paths, ANSWER_WARM_BUDGET);
     }
 
-    let current = current_repo_id(&store, cwd.as_deref());
+    let current = identity
+        .as_deref()
+        .and_then(|id| store.repository_id(id).ok().flatten());
     let active = crate::search::ActiveFiles::new(active_paths.clone());
 
     // A repeated search (same query, nothing opened since) means last time
@@ -597,11 +603,17 @@ fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
     changed
 }
 
-/// The repository id for the working directory, if it's indexed — used to
-/// boost results from the repo you're in.
-fn current_repo_id(store: &Store, cwd: Option<&std::path::Path>) -> Option<i64> {
-    let identity = crate::index::detect_identity(cwd?);
-    store.repository_id(&identity.to_string()).ok().flatten()
+/// The repository's normalized identity for `cwd`, cache-first: look it up by
+/// the canonical cwd (the checkout root indexing records), forking `git remote`
+/// only when the repo is new to the index. Avoids a `git` call on every search
+/// of a known repo.
+fn resolve_identity(store: &Store, cwd: &std::path::Path) -> String {
+    if let Ok(canon) = cwd.canonicalize()
+        && let Ok(Some(identity)) = store.identity_for_root(&canon.to_string_lossy())
+    {
+        return identity;
+    }
+    crate::index::detect_identity(cwd).to_string()
 }
 
 fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
