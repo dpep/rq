@@ -311,6 +311,28 @@ fn first_query_warms_the_index_without_an_explicit_reindex() {
 }
 
 #[test]
+fn explicitly_indexes_and_recognizes_a_non_git_directory() {
+    // A non-git directory (no git_init): you can still index it explicitly, and
+    // a later search recognizes it as the current repo and self-heals.
+    let (dir, db) = scratch("nongit");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+
+    let (ok, out) = rq(&db, &dir, &["--index"]);
+    assert!(ok, "index of a non-git dir failed: {out}");
+
+    let (ok, out) = rq(&db, &dir, &["widget", "--ndjson"]);
+    assert!(ok, "search failed: {out}");
+    assert!(out.contains("\"name\":\"Widget\""), "result present: {out}");
+    // recognized as the current repo → the current-repo boost applies
+    assert!(
+        out.contains("current_repo"),
+        "current-repo boost applied: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

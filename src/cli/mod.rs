@@ -208,24 +208,24 @@ fn cmd_search(
         _ => Vec::new(),
     };
 
-    // Resolve identity once, cache-first: a known repo is looked up by its
-    // checkout root (no `git remote` fork), falling back to git only the first
-    // time we see it. Reused for coverage and the current-repo boost below.
-    let identity = cwd
-        .as_deref()
-        .filter(|_| cwd_is_git)
-        .map(|c| resolve_identity(&store, c));
-
-    // Opportunistic indexing (Layer 5), now time-bounded so the first query in a
-    // large repo never blocks on a full walk. We never auto-index a deliberate
-    // partial subset (`--index --path …`, status "partial"); for everything else
-    // a small inline slice (active files first) makes *this* query useful, and
-    // the rest warms in the deferred pass and across subsequent queries.
+    // Resolve identity for any cwd, cache-first: looked up by checkout root (no
+    // `git remote` fork), falling back to git only the first time we see a repo.
+    // Computed even for non-git dirs so an explicitly `--index`ed one is still
+    // recognized as the current repo below.
+    let identity = cwd.as_deref().map(|c| resolve_identity(&store, c));
     let coverage = identity
         .as_deref()
         .and_then(|id| store.coverage_status(id).ok())
         .flatten();
-    let warming_ok = cwd_is_git && coverage.as_deref() != Some("partial");
+
+    // Opportunistic indexing (Layer 5), time-bounded so the first query in a
+    // large repo never blocks on a full walk. We may warm a git work tree (safe
+    // to auto-discover) *or* any dir we already track — one earns tracking by
+    // being explicitly `--index`ed, which opts a non-git dir in. We never warm an
+    // unknown non-git dir (don't walk a random directory) or a deliberate partial
+    // subset (`--index --path …`, status "partial").
+    let known = coverage.is_some();
+    let warming_ok = (cwd_is_git || known) && coverage.as_deref() != Some("partial");
     if warming_ok
         && coverage.as_deref() != Some("complete")
         && let Some(c) = &cwd
@@ -263,24 +263,29 @@ fn cmd_search(
         };
     }
 
-    // Layer 4 fallback when the index came up empty.
-    //   - non-git dir: never persisted, so scan it live in full (answers at 0%).
-    //   - git repo still warming: a bounded live scan, skipping already-indexed
-    //     files so the budget reaches ground the warm hasn't covered yet. Skipped
-    //     once coverage is `complete` (then empty really means no match) and on a
-    //     deliberate partial subset.
+    // Layer 4 fallback when the index came up empty, keyed on what we know about
+    // the dir:
+    //   - untracked (no coverage — typically a non-git dir we won't persist):
+    //     scan it live, in full, so we answer at all.
+    //   - warming (a git repo mid-warm): a bounded live scan that skips already-
+    //     indexed files, so the budget reaches ground the warm hasn't covered.
+    //   - complete / partial: empty is a genuine miss (or outside the subset).
     if hits.is_empty()
         && let Some(cwd) = &cwd
     {
-        if !cwd_is_git {
-            hits = crate::search::live_search(cwd, query, limit, &HashSet::new(), None);
-        } else if !matches!(coverage.as_deref(), Some("complete") | Some("partial")) {
-            let indexed: HashSet<String> = current
-                .and_then(|id| store.file_mtimes(id).ok())
-                .map(|m| m.into_keys().collect())
-                .unwrap_or_default();
-            let deadline = Some(std::time::Instant::now() + LIVE_FALLBACK_BUDGET);
-            hits = crate::search::live_search(cwd, query, limit, &indexed, deadline);
+        match coverage.as_deref() {
+            None => {
+                hits = crate::search::live_search(cwd, query, limit, &HashSet::new(), None);
+            }
+            Some("warming") => {
+                let indexed: HashSet<String> = current
+                    .and_then(|id| store.file_mtimes(id).ok())
+                    .map(|m| m.into_keys().collect())
+                    .unwrap_or_default();
+                let deadline = Some(std::time::Instant::now() + LIVE_FALLBACK_BUDGET);
+                hits = crate::search::live_search(cwd, query, limit, &indexed, deadline);
+            }
+            _ => {}
         }
     }
 
@@ -604,14 +609,18 @@ fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
 }
 
 /// The repository's normalized identity for `cwd`, cache-first: look it up by
-/// the canonical cwd (the checkout root indexing records), forking `git remote`
-/// only when the repo is new to the index. Avoids a `git` call on every search
-/// of a known repo.
+/// the canonical cwd (the checkout root indexing records), so a known repo (git
+/// or explicitly `--index`ed) costs no `git` fork. On a cache miss, a non-git
+/// dir resolves to its `local:` path directly (still no fork); only a git work
+/// tree we haven't seen yet pays a `git remote` call.
 fn resolve_identity(store: &Store, cwd: &std::path::Path) -> String {
-    if let Ok(canon) = cwd.canonicalize()
-        && let Ok(Some(identity)) = store.identity_for_root(&canon.to_string_lossy())
-    {
-        return identity;
+    if let Ok(canon) = cwd.canonicalize() {
+        if let Ok(Some(identity)) = store.identity_for_root(&canon.to_string_lossy()) {
+            return identity;
+        }
+        if crate::index::repo_root(cwd).is_none() {
+            return crate::core::RepoIdentity::local(&canon.to_string_lossy()).to_string();
+        }
     }
     crate::index::detect_identity(cwd).to_string()
 }
