@@ -296,6 +296,21 @@ fn kind_filter_scopes_by_symbol_kind() {
 }
 
 #[test]
+fn first_query_warms_the_index_without_an_explicit_reindex() {
+    // A git repo that was never explicitly indexed: the first query opportunistically
+    // warms the index (time-bounded) and still answers.
+    let (dir, db) = scratch("warm");
+    git_init(&dir);
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+
+    let (ok, out) = rq(&db, &dir, &["widget", "--ndjson"]);
+    assert!(ok, "cold search failed: {out}");
+    assert!(out.contains("\"name\":\"Widget\""), "result present: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

@@ -39,6 +39,11 @@ Make `rq` useful before indexing finishes or when it never ran.
       the CLI uses it for non-git directories it won't persist
 - [x] Layer 5 opportunistic indexing — the first query in a git repo warms the
       index (gated to git work trees so a stray query never walks a random dir)
+- [x] time-bounded warming (`index::index_budgeted`) — the cold first query never
+      blocks on a full walk of a large repo: a small inline budget indexes the
+      branch's active files first and answers, then the deferred pass warms more
+      per query until coverage is complete. A cheap mtime check skips unchanged
+      files, so repeated sweeps converge and pick up added/changed/deleted files
 - [x] staleness detection via `content_hash` + lazy top-N validation — the files
       behind the top hits are revalidated; changed files re-extracted, deleted
       files forgotten, results re-ranked
@@ -53,7 +58,11 @@ exiting. See "No daemon — amortized post-interaction work" in ARCHITECTURE.
 Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
 
 - [ ] streamed result tail (results arrive incrementally)
-- [ ] proactive indexing of files adjacent to a result, in the deferred pass
+- [ ] detached background warming — the deferred warm is currently synchronous
+      (it runs before the process exits, so its budget must stay small, ~250 ms).
+      Re-exec a detached `rq --warm` child (null streams) so the foreground
+      returns instantly and warming can run for seconds; needs `busy_timeout` +
+      a `last_indexed_at` single-flight gate. Bigger budget, periodic freshness
 
 Exit criteria met: search works at 0%, partial, and 100% coverage; the user
 doesn't have to know which layer answered.
@@ -92,7 +101,9 @@ signal slots into the scorer without threading new parameters.
       (committed + uncommitted) get a `branch` boost, and their directory
       neighbors a smaller one; computed at search time via a few git calls,
       gated so the trunk pays nothing
-- [ ] use the active-file set for proactive (pre-)indexing in the deferred pass
+- [x] use the active-file set for proactive (pre-)indexing — `index_budgeted`
+      warms the branch's active files first, so the working set is indexed (and
+      kept fresh) before the rest of the repo
 - [ ] ownership / activity hints
 
 ## Phase 5 — Editor integration

@@ -3,6 +3,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
@@ -199,30 +200,36 @@ fn cmd_search(
     let cwd = std::env::current_dir().ok();
     let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
 
-    // Layer 5: opportunistically index the working repo the first time we see
-    // it, so the index warms through normal use. Gated to git repos so a stray
-    // query never walks an arbitrary directory.
-    if let Some(cwd) = &cwd
-        && cwd_is_git
+    // Files you're changing on this feature branch (and their directory
+    // neighbors): the branch ranking boost, and the warm pass's priority set.
+    let active_paths: Vec<String> = match &cwd {
+        Some(c) if cwd_is_git => crate::index::branch_changed_files(c),
+        _ => Vec::new(),
+    };
+
+    // Opportunistic indexing (Layer 5), now time-bounded so the first query in a
+    // large repo never blocks on a full walk. We never auto-index a deliberate
+    // partial subset (`--index --path …`, status "partial"); for everything else
+    // a small inline slice (active files first) makes *this* query useful, and
+    // the rest warms in the deferred pass and across subsequent queries.
+    let coverage = cwd
+        .as_deref()
+        .filter(|_| cwd_is_git)
+        .and_then(|c| {
+            let id = crate::index::detect_identity(c).to_string();
+            store.coverage_status(&id).ok()
+        })
+        .flatten();
+    let warming_ok = cwd_is_git && coverage.as_deref() != Some("partial");
+    if warming_ok
+        && coverage.as_deref() != Some("complete")
+        && let Some(c) = &cwd
     {
-        let identity = crate::index::detect_identity(cwd).to_string();
-        // only auto-index a repo we've never seen — a deliberate partial index
-        // (`--index --path …`, status "partial") is respected, not clobbered
-        if store.coverage_status(&identity).ok().flatten().is_none() {
-            let _ = crate::index::index_path(&mut store, cwd);
-        }
+        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, ANSWER_WARM_BUDGET);
     }
 
     let current = current_repo_id(&store, cwd.as_deref());
-
-    // Branch awareness: files you're changing on this feature branch (and their
-    // directory neighbors) are where you're most likely looking.
-    let active = match &cwd {
-        Some(c) if cwd_is_git => {
-            crate::search::ActiveFiles::new(crate::index::branch_changed_files(c))
-        }
-        _ => crate::search::ActiveFiles::default(),
-    };
+    let active = crate::search::ActiveFiles::new(active_paths.clone());
 
     // A repeated search (same query, nothing opened since) means last time
     // missed — decay this query's learned boost before ranking so a stale
@@ -347,8 +354,25 @@ fn cmd_search(
     }
     deferred_maintenance(&mut store);
 
+    // Now that results are out, warm the index a little more (bounded). This
+    // builds coverage on a large repo across queries and, on an already-complete
+    // repo, picks up new/changed files (active ones first) and drops deleted ones
+    // once a full sweep finishes — so the index tracks edits without a daemon.
+    if warming_ok && let Some(c) = &cwd {
+        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, DEFERRED_WARM_BUDGET);
+    }
+
     ExitCode::SUCCESS
 }
+
+/// Inline warm budget on the search path: small, so the first query in a large,
+/// never-indexed repo stays responsive (it answers from whatever got indexed
+/// plus the live fallback) rather than blocking on a full walk.
+const ANSWER_WARM_BUDGET: Duration = Duration::from_millis(50);
+
+/// Deferred warm budget, spent after results are printed: larger, to make real
+/// progress on coverage per query while keeping each invocation snappy.
+const DEFERRED_WARM_BUDGET: Duration = Duration::from_millis(250);
 
 /// How many events to roll up per interaction. Bounded so the deferred pass
 /// after a command stays quick.

@@ -3,11 +3,11 @@
 //! Decoupled from search: it only writes. Unchanged files (same content hash)
 //! are skipped, and coverage is recorded so search can judge its own confidence.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use ignore::WalkBuilder;
 
@@ -102,6 +102,149 @@ pub fn index_under(
         status,
     )?;
     Ok(stats)
+}
+
+/// Opportunistic, time-bounded indexing — warm the index a little per call so
+/// no single query blocks on a full walk of a large repo.
+///
+/// Indexes the `active` (branch) files first — what you're most likely working
+/// on, so they stay fresh — then walks the rest until `budget` elapses,
+/// skipping files whose mtime is unchanged with a cheap `stat` (no read). Marks
+/// coverage `complete` when a full sweep finishes within budget (and then
+/// reconciles deletions + captures commit times), otherwise `warming`. Each
+/// call resumes the warming from a clean walk; unchanged files are near-free, so
+/// repeated calls converge cheaply and pick up new/changed files as they appear.
+pub fn index_budgeted(
+    store: &mut Store,
+    root: &Path,
+    active: &[String],
+    budget: Duration,
+) -> Result<Stats, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + budget;
+    let identity = detect_identity(root);
+    let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
+    let root_display = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
+
+    let stored = store.file_mtimes(repo_id)?;
+    let mut stats = Stats::default();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // active files first: they're the working set, so keep them fresh even if the
+    // budget cuts the walk short
+    for rel in active {
+        index_file(
+            store,
+            repo_id,
+            root,
+            &root.join(rel),
+            &stored,
+            &mut stats,
+            &mut seen,
+        )?;
+    }
+
+    let mut completed = true;
+    for result in WalkBuilder::new(root).build() {
+        if Instant::now() >= deadline {
+            completed = false;
+            break;
+        }
+        let Ok(entry) = result else { continue };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        index_file(
+            store,
+            repo_id,
+            root,
+            entry.path(),
+            &stored,
+            &mut stats,
+            &mut seen,
+        )?;
+    }
+
+    if completed {
+        // a full sweep saw every live file: anything still in the index is gone
+        for path in stored.keys() {
+            if !seen.contains(path) {
+                store.forget_file(repo_id, path)?;
+            }
+        }
+        // commit times feed the recency signal; one git call, only once a sweep
+        // finishes (a never-completing huge repo just leans on mtime recency)
+        if is_git_repo(root) {
+            let times = git_commit_times(root, 1000);
+            if !times.is_empty() {
+                let _ = store.set_file_git_ts(repo_id, &times);
+            }
+        }
+    }
+
+    let status = if completed { "complete" } else { "warming" };
+    let (files, _) = store.repo_totals(repo_id).unwrap_or((0, 0));
+    store.set_coverage(repo_id, files, stats.files_indexed as i64, status)?;
+    Ok(stats)
+}
+
+/// Index a single file into the store, skipping it when unchanged. The shared
+/// step behind both the active-files pass and the walk in [`index_budgeted`]:
+/// a cheap mtime match short-circuits before any read; otherwise the content
+/// hash guards against a needless re-extract. Records the path in `seen`.
+#[allow(clippy::too_many_arguments)]
+fn index_file(
+    store: &mut Store,
+    repo_id: i64,
+    root: &Path,
+    file: &Path,
+    stored: &HashMap<String, Option<i64>>,
+    stats: &mut Stats,
+    seen: &mut HashSet<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(ext) = file.extension().and_then(|e| e.to_str()) else {
+        return Ok(());
+    };
+    let Some(plugin) = lang::plugin_for_extension(ext) else {
+        return Ok(());
+    };
+    let rel = file
+        .strip_prefix(root)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .into_owned();
+    if seen.contains(&rel) {
+        return Ok(());
+    }
+    stats.files_seen += 1;
+    let mtime = file_mtime(file);
+    // cheap path: same mtime as indexed → unchanged, skip without reading
+    if let Some(&stored_mtime) = stored.get(&rel)
+        && stored_mtime.is_some()
+        && stored_mtime == mtime
+    {
+        seen.insert(rel);
+        return Ok(());
+    }
+    let Ok(source) = std::fs::read_to_string(file) else {
+        return Ok(());
+    };
+    let hash = content_hash(&source);
+    if store.file_unchanged(repo_id, &rel, &hash)? {
+        seen.insert(rel);
+        return Ok(());
+    }
+    let symbols = plugin.extract(&rel, &source);
+    let language = symbols
+        .first()
+        .map(|s| s.language.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    store.replace_file_symbols(repo_id, &rel, &language, mtime, &hash, &symbols)?;
+    stats.files_indexed += 1;
+    stats.symbols += symbols.len();
+    seen.insert(rel);
+    Ok(())
 }
 
 /// Map of repo-relative path → most-recent commit time (unix seconds), from the

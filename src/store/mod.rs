@@ -157,6 +157,23 @@ impl Store {
         Ok(stored.as_deref() == Some(content_hash))
     }
 
+    /// Indexed path → stored mtime for a repository. The budgeted warm pass uses
+    /// this to skip unchanged files with a cheap `stat` (no read or re-hash).
+    pub fn file_mtimes(&self, repository_id: i64) -> Result<HashMap<String, Option<i64>>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, mtime FROM files WHERE repository_id = ?1")?;
+        let rows = stmt.query_map(params![repository_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (path, mtime) = row?;
+            map.insert(path, mtime);
+        }
+        Ok(map)
+    }
+
     /// Replace all symbols for one file in a single transaction: upsert the
     /// file row, drop its old symbols, insert the new ones.
     pub fn replace_file_symbols(

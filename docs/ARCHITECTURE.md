@@ -200,18 +200,26 @@ Decisions worth calling out:
 Indexing is **decoupled** from search — a background worker parses and writes;
 search only reads.
 
-- **Incremental** — compare `mtime` / `content_hash`; skip unchanged files. The
-  walker respects `.gitignore`.
-- **Opportunistic** — when a live scan parses a file (search Layer 5), persist
-  its symbols. The index warms through normal use.
-- **Prioritized** — current checkout first, then git-recent directories first.
-- **Coverage-aware** — every walk updates `coverage`.
+- **Incremental** — compare `mtime` / `content_hash`; skip unchanged files (a
+  cheap `mtime` match short-circuits before any read). The walker respects
+  `.gitignore`.
+- **Opportunistic + time-bounded** (`index::index_budgeted`) — the first query in
+  a git repo warms the index, but never blocks on a full walk of a large repo: a
+  small inline budget indexes the active (branch) files first and answers, then
+  the deferred pass warms more per query until a full sweep marks coverage
+  `complete`. A completed sweep also reconciles deletions and captures commit
+  times. Explicit `rq --index` stays a full, unbounded walk.
+- **Prioritized** — active (branch) files first, so the working set is indexed
+  and kept fresh ahead of the rest of the repo.
+- **Coverage-aware** — every walk updates `coverage` (`warming` until a full
+  sweep completes, then `complete`; a deliberate `--index --path` subset is
+  `partial` and never auto-warmed over).
 - **Language-isolated** — the indexer is blind to language; plugins emit the
   common symbol model.
 
 Tree-sitter parsing is the expensive step and is kept **off the search critical
-path**. Layer 5 extraction persists for the *next* query rather than blocking
-the current one.
+path**: the inline warm is time-boxed, and the bulk of extraction persists for
+the *next* query rather than blocking the current one.
 
 ## Search / ranking pipeline
 
@@ -248,7 +256,8 @@ why a result ranked where it did:
   those files' directories a smaller one. This is the one signal computed *at
   search time* (a few `git diff --name-only` calls) because it tracks live
   working state; it's gated to feature branches, so the trunk pays nothing.
-  The active-file set is also a natural input for proactive pre-indexing (future).
+  The active-file set also drives proactive pre-indexing — `index_budgeted`
+  warms those files first.
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`learned`, `recency`) are computed by the
@@ -273,8 +282,9 @@ a penalty. Quality of ranking matters more than the cleverness of the algorithm.
 
 The index is **never assumed complete**.
 
-- `coverage.status` tells search its own confidence (`never | partial |
-  complete | stale`).
+- `coverage.status` tells search its own confidence (`never | warming | partial
+  | complete`). `warming` is opportunistic indexing in progress; `partial` is a
+  deliberate `--index --path` subset that auto-warming won't clobber.
 - When coverage is below threshold, search appends a **streamed live-scan tail**
   so missing symbols still surface — slower, but visible.
 - **Opportunistic extraction** grows coverage through normal use.
@@ -324,8 +334,10 @@ bounded chunk of deferred work before exiting — rolling a batch of events into
 interactions, with no process to manage. A high-water mark in `meta` tracks
 which events have been rolled up so each pass only touches new ones, and the
 same pass prunes already-rolled-up events (keeping a small recent window for
-repeat detection) so the raw log stays bounded. (Proactive indexing of files
-adjacent to a result is a natural future addition to this same deferred pass.)
+repeat detection) so the raw log stays bounded. The same pass also warms the
+index a little (`index_budgeted`) — bounded, so the process still exits
+promptly. Making that warm a *detached* child (so it can run longer without
+delaying the foreground) is a future addition; see the roadmap.
 
 Git-awareness (current branch, recent commits, ownership, recently-modified
 areas) enters later as additional **ranking hints — never hard filters**.

@@ -109,11 +109,14 @@ Returning fewer, better, ranked results is the goal — not completeness.
 ## Staying current
 
 You rarely run `rq --index` by hand. The first query inside a git repository
-indexes it opportunistically, and results self-heal: the files behind the top
-hits are revalidated each search, so edited files are re-read and deleted ones
-drop out. Outside a git repository rq falls back to a live scan, so it answers
-even at zero coverage. The index is a SQLite file at `$RQ_DB` (default
-`~/.local/share/rq/rq.db`).
+warms the index opportunistically — but *time-bounded*, so even a huge repo
+never blocks the first answer: it indexes the files you're changing on this
+branch first, answers, then keeps warming a little per query until coverage is
+complete. Results also self-heal: the files behind the top hits are revalidated
+each search, so edited files are re-read and deleted ones drop out, and the warm
+pass picks up added/changed/removed files as it sweeps. Outside a git repository
+rq falls back to a live scan, so it answers even at zero coverage. The index is
+a SQLite file at `$RQ_DB` (default `~/.local/share/rq/rq.db`).
 
 ## Learning from what you pick
 
