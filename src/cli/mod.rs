@@ -74,8 +74,8 @@ struct Cli {
     #[arg(short = 'l', long, value_name = "N", default_value_t = 10)]
     limit: usize,
 
-    /// Restrict to symbol kinds: class, module, method, function
-    /// (shortcuts: c, mod, m, f). Repeatable or comma-separated.
+    /// Restrict to symbol kinds: class, module, method, function, struct, enum,
+    /// trait (shortcuts: c, mod, m, f, s, e, t). Repeatable or comma-separated.
     #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
     kind: Vec<String>,
 
@@ -365,10 +365,15 @@ fn cmd_search(
     ExitCode::SUCCESS
 }
 
-/// Inline warm budget on the search path: small, so the first query in a large,
-/// never-indexed repo stays responsive (it answers from whatever got indexed
-/// plus the live fallback) rather than blocking on a full walk.
-const ANSWER_WARM_BUDGET: Duration = Duration::from_millis(50);
+/// Inline warm budget on the search path. A *cap*, not a fixed delay:
+/// `index_budgeted` returns the moment a full sweep finishes, so small/medium
+/// repos index completely and pay only their real cost. The cap only bites a
+/// genuinely huge, never-indexed repo — where a bigger budget buys a much better
+/// first answer (a tiny budget can return nothing, since a git repo has no
+/// live-scan fallback). 500 ms is a one-time cold-cache cost, trivial next to
+/// scanning a large tree from scratch; the deferred pass and later queries fill
+/// in the rest.
+const ANSWER_WARM_BUDGET: Duration = Duration::from_millis(500);
 
 /// Deferred warm budget, spent after results are printed: larger, to make real
 /// progress on coverage per query while keeping each invocation snappy.
@@ -444,6 +449,9 @@ fn canonical_kind(s: &str) -> String {
         "m" | "method" => "method",
         "f" | "fn" | "func" | "function" => "function",
         "mod" | "module" => "module",
+        "s" | "struct" => "struct",
+        "e" | "enum" => "enum",
+        "t" | "trait" => "trait",
         other => return other.to_string(),
     }
     .to_string()

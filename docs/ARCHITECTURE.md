@@ -75,6 +75,7 @@ src/
   search/     # staged pipeline, scorer, --explain
   lang/       # Tree-sitter plugins
     ruby/     # the first plugin
+    rust/     # second language; what rq dogfoods on its own source
   events/     # interaction capture + async rollup
   adapters/   # editor event ingestion (thin, decoupled)
 ```
@@ -89,7 +90,9 @@ trait LanguagePlugin {
 ```
 
 A registry maps file extension → plugin. Adding Go/TS/Python/Java is a new
-plugin, not a core change.
+plugin. The one shared thing a language may extend is the `core::Kind`
+vocabulary — Rust added `struct`/`enum`/`trait` — which generalizes the model
+rather than leaking a language into `index`/`search`/scoring.
 
 ## SQLite schema
 
@@ -132,7 +135,7 @@ symbols (
   file_id INTEGER NOT NULL REFERENCES files(id),
   name TEXT NOT NULL,
   name_lower TEXT NOT NULL,          -- prefix / ranking
-  kind TEXT NOT NULL,                -- class|module|method|function
+  kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
   parent TEXT                        -- enclosing symbol's qualified NAME

@@ -19,9 +19,9 @@ as immediate as `rg`, `fd`, and `fzf`.
 
 > **Status: early, working.** Ranking (exact/prefix, abbreviation-fuzzy, path,
 > current-repo, recency, and learned-from-your-picks signals) is functional for
-> Ruby; the index warms on first use and self-heals. Shipped editor hooks + a
-> shell wrapper; a packaged extension and more languages are next. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> Ruby and Rust (rq indexes its own source); the index warms on first use and
+> self-heals. Shipped editor hooks + a shell wrapper; a packaged extension and
+> more languages are next. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Install
 
@@ -93,7 +93,7 @@ lib/iriq/corpus.rb:431  method corpus_token · Iriq::Corpus
 
 ## Ranking
 
-Symbols come from Tree-sitter (Ruby first; the core is language-agnostic). A
+Symbols come from Tree-sitter (Ruby and Rust; the core is language-agnostic). A
 query is matched and scored by an additive, explainable sum of signals:
 
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence

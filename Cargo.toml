@@ -1,6 +1,6 @@
 [package]
 name = "rq"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 description = "Reference Query — find the code you're looking for."
 license = "MIT"
@@ -22,3 +22,4 @@ ignore = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tree-sitter = "0.25"
 tree-sitter-ruby = "0.23"
+tree-sitter-rust = "0.24"

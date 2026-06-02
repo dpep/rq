@@ -89,7 +89,12 @@ pub fn score(
     } else {
         // no name match: a path hit only surfaces a file's primary definitions
         match path_match {
-            Some(ps) if matches!(cand.kind.as_str(), "class" | "module") => {
+            Some(ps)
+                if matches!(
+                    cand.kind.as_str(),
+                    "class" | "module" | "struct" | "enum" | "trait"
+                ) =>
+            {
                 features.push(Feature {
                     name: "path",
                     value: (ps * 0.6).min(300.0),
@@ -100,9 +105,10 @@ pub fn score(
     }
 
     // Kind weight — definitions you navigate to most sit slightly higher.
+    // Top-level types rank alongside classes; methods/functions stay neutral.
     let kind = match cand.kind.as_str() {
-        "class" => 15.0,
-        "module" => 12.0,
+        "class" | "struct" | "trait" => 15.0,
+        "module" | "enum" => 12.0,
         _ => 0.0,
     };
     if kind != 0.0 {

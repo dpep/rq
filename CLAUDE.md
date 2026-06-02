@@ -14,7 +14,11 @@ product vision, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and
 - **Navigation, not search.** Fewer, better, ranked results beat exhaustive
   ones. When a change trades relevance for completeness, it's probably wrong.
 - **The core is language-agnostic.** No Ruby-specific (or any-language)
-  assumption leaks out of `src/lang/`. Languages plug in via `LanguagePlugin`.
+  assumption leaks out of `src/lang/` into `index`/`search`/scoring. Languages
+  plug in via `LanguagePlugin`. The shared *model* may grow to fit a language —
+  e.g. Rust added `struct`/`enum`/`trait` to `core::Kind` — but that's
+  generalizing the vocabulary all languages share, not a one-off. Prefer
+  generalizing over a special case; change `core/` when it genuinely earns it.
 - **Results stream.** The API is incremental from the start — sub-50 ms first
   answer, then progressive improvement. Don't add synchronous "collect
   everything" paths.
@@ -54,6 +58,7 @@ rq/
     search/      ← staged pipeline, scorer, --explain
     lang/        ← Tree-sitter plugins
       ruby/      ← first plugin
+      rust/      ← second language; rq dogfoods on its own source
     events/      ← interaction capture + async rollup
     adapters/    ← editor event ingestion (thin)
   docs/          ← ARCHITECTURE.md, ROADMAP.md
@@ -105,10 +110,20 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
 2. Implement `LanguagePlugin` in `src/lang/<lang>/`: `extensions()` +
    `extract(source) -> Vec<Symbol>`.
 3. Register it in the extension→plugin registry.
-4. Add a fixture (source + expected `Symbol`s) under `tests/fixtures/<lang>/`.
+4. Add a fixture (source + expected `Symbol`s) under `tests/fixtures/<lang>/`,
+   and assert on *ordering* end-to-end (see `tests/rust_fixture.rs`).
 
-No change to `core/`, `index/`, or `search/` should be needed — if one is, the
-abstraction leaked and the design doc needs revisiting.
+`index/` and `search/` should not need to change — if they do, a language
+specific leaked and the design doc needs revisiting. The exception is the shared
+`core::Kind` vocabulary: a language may add a kind it genuinely needs (Rust
+added `struct`/`enum`/`trait`), which also touches the kind-keyed spots in
+`search/score.rs` (weight + the path-only "primary definition" gate) and the
+`--kind` canonicalizer in `cli/`. That's generalizing the model, not a leak —
+prefer it over a one-off, and keep the new kind language-neutral.
+
+**Dogfooding.** Rust is the dogfood language: `make dogfood Q=<query>` fully
+indexes this repo into a throwaway DB and runs a query, so you can feel the
+ranking on real Rust. Use it to catch quality regressions a unit test wouldn't.
 
 ## Schema changes
 

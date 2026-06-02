@@ -7,6 +7,7 @@
 use crate::core::Symbol;
 
 pub mod ruby;
+pub mod rust;
 
 /// Extracts definitions from a single source file.
 pub trait LanguagePlugin {
@@ -20,7 +21,7 @@ pub trait LanguagePlugin {
 
 /// The registered language plugins. Adding a language is one line here.
 pub fn registry() -> Vec<Box<dyn LanguagePlugin>> {
-    vec![Box::new(ruby::Ruby)]
+    vec![Box::new(ruby::Ruby), Box::new(rust::Rust)]
 }
 
 /// The plugin handling files with the given extension (without the dot), if any.
@@ -35,8 +36,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ruby_is_registered_for_rb() {
+    fn languages_are_registered_by_extension() {
         assert!(plugin_for_extension("rb").is_some());
+        assert!(plugin_for_extension("rs").is_some());
         assert!(plugin_for_extension("py").is_none());
     }
 }

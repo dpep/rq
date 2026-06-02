@@ -4,14 +4,21 @@ use std::fmt;
 
 /// The kind of definition a [`Symbol`] represents.
 ///
-/// Intentionally small: the MVP indexes *definitions only*. Call graphs,
-/// references, and inheritance are explicit non-goals (see `docs/ROADMAP.md`).
+/// A small, *language-agnostic* vocabulary of definition kinds — the shared
+/// model every plugin maps onto, deliberately generalized rather than per
+/// language (Rust's `struct`/`enum`/`trait` sit beside Ruby's `class`/`module`).
+/// It covers *definitions only*: call graphs, references, and inheritance are
+/// explicit non-goals (see `docs/ROADMAP.md`). Add a variant when a language
+/// needs a kind the model can't yet express, not a language-specific one-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     Class,
     Module,
     Method,
     Function,
+    Struct,
+    Enum,
+    Trait,
 }
 
 impl Kind {
@@ -22,6 +29,9 @@ impl Kind {
             Kind::Module => "module",
             Kind::Method => "method",
             Kind::Function => "function",
+            Kind::Struct => "struct",
+            Kind::Enum => "enum",
+            Kind::Trait => "trait",
         }
     }
 }
@@ -62,5 +72,8 @@ mod tests {
         assert_eq!(Kind::Module.to_string(), "module");
         assert_eq!(Kind::Method.as_str(), "method");
         assert_eq!(Kind::Function.as_str(), "function");
+        assert_eq!(Kind::Struct.as_str(), "struct");
+        assert_eq!(Kind::Enum.as_str(), "enum");
+        assert_eq!(Kind::Trait.as_str(), "trait");
     }
 }

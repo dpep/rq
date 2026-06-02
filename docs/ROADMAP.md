@@ -117,8 +117,13 @@ signal slots into the scorer without threading new parameters.
 
 ## Later — more languages
 
-Each is a new `lang/` plugin implementing `LanguagePlugin`; no core change.
+Each is a new `lang/` plugin implementing `LanguagePlugin`. The plugin stays
+self-contained; the only shared change a language may need is extending the
+`core::Kind` vocabulary (Rust added `struct`/`enum`/`trait`) — generalizing the
+model, not leaking a language into `index`/`search`/scoring.
 
+- [x] Rust — `lang/rust/` (`fn`/`struct`/`enum`/`trait`/`mod`, impl & trait
+      methods). The dogfood language: rq indexes its own source (`make dogfood`)
 - [ ] Go
 - [ ] TypeScript
 - [ ] Python
