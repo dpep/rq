@@ -114,9 +114,16 @@ never blocks the first answer: it indexes the files you're changing on this
 branch first, answers, then keeps warming a little per query until coverage is
 complete. Results also self-heal: the files behind the top hits are revalidated
 each search, so edited files are re-read and deleted ones drop out, and the warm
-pass picks up added/changed/removed files as it sweeps. Outside a git repository
-rq falls back to a live scan, so it answers even at zero coverage. The index is
-a SQLite file at `$RQ_DB` (default `~/.local/share/rq/rq.db`).
+pass picks up added/changed/removed files as it sweeps. Indexing parses files in
+parallel and writes them in one batched transaction, and a search of an already-
+indexed repo does no `git` subprocess work for identity or staleness.
+
+A git work tree is auto-discovered (the first query warms it). A non-git
+directory isn't walked on a stray query, but you can index one explicitly with
+`rq --index <dir>` — it's then tracked like any repo (current-repo boost,
+self-healing) under a `local:<path>` identity. Otherwise rq falls back to a live
+scan, so it still answers at zero coverage. The index is a SQLite file at
+`$RQ_DB` (default `~/.local/share/rq/rq.db`).
 
 ## Learning from what you pick
 

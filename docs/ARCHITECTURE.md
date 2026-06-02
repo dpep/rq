@@ -203,20 +203,34 @@ Decisions worth calling out:
 Indexing is **decoupled** from search — a background worker parses and writes;
 search only reads.
 
-- **Incremental** — compare `mtime` / `content_hash`; skip unchanged files (a
-  cheap `mtime` match short-circuits before any read). The walker respects
-  `.gitignore`.
-- **Opportunistic + time-bounded** (`index::index_budgeted`) — the first query in
-  a git repo warms the index, but never blocks on a full walk of a large repo: a
-  small inline budget indexes the active (branch) files first and answers, then
-  the deferred pass warms more per query until a full sweep marks coverage
-  `complete`. A completed sweep also reconciles deletions and captures commit
-  times. Explicit `rq --index` stays a full, unbounded walk.
+- **One core, two entry points** — explicit (`index_under`, unbounded) and
+  opportunistic (`index_budgeted`, time-bounded) both call `run_index`, which
+  differs only by parameters (active files, subtrees, deadline): collect
+  candidates serially → parse the changed/new ones → write a batch.
+- **Incremental** — a cheap `mtime` match short-circuits before any read; the
+  content `hash` then guards the write. The walker respects `.gitignore`.
+- **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
+  fans out across CPUs; the parsed files are written in **one** transaction (one
+  `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.
+- **Opportunistic + time-bounded** (`index_budgeted`) — the first query warms the
+  index without blocking on a full walk: a small inline budget indexes the active
+  (branch) files first and answers, then the deferred pass warms more per query
+  until a full sweep marks coverage `complete` (reconciling deletions + capturing
+  commit times). Explicit `rq --index` is the same path, unbounded.
+- **Discovery vs tracking** — a *git work tree* is auto-discovered (a stray query
+  may warm it); a *non-git* dir is only indexed when asked (`rq --index`), after
+  which it's **tracked** (has coverage) and treated like any repo. Git-ness gates
+  auto-discovery and branch-awareness; tracking gates the current-repo boost and
+  self-healing warm.
 - **Prioritized** — active (branch) files first, so the working set is indexed
   and kept fresh ahead of the rest of the repo.
 - **Coverage-aware** — every walk updates `coverage` (`warming` until a full
   sweep completes, then `complete`; a deliberate `--index --path` subset is
   `partial` and never auto-warmed over).
+- **Git off the hot path** — `is_git_repo` is native (walk up for `.git`),
+  identity is cached by checkout root, and the `git log` for commit-time recency
+  runs only when a sweep actually (re)indexed something — so a search of a clean,
+  indexed repo forks no `git` at all.
 - **Language-isolated** — the indexer is blind to language; plugins emit the
   common symbol model.
 
