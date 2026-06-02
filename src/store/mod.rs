@@ -57,6 +57,17 @@ pub struct Store {
     conn: Connection,
 }
 
+/// A parsed file ready to persist — the unit the indexer produces (in parallel)
+/// and [`Store::replace_files`] writes in one batched transaction.
+#[derive(Debug, Clone)]
+pub struct FileSymbols {
+    pub path: String,
+    pub language: String,
+    pub mtime: Option<i64>,
+    pub content_hash: String,
+    pub symbols: Vec<Symbol>,
+}
+
 /// One row of `rq status` output — the current indexed totals for a repo (not
 /// any single run's incremental counts).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,6 +231,78 @@ impl Store {
             }
         }
         tx.commit()
+    }
+
+    /// Write many parsed files in a single transaction — one `fsync` for the
+    /// batch instead of one per file. A file whose content hash already matches
+    /// the index is skipped (not rewritten). Returns `(files_written,
+    /// symbols_written)`; files skipped as unchanged don't count.
+    pub fn replace_files(
+        &mut self,
+        repository_id: i64,
+        files: &[FileSymbols],
+    ) -> Result<(usize, usize)> {
+        let now = now_unix();
+        let mut files_written = 0;
+        let mut symbols_written = 0;
+        let tx = self.conn.transaction()?;
+        {
+            let mut upsert = tx.prepare(
+                "INSERT INTO files (repository_id, path, language, mtime, content_hash, indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(repository_id, path) DO UPDATE SET
+                   language = excluded.language,
+                   mtime = excluded.mtime,
+                   content_hash = excluded.content_hash,
+                   indexed_at = excluded.indexed_at
+                 RETURNING id",
+            )?;
+            let mut current = tx
+                .prepare("SELECT content_hash FROM files WHERE repository_id = ?1 AND path = ?2")?;
+            let mut clear = tx.prepare("DELETE FROM symbols WHERE file_id = ?1")?;
+            let mut insert = tx.prepare(
+                "INSERT INTO symbols
+                   (repository_id, file_id, name, name_lower, kind, language, line, parent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for f in files {
+                // content unchanged (e.g. mtime moved but bytes didn't): skip
+                let stored: Option<String> = current
+                    .query_row(params![repository_id, f.path], |r| r.get(0))
+                    .optional()?;
+                if stored.as_deref() == Some(f.content_hash.as_str()) {
+                    continue;
+                }
+                let file_id: i64 = upsert.query_row(
+                    params![
+                        repository_id,
+                        f.path,
+                        f.language,
+                        f.mtime,
+                        f.content_hash,
+                        now
+                    ],
+                    |r| r.get(0),
+                )?;
+                clear.execute(params![file_id])?;
+                for s in &f.symbols {
+                    insert.execute(params![
+                        repository_id,
+                        file_id,
+                        s.name,
+                        s.name.to_lowercase(),
+                        s.kind.as_str(),
+                        s.language,
+                        s.line,
+                        s.parent,
+                    ])?;
+                }
+                files_written += 1;
+                symbols_written += f.symbols.len();
+            }
+        }
+        tx.commit()?;
+        Ok((files_written, symbols_written))
     }
 
     /// Record indexing coverage for a repository (scope `full`).

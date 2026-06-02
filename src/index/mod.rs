@@ -32,14 +32,47 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
 }
 
 /// Index `root`, or — when `subdirs` is non-empty — only those repo-relative
-/// subtrees of it (a partial index of the repo). Paths stay repo-relative and
-/// the identity is still the repo's, so a subset slots into the same index;
-/// coverage is marked `partial` so a later search won't silently re-index the
-/// whole repo over your deliberate subset.
+/// subtrees of it (a partial index of the repo). Unbounded: an explicit index
+/// is thorough. A whole-repo index also reconciles deletions; a deliberate
+/// subset is marked `partial` so a later search won't auto-warm over it.
 pub fn index_under(
     store: &mut Store,
     root: &Path,
     subdirs: &[String],
+) -> Result<Stats, Box<dyn std::error::Error>> {
+    run_index(store, root, &[], subdirs, None)
+}
+
+/// Opportunistic, time-bounded indexing — warm the index a little per call so no
+/// single query blocks on a full walk of a large repo. `active` (branch) files
+/// are parsed first and ignore the budget (the working set stays fresh); the
+/// rest of the walk honors `budget`. A sweep that finishes within budget marks
+/// coverage `complete` (and reconciles deletions), otherwise `warming`.
+pub fn index_budgeted(
+    store: &mut Store,
+    root: &Path,
+    active: &[String],
+    budget: Duration,
+) -> Result<Stats, Box<dyn std::error::Error>> {
+    run_index(store, root, active, &[], Some(Instant::now() + budget))
+}
+
+/// The shared indexing core behind both the explicit (`index_under`) and
+/// opportunistic (`index_budgeted`) paths. Collect candidates serially (cheap,
+/// mtime-skipping unchanged files into `seen` for deletion reconcile), parse the
+/// changed/new ones in parallel, then write them in one batched transaction.
+///
+/// `active` files are parsed first and ignore `deadline` (the working set);
+/// `subdirs` (empty = whole repo) scope the walk; `deadline` bounds it
+/// (`None` = unbounded). A whole-repo sweep that finishes within the deadline
+/// reconciles deletions and is marked `complete`; a bounded sweep cut short is
+/// `warming`; a deliberate subtree is `partial` (never auto-warmed over).
+fn run_index(
+    store: &mut Store,
+    root: &Path,
+    active: &[String],
+    subdirs: &[String],
+    deadline: Option<Instant>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -47,53 +80,89 @@ pub fn index_under(
     let root_display = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
 
-    // walk the whole repo, or just the requested subtrees — paths are always
-    // taken relative to `root` so they're repo-relative either way
+    let stored = store.file_mtimes(repo_id)?;
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // active (branch) files first: always parsed, so the working set stays fresh
+    // even when a tight budget cuts the walk short
+    let mut active_to_parse: Vec<std::path::PathBuf> = Vec::new();
+    for rel in active {
+        note_candidate(
+            root,
+            &root.join(rel),
+            &stored,
+            &mut seen,
+            &mut active_to_parse,
+        );
+    }
+
+    // walk the whole repo, or just the requested subtrees — paths stay relative
+    // to `root` so they're repo-relative either way
     let walk_roots: Vec<std::path::PathBuf> = if subdirs.is_empty() {
         vec![root.to_path_buf()]
     } else {
         subdirs.iter().map(|s| root.join(s)).collect()
     };
-
-    let mut stats = Stats::default();
-    for walk_root in &walk_roots {
+    let mut walk_to_parse: Vec<std::path::PathBuf> = Vec::new();
+    let mut completed = true;
+    'walk: for walk_root in &walk_roots {
         for result in WalkBuilder::new(walk_root).build() {
+            if let Some(d) = deadline
+                && Instant::now() >= d
+            {
+                completed = false;
+                break 'walk;
+            }
             let Ok(entry) = result else { continue };
-            let Some((rel, source, plugin)) = source_for(&entry, root) else {
-                continue;
-            };
-            stats.files_seen += 1;
-
-            let hash = content_hash(&source);
-            if store.file_unchanged(repo_id, &rel, &hash)? {
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
                 continue;
             }
-
-            let symbols = plugin.extract(&rel, &source);
-            let mtime = file_mtime(entry.path());
-            let language = symbols
-                .first()
-                .map(|s| s.language.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            store.replace_file_symbols(repo_id, &rel, &language, mtime, &hash, &symbols)?;
-            stats.files_indexed += 1;
-            stats.symbols += symbols.len();
+            note_candidate(root, entry.path(), &stored, &mut seen, &mut walk_to_parse);
         }
     }
 
-    // Phase 4: capture per-file git last-commit times for the recency signal.
-    // One git call per index (not per search); best-effort.
-    if is_git_repo(root) {
+    // parse in parallel (the expensive, CPU-bound step), then write in one
+    // batched transaction
+    let (active_parsed, _) = parse_files(root, &active_to_parse, None);
+    let (walk_parsed, parsed_all) = parse_files(root, &walk_to_parse, deadline);
+    if !parsed_all {
+        completed = false;
+    }
+    let mut parsed = active_parsed;
+    parsed.extend(walk_parsed);
+    let (files_indexed, symbols) = store.replace_files(repo_id, &parsed)?;
+    let stats = Stats {
+        files_seen: seen.len(),
+        files_indexed,
+        symbols,
+    };
+
+    let whole_repo = subdirs.is_empty();
+    // a finished whole-repo sweep saw every live file → anything still indexed
+    // (but not seen) was deleted on disk
+    if completed && whole_repo {
+        for path in stored.keys() {
+            if !seen.contains(path) {
+                store.forget_file(repo_id, path)?;
+            }
+        }
+    }
+    // commit times feed the recency signal; the `git log` is relatively pricey,
+    // so only when this run actually (re)indexed something — a clean re-sweep
+    // pays nothing — and we're in a git work tree
+    if stats.files_indexed > 0 && is_git_repo(root) {
         let times = git_commit_times(root, 1000);
         if !times.is_empty() {
             let _ = store.set_file_git_ts(repo_id, &times);
         }
     }
 
-    let status = if subdirs.is_empty() {
+    let status = if !whole_repo {
+        "partial"
+    } else if completed {
         "complete"
     } else {
-        "partial"
+        "warming"
     };
     store.set_coverage(
         repo_id,
@@ -104,149 +173,125 @@ pub fn index_under(
     Ok(stats)
 }
 
-/// Opportunistic, time-bounded indexing — warm the index a little per call so
-/// no single query blocks on a full walk of a large repo.
-///
-/// Indexes the `active` (branch) files first — what you're most likely working
-/// on, so they stay fresh — then walks the rest until `budget` elapses,
-/// skipping files whose mtime is unchanged with a cheap `stat` (no read). Marks
-/// coverage `complete` when a full sweep finishes within budget (and then
-/// reconciles deletions + captures commit times), otherwise `warming`. Each
-/// call resumes the warming from a clean walk; unchanged files are near-free, so
-/// repeated calls converge cheaply and pick up new/changed files as they appear.
-pub fn index_budgeted(
-    store: &mut Store,
-    root: &Path,
-    active: &[String],
-    budget: Duration,
-) -> Result<Stats, Box<dyn std::error::Error>> {
-    let deadline = Instant::now() + budget;
-    let identity = detect_identity(root);
-    let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
-    let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
-    let root_display = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
-
-    let stored = store.file_mtimes(repo_id)?;
-    let mut stats = Stats::default();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    // active files first: they're the working set, so keep them fresh even if the
-    // budget cuts the walk short
-    for rel in active {
-        index_file(
-            store,
-            repo_id,
-            root,
-            &root.join(rel),
-            &stored,
-            &mut stats,
-            &mut seen,
-        )?;
-    }
-
-    let mut completed = true;
-    for result in WalkBuilder::new(root).build() {
-        if Instant::now() >= deadline {
-            completed = false;
-            break;
-        }
-        let Ok(entry) = result else { continue };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        index_file(
-            store,
-            repo_id,
-            root,
-            entry.path(),
-            &stored,
-            &mut stats,
-            &mut seen,
-        )?;
-    }
-
-    if completed {
-        // a full sweep saw every live file: anything still in the index is gone
-        for path in stored.keys() {
-            if !seen.contains(path) {
-                store.forget_file(repo_id, path)?;
-            }
-        }
-        // commit times feed the recency signal. Only worth the (relatively
-        // expensive) `git log` when this sweep actually (re)indexed something —
-        // a clean, already-complete repo re-sweeps every query and must not pay
-        // a git log each time. New/changed files (files_indexed > 0) refresh it.
-        if stats.files_indexed > 0 && is_git_repo(root) {
-            let times = git_commit_times(root, 1000);
-            if !times.is_empty() {
-                let _ = store.set_file_git_ts(repo_id, &times);
-            }
-        }
-    }
-
-    let status = if completed { "complete" } else { "warming" };
-    let (files, _) = store.repo_totals(repo_id).unwrap_or((0, 0));
-    store.set_coverage(repo_id, files, stats.files_indexed as i64, status)?;
-    Ok(stats)
-}
-
-/// Index a single file into the store, skipping it when unchanged. The shared
-/// step behind both the active-files pass and the walk in [`index_budgeted`]:
-/// a cheap mtime match short-circuits before any read; otherwise the content
-/// hash guards against a needless re-extract. Records the path in `seen`.
-#[allow(clippy::too_many_arguments)]
-fn index_file(
-    store: &mut Store,
-    repo_id: i64,
+/// Note a walked file: record every source file in `seen` (for deletion
+/// reconcile), and queue it for parsing only when it's new or its mtime moved —
+/// a cheap `stat` skips unchanged files before any read. Non-source files are
+/// ignored entirely.
+fn note_candidate(
     root: &Path,
     file: &Path,
     stored: &HashMap<String, Option<i64>>,
-    stats: &mut Stats,
     seen: &mut HashSet<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    to_parse: &mut Vec<std::path::PathBuf>,
+) {
     let Some(ext) = file.extension().and_then(|e| e.to_str()) else {
-        return Ok(());
+        return;
     };
-    let Some(plugin) = lang::plugin_for_extension(ext) else {
-        return Ok(());
-    };
+    if lang::plugin_for_extension(ext).is_none() {
+        return;
+    }
     let rel = file
         .strip_prefix(root)
         .unwrap_or(file)
         .to_string_lossy()
         .into_owned();
-    if seen.contains(&rel) {
-        return Ok(());
+    if !seen.insert(rel.clone()) {
+        return; // already noted (e.g. an active file re-seen by the walk)
     }
-    stats.files_seen += 1;
-    let mtime = file_mtime(file);
-    // cheap path: same mtime as indexed → unchanged, skip without reading
-    if let Some(&stored_mtime) = stored.get(&rel)
-        && stored_mtime.is_some()
-        && stored_mtime == mtime
+    // unchanged by mtime → already indexed, no need to re-parse
+    if let Some(&Some(m)) = stored.get(&rel)
+        && Some(m) == file_mtime(file)
     {
-        seen.insert(rel);
-        return Ok(());
+        return;
     }
-    let Ok(source) = std::fs::read_to_string(file) else {
-        return Ok(());
-    };
-    let hash = content_hash(&source);
-    if store.file_unchanged(repo_id, &rel, &hash)? {
-        seen.insert(rel);
-        return Ok(());
-    }
+    to_parse.push(file.to_path_buf());
+}
+
+/// Read + parse one source file into a [`FileSymbols`], or `None` if it isn't a
+/// known language or can't be read. Touches no store — safe to run on a worker
+/// thread (each call builds its own Tree-sitter parser).
+fn parse_file(root: &Path, file: &Path) -> Option<crate::store::FileSymbols> {
+    let ext = file.extension().and_then(|e| e.to_str())?;
+    let plugin = lang::plugin_for_extension(ext)?;
+    let rel = file
+        .strip_prefix(root)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .into_owned();
+    let source = std::fs::read_to_string(file).ok()?;
+    let content_hash = content_hash(&source);
     let symbols = plugin.extract(&rel, &source);
     let language = symbols
         .first()
         .map(|s| s.language.clone())
         .unwrap_or_else(|| "unknown".to_string());
-    store.replace_file_symbols(repo_id, &rel, &language, mtime, &hash, &symbols)?;
-    stats.files_indexed += 1;
-    stats.symbols += symbols.len();
-    seen.insert(rel);
-    Ok(())
+    Some(crate::store::FileSymbols {
+        path: rel,
+        language,
+        mtime: file_mtime(file),
+        content_hash,
+        symbols,
+    })
+}
+
+/// Parse many files across the available CPUs, stopping early once `deadline`
+/// passes. Returns the parsed files and whether *all* of them were parsed (false
+/// if the deadline cut it short). Parsing is the expensive, CPU-bound step;
+/// writing stays serialized in one batched transaction by the caller.
+fn parse_files(
+    root: &Path,
+    paths: &[std::path::PathBuf],
+    deadline: Option<Instant>,
+) -> (Vec<crate::store::FileSymbols>, bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let past = |d: Option<Instant>| d.is_some_and(|d| Instant::now() >= d);
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(paths.len());
+
+    if workers <= 1 {
+        let mut out = Vec::new();
+        for p in paths {
+            if past(deadline) {
+                return (out, false);
+            }
+            if let Some(parsed) = parse_file(root, p) {
+                out.push(parsed);
+            }
+        }
+        return (out, true);
+    }
+
+    let bailed = AtomicBool::new(false);
+    let chunk_size = paths.len().div_ceil(workers);
+    let mut out = Vec::new();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = paths
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let bailed = &bailed;
+                s.spawn(move || {
+                    let mut local = Vec::new();
+                    for p in chunk {
+                        if past(deadline) {
+                            bailed.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                        if let Some(parsed) = parse_file(root, p) {
+                            local.push(parsed);
+                        }
+                    }
+                    local
+                })
+            })
+            .collect();
+        for h in handles {
+            out.extend(h.join().unwrap_or_default());
+        }
+    });
+    (out, !bailed.load(Ordering::Relaxed))
 }
 
 /// Map of repo-relative path → most-recent commit time (unix seconds), from the
