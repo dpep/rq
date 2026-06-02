@@ -1,5 +1,6 @@
 //! Command-line surface. Search is the default action: `rq <query>`.
 
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -256,13 +257,25 @@ fn cmd_search(
         };
     }
 
-    // Layer 4: a non-git directory isn't persisted, so fall back to a live scan
-    // there — search still answers at zero coverage.
+    // Layer 4 fallback when the index came up empty.
+    //   - non-git dir: never persisted, so scan it live in full (answers at 0%).
+    //   - git repo still warming: a bounded live scan, skipping already-indexed
+    //     files so the budget reaches ground the warm hasn't covered yet. Skipped
+    //     once coverage is `complete` (then empty really means no match) and on a
+    //     deliberate partial subset.
     if hits.is_empty()
-        && !cwd_is_git
         && let Some(cwd) = &cwd
     {
-        hits = crate::search::live_search(cwd, query, limit);
+        if !cwd_is_git {
+            hits = crate::search::live_search(cwd, query, limit, &HashSet::new(), None);
+        } else if !matches!(coverage.as_deref(), Some("complete") | Some("partial")) {
+            let indexed: HashSet<String> = current
+                .and_then(|id| store.file_mtimes(id).ok())
+                .map(|m| m.into_keys().collect())
+                .unwrap_or_default();
+            let deadline = Some(std::time::Instant::now() + LIVE_FALLBACK_BUDGET);
+            hits = crate::search::live_search(cwd, query, limit, &indexed, deadline);
+        }
     }
 
     // post-filters: keep only results under a --path dir and/or of a --kind,
@@ -378,6 +391,10 @@ const ANSWER_WARM_BUDGET: Duration = Duration::from_millis(500);
 /// Deferred warm budget, spent after results are printed: larger, to make real
 /// progress on coverage per query while keeping each invocation snappy.
 const DEFERRED_WARM_BUDGET: Duration = Duration::from_millis(250);
+
+/// Bound for the git-repo live-scan fallback (index empty, still warming): enough
+/// to surface a result the warm hasn't reached, without an unbounded walk.
+const LIVE_FALLBACK_BUDGET: Duration = Duration::from_millis(250);
 
 /// How many events to roll up per interaction. Bounded so the deferred pass
 /// after a command stays quick.

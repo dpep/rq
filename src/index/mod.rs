@@ -290,9 +290,34 @@ fn parse_git_log(text: &str) -> HashMap<String, i64> {
 /// This is search Layer 4's live scan — it lets `rq` answer even when a
 /// repository has never been indexed.
 pub fn scan_symbols(root: &Path) -> Vec<crate::core::Symbol> {
+    scan_symbols_budgeted(root, &HashSet::new(), None)
+}
+
+/// Like [`scan_symbols`], but bounded: stop once `deadline` passes, and skip any
+/// file whose repo-relative path is in `skip` (the already-indexed set). Used as
+/// a git-repo fallback — the budget then covers *un-indexed* ground rather than
+/// re-parsing what the warm pass already has, and stays bounded on a huge repo.
+pub fn scan_symbols_budgeted(
+    root: &Path,
+    skip: &HashSet<String>,
+    deadline: Option<Instant>,
+) -> Vec<crate::core::Symbol> {
     let mut out = Vec::new();
     for result in WalkBuilder::new(root).build() {
+        if let Some(d) = deadline
+            && Instant::now() >= d
+        {
+            break;
+        }
         let Ok(entry) = result else { continue };
+        // cheap skip before any read: an already-indexed file adds nothing here
+        if !skip.is_empty()
+            && entry.file_type().is_some_and(|t| t.is_file())
+            && let Ok(rel) = entry.path().strip_prefix(root)
+            && skip.contains(rel.to_string_lossy().as_ref())
+        {
+            continue;
+        }
         let Some((rel, source, plugin)) = source_for(&entry, root) else {
             continue;
         };

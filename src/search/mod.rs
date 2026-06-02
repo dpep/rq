@@ -11,7 +11,7 @@ pub use score::{Boosts, Feature, Scored, match_positions};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::store::{Store, SymbolRow};
 
@@ -176,9 +176,17 @@ fn now_unix() -> i64 {
 
 /// Layer 4: scan `root` live (no index required) and return ranked hits.
 /// Results are treated as the current repo, so the current-repo boost applies.
-pub fn live_search(root: &Path, query: &str, limit: usize) -> Vec<Hit> {
+/// `skip` names already-indexed files to ignore, and `deadline` bounds the scan
+/// — both empty/`None` for an unbounded scan of a never-indexed directory.
+pub fn live_search(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    skip: &HashSet<String>,
+    deadline: Option<Instant>,
+) -> Vec<Hit> {
     let identity = crate::index::detect_identity(root).to_string();
-    let mut hits: Vec<Hit> = crate::index::scan_symbols(root)
+    let mut hits: Vec<Hit> = crate::index::scan_symbols_budgeted(root, skip, deadline)
         .into_iter()
         .filter_map(|s| {
             let row = SymbolRow {
