@@ -333,6 +333,42 @@ fn explicitly_indexes_and_recognizes_a_non_git_directory() {
 }
 
 #[test]
+fn lang_filter_scopes_by_language() {
+    let (dir, db) = scratch("lang");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("widget.rs"), "pub struct Widget {}\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // both languages match "widget"
+    let (_, out) = rq(&db, &dir, &["widget", "--ndjson"]);
+    assert!(out.contains("\"language\":\"ruby\""), "ruby present: {out}");
+    assert!(out.contains("\"language\":\"rust\""), "rust present: {out}");
+
+    // -x rs keeps only rust
+    let (ok, out) = rq(&db, &dir, &["widget", "-x", "rs", "--ndjson"]);
+    assert!(ok, "lang search failed: {out}");
+    assert!(out.contains("\"language\":\"rust\""), "rust kept: {out}");
+    assert!(
+        !out.contains("\"language\":\"ruby\""),
+        "ruby filtered: {out}"
+    );
+
+    // -x r matches ruby + rust (the lazy shorthand) — both kept
+    let (_, out) = rq(&db, &dir, &["widget", "-x", "r", "--ndjson"]);
+    assert!(
+        out.contains("\"language\":\"ruby\"") && out.contains("\"language\":\"rust\""),
+        "both kept for -x r: {out}"
+    );
+
+    // -x py matches neither → no results
+    let (ok, out) = rq(&db, &dir, &["widget", "-x", "py", "--ndjson"]);
+    assert!(!ok, "no python here, should exit non-zero");
+    assert!(out.is_empty(), "expected no results: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

@@ -76,6 +76,7 @@ fn parent_dir(path: &str) -> Option<&str> {
 pub struct Hit {
     pub name: String,
     pub kind: String,
+    pub language: String,
     pub file: String,
     pub line: i64,
     pub parent: Option<String>,
@@ -250,6 +251,7 @@ fn rank_one(
     Some(Hit {
         name: c.name,
         kind: c.kind,
+        language: c.language,
         file: c.file,
         line: c.line,
         parent: c.parent,
@@ -333,6 +335,7 @@ mod tests {
         let mk = |name: &str, score: f64| Hit {
             name: name.into(),
             kind: "class".into(),
+            language: "ruby".into(),
             file: "a.rb".into(),
             line: 1,
             parent: None,

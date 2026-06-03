@@ -80,6 +80,11 @@ struct Cli {
     #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
     kind: Vec<String>,
 
+    /// Restrict to languages: ruby, rust, go, python (aliases: rb, rs, py, p;
+    /// `r` matches ruby+rust). Repeatable or comma-separated.
+    #[arg(short = 'x', long = "lang", value_name = "LANG", value_delimiter = ',')]
+    lang: Vec<String>,
+
     /// Index a repository (TARGET path, or the current directory).
     #[arg(long, conflicts_with_all = ["status", "record"])]
     index: bool,
@@ -135,6 +140,8 @@ pub fn run() -> ExitCode {
     let mut paths = cli.path.clone();
     paths.extend(cli.dirs.clone());
     let kinds: Vec<String> = cli.kind.iter().map(|k| canonical_kind(k)).collect();
+    // a language token can expand to several tags (`r` → ruby + rust)
+    let langs: Vec<String> = cli.lang.iter().flat_map(|x| canonical_langs(x)).collect();
     match cli.target {
         Some(query) => cmd_search(
             &query,
@@ -142,6 +149,7 @@ pub fn run() -> ExitCode {
             out,
             &paths,
             &kinds,
+            &langs,
             cli.limit,
             cli.no_record,
         ),
@@ -184,12 +192,13 @@ fn cmd_search(
     out: Output,
     paths: &[String],
     kinds: &[String],
+    langs: &[String],
     want: usize,
     no_record: bool,
 ) -> ExitCode {
-    // post-filters (--path, --kind) need headroom before the cutoff so a
+    // post-filters (--path, --kind, --lang) need headroom before the cutoff so a
     // filtered-in result isn't lost to the top-N truncation
-    let limit = if paths.is_empty() && kinds.is_empty() {
+    let limit = if paths.is_empty() && kinds.is_empty() && langs.is_empty() {
         want
     } else {
         (want * 20).max(PATH_HEADROOM)
@@ -289,15 +298,18 @@ fn cmd_search(
         }
     }
 
-    // post-filters: keep only results under a --path dir and/or of a --kind,
-    // then trim to the requested count.
+    // post-filters: keep only results under a --path dir, of a --kind, and/or in
+    // a --lang, then trim to the requested count.
     if !paths.is_empty() {
         hits.retain(|h| under_any(&h.file, paths));
     }
     if !kinds.is_empty() {
         hits.retain(|h| kinds.iter().any(|k| k == &h.kind));
     }
-    if !paths.is_empty() || !kinds.is_empty() {
+    if !langs.is_empty() {
+        hits.retain(|h| langs.iter().any(|l| l == &h.language));
+    }
+    if !paths.is_empty() || !kinds.is_empty() || !langs.is_empty() {
         hits.truncate(want);
     }
 
@@ -519,6 +531,21 @@ fn canonical_kind(s: &str) -> String {
         other => return other.to_string(),
     }
     .to_string()
+}
+
+/// Expand a `--lang` value (name or alias) to the language tag(s) it selects.
+/// `r` is deliberately both ruby and rust (cheap convenience, little downside).
+/// An unknown value passes through lowercased so it simply matches nothing.
+fn canonical_langs(s: &str) -> Vec<String> {
+    let tags: &[&str] = match s.to_ascii_lowercase().as_str() {
+        "rb" | "ruby" => &["ruby"],
+        "rs" | "rust" => &["rust"],
+        "go" | "golang" => &["go"],
+        "p" | "py" | "python" => &["python"],
+        "r" => &["ruby", "rust"],
+        other => return vec![other.to_string()],
+    };
+    tags.iter().map(|s| s.to_string()).collect()
 }
 
 /// The ANSI SGR code for highlighting matches, or `None` to disable color.
