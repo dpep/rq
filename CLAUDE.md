@@ -56,9 +56,9 @@ rq/
     store/       ← SQLite schema, migrations, queries (WAL)
     index/       ← walker, incremental indexer, coverage
     search/      ← staged pipeline, scorer, --explain
-    lang/        ← Tree-sitter plugins
+    lang/        ← Tree-sitter plugins (ruby, rust, go, python)
       ruby/      ← first plugin
-      rust/      ← second language; rq dogfoods on its own source
+      rust/      ← rq dogfoods on its own source
     events/      ← interaction capture + async rollup
     adapters/    ← editor event ingestion (thin)
   docs/          ← ARCHITECTURE.md, ROADMAP.md

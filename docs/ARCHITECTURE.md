@@ -73,9 +73,9 @@ src/
   store/      # SQLite schema, migrations, queries (WAL mode)
   index/      # walker, incremental indexer, coverage tracking
   search/     # staged pipeline, scorer, --explain
-  lang/       # Tree-sitter plugins
+  lang/       # Tree-sitter plugins: ruby, rust, go, python
     ruby/     # the first plugin
-    rust/     # second language; what rq dogfoods on its own source
+    rust/     # what rq dogfoods on its own source
   events/     # interaction capture + async rollup
   adapters/   # editor event ingestion (thin, decoupled)
 ```

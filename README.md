@@ -19,9 +19,9 @@ as immediate as `rg`, `fd`, and `fzf`.
 
 > **Status: early, working.** Ranking (exact/prefix, abbreviation-fuzzy, path,
 > current-repo, recency, and learned-from-your-picks signals) is functional for
-> Ruby and Rust (rq indexes its own source); the index warms on first use and
-> self-heals. Shipped editor hooks + a shell wrapper; a packaged extension and
-> more languages are next. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> Ruby, Rust, Go, and Python (rq indexes its own source); the index warms on
+> first use and self-heals. Shipped editor hooks + a shell wrapper; a packaged
+> extension and more languages are next. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Install
 
@@ -42,7 +42,8 @@ rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
-rq <query> -k/--kind KIND   # restrict to class|module|method|function (c/mod/m/f)
+rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait
+rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python (rb/rs/go/py; r=ruby+rust)
 rq <query> -l/--limit N     # cap the number of results (default 10)
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # index only a subtree (partial — for big monorepos)
@@ -53,10 +54,10 @@ rq --status                 # indexing coverage per known repository
 
 `-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
 surface for editors, scripts, and AI agents. Each result is an object with
-`name`, `kind`, `file`, `line`, `parent`, `repo`, `score`, the scoring
-`features`, and `signature` (the definition's source line, so you can judge a
-result without opening the file). Exit code is `0` when something matched,
-non-zero when nothing did.
+`name`, `kind`, `language`, `file`, `line`, `parent`, `repo`, `score`, the
+scoring `features`, and `signature` (the definition's source line, so you can
+judge a result without opening the file). Exit code is `0` when something
+matched, non-zero when nothing did.
 
 Reach for `rq` over `grep`/`rg` when you want **where a symbol is defined** —
 it returns the most likely definition first instead of every textual mention.
@@ -93,7 +94,8 @@ lib/iriq/corpus.rb:431  method corpus_token · Iriq::Corpus
 
 ## Ranking
 
-Symbols come from Tree-sitter (Ruby and Rust; the core is language-agnostic). A
+Symbols come from Tree-sitter (Ruby, Rust, Go, Python; the core is
+language-agnostic). A
 query is matched and scored by an additive, explainable sum of signals:
 
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence

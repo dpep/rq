@@ -124,9 +124,9 @@ model, not leaking a language into `index`/`search`/scoring.
 
 - [x] Rust — `lang/rust/` (`fn`/`struct`/`enum`/`trait`/`mod`, impl & trait
       methods). The dogfood language: rq indexes its own source (`make dogfood`)
-- [ ] Go
+- [x] Go — `lang/go/` (`func`/method, `struct`, `interface`→trait)
+- [x] Python — `lang/python/` (`class`, `def` free/method, decorator-aware)
 - [ ] TypeScript
-- [ ] Python
 - [ ] Java
 
 ## Shipped CLI affordances
@@ -134,7 +134,8 @@ model, not leaking a language into `index`/`search`/scoring.
 - `-j/--json`, `-J/--ndjson` — structured output for editors, scripts, agents;
   each result carries a `signature` (the definition's source line)
 - path filters — trailing positionals (rg-style `rq query dir…`) or `-p/--path`
-- `-k/--kind` — restrict to class/module/method/function (names or c/mod/m/f)
+- `-k/--kind` — restrict to kind: class/module/method/function/struct/enum/trait
+- `-x/--lang` — restrict to language: ruby/rust/go/python (aliases; `r`=ruby+rust)
 - `-l/--limit N` — cap the number of results
 - `--no-record` — search without recording a behavioral signal (for agents)
 - `-e/--explain` — per-result score breakdown
