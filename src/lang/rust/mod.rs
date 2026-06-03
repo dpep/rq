@@ -16,6 +16,10 @@ const LANGUAGE: &str = "rust";
 pub struct Rust;
 
 impl LanguagePlugin for Rust {
+    fn language(&self) -> &'static str {
+        LANGUAGE
+    }
+
     fn extensions(&self) -> &[&str] {
         &["rs"]
     }

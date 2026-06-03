@@ -13,6 +13,10 @@ const LANGUAGE: &str = "go";
 pub struct Go;
 
 impl LanguagePlugin for Go {
+    fn language(&self) -> &'static str {
+        LANGUAGE
+    }
+
     fn extensions(&self) -> &[&str] {
         &["go"]
     }

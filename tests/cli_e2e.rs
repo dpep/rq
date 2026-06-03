@@ -353,11 +353,19 @@ fn lang_filter_scopes_by_language() {
         "ruby filtered: {out}"
     );
 
-    // -x r matches ruby + rust (the lazy shorthand) — both kept
+    // -x r matches ruby + rust (prefix match) — both kept
     let (_, out) = rq(&db, &dir, &["widget", "-x", "r", "--ndjson"]);
     assert!(
         out.contains("\"language\":\"ruby\"") && out.contains("\"language\":\"rust\""),
         "both kept for -x r: {out}"
+    );
+
+    // spelled out keeps only that language
+    let (_, out) = rq(&db, &dir, &["widget", "-x", "ruby", "--ndjson"]);
+    assert!(out.contains("\"language\":\"ruby\""), "ruby kept: {out}");
+    assert!(
+        !out.contains("\"language\":\"rust\""),
+        "rust filtered: {out}"
     );
 
     // -x py matches neither → no results

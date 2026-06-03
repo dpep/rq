@@ -80,8 +80,9 @@ struct Cli {
     #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
     kind: Vec<String>,
 
-    /// Restrict to languages: ruby, rust, go, python (aliases: rb, rs, py, p;
-    /// `r` matches ruby+rust). Repeatable or comma-separated.
+    /// Restrict to languages: ruby, rust, go, python. Prefix-matched, so `r`
+    /// means ruby+rust and `p` means python; aliases rb, rs, golang. Repeatable
+    /// or comma-separated.
     #[arg(short = 'x', long = "lang", value_name = "LANG", value_delimiter = ',')]
     lang: Vec<String>,
 
@@ -533,19 +534,24 @@ fn canonical_kind(s: &str) -> String {
     .to_string()
 }
 
-/// Expand a `--lang` value (name or alias) to the language tag(s) it selects.
-/// `r` is deliberately both ruby and rust (cheap convenience, little downside).
-/// An unknown value passes through lowercased so it simply matches nothing.
+/// Expand a `--lang` value to the language tag(s) it selects: a **prefix** of any
+/// known language name (so `r` → ruby+rust, `p`/`py` → python, `g` → go), plus a
+/// few non-prefix aliases (`rb`→ruby, `rs`→rust, `golang`→go). An unknown value
+/// passes through lowercased so it simply matches nothing.
 fn canonical_langs(s: &str) -> Vec<String> {
-    let tags: &[&str] = match s.to_ascii_lowercase().as_str() {
-        "rb" | "ruby" => &["ruby"],
-        "rs" | "rust" => &["rust"],
-        "go" | "golang" => &["go"],
-        "p" | "py" | "python" => &["python"],
-        "r" => &["ruby", "rust"],
-        other => return vec![other.to_string()],
+    let t = s.to_ascii_lowercase();
+    let alias = match t.as_str() {
+        "rb" => Some("ruby"),
+        "rs" => Some("rust"),
+        "golang" => Some("go"),
+        _ => None,
     };
-    tags.iter().map(|s| s.to_string()).collect()
+    let matched: Vec<String> = crate::lang::languages()
+        .into_iter()
+        .filter(|lang| alias == Some(*lang) || lang.starts_with(&t))
+        .map(str::to_string)
+        .collect();
+    if matched.is_empty() { vec![t] } else { matched }
 }
 
 /// The ANSI SGR code for highlighting matches, or `None` to disable color.

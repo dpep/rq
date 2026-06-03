@@ -14,6 +14,10 @@ const LANGUAGE: &str = "ruby";
 pub struct Ruby;
 
 impl LanguagePlugin for Ruby {
+    fn language(&self) -> &'static str {
+        LANGUAGE
+    }
+
     fn extensions(&self) -> &[&str] {
         &["rb"]
     }

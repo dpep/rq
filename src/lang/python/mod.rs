@@ -12,6 +12,10 @@ const LANGUAGE: &str = "python";
 pub struct Python;
 
 impl LanguagePlugin for Python {
+    fn language(&self) -> &'static str {
+        LANGUAGE
+    }
+
     fn extensions(&self) -> &[&str] {
         &["py"]
     }
