@@ -6,6 +6,8 @@
 
 use crate::core::Symbol;
 
+pub mod go;
+pub mod python;
 pub mod ruby;
 pub mod rust;
 
@@ -21,7 +23,12 @@ pub trait LanguagePlugin {
 
 /// The registered language plugins. Adding a language is one line here.
 pub fn registry() -> Vec<Box<dyn LanguagePlugin>> {
-    vec![Box::new(ruby::Ruby), Box::new(rust::Rust)]
+    vec![
+        Box::new(ruby::Ruby),
+        Box::new(rust::Rust),
+        Box::new(go::Go),
+        Box::new(python::Python),
+    ]
 }
 
 /// The plugin handling files with the given extension (without the dot), if any.
@@ -37,8 +44,9 @@ mod tests {
 
     #[test]
     fn languages_are_registered_by_extension() {
-        assert!(plugin_for_extension("rb").is_some());
-        assert!(plugin_for_extension("rs").is_some());
-        assert!(plugin_for_extension("py").is_none());
+        for ext in ["rb", "rs", "go", "py"] {
+            assert!(plugin_for_extension(ext).is_some(), "{ext} should resolve");
+        }
+        assert!(plugin_for_extension("java").is_none());
     }
 }
