@@ -146,6 +146,11 @@ fn run_index(
                 store.forget_file(repo_id, path)?;
             }
         }
+        // record the commit the index now reflects, so a later search can detect
+        // an unchanged committed tree and skip re-walking a large repo
+        if let Some(head) = git_head(root) {
+            let _ = store.set_indexed_head(repo_id, &head);
+        }
     }
     // commit times feed the recency signal; the `git log` is relatively pricey,
     // so only when this run actually (re)indexed something — a clean re-sweep
@@ -422,6 +427,18 @@ pub fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
         .ancestors()
         .find(|a| a.join(".git").exists())
         .map(Path::to_path_buf)
+}
+
+/// The current HEAD commit sha, or `None` outside a git work tree.
+pub fn git_head(root: &Path) -> Option<String> {
+    git_output(root, &["rev-parse", "HEAD"])
+}
+
+/// Whether the work tree has uncommitted changes (tracked or untracked).
+/// `git status --porcelain` prints nothing when clean, so empty stdout (which
+/// `git_output` reports as `None`) means clean.
+pub fn is_dirty(root: &Path) -> bool {
+    git_output(root, &["status", "--porcelain"]).is_some()
 }
 
 /// Repo-relative files you're working on this branch: committed changes since

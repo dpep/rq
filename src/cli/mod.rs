@@ -382,11 +382,47 @@ fn cmd_search(
     // builds coverage on a large repo across queries and, on an already-complete
     // repo, picks up new/changed files (active ones first) and drops deleted ones
     // once a full sweep finishes — so the index tracks edits without a daemon.
-    if warming_ok && let Some(c) = &cwd {
+    //
+    // On a *large, complete* repo the per-search re-walk is the dominant cost;
+    // skip it when git confirms nothing changed since the index (HEAD identical
+    // and a clean work tree). Small repos always warm — the walk is cheaper than
+    // forking git for them — so they pay nothing for this check.
+    if warming_ok
+        && let Some(c) = &cwd
+        && !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
+    {
         let _ = crate::index::index_budgeted(&mut store, c, &active_paths, DEFERRED_WARM_BUDGET);
     }
 
     ExitCode::SUCCESS
+}
+
+/// Above this many indexed files, a complete repo checks git for changes before
+/// re-walking; below it the walk is cheap enough to just run.
+const WARM_SKIP_MIN_FILES: i64 = 2000;
+
+/// Whether a large, complete repo is provably unchanged since its last index —
+/// same HEAD and a clean work tree — so the deferred re-walk can be skipped.
+/// Conservative: any uncertainty (small repo, not complete, git hiccup) returns
+/// false, so we warm.
+fn repo_unchanged_since_index(
+    store: &Store,
+    cwd: &std::path::Path,
+    current: Option<i64>,
+    coverage: Option<&str>,
+) -> bool {
+    if coverage != Some("complete") {
+        return false;
+    }
+    let Some(id) = current else { return false };
+    let files = store.repo_totals(id).map(|(f, _)| f).unwrap_or(0);
+    if files <= WARM_SKIP_MIN_FILES {
+        return false;
+    }
+    let indexed_head = store.indexed_head(id).ok().flatten();
+    crate::index::git_head(cwd) == indexed_head
+        && indexed_head.is_some()
+        && !crate::index::is_dirty(cwd)
 }
 
 /// Inline warm budget on the search path. A *cap*, not a fixed delay:

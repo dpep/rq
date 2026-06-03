@@ -669,6 +669,34 @@ impl Store {
         Ok(n)
     }
 
+    /// The git HEAD sha recorded at the last complete index of a repo, if any —
+    /// used to detect that the committed tree is unchanged since indexing.
+    pub fn indexed_head(&self, repository_id: i64) -> Result<Option<String>> {
+        self.meta_get(&format!("head:{repository_id}"))
+    }
+
+    /// Record the git HEAD sha at a complete index.
+    pub fn set_indexed_head(&self, repository_id: i64, head: &str) -> Result<()> {
+        self.meta_set(&format!("head:{repository_id}"), head)
+    }
+
+    fn meta_get(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()
+    }
+
+    fn meta_set(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     fn meta_get_i64(&self, key: &str) -> Result<Option<i64>> {
         let raw: Option<String> = self
             .conn
