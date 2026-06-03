@@ -43,3 +43,15 @@ fn obvious_queries_land_their_definition_first() {
     assert_eq!(fs.name, "FileSymbols");
     assert_eq!(fs.kind, "struct");
 }
+
+#[test]
+fn fuzzy_abbreviations_resolve_to_their_definition() {
+    let store = indexed_src();
+
+    // abbreviations that skip across word boundaries (camelCase humps and
+    // snake_case underscores) land their definition — no exact/prefix match
+    // exists for these, so they exercise the fuzzy tail end to end.
+    assert_eq!(top(&store, "idxbudg").name, "index_budgeted"); // index_budgeted
+    assert_eq!(top(&store, "filesym").name, "FileSymbols"); // FileSymbols (S hump)
+    assert_eq!(top(&store, "langplug").name, "LanguagePlugin"); // LanguagePlugin
+}
