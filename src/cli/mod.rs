@@ -31,7 +31,8 @@ rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
-rq perform -k method      restrict to a symbol kind (c/mod/m/f)\n  \
+rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
+rq thing -x rust          restrict to a language (ruby/rust/go/python)\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n\n\
 RECORDING (editor/shell hook):\n  \
