@@ -93,7 +93,12 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Store> {
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        // WAL lets one writer and many readers coexist; busy_timeout makes a
+        // second writer (e.g. two `rq` processes in two terminals, both warming)
+        // wait briefly instead of erroring with "database is locked".
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;",
+        )?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version == 0 {
             // fresh database — SCHEMA is already at the current version
