@@ -89,12 +89,16 @@ impl Ctx<'_> {
                     }
                 }
                 "mod_item" => {
-                    if let Some(name) = self.field_text(child, "name") {
+                    // Only a module *with a body* is a definition worth surfacing.
+                    // A bare `mod x;` is just a re-export pointer to another file —
+                    // indexing it competes with (and can outrank) the real
+                    // definitions it forwards to.
+                    if child.child_by_field_name("body").is_some()
+                        && let Some(name) = self.field_text(child, "name")
+                    {
                         out.push(self.symbol(&name, Kind::Module, child, parent));
                         let qualified = qualify(parent, &name);
                         self.walk(child, Some(&qualified), false, out);
-                    } else {
-                        self.walk(child, parent, in_impl, out);
                     }
                 }
                 "impl_item" => {
@@ -236,6 +240,19 @@ mod outer {
         assert_eq!(find(&syms, "Store").parent.as_deref(), Some("outer"));
         // generic args and the module path resolve to the bare type name
         assert_eq!(find(&syms, "get").parent.as_deref(), Some("outer::Store"));
+    }
+
+    #[test]
+    fn bare_module_declarations_are_not_indexed() {
+        // `mod foo;` is a re-export pointer, not a definition; only a module with
+        // a body is surfaced.
+        let syms = extract("mod search;\nmod handler { pub fn run() {} }\n");
+        assert!(
+            !syms.iter().any(|s| s.name == "search"),
+            "bare `mod search;` should be skipped: {syms:?}"
+        );
+        assert_eq!(find(&syms, "handler").kind, Kind::Module);
+        assert_eq!(find(&syms, "run").kind, Kind::Function);
     }
 
     #[test]
