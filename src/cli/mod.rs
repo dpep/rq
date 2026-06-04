@@ -245,7 +245,7 @@ fn cmd_search(
             &mut store,
             c,
             &active_paths,
-            ANSWER_WARM_BUDGET,
+            answer_warm_budget(),
             Some(query),
         );
     }
@@ -274,7 +274,7 @@ fn cmd_search(
             .file_mtimes(id)
             .map(|m| m.into_keys().collect())
             .unwrap_or_default();
-        let deadline = std::time::Instant::now() + LIVE_FALLBACK_BUDGET;
+        let deadline = std::time::Instant::now() + live_fallback_budget();
         let scanned = crate::index::scan_for_query(c, query, &indexed, Some(deadline));
         if !scanned.is_empty() {
             let _ = store.replace_files(id, &scanned);
@@ -326,7 +326,7 @@ fn cmd_search(
                     &mut store,
                     cwd,
                     &active_paths,
-                    LIVE_FALLBACK_BUDGET,
+                    live_fallback_budget(),
                     Some(query),
                 );
                 hits = crate::search::search(&store, query, current, &active, limit)
@@ -453,7 +453,7 @@ fn cmd_search(
             &mut store,
             c,
             &active_paths,
-            DEFERRED_WARM_BUDGET,
+            deferred_warm_budget(),
             Some(query),
         );
     }
@@ -497,15 +497,32 @@ fn repo_unchanged_since_index(
 /// live-scan fallback). 500 ms is a one-time cold-cache cost, trivial next to
 /// scanning a large tree from scratch; the deferred pass and later queries fill
 /// in the rest.
-const ANSWER_WARM_BUDGET: Duration = Duration::from_millis(500);
+fn answer_warm_budget() -> Duration {
+    env_budget("RQ_ANSWER_BUDGET_MS", 500)
+}
 
 /// Deferred warm budget, spent after results are printed: larger, to make real
 /// progress on coverage per query while keeping each invocation snappy.
-const DEFERRED_WARM_BUDGET: Duration = Duration::from_millis(250);
+fn deferred_warm_budget() -> Duration {
+    env_budget("RQ_DEFERRED_BUDGET_MS", 250)
+}
 
 /// Bound for the git-repo live-scan fallback (index empty, still warming): enough
 /// to surface a result the warm hasn't reached, without an unbounded walk.
-const LIVE_FALLBACK_BUDGET: Duration = Duration::from_millis(250);
+fn live_fallback_budget() -> Duration {
+    env_budget("RQ_FALLBACK_BUDGET_MS", 250)
+}
+
+/// Read a budget (milliseconds) from an env var, else the default. The env knobs
+/// exist mainly for testing — a tiny budget reproduces large-repo warming
+/// behavior on a small repo.
+fn env_budget(var: &str, default_ms: u64) -> Duration {
+    let ms = std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default_ms);
+    Duration::from_millis(ms)
+}
 
 /// How many events to roll up per interaction. Bounded so the deferred pass
 /// after a command stays quick.

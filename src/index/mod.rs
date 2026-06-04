@@ -57,15 +57,15 @@ pub fn index_budgeted(
     budget: Duration,
     query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(
-        store,
-        root,
-        active,
-        &[],
-        Some(Instant::now() + budget),
-        query,
-    )
+    run_index(store, root, active, &[], Some(budget), query)
 }
+
+/// Max candidates a single *bounded* (warming) pass collects before it stops
+/// walking. Collection is cheap (stat-only), but on a huge repo it must not run
+/// the whole tree (memory + latency) nor consume the parse budget — so we cap it
+/// and let the deadline govern parsing instead. An explicit `--index` (unbounded)
+/// ignores this and walks everything.
+const COLLECT_CAP: usize = 50_000;
 
 /// The shared indexing core behind both the explicit (`index_under`) and
 /// opportunistic (`index_budgeted`) paths. Collect candidates serially (cheap,
@@ -82,7 +82,7 @@ fn run_index(
     root: &Path,
     active: &[String],
     subdirs: &[String],
-    deadline: Option<Instant>,
+    budget: Option<Duration>,
     query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
@@ -114,21 +114,24 @@ fn run_index(
     } else {
         subdirs.iter().map(|s| root.join(s)).collect()
     };
+    // Collect candidates with a *count* cap (bounded passes only) — never a time
+    // bound. Collection is cheap (stat-only); time-bounding it here is what
+    // starved parsing on a huge repo (the walk ate the whole budget, leaving zero
+    // to parse). The deadline below governs parsing instead.
+    let cap = budget.map(|_| COLLECT_CAP);
     let mut walk_to_parse: Vec<std::path::PathBuf> = Vec::new();
-    let mut completed = true;
+    let mut walk_finished = true;
     'walk: for walk_root in &walk_roots {
         for result in WalkBuilder::new(walk_root).build() {
-            if let Some(d) = deadline
-                && Instant::now() >= d
-            {
-                completed = false;
-                break 'walk;
-            }
             let Ok(entry) = result else { continue };
             if !entry.file_type().is_some_and(|t| t.is_file()) {
                 continue;
             }
             note_candidate(root, entry.path(), &stored, &mut seen, &mut walk_to_parse);
+            if cap.is_some_and(|c| walk_to_parse.len() >= c) {
+                walk_finished = false;
+                break 'walk;
+            }
         }
     }
 
@@ -146,15 +149,15 @@ fn run_index(
         None => (Vec::new(), walk_to_parse),
     };
 
-    // parse in parallel (the expensive, CPU-bound step), then write in one
-    // batched transaction. Active and path-matching files lead; the active set
-    // ignores the deadline (the working set stays fresh regardless).
+    // Parse in parallel (the expensive, CPU-bound step), then write in one batched
+    // transaction. The parse deadline is computed *now* — after collection — so
+    // collection time never eats into it; parsing always gets the full budget.
+    // Active and path-matching files lead; the active set ignores the deadline.
+    let deadline = budget.map(|b| Instant::now() + b);
     let (active_parsed, _) = parse_files(root, &active_to_parse, None, None);
     let (priority_parsed, prio_all) = parse_files(root, &priority_to_parse, deadline, None);
     let (walk_parsed, walk_all) = parse_files(root, &walk_to_parse, deadline, None);
-    if !prio_all || !walk_all {
-        completed = false;
-    }
+    let completed = walk_finished && prio_all && walk_all;
     let mut parsed = active_parsed;
     parsed.extend(priority_parsed);
     parsed.extend(walk_parsed);
