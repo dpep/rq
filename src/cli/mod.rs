@@ -282,34 +282,44 @@ fn cmd_search(
 
     // Layer 4 fallback when the index came up empty, keyed on what we know about
     // the dir:
+    //   - warming (tracked, mid-warm): content-scan the un-indexed remainder and
+    //     *persist* the matches (folding the scan into the index — coverage grows
+    //     toward what's searched), then re-search. Fuzzy (non-substring) misses
+    //     fall back to an unfiltered live scan.
     //   - untracked (no coverage — typically a non-git dir we won't persist):
-    //     scan it live, in full, so we answer at all.
-    //   - warming (a git repo mid-warm): a bounded live scan that skips already-
-    //     indexed files, so the budget reaches ground the warm hasn't covered.
+    //     live scan in full so we answer at all (substring, then fuzzy).
     //   - complete / partial: empty is a genuine miss (or outside the subset).
     if hits.is_empty()
         && let Some(cwd) = &cwd
     {
-        // a pre-filtered scan parses only files containing the query — fast, but
-        // blind to fuzzy abbreviations, so retry unfiltered if it finds nothing.
-        let scan = |skip: &HashSet<String>, deadline| {
-            let mut h = crate::search::live_search(cwd, query, limit, skip, deadline, true);
-            if h.is_empty() {
-                h = crate::search::live_search(cwd, query, limit, skip, deadline, false);
-            }
-            h
-        };
         match coverage.as_deref() {
-            None => {
-                hits = scan(&HashSet::new(), None);
-            }
             Some("warming") => {
                 let indexed: HashSet<String> = current
                     .and_then(|id| store.file_mtimes(id).ok())
                     .map(|m| m.into_keys().collect())
                     .unwrap_or_default();
                 let deadline = Some(std::time::Instant::now() + LIVE_FALLBACK_BUDGET);
-                hits = scan(&indexed, deadline);
+                // scan the remainder for the query, persist matches, re-search
+                if let Some(id) = current {
+                    let scanned = crate::index::scan_for_query(cwd, query, &indexed, deadline);
+                    if !scanned.is_empty() {
+                        let _ = store.replace_files(id, &scanned);
+                        hits = crate::search::search(&store, query, current, &active, limit)
+                            .unwrap_or_default();
+                    }
+                }
+                // fuzzy (non-substring) query: nothing was persisted, scan live
+                if hits.is_empty() {
+                    hits = crate::search::live_search(cwd, query, limit, &indexed, deadline, false);
+                }
+            }
+            None => {
+                let mut h =
+                    crate::search::live_search(cwd, query, limit, &HashSet::new(), None, true);
+                if h.is_empty() {
+                    h = crate::search::live_search(cwd, query, limit, &HashSet::new(), None, false);
+                }
+                hits = h;
             }
             _ => {}
         }

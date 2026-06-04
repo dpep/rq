@@ -79,3 +79,19 @@ fn a_full_sweep_completes_and_tracks_added_and_deleted_files() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn scan_for_query_returns_only_content_matching_files_to_persist() {
+    use std::collections::HashSet;
+
+    let dir = scratch_dir("scanq");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+
+    // content-scan for "widget": only a.rb contains it, so only it comes back —
+    // ready for the warming fallback to persist (fold the scan into the index)
+    let scanned = index::scan_for_query(&dir, "widget", &HashSet::new(), None);
+    assert_eq!(scanned.len(), 1, "only the matching file: {scanned:?}");
+    assert_eq!(scanned[0].path, "a.rb");
+    assert!(scanned[0].symbols.iter().any(|s| s.name == "Widget"));
+}

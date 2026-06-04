@@ -65,6 +65,10 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       a `last_indexed_at` single-flight gate. Bigger budget, periodic freshness
 - [x] query-guided warming (path) — `index_budgeted` indexes files whose *path*
       matches the query first, so an incomplete index serves the search at hand
+- [x] demand-first coverage — when a warming repo's search comes up empty, the
+      fallback content-scans the un-indexed remainder, *persists* the matches
+      (`index::scan_for_query` → `replace_files`), and re-searches; coverage grows
+      toward what's actually searched, not just walk order
 - [ ] best-first indexing scheduler — extend the above with content/git-recency
       signals and a shared priority queue (parallel scan → heap → parallel parse
       → serialized write). Design: [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md)

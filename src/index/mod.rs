@@ -412,8 +412,34 @@ pub fn scan_symbols_budgeted(
     needle: Option<&str>,
 ) -> Vec<crate::core::Symbol> {
     let needle = needle.map(str::as_bytes).filter(|n| !n.is_empty());
+    let paths = collect_source_paths(root, skip, deadline);
+    // parallel read + content-filter + parse (the expensive part)
+    let (parsed, _) = parse_files(root, &paths, deadline, needle);
+    parsed.into_iter().flat_map(|fs| fs.symbols).collect()
+}
 
-    // cheap serial walk to collect parseable, not-already-indexed source paths
+/// Content-scan `root` for files matching `query`, parsed in parallel, and
+/// return the parsed files so the caller can **persist** them — the warming
+/// fallback folds the scan into the index (demand-first coverage) instead of
+/// throwing the parse away. Skips already-indexed files; bounded by `deadline`.
+pub fn scan_for_query(
+    root: &Path,
+    query: &str,
+    skip: &HashSet<String>,
+    deadline: Option<Instant>,
+) -> Vec<crate::store::FileSymbols> {
+    let needle = (!query.is_empty()).then_some(query.as_bytes());
+    let paths = collect_source_paths(root, skip, deadline);
+    parse_files(root, &paths, deadline, needle).0
+}
+
+/// Cheap serial walk collecting parseable, not-already-indexed source paths
+/// (the readdir half of a scan; the expensive read+parse is parallelized after).
+fn collect_source_paths(
+    root: &Path,
+    skip: &HashSet<String>,
+    deadline: Option<Instant>,
+) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     for result in WalkBuilder::new(root).build() {
         if let Some(d) = deadline
@@ -441,10 +467,7 @@ pub fn scan_symbols_budgeted(
         }
         paths.push(path.to_path_buf());
     }
-
-    // parallel read + content-filter + parse (the expensive part)
-    let (parsed, _) = parse_files(root, &paths, deadline, needle);
-    parsed.into_iter().flat_map(|fs| fs.symbols).collect()
+    paths
 }
 
 /// Case-insensitive (ASCII) substring test — `haystack` contains `needle`.
