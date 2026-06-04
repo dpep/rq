@@ -152,10 +152,12 @@ fn run_index(
             let _ = store.set_indexed_head(repo_id, &head);
         }
     }
-    // commit times feed the recency signal; the `git log` is relatively pricey,
-    // so only when this run actually (re)indexed something — a clean re-sweep
-    // pays nothing — and we're in a git work tree
-    if stats.files_indexed > 0 && is_git_repo(root) {
+    // commit times feed the recency signal, but `git log -n1000 --name-only` is
+    // pricey on a big repo. Run it only when this run indexed something AND
+    // `root` is the work-tree root: a subdir index's `git log` walks the whole
+    // repo's history yet emits repo-relative paths that wouldn't match our
+    // subdir-relative ones — pure waste. (A subdir index leans on mtime recency.)
+    if stats.files_indexed > 0 && repo_root(root).is_some_and(|r| r == root_display) {
         let times = git_commit_times(root, 1000);
         if !times.is_empty() {
             let _ = store.set_file_git_ts(repo_id, &times);
