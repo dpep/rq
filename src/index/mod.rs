@@ -344,18 +344,27 @@ fn parse_git_log(text: &str) -> HashMap<String, i64> {
 /// This is search Layer 4's live scan — it lets `rq` answer even when a
 /// repository has never been indexed.
 pub fn scan_symbols(root: &Path) -> Vec<crate::core::Symbol> {
-    scan_symbols_budgeted(root, &HashSet::new(), None)
+    scan_symbols_budgeted(root, &HashSet::new(), None, None)
 }
 
-/// Like [`scan_symbols`], but bounded: stop once `deadline` passes, and skip any
-/// file whose repo-relative path is in `skip` (the already-indexed set). Used as
-/// a git-repo fallback — the budget then covers *un-indexed* ground rather than
-/// re-parsing what the warm pass already has, and stays bounded on a huge repo.
+/// Like [`scan_symbols`], but bounded and filtered:
+/// - stop once `deadline` passes;
+/// - skip any file whose repo-relative path is in `skip` (already indexed);
+/// - when `needle` is set, parse only files that contain it (case-insensitive
+///   substring) — a ripgrep-style pre-filter that skips the expensive
+///   tree-sitter parse on files that can't hold an exact/prefix/substring match.
+///
+/// The pre-filter still *reads* every candidate file (to scan its bytes) but
+/// parses only the survivors, which is where the cost is. It can't see a fuzzy
+/// abbreviation (`usr` isn't a substring of `user`); callers fall back to an
+/// unfiltered scan when a filtered one comes up empty.
 pub fn scan_symbols_budgeted(
     root: &Path,
     skip: &HashSet<String>,
     deadline: Option<Instant>,
+    needle: Option<&str>,
 ) -> Vec<crate::core::Symbol> {
+    let needle = needle.map(str::as_bytes).filter(|n| !n.is_empty());
     let mut out = Vec::new();
     for result in WalkBuilder::new(root).build() {
         if let Some(d) = deadline
@@ -375,9 +384,26 @@ pub fn scan_symbols_budgeted(
         let Some((rel, source, plugin)) = source_for(&entry, root) else {
             continue;
         };
+        // ripgrep-style: parse only files that actually contain the query
+        if let Some(n) = needle
+            && !contains_ascii_ci(source.as_bytes(), n)
+        {
+            continue;
+        }
         out.extend(plugin.extract(&rel, &source));
     }
     out
+}
+
+/// Case-insensitive (ASCII) substring test — `haystack` contains `needle`.
+/// Allocation-free; used to pre-filter live-scan files before parsing.
+fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 /// If `entry` is a source file rq can parse, return its repo-relative path,

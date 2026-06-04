@@ -181,16 +181,21 @@ fn now_unix() -> i64 {
 /// Layer 4: scan `root` live (no index required) and return ranked hits.
 /// Results are treated as the current repo, so the current-repo boost applies.
 /// `skip` names already-indexed files to ignore, and `deadline` bounds the scan
-/// — both empty/`None` for an unbounded scan of a never-indexed directory.
+/// — both empty/`None` for an unbounded scan of a never-indexed directory. When
+/// `prefilter` is set, only files containing the query (substring) are parsed —
+/// fast for exact/prefix/substring queries, but blind to fuzzy abbreviations, so
+/// callers retry with `prefilter = false` if a filtered scan finds nothing.
 pub fn live_search(
     root: &Path,
     query: &str,
     limit: usize,
     skip: &HashSet<String>,
     deadline: Option<Instant>,
+    prefilter: bool,
 ) -> Vec<Hit> {
+    let needle = prefilter.then_some(query);
     let identity = crate::index::detect_identity(root).to_string();
-    let mut hits: Vec<Hit> = crate::index::scan_symbols_budgeted(root, skip, deadline)
+    let mut hits: Vec<Hit> = crate::index::scan_symbols_budgeted(root, skip, deadline, needle)
         .into_iter()
         .filter_map(|s| {
             let row = SymbolRow {

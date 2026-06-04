@@ -284,9 +284,18 @@ fn cmd_search(
     if hits.is_empty()
         && let Some(cwd) = &cwd
     {
+        // a pre-filtered scan parses only files containing the query — fast, but
+        // blind to fuzzy abbreviations, so retry unfiltered if it finds nothing.
+        let scan = |skip: &HashSet<String>, deadline| {
+            let mut h = crate::search::live_search(cwd, query, limit, skip, deadline, true);
+            if h.is_empty() {
+                h = crate::search::live_search(cwd, query, limit, skip, deadline, false);
+            }
+            h
+        };
         match coverage.as_deref() {
             None => {
-                hits = crate::search::live_search(cwd, query, limit, &HashSet::new(), None);
+                hits = scan(&HashSet::new(), None);
             }
             Some("warming") => {
                 let indexed: HashSet<String> = current
@@ -294,7 +303,7 @@ fn cmd_search(
                     .map(|m| m.into_keys().collect())
                     .unwrap_or_default();
                 let deadline = Some(std::time::Instant::now() + LIVE_FALLBACK_BUDGET);
-                hits = crate::search::live_search(cwd, query, limit, &indexed, deadline);
+                hits = scan(&indexed, deadline);
             }
             _ => {}
         }
