@@ -149,9 +149,9 @@ fn run_index(
     // parse in parallel (the expensive, CPU-bound step), then write in one
     // batched transaction. Active and path-matching files lead; the active set
     // ignores the deadline (the working set stays fresh regardless).
-    let (active_parsed, _) = parse_files(root, &active_to_parse, None);
-    let (priority_parsed, prio_all) = parse_files(root, &priority_to_parse, deadline);
-    let (walk_parsed, walk_all) = parse_files(root, &walk_to_parse, deadline);
+    let (active_parsed, _) = parse_files(root, &active_to_parse, None, None);
+    let (priority_parsed, prio_all) = parse_files(root, &priority_to_parse, deadline, None);
+    let (walk_parsed, walk_all) = parse_files(root, &walk_to_parse, deadline, None);
     if !prio_all || !walk_all {
         completed = false;
     }
@@ -253,9 +253,15 @@ fn note_candidate(
 }
 
 /// Read + parse one source file into a [`FileSymbols`], or `None` if it isn't a
-/// known language or can't be read. Touches no store — safe to run on a worker
-/// thread (each call builds its own Tree-sitter parser).
-fn parse_file(root: &Path, file: &Path) -> Option<crate::store::FileSymbols> {
+/// known language, can't be read, or (when `needle` is set) doesn't contain the
+/// query — the ripgrep-style content pre-filter, applied here so it runs on the
+/// worker thread. Touches no store — safe to run in parallel (each call builds
+/// its own Tree-sitter parser).
+fn parse_file(
+    root: &Path,
+    file: &Path,
+    needle: Option<&[u8]>,
+) -> Option<crate::store::FileSymbols> {
     let ext = file.extension().and_then(|e| e.to_str())?;
     let plugin = lang::plugin_for_extension(ext)?;
     let rel = file
@@ -264,6 +270,12 @@ fn parse_file(root: &Path, file: &Path) -> Option<crate::store::FileSymbols> {
         .to_string_lossy()
         .into_owned();
     let source = std::fs::read_to_string(file).ok()?;
+    // pre-filter: skip the expensive parse on files that can't hold the match
+    if let Some(n) = needle
+        && !contains_ascii_ci(source.as_bytes(), n)
+    {
+        return None;
+    }
     let content_hash = content_hash(&source);
     let symbols = plugin.extract(&rel, &source);
     let language = symbols
@@ -280,13 +292,16 @@ fn parse_file(root: &Path, file: &Path) -> Option<crate::store::FileSymbols> {
 }
 
 /// Parse many files across the available CPUs, stopping early once `deadline`
-/// passes. Returns the parsed files and whether *all* of them were parsed (false
-/// if the deadline cut it short). Parsing is the expensive, CPU-bound step;
-/// writing stays serialized in one batched transaction by the caller.
+/// passes; when `needle` is set, each worker skips files that don't contain it
+/// (the content pre-filter). Returns the parsed files and whether *all* of them
+/// were parsed (false if the deadline cut it short). Parsing is the expensive,
+/// CPU-bound step; writing stays serialized in one batched transaction by the
+/// caller.
 fn parse_files(
     root: &Path,
     paths: &[std::path::PathBuf],
     deadline: Option<Instant>,
+    needle: Option<&[u8]>,
 ) -> (Vec<crate::store::FileSymbols>, bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -302,7 +317,7 @@ fn parse_files(
             if past(deadline) {
                 return (out, false);
             }
-            if let Some(parsed) = parse_file(root, p) {
+            if let Some(parsed) = parse_file(root, p, needle) {
                 out.push(parsed);
             }
         }
@@ -324,7 +339,7 @@ fn parse_files(
                             bailed.store(true, Ordering::Relaxed);
                             break;
                         }
-                        if let Some(parsed) = parse_file(root, p) {
+                        if let Some(parsed) = parse_file(root, p, needle) {
                             local.push(parsed);
                         }
                     }
@@ -378,24 +393,18 @@ fn parse_git_log(text: &str) -> HashMap<String, i64> {
     map
 }
 
-/// Walk `root` and extract every symbol in-memory, without touching the store.
-/// This is search Layer 4's live scan — it lets `rq` answer even when a
-/// repository has never been indexed.
-pub fn scan_symbols(root: &Path) -> Vec<crate::core::Symbol> {
-    scan_symbols_budgeted(root, &HashSet::new(), None, None)
-}
-
-/// Like [`scan_symbols`], but bounded and filtered:
+/// Live scan (search Layer 4): extract symbols in-memory without touching the
+/// store, so `rq` answers even at zero coverage. Bounded and filtered:
 /// - stop once `deadline` passes;
 /// - skip any file whose repo-relative path is in `skip` (already indexed);
-/// - when `needle` is set, parse only files that contain it (case-insensitive
-///   substring) — a ripgrep-style pre-filter that skips the expensive
-///   tree-sitter parse on files that can't hold an exact/prefix/substring match.
+/// - when `needle` is set, parse only files containing it (case-insensitive
+///   substring) — the ripgrep-style pre-filter, which skips the tree-sitter
+///   parse on files that can't hold an exact/prefix/substring match.
 ///
-/// The pre-filter still *reads* every candidate file (to scan its bytes) but
-/// parses only the survivors, which is where the cost is. It can't see a fuzzy
-/// abbreviation (`usr` isn't a substring of `user`); callers fall back to an
-/// unfiltered scan when a filtered one comes up empty.
+/// The cheap walk collects candidate paths; the expensive read+filter+parse runs
+/// in parallel across CPUs (same engine as the indexer). The pre-filter can't
+/// see a fuzzy abbreviation (`usr` isn't a substring of `user`); callers retry
+/// unfiltered when a filtered scan comes up empty.
 pub fn scan_symbols_budgeted(
     root: &Path,
     skip: &HashSet<String>,
@@ -403,7 +412,9 @@ pub fn scan_symbols_budgeted(
     needle: Option<&str>,
 ) -> Vec<crate::core::Symbol> {
     let needle = needle.map(str::as_bytes).filter(|n| !n.is_empty());
-    let mut out = Vec::new();
+
+    // cheap serial walk to collect parseable, not-already-indexed source paths
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
     for result in WalkBuilder::new(root).build() {
         if let Some(d) = deadline
             && Instant::now() >= d
@@ -411,26 +422,29 @@ pub fn scan_symbols_budgeted(
             break;
         }
         let Ok(entry) = result else { continue };
-        // cheap skip before any read: an already-indexed file adds nothing here
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let is_source = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| lang::plugin_for_extension(e).is_some());
+        if !is_source {
+            continue;
+        }
         if !skip.is_empty()
-            && entry.file_type().is_some_and(|t| t.is_file())
-            && let Ok(rel) = entry.path().strip_prefix(root)
+            && let Ok(rel) = path.strip_prefix(root)
             && skip.contains(rel.to_string_lossy().as_ref())
         {
             continue;
         }
-        let Some((rel, source, plugin)) = source_for(&entry, root) else {
-            continue;
-        };
-        // ripgrep-style: parse only files that actually contain the query
-        if let Some(n) = needle
-            && !contains_ascii_ci(source.as_bytes(), n)
-        {
-            continue;
-        }
-        out.extend(plugin.extract(&rel, &source));
+        paths.push(path.to_path_buf());
     }
-    out
+
+    // parallel read + content-filter + parse (the expensive part)
+    let (parsed, _) = parse_files(root, &paths, deadline, needle);
+    parsed.into_iter().flat_map(|fs| fs.symbols).collect()
 }
 
 /// Case-insensitive (ASCII) substring test — `haystack` contains `needle`.
@@ -442,27 +456,6 @@ fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|w| w.eq_ignore_ascii_case(needle))
-}
-
-/// If `entry` is a source file rq can parse, return its repo-relative path,
-/// contents, and the matching plugin.
-fn source_for(
-    entry: &ignore::DirEntry,
-    root: &Path,
-) -> Option<(String, String, Box<dyn lang::LanguagePlugin>)> {
-    if !entry.file_type().is_some_and(|t| t.is_file()) {
-        return None;
-    }
-    let path = entry.path();
-    let ext = path.extension().and_then(|e| e.to_str())?;
-    let plugin = lang::plugin_for_extension(ext)?;
-    let rel = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned();
-    let source = std::fs::read_to_string(path).ok()?;
-    Some((rel, source, plugin))
 }
 
 /// Result of revalidating a single file against what's on disk.

@@ -63,10 +63,11 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       Re-exec a detached `rq --warm` child (null streams) so the foreground
       returns instantly and warming can run for seconds; needs `busy_timeout` +
       a `last_indexed_at` single-flight gate. Bigger budget, periodic freshness
-- [ ] query-guided indexing — reuse the live-scan substring pre-filter (now in
-      `scan_symbols_budgeted`) to prioritize *which* files the warm pass indexes
-      next: when a search is under-served, index the files that contain the query
-      first, so coverage grows demand-first toward what's actually searched
+- [x] query-guided warming (path) — `index_budgeted` indexes files whose *path*
+      matches the query first, so an incomplete index serves the search at hand
+- [ ] best-first indexing scheduler — extend the above with content/git-recency
+      signals and a shared priority queue (parallel scan → heap → parallel parse
+      → serialized write). Design: [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md)
 - [ ] cheaper fuzzy pre-filter — the substring pre-filter is blind to
       abbreviations (`usr`↛`user`). A loose, recall-preserving narrowing (even
       ~50%) would speed cold fuzzy scans without the full unfiltered fallback
