@@ -241,7 +241,13 @@ fn cmd_search(
         && coverage.as_deref() != Some("complete")
         && let Some(c) = &cwd
     {
-        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, ANSWER_WARM_BUDGET);
+        let _ = crate::index::index_budgeted(
+            &mut store,
+            c,
+            &active_paths,
+            ANSWER_WARM_BUDGET,
+            Some(query),
+        );
     }
 
     let current = identity
@@ -414,7 +420,13 @@ fn cmd_search(
         && let Some(c) = &cwd
         && !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
     {
-        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, DEFERRED_WARM_BUDGET);
+        let _ = crate::index::index_budgeted(
+            &mut store,
+            c,
+            &active_paths,
+            DEFERRED_WARM_BUDGET,
+            Some(query),
+        );
     }
 
     ExitCode::SUCCESS

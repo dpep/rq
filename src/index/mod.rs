@@ -40,21 +40,31 @@ pub fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None)
+    run_index(store, root, &[], subdirs, None, None)
 }
 
 /// Opportunistic, time-bounded indexing — warm the index a little per call so no
 /// single query blocks on a full walk of a large repo. `active` (branch) files
-/// are parsed first and ignore the budget (the working set stays fresh); the
-/// rest of the walk honors `budget`. A sweep that finishes within budget marks
-/// coverage `complete` (and reconciles deletions), otherwise `warming`.
+/// are parsed first and ignore the budget (the working set stays fresh); then
+/// files whose path matches `query` (so warming is steered toward the search at
+/// hand); then the rest of the walk, honoring `budget`. A sweep that finishes
+/// within budget marks coverage `complete` (and reconciles deletions), else
+/// `warming`.
 pub fn index_budgeted(
     store: &mut Store,
     root: &Path,
     active: &[String],
     budget: Duration,
+    query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(Instant::now() + budget))
+    run_index(
+        store,
+        root,
+        active,
+        &[],
+        Some(Instant::now() + budget),
+        query,
+    )
 }
 
 /// The shared indexing core behind both the explicit (`index_under`) and
@@ -73,6 +83,7 @@ fn run_index(
     active: &[String],
     subdirs: &[String],
     deadline: Option<Instant>,
+    query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -121,14 +132,31 @@ fn run_index(
         }
     }
 
+    // Query-guided ordering: when warming for a specific search, parse files
+    // whose *path* matches the query first (`employee` → `app/models/employee.rb`,
+    // `…/employee/*`). Under a tight budget the relevant files get indexed before
+    // the arbitrary tail, so the very next search is more likely to land.
+    let (priority_to_parse, walk_to_parse): (Vec<_>, Vec<_>) = match query {
+        Some(q) => {
+            let ql = q.to_ascii_lowercase();
+            walk_to_parse
+                .into_iter()
+                .partition(|p| path_matches_query(p, root, &ql))
+        }
+        None => (Vec::new(), walk_to_parse),
+    };
+
     // parse in parallel (the expensive, CPU-bound step), then write in one
-    // batched transaction
+    // batched transaction. Active and path-matching files lead; the active set
+    // ignores the deadline (the working set stays fresh regardless).
     let (active_parsed, _) = parse_files(root, &active_to_parse, None);
-    let (walk_parsed, parsed_all) = parse_files(root, &walk_to_parse, deadline);
-    if !parsed_all {
+    let (priority_parsed, prio_all) = parse_files(root, &priority_to_parse, deadline);
+    let (walk_parsed, walk_all) = parse_files(root, &walk_to_parse, deadline);
+    if !prio_all || !walk_all {
         completed = false;
     }
     let mut parsed = active_parsed;
+    parsed.extend(priority_parsed);
     parsed.extend(walk_parsed);
     let (files_indexed, symbols) = store.replace_files(repo_id, &parsed)?;
     let stats = Stats {
@@ -178,6 +206,16 @@ fn run_index(
         status,
     )?;
     Ok(stats)
+}
+
+/// Whether a file's repo-relative path contains the (already-lowercased) query —
+/// a filename or directory match (`employee` → `app/models/employee.rb`,
+/// `lib/employee/x.rb`). Used to prioritize warming toward what's being searched.
+fn path_matches_query(file: &Path, root: &Path, query_lower: &str) -> bool {
+    let rel = file.strip_prefix(root).unwrap_or(file);
+    rel.to_string_lossy()
+        .to_ascii_lowercase()
+        .contains(query_lower)
 }
 
 /// Note a walked file: record every source file in `seen` (for deletion
@@ -621,6 +659,33 @@ mod tests {
         assert!(is_trunk("master"));
         assert!(!is_trunk("feature/x"));
         assert!(!is_trunk("dpep/fix"));
+    }
+
+    #[test]
+    fn path_match_steers_warming_toward_the_query() {
+        let root = Path::new("/repo");
+        // filename or any path segment matching the (lowercased) query qualifies
+        assert!(path_matches_query(
+            Path::new("/repo/app/models/employee.rb"),
+            root,
+            "employee"
+        ));
+        assert!(path_matches_query(
+            Path::new("/repo/lib/employee/list.rb"),
+            root,
+            "employee"
+        ));
+        // case-insensitive, and a non-match stays in the arbitrary tail
+        assert!(path_matches_query(
+            Path::new("/repo/Employee.go"),
+            root,
+            "employee"
+        ));
+        assert!(!path_matches_query(
+            Path::new("/repo/app/widget.rb"),
+            root,
+            "employee"
+        ));
     }
 
     #[test]
