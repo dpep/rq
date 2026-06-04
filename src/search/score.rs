@@ -191,6 +191,12 @@ pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
 /// Separators in the query are ignored, so a snake_case (or kebab) query matches
 /// a CamelCase name: `widget_controller` → `WidgetsController`. Candidate
 /// separators are skipped naturally as the scan walks the name.
+/// Largest gap (chars skipped) allowed between two matched query chars that
+/// land *mid-word* (not at a word boundary). Boundary jumps are how
+/// abbreviations work and stay unlimited; off-boundary we tolerate a single
+/// skipped char (a typo) but no more — a bigger gap is coincidence, not a match.
+const MAX_NONBOUNDARY_GAP: usize = 1;
+
 fn subsequence_score(query: &str, name: &str) -> Option<f64> {
     let q: Vec<char> = query.chars().filter(|c| c.is_alphanumeric()).collect();
     if q.is_empty() {
@@ -215,9 +221,20 @@ fn subsequence_score(query: &str, name: &str) -> Option<f64> {
             score += 15.0; // aligned to a word boundary
         }
         match prev {
-            Some(p) if p + 1 == i => score += 10.0,       // contiguous
-            Some(p) => score -= (i - p - 1) as f64 * 0.5, // gap penalty
-            None if i == 0 => score += 20.0,              // matches at the very start
+            Some(p) if p + 1 == i => score += 10.0, // contiguous
+            Some(p) => {
+                let gap = i - p - 1;
+                // A non-boundary match far from the previous one is noise, not
+                // signal: real abbreviations skip at word boundaries (rewarded
+                // above), and a typo skips at most one char. A larger mid-word
+                // gap — the `s` in `employeescontroller` landing past `XYZ` in
+                // `EmployeeXYZsController` — means this isn't really a match.
+                if !boundary[i] && gap > MAX_NONBOUNDARY_GAP {
+                    return None;
+                }
+                score -= gap as f64 * 0.5; // gap penalty
+            }
+            None if i == 0 => score += 20.0, // matches at the very start
             None => {}
         }
         prev = Some(i);
@@ -302,6 +319,16 @@ mod tests {
         assert!(total("paymnt", "Payments").is_some());
         assert!(total("perf", "perform").is_some());
         assert!(total("usr", "User").is_some());
+    }
+
+    #[test]
+    fn rejects_scattered_midword_matches() {
+        // the trailing `s` of the query landed past `XYZ` mid-word — coincidence,
+        // not a match. The clean plural (boundary/contiguous `s`) still matches.
+        assert!(total("employeescontroller", "EmployeeXYZsController").is_none());
+        assert!(total("employeescontroller", "EmployeesController").is_some());
+        // a single skipped char off-boundary is tolerated (looks like a typo)
+        assert!(total("employescontroller", "EmployeesController").is_some());
     }
 
     #[test]
