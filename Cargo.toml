@@ -1,6 +1,6 @@
 [package]
 name = "rq"
-version = "0.13.1"
+version = "0.13.2"
 edition = "2024"
 description = "Reference Query — find the code you're looking for."
 license = "MIT"
@@ -19,6 +19,7 @@ clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ignore = "0.4"
+aho-corasick = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tree-sitter = "0.25"
 tree-sitter-ruby = "0.23"
