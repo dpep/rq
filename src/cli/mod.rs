@@ -306,24 +306,31 @@ fn cmd_search(
         };
     }
 
-    // Layer 4 fallback when the index *still* came up empty, keyed on the dir:
+    // Fallback when the index *still* came up empty, keyed on the dir:
     //   - warming (tracked, mid-warm): the substring content-scan already ran up
-    //     front, so an empty result means a fuzzy (non-substring) query — scan
-    //     unfiltered (bounded), skipping already-indexed files.
-    //   - untracked (no coverage — typically a non-git dir we won't persist):
-    //     live scan in full so we answer at all (substring, then fuzzy).
+    //     front, so an empty result means a fuzzy (non-substring) query that the
+    //     indexed slice didn't cover. A fuzzy query can't be content-filtered, so
+    //     index another bounded slice of the remainder — *persisting* it (the
+    //     same work the deferred warm would do, pulled forward, so it isn't
+    //     thrown away and the deferred pass then skips it) — and re-search.
+    //   - untracked (no coverage — a non-git dir we won't persist): scan it live
+    //     in-memory so we answer at all (substring, then fuzzy). This is the only
+    //     place a non-persisting live scan remains.
     //   - complete / partial: empty is a genuine miss (or outside the subset).
     if hits.is_empty()
         && let Some(cwd) = &cwd
     {
         match coverage.as_deref() {
             Some("warming") => {
-                let indexed: HashSet<String> = current
-                    .and_then(|id| store.file_mtimes(id).ok())
-                    .map(|m| m.into_keys().collect())
+                let _ = crate::index::index_budgeted(
+                    &mut store,
+                    cwd,
+                    &active_paths,
+                    LIVE_FALLBACK_BUDGET,
+                    Some(query),
+                );
+                hits = crate::search::search(&store, query, current, &active, limit)
                     .unwrap_or_default();
-                let deadline = Some(std::time::Instant::now() + LIVE_FALLBACK_BUDGET);
-                hits = crate::search::live_search(cwd, query, limit, &indexed, deadline, false);
             }
             None => {
                 let mut h =
