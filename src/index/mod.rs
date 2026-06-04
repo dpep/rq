@@ -260,7 +260,7 @@ fn note_candidate(
 fn parse_file(
     root: &Path,
     file: &Path,
-    needle: Option<&aho_corasick::AhoCorasick>,
+    needle: Option<&[u8]>,
 ) -> Option<crate::store::FileSymbols> {
     let ext = file.extension().and_then(|e| e.to_str())?;
     let plugin = lang::plugin_for_extension(ext)?;
@@ -271,9 +271,8 @@ fn parse_file(
         .into_owned();
     let source = std::fs::read_to_string(file).ok()?;
     // pre-filter: skip the expensive parse on files that can't hold the match
-    // (SIMD, case-insensitive substring via aho-corasick)
-    if let Some(ac) = needle
-        && !ac.is_match(source.as_bytes())
+    if let Some(n) = needle
+        && !contains_ascii_ci(source.as_bytes(), n)
     {
         return None;
     }
@@ -302,7 +301,7 @@ fn parse_files(
     root: &Path,
     paths: &[std::path::PathBuf],
     deadline: Option<Instant>,
-    needle: Option<&aho_corasick::AhoCorasick>,
+    needle: Option<&[u8]>,
 ) -> (Vec<crate::store::FileSymbols>, bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -412,13 +411,7 @@ pub fn scan_symbols_budgeted(
     deadline: Option<Instant>,
     needle: Option<&str>,
 ) -> Vec<crate::core::Symbol> {
-    // build the content matcher once per query (SIMD, case-insensitive)
-    let matcher = needle.filter(|q| !q.is_empty()).and_then(|q| {
-        aho_corasick::AhoCorasick::builder()
-            .ascii_case_insensitive(true)
-            .build([q])
-            .ok()
-    });
+    let needle = needle.map(str::as_bytes).filter(|n| !n.is_empty());
 
     // cheap serial walk to collect parseable, not-already-indexed source paths
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
@@ -450,8 +443,19 @@ pub fn scan_symbols_budgeted(
     }
 
     // parallel read + content-filter + parse (the expensive part)
-    let (parsed, _) = parse_files(root, &paths, deadline, matcher.as_ref());
+    let (parsed, _) = parse_files(root, &paths, deadline, needle);
     parsed.into_iter().flat_map(|fs| fs.symbols).collect()
+}
+
+/// Case-insensitive (ASCII) substring test — `haystack` contains `needle`.
+/// Allocation-free; used to pre-filter live-scan files before parsing.
+fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 /// Result of revalidating a single file against what's on disk.
