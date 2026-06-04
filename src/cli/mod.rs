@@ -255,6 +255,32 @@ fn cmd_search(
         .and_then(|id| store.repository_id(id).ok().flatten());
     let active = crate::search::ActiveFiles::new(active_paths.clone());
 
+    // Re-read coverage — the inline warm above may have just completed the repo.
+    let coverage = identity
+        .as_deref()
+        .and_then(|id| store.coverage_status(id).ok())
+        .flatten();
+
+    // Content scan up front (still-incomplete repos): index files whose *content*
+    // matches the query — beyond the path-matchers the warm already indexed — and
+    // persist them, so the first search is higher-confidence rather than relying
+    // on a post-miss fallback. Bounded; skips already-indexed files.
+    if warming_ok
+        && coverage.as_deref() != Some("complete")
+        && let Some(c) = &cwd
+        && let Some(id) = current
+    {
+        let indexed: HashSet<String> = store
+            .file_mtimes(id)
+            .map(|m| m.into_keys().collect())
+            .unwrap_or_default();
+        let deadline = std::time::Instant::now() + LIVE_FALLBACK_BUDGET;
+        let scanned = crate::index::scan_for_query(c, query, &indexed, Some(deadline));
+        if !scanned.is_empty() {
+            let _ = store.replace_files(id, &scanned);
+        }
+    }
+
     // A repeated search (same query, nothing opened since) means last time
     // missed — decay this query's learned boost before ranking so a stale
     // learned pick stops dominating and alternatives surface. Skipped under
@@ -280,12 +306,10 @@ fn cmd_search(
         };
     }
 
-    // Layer 4 fallback when the index came up empty, keyed on what we know about
-    // the dir:
-    //   - warming (tracked, mid-warm): content-scan the un-indexed remainder and
-    //     *persist* the matches (folding the scan into the index — coverage grows
-    //     toward what's searched), then re-search. Fuzzy (non-substring) misses
-    //     fall back to an unfiltered live scan.
+    // Layer 4 fallback when the index *still* came up empty, keyed on the dir:
+    //   - warming (tracked, mid-warm): the substring content-scan already ran up
+    //     front, so an empty result means a fuzzy (non-substring) query — scan
+    //     unfiltered (bounded), skipping already-indexed files.
     //   - untracked (no coverage — typically a non-git dir we won't persist):
     //     live scan in full so we answer at all (substring, then fuzzy).
     //   - complete / partial: empty is a genuine miss (or outside the subset).
@@ -299,19 +323,7 @@ fn cmd_search(
                     .map(|m| m.into_keys().collect())
                     .unwrap_or_default();
                 let deadline = Some(std::time::Instant::now() + LIVE_FALLBACK_BUDGET);
-                // scan the remainder for the query, persist matches, re-search
-                if let Some(id) = current {
-                    let scanned = crate::index::scan_for_query(cwd, query, &indexed, deadline);
-                    if !scanned.is_empty() {
-                        let _ = store.replace_files(id, &scanned);
-                        hits = crate::search::search(&store, query, current, &active, limit)
-                            .unwrap_or_default();
-                    }
-                }
-                // fuzzy (non-substring) query: nothing was persisted, scan live
-                if hits.is_empty() {
-                    hits = crate::search::live_search(cwd, query, limit, &indexed, deadline, false);
-                }
+                hits = crate::search::live_search(cwd, query, limit, &indexed, deadline, false);
             }
             None => {
                 let mut h =
