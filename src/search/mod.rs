@@ -15,8 +15,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::store::{Store, SymbolRow};
 
-/// How many candidates to pull from the store before ranking.
-const CANDIDATE_LIMIT: usize = 4000;
+/// Per-layer cap on candidates pulled from the store before ranking. Exact and
+/// prefix matches are guaranteed in full (see `Store::search_candidates`); this
+/// only bounds the broad first-char-anchor and trigram-fuzzy recall layers.
+/// Scoring is linear and cheap, so this sits well under the latency budget.
+const CANDIDATE_LIMIT: usize = 8000;
 
 /// Sentinel repository id for live-scan (Layer 4) results — distinct from any
 /// real row id, and treated as "the current repo" so the boost applies.

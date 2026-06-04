@@ -723,21 +723,53 @@ impl Store {
         let q = query.to_ascii_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
 
-        // Layer 1: first-character anchor (index-backed prefix scan) plus the
-        // exact name. Anchoring on the first character — rather than the whole
-        // query as a prefix — is what lets short skip-abbreviations like
-        // `usr → user` reach the scorer; the scorer filters and ranks them.
+        // Layer 0: exact name — always included, never subject to the cap. The
+        // match we most want must reach the scorer no matter how large the index
+        // is (a broad capped scan could otherwise truncate it away).
+        {
+            let sql = format!(
+                "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} WHERE s.name_lower = ?1 LIMIT ?2"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![q, limit as i64], row_to_candidate)?;
+            for row in rows {
+                let (id, cand) = row?;
+                found.insert(id, cand);
+            }
+        }
+
+        // Layer 1: query as a prefix — selective, so prefix matches always
+        // surface even on a huge repo (unlike the broad first-char anchor below,
+        // which the cap can truncate).
+        {
+            let like = format!("{}%", escape_like(&q));
+            let sql = format!(
+                "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
+                 WHERE s.name_lower LIKE ?1 ESCAPE '\\' LIMIT ?2"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![like, limit as i64], row_to_candidate)?;
+            for row in rows {
+                let (id, cand) = row?;
+                found.entry(id).or_insert(cand);
+            }
+        }
+
+        // Layer 2: first-character anchor (index-backed scan) for short
+        // skip-abbreviations like `usr → user` that prefix matching can't reach;
+        // the scorer filters and ranks. Best-effort under the cap — exact and
+        // prefix are already guaranteed above.
         if let Some(first) = q.chars().next() {
             let like = format!("{}%", escape_like(&first.to_string()));
             let sql = format!(
                 "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-                 WHERE s.name_lower = ?1 OR s.name_lower LIKE ?2 ESCAPE '\\' LIMIT ?3"
+                 WHERE s.name_lower LIKE ?1 ESCAPE '\\' LIMIT ?2"
             );
             let mut stmt = self.conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![q, like, limit as i64], row_to_candidate)?;
+            let rows = stmt.query_map(params![like, limit as i64], row_to_candidate)?;
             for row in rows {
                 let (id, cand) = row?;
-                found.insert(id, cand);
+                found.entry(id).or_insert(cand);
             }
         }
 
