@@ -43,35 +43,43 @@ pub fn index_under(
     run_index(store, root, &[], subdirs, None, None)
 }
 
-/// Move the candidate paths whose (separator-stripped, lowercased) repo-relative
-/// path contains the query to the front, preserving order within each group, so a
-/// warming pass parses query-relevant files first. Cheap — string matching over
-/// the in-memory path list, no file reads. A no-op for an empty/absent query.
-fn prioritize_by_path(
-    paths: Vec<std::path::PathBuf>,
-    root: &Path,
-    query: Option<&str>,
-) -> Vec<std::path::PathBuf> {
-    let needle: String = query
-        .unwrap_or("")
-        .chars()
+/// Lowercase the alphanumeric chars of `s` — the normal form for loose,
+/// separator-insensitive path matching.
+fn alnum_lower(s: &str) -> String {
+    s.chars()
         .filter(|c| c.is_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
-        .collect();
-    if needle.is_empty() {
+        .collect()
+}
+
+/// Move the candidate paths whose *filename* looks relevant to the query to the
+/// front (preserving order within each group), so a warming pass parses likely
+/// files first. Deliberately generous: a stem qualifies if it shares any ~4-char
+/// run with the query — parsing is cheap, so over-including a near-match beats
+/// missing the target. `employeescontroller` flags employee / employers /
+/// EmpController, tosses companies. Matched on the filename stem (not the whole
+/// path), so a common directory like `controllers/` doesn't flag the whole tree.
+/// String-only over the in-memory list — no file reads. No-op for an empty query.
+fn prioritize_by_path(
+    paths: Vec<std::path::PathBuf>,
+    _root: &Path,
+    query: Option<&str>,
+) -> Vec<std::path::PathBuf> {
+    let needle = alnum_lower(query.unwrap_or(""));
+    let k = needle.len().min(4);
+    if k == 0 {
         return paths;
     }
-    let matches = |p: &Path| {
-        let rel = p.strip_prefix(root).unwrap_or(p);
-        let norm: String = rel
-            .to_string_lossy()
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
-        norm.contains(&needle)
+    let kgrams: Vec<&[u8]> = needle.as_bytes().windows(k).collect();
+    let relevant = |p: &Path| {
+        let Some(stem) = p.file_stem() else {
+            return false;
+        };
+        let stem = alnum_lower(&stem.to_string_lossy());
+        // shares a k-char run with the query (a common substring of length ≥ k)
+        stem.as_bytes().windows(k).any(|w| kgrams.contains(&w))
     };
-    let (mut prio, rest): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| matches(p));
+    let (mut prio, rest): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| relevant(p));
     prio.extend(rest);
     prio
 }
@@ -933,20 +941,27 @@ mod tests {
     }
 
     #[test]
-    fn prioritize_by_path_moves_query_matches_first() {
+    fn prioritize_by_path_is_loose_but_targeted() {
         let root = Path::new("/repo");
-        let paths: Vec<std::path::PathBuf> = ["aaa.rb", "app/employees_controller.rb", "bbb.rb"]
-            .iter()
-            .map(|p| root.join(p))
-            .collect();
-        // separator-insensitive: the snake-case path matches the run-together query
+        let paths: Vec<std::path::PathBuf> = [
+            "companies.rb",         // unrelated → tail
+            "app/employee.rb",      // near-match → front
+            "lib/EmpController.rb", // near-match (shares "cont…") → front
+            "employers.rb",         // near-match (shares "employe") → front
+            "app/controllers/x.rb", // dir matches but stem doesn't → tail
+        ]
+        .iter()
+        .map(|p| root.join(p))
+        .collect();
         let out = prioritize_by_path(paths.clone(), root, Some("employeescontroller"));
-        assert!(
-            out[0].ends_with("employees_controller.rb"),
-            "match first: {out:?}"
-        );
-        // order within the non-matching tail is preserved
-        assert!(out[1].ends_with("aaa.rb") && out[2].ends_with("bbb.rb"));
+        let name = |p: &std::path::PathBuf| p.file_name().unwrap().to_str().unwrap().to_string();
+        let front: Vec<String> = out[..3].iter().map(name).collect();
+        assert!(front.contains(&"employee.rb".to_string()), "{front:?}");
+        assert!(front.contains(&"EmpController.rb".to_string()), "{front:?}");
+        assert!(front.contains(&"employers.rb".to_string()), "{front:?}");
+        let tail: Vec<String> = out[3..].iter().map(name).collect();
+        assert!(tail.contains(&"companies.rb".to_string()), "{tail:?}");
+        assert!(tail.contains(&"x.rb".to_string()), "{tail:?}"); // dir match isn't enough
         // no query → unchanged
         assert_eq!(prioritize_by_path(paths.clone(), root, None), paths);
     }
