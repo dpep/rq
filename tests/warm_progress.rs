@@ -1,8 +1,12 @@
-//! Regression: a bounded warm pass must make progress even on a repo too big to
-//! index in one budget. The bug was that candidate *collection* (a cheap walk)
-//! shared the time budget with *parsing* and ran first — so on a large repo the
-//! walk consumed the whole budget and zero files were parsed, and repeated
-//! searches made no (or nondeterministic) progress.
+//! Regression: a bounded warm pass must make real, incremental progress on a
+//! repo too big to index in one pass. The bug was that candidate collection
+//! shared the budget with parsing and ran first — so on a large repo the walk
+//! consumed the budget and zero files were parsed, and repeated searches made no
+//! (or nondeterministic) progress. Indexing is now a fused walk→parse→write
+//! pipeline; each bounded pass advances coverage and persists as it goes.
+//!
+//! Bounded here by the count cap (`RQ_COLLECT_CAP`) rather than wall-clock time,
+//! so the assertions are deterministic instead of racing a millisecond budget.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,14 +15,16 @@ use std::time::Duration;
 use rq::index;
 use rq::store::Store;
 
-/// ~5000 files — enough that walking/stat-ing them all exceeds a 1ms budget.
-fn big_scratch() -> PathBuf {
+const FILES: usize = 1000;
+const CAP: usize = 200;
+
+fn scratch() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rq-warmprog-{}", std::process::id()));
     fs::remove_dir_all(&dir).ok();
     for d in 0..50 {
         let sub = dir.join(format!("d{d:02}"));
         fs::create_dir_all(&sub).unwrap();
-        for f in 0..100 {
+        for f in 0..(FILES / 50) {
             fs::write(
                 sub.join(format!("m{f:03}.rb")),
                 format!("class C{d}_{f}\nend\n"),
@@ -38,26 +44,40 @@ fn total_files(store: &Store, dir: &Path) -> i64 {
 }
 
 #[test]
-fn a_tiny_budget_still_makes_progress_on_a_large_repo() {
-    let dir = big_scratch();
-    let mut store = Store::open_in_memory().unwrap();
+fn a_bounded_pass_makes_incremental_progress() {
+    // Cap each pass to a slice of the repo, deterministically — no timing race.
+    // SAFETY: single-test binary, set before any indexing; nothing else reads env.
+    unsafe { std::env::set_var("RQ_COLLECT_CAP", CAP.to_string()) };
 
-    // 1ms budget: collecting 5000 paths alone takes longer than this, so a
-    // time-bounded walk would parse zero. Collection must not starve parsing.
-    let s1 = index::index_budgeted(&mut store, &dir, &[], Duration::from_millis(1), None).unwrap();
+    let dir = scratch();
+    let mut store = Store::open_in_memory().unwrap();
+    // generous budget: the cap, not the clock, bounds the pass
+    let budget = Duration::from_secs(5);
+
+    let s1 = index::index_budgeted(&mut store, &dir, &[], budget).unwrap();
     assert!(
         s1.files_indexed > 0,
-        "a bounded pass indexed nothing (collection starved parsing): {s1:?}"
+        "a bounded pass made no progress: {s1:?}"
+    );
+    assert!(
+        s1.files_indexed < FILES,
+        "a bounded pass is partial, not the whole repo: {s1:?}"
     );
 
-    // repeated passes grow coverage monotonically (real progress, not a fixed
-    // nondeterministic slice)
-    let after1 = total_files(&store, &dir);
-    index::index_budgeted(&mut store, &dir, &[], Duration::from_millis(50), None).unwrap();
-    let after2 = total_files(&store, &dir);
-    assert!(
-        after2 > after1,
-        "coverage did not grow across passes: {after1} -> {after2}"
+    // repeated passes grow coverage monotonically until everything is indexed
+    let mut last = total_files(&store, &dir);
+    for _ in 0..FILES / CAP + 2 {
+        if last as usize >= FILES {
+            break;
+        }
+        index::index_budgeted(&mut store, &dir, &[], budget).unwrap();
+        let now = total_files(&store, &dir);
+        assert!(now > last, "coverage stalled at {last}");
+        last = now;
+    }
+    assert_eq!(
+        last as usize, FILES,
+        "every file indexed after enough passes"
     );
 
     fs::remove_dir_all(&dir).ok();

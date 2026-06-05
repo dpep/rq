@@ -63,15 +63,22 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       Re-exec a detached `rq --warm` child (null streams) so the foreground
       returns instantly and warming can run for seconds; needs `busy_timeout` +
       a `last_indexed_at` single-flight gate. Bigger budget, periodic freshness
-- [x] query-guided warming (path) — `index_budgeted` indexes files whose *path*
-      matches the query first, so an incomplete index serves the search at hand
-- [x] demand-first coverage — when a warming repo's search comes up empty, the
-      fallback content-scans the un-indexed remainder, *persists* the matches
-      (`index::scan_for_query` → `replace_files`), and re-searches; coverage grows
-      toward what's actually searched, not just walk order
-- [ ] best-first indexing scheduler — extend the above with content/git-recency
-      signals and a shared priority queue (parallel scan → heap → parallel parse
-      → serialized write). Design: [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md)
+- [x] fused walk→parse→write pipeline — `run_index` streams: one walk thread
+      feeds parse workers, which feed a writer committing in batches *as results
+      arrive*. Walk and parse overlap (indexing starts on the first file found),
+      and a budget-cut pass persists everything it parsed rather than losing the
+      lot. This replaced the collect-all-then-parse path, whose serial walk could
+      eat the whole budget on a huge repo and parse zero. Query relevance is the
+      content-scan's job (below), so the walk just streams in walk order — nothing
+      is deferred, which is what guarantees progress when the walk can't finish
+- [x] demand-first coverage — a warming repo content-scans for the query up front
+      (and on an empty result), *persists* the matches (`index::scan_for_query` →
+      `replace_files`), and searches; coverage grows toward what's actually
+      searched, not just walk order
+- [ ] best-first indexing scheduler — extend the fused pipeline with content/
+      git-recency signals and a priority heap between walk and parse (so warming
+      orders by relevance, not just walk order). Design:
+      [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md)
 - [ ] cheaper fuzzy pre-filter — the substring pre-filter is blind to
       abbreviations (`usr`↛`user`). A loose, recall-preserving narrowing (even
       ~50%) would speed cold fuzzy scans without the full unfiltered fallback

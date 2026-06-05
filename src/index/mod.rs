@@ -40,51 +40,64 @@ pub fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None, None)
+    run_index(store, root, &[], subdirs, None)
 }
 
 /// Opportunistic, time-bounded indexing — warm the index a little per call so no
 /// single query blocks on a full walk of a large repo. `active` (branch) files
-/// are parsed first and ignore the budget (the working set stays fresh); then
-/// files whose path matches `query` (so warming is steered toward the search at
-/// hand); then the rest of the walk, honoring `budget`. A sweep that finishes
-/// within budget marks coverage `complete` (and reconciles deletions), else
-/// `warming`.
+/// are parsed first and ignore the budget (the working set stays fresh); then the
+/// walk streams the rest, honoring `budget`. A sweep that finishes within budget
+/// marks coverage `complete` (and reconciles deletions), else `warming`.
 pub fn index_budgeted(
     store: &mut Store,
     root: &Path,
     active: &[String],
     budget: Duration,
-    query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget), query)
+    run_index(store, root, active, &[], Some(budget))
 }
 
-/// Max candidates a single *bounded* (warming) pass collects before it stops
-/// walking. Collection is cheap (stat-only), but on a huge repo it must not run
-/// the whole tree (memory + latency) nor consume the parse budget — so we cap it
-/// and let the deadline govern parsing instead. An explicit `--index` (unbounded)
-/// ignores this and walks everything.
+/// Max files a single *bounded* (warming) pass walks before it stops. The walk
+/// is cheap (stat-only), but on a huge repo it must not run the whole tree
+/// (memory + latency); the deadline cuts it short sooner. An explicit `--index`
+/// (unbounded) ignores this and walks everything. Overridable via
+/// `RQ_COLLECT_CAP` (tuning / deterministic tests).
 const COLLECT_CAP: usize = 50_000;
 
+fn collect_cap() -> usize {
+    std::env::var("RQ_COLLECT_CAP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(COLLECT_CAP)
+}
+
+/// Files buffered before a streaming write commits them — bounds per-transaction
+/// size and how much parsed-but-unwritten work a cut-short pass can lose.
+const WRITE_BATCH: usize = 512;
+
 /// The shared indexing core behind both the explicit (`index_under`) and
-/// opportunistic (`index_budgeted`) paths. Collect candidates serially (cheap,
-/// mtime-skipping unchanged files into `seen` for deletion reconcile), parse the
-/// changed/new ones in parallel, then write them in one batched transaction.
+/// opportunistic (`index_budgeted`) paths, run as a single fused pipeline: one
+/// walk thread streams candidate paths (cheap, stat-only, mtime-skipping
+/// unchanged files), a pool of parse workers turns them into symbols in parallel,
+/// and this thread writes the results in batches **as they arrive** — so a pass
+/// cut short by its budget still persists everything parsed up to that point, and
+/// indexing starts the instant the first file is found (walk and parse overlap).
 ///
-/// `active` files are parsed first and ignore `deadline` (the working set);
-/// `subdirs` (empty = whole repo) scope the walk; `deadline` bounds it
-/// (`None` = unbounded). A whole-repo sweep that finishes within the deadline
-/// reconciles deletions and is marked `complete`; a bounded sweep cut short is
-/// `warming`; a deliberate subtree is `partial` (never auto-warmed over).
+/// `active` files are parsed first and ignore `budget` (the working set stays
+/// fresh); then the walk streams the rest in walk order. `subdirs` (empty = whole
+/// repo) scope the walk; `budget` bounds it (`None` = unbounded). A whole-repo
+/// sweep that finishes within budget reconciles deletions and is `complete`; a
+/// sweep cut short is `warming`; a deliberate subtree is `partial`.
 fn run_index(
     store: &mut Store,
     root: &Path,
     active: &[String],
     subdirs: &[String],
     budget: Option<Duration>,
-    query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
@@ -94,8 +107,8 @@ fn run_index(
     let stored = store.file_mtimes(repo_id)?;
     let mut seen: HashSet<String> = HashSet::new();
 
-    // active (branch) files first: always parsed, so the working set stays fresh
-    // even when a tight budget cuts the walk short
+    // Active (branch) files first: always parsed and written, so the working set
+    // stays fresh even when a tight budget cuts the walk short.
     let mut active_to_parse: Vec<std::path::PathBuf> = Vec::new();
     for rel in active {
         note_candidate(
@@ -106,6 +119,8 @@ fn run_index(
             &mut active_to_parse,
         );
     }
+    let (active_parsed, _) = parse_files(root, &active_to_parse, None, None);
+    let (mut files_indexed, mut symbols) = store.replace_files(repo_id, &active_parsed)?;
 
     // walk the whole repo, or just the requested subtrees — paths stay relative
     // to `root` so they're repo-relative either way
@@ -114,54 +129,125 @@ fn run_index(
     } else {
         subdirs.iter().map(|s| root.join(s)).collect()
     };
-    // Collect candidates with a *count* cap (bounded passes only) — never a time
-    // bound. Collection is cheap (stat-only); time-bounding it here is what
-    // starved parsing on a huge repo (the walk ate the whole budget, leaving zero
-    // to parse). The deadline below governs parsing instead.
-    let cap = budget.map(|_| COLLECT_CAP);
-    let mut walk_to_parse: Vec<std::path::PathBuf> = Vec::new();
-    let mut walk_finished = true;
-    'walk: for walk_root in &walk_roots {
-        for result in WalkBuilder::new(walk_root).build() {
-            let Ok(entry) = result else { continue };
-            if !entry.file_type().is_some_and(|t| t.is_file()) {
-                continue;
-            }
-            note_candidate(root, entry.path(), &stored, &mut seen, &mut walk_to_parse);
-            if cap.is_some_and(|c| walk_to_parse.len() >= c) {
-                walk_finished = false;
-                break 'walk;
-            }
-        }
-    }
 
-    // Query-guided ordering: when warming for a specific search, parse files
-    // whose *path* matches the query first (`employee` → `app/models/employee.rb`,
-    // `…/employee/*`). Under a tight budget the relevant files get indexed before
-    // the arbitrary tail, so the very next search is more likely to land.
-    let (priority_to_parse, walk_to_parse): (Vec<_>, Vec<_>) = match query {
-        Some(q) => {
-            let ql = q.to_ascii_lowercase();
-            walk_to_parse
-                .into_iter()
-                .partition(|p| path_matches_query(p, root, &ql))
-        }
-        None => (Vec::new(), walk_to_parse),
-    };
-
-    // Parse in parallel (the expensive, CPU-bound step), then write in one batched
-    // transaction. The parse deadline is computed *now* — after collection — so
-    // collection time never eats into it; parsing always gets the full budget.
-    // Active and path-matching files lead; the active set ignores the deadline.
+    // Fused walk → parse → write pipeline. Bounded channels give back-pressure, so
+    // a fast walk can't outrun the parsers (nor they the writer) into unbounded
+    // memory. The walk thread alone owns `seen` and returns it.
     let deadline = budget.map(|b| Instant::now() + b);
-    let (active_parsed, _) = parse_files(root, &active_to_parse, None, None);
-    let (priority_parsed, prio_all) = parse_files(root, &priority_to_parse, deadline, None);
-    let (walk_parsed, walk_all) = parse_files(root, &walk_to_parse, deadline, None);
-    let completed = walk_finished && prio_all && walk_all;
-    let mut parsed = active_parsed;
-    parsed.extend(priority_parsed);
-    parsed.extend(walk_parsed);
-    let (files_indexed, symbols) = store.replace_files(repo_id, &parsed)?;
+    let cap = budget.map(|_| collect_cap());
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let parse_incomplete = AtomicBool::new(false);
+    let (path_tx, path_rx) = std::sync::mpsc::sync_channel::<std::path::PathBuf>(1024);
+    let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<crate::store::FileSymbols>(1024);
+    let path_rx = Arc::new(Mutex::new(path_rx));
+    // borrowed (not moved) so deletion reconcile can still read it after the walk
+    let stored_ref = &stored;
+
+    let (walk_files, walk_symbols, seen, walk_finished) =
+        std::thread::scope(|s| -> Result<_, Box<dyn std::error::Error>> {
+            // walk thread: stream every path that needs a parse to the workers, in
+            // walk order, the instant it's found. No buffering or deferral — on a
+            // repo too big to finish in budget, anything held back would never be
+            // sent, so a streamed walk is what guarantees progress every pass.
+            let walk = s.spawn(move || {
+                let mut seen = seen;
+                let mut finished = true;
+                let mut processed = 0usize;
+                'walk: for walk_root in &walk_roots {
+                    for result in WalkBuilder::new(walk_root).build() {
+                        if past(deadline) {
+                            finished = false;
+                            break 'walk;
+                        }
+                        let Ok(entry) = result else { continue };
+                        if !entry.file_type().is_some_and(|t| t.is_file()) {
+                            continue;
+                        }
+                        let path = entry.path();
+                        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                            continue;
+                        };
+                        if lang::plugin_for_extension(ext).is_none() {
+                            continue;
+                        }
+                        let rel = path
+                            .strip_prefix(root)
+                            .unwrap_or(path)
+                            .to_string_lossy()
+                            .into_owned();
+                        if !seen.insert(rel.clone()) {
+                            continue; // an active file re-seen, or a duplicate
+                        }
+                        // unchanged by mtime → already indexed, skip the parse
+                        if let Some(&Some(m)) = stored_ref.get(&rel)
+                            && Some(m) == file_mtime(path)
+                        {
+                            continue;
+                        }
+                        if path_tx.send(path.to_path_buf()).is_err() {
+                            break 'walk;
+                        }
+                        processed += 1;
+                        if cap.is_some_and(|c| processed >= c) {
+                            finished = false;
+                            break 'walk;
+                        }
+                    }
+                }
+                drop(path_tx); // close → workers drain and exit
+                (seen, finished)
+            });
+
+            // parse workers: pull paths, parse in parallel, stream symbols out
+            let parse_incomplete = &parse_incomplete;
+            for _ in 0..workers {
+                let path_rx = Arc::clone(&path_rx);
+                let res_tx = res_tx.clone();
+                s.spawn(move || {
+                    loop {
+                        let got = { path_rx.lock().unwrap().recv() };
+                        let Ok(path) = got else { break }; // channel closed
+                        if past(deadline) {
+                            parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
+                            break;
+                        }
+                        if let Some(fs) = parse_file(root, &path, None)
+                            && res_tx.send(fs).is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(res_tx); // the workers hold the live clones
+
+            // writer (this thread): commit batches as they arrive, so a cut-short
+            // pass keeps everything it managed to parse
+            let mut buf: Vec<crate::store::FileSymbols> = Vec::new();
+            let (mut wf, mut ws) = (0usize, 0usize);
+            while let Ok(fs) = res_rx.recv() {
+                buf.push(fs);
+                if buf.len() >= WRITE_BATCH {
+                    let (f, sy) = store.replace_files(repo_id, &buf)?;
+                    wf += f;
+                    ws += sy;
+                    buf.clear();
+                }
+            }
+            if !buf.is_empty() {
+                let (f, sy) = store.replace_files(repo_id, &buf)?;
+                wf += f;
+                ws += sy;
+            }
+            let (seen, finished) = walk.join().unwrap();
+            Ok((wf, ws, seen, finished))
+        })?;
+
+    files_indexed += walk_files;
+    symbols += walk_symbols;
+    let completed = walk_finished && !parse_incomplete.load(Ordering::Relaxed);
     let stats = Stats {
         files_seen: seen.len(),
         files_indexed,
@@ -209,16 +295,6 @@ fn run_index(
         status,
     )?;
     Ok(stats)
-}
-
-/// Whether a file's repo-relative path contains the (already-lowercased) query —
-/// a filename or directory match (`employee` → `app/models/employee.rb`,
-/// `lib/employee/x.rb`). Used to prioritize warming toward what's being searched.
-fn path_matches_query(file: &Path, root: &Path, query_lower: &str) -> bool {
-    let rel = file.strip_prefix(root).unwrap_or(file);
-    rel.to_string_lossy()
-        .to_ascii_lowercase()
-        .contains(query_lower)
 }
 
 /// Note a walked file: record every source file in `seen` (for deletion
@@ -294,6 +370,11 @@ fn parse_file(
     })
 }
 
+/// Whether an optional deadline has passed (always false when unbounded).
+fn past(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
+}
+
 /// Parse many files across the available CPUs, stopping early once `deadline`
 /// passes; when `needle` is set, each worker skips files that don't contain it
 /// (the content pre-filter). Returns the parsed files and whether *all* of them
@@ -308,7 +389,6 @@ fn parse_files(
 ) -> (Vec<crate::store::FileSymbols>, bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let past = |d: Option<Instant>| d.is_some_and(|d| Instant::now() >= d);
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
@@ -678,33 +758,6 @@ mod tests {
         assert!(is_trunk("master"));
         assert!(!is_trunk("feature/x"));
         assert!(!is_trunk("dpep/fix"));
-    }
-
-    #[test]
-    fn path_match_steers_warming_toward_the_query() {
-        let root = Path::new("/repo");
-        // filename or any path segment matching the (lowercased) query qualifies
-        assert!(path_matches_query(
-            Path::new("/repo/app/models/employee.rb"),
-            root,
-            "employee"
-        ));
-        assert!(path_matches_query(
-            Path::new("/repo/lib/employee/list.rb"),
-            root,
-            "employee"
-        ));
-        // case-insensitive, and a non-match stays in the arbitrary tail
-        assert!(path_matches_query(
-            Path::new("/repo/Employee.go"),
-            root,
-            "employee"
-        ));
-        assert!(!path_matches_query(
-            Path::new("/repo/app/widget.rb"),
-            root,
-            "employee"
-        ));
     }
 
     #[test]

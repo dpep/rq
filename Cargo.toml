@@ -1,6 +1,6 @@
 [package]
 name = "rq"
-version = "0.15.1"
+version = "0.16.0"
 edition = "2024"
 description = "Reference Query — find the code you're looking for."
 license = "MIT"

@@ -241,13 +241,7 @@ fn cmd_search(
         && coverage.as_deref() != Some("complete")
         && let Some(c) = &cwd
     {
-        let _ = crate::index::index_budgeted(
-            &mut store,
-            c,
-            &active_paths,
-            answer_warm_budget(),
-            Some(query),
-        );
+        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, answer_warm_budget());
     }
 
     let current = identity
@@ -327,7 +321,6 @@ fn cmd_search(
                     cwd,
                     &active_paths,
                     live_fallback_budget(),
-                    Some(query),
                 );
                 hits = crate::search::search(&store, query, current, &active, limit)
                     .unwrap_or_default();
@@ -449,13 +442,7 @@ fn cmd_search(
         && let Some(c) = &cwd
         && !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
     {
-        let _ = crate::index::index_budgeted(
-            &mut store,
-            c,
-            &active_paths,
-            deferred_warm_budget(),
-            Some(query),
-        );
+        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, deferred_warm_budget());
     }
 
     ExitCode::SUCCESS
