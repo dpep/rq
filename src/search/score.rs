@@ -156,98 +156,134 @@ pub fn score(
     Some(Scored { total, features })
 }
 
-/// The char indices in `name` that `query` matched — greedy, left-to-right,
-/// separator-insensitive (same matching as the scorer). For highlighting *what*
-/// matched (exact/prefix yield a leading run; fuzzy yields the scattered chars).
-/// Empty if `query` isn't a subsequence of `name`.
-pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
+/// Largest gap (chars skipped) allowed between two matched query chars that land
+/// *mid-word* (not at a word boundary). Boundary jumps are how abbreviations work
+/// and stay unlimited; off-boundary we tolerate a couple of skipped chars — a
+/// consonant run like `ctrl`→`Controller` (the `c`→`t` skips `on`), or a typo —
+/// but no more. A bigger gap (the `s` in `employeescontroller` reaching past
+/// `XYZ`, three chars) is coincidence, not a match.
+const MAX_NONBOUNDARY_GAP: usize = 2;
+
+/// One way `query` lines up against `name`: its score and the matched indices.
+struct Alignment {
+    score: f64,
+    positions: Vec<usize>,
+}
+
+/// Find the **best** alignment of `query` as a subsequence of `name`, maximizing
+/// matches at word boundaries (camelCase / underscore) and contiguous runs while
+/// penalizing gaps. `None` if `query` isn't a subsequence. Handles abbreviations
+/// (`refproc → RefundProcessor`, `usr → User`, `paymnt → Payments`) and ignores
+/// separators in the query, so a snake_case query matches CamelCase
+/// (`widget_controller → WidgetsController`).
+///
+/// This is a small dynamic program rather than a greedy left-to-right scan: greedy
+/// takes the *first* candidate for each query char, which mis-aligns (matching the
+/// `e` in `xxxe_employee` instead of the contiguous `employee`, or letting a
+/// trailing char straggle to a far position). The DP considers every placement and
+/// keeps the highest-scoring one, so the score and the highlight reflect the match
+/// a human would read.
+fn align(query: &str, name: &str) -> Option<Alignment> {
     let q: Vec<char> = query
         .chars()
         .filter(|c| c.is_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
         .collect();
     if q.is_empty() {
-        return Vec::new();
-    }
-    let mut positions = Vec::new();
-    let mut qi = 0;
-    for (i, c) in name.chars().enumerate() {
-        if qi >= q.len() {
-            break;
-        }
-        if c.to_ascii_lowercase() == q[qi] {
-            positions.push(i);
-            qi += 1;
-        }
-    }
-    if qi == q.len() { positions } else { Vec::new() }
-}
-
-/// Score `query` as a subsequence of `name`, rewarding matches at word
-/// boundaries (camelCase / underscore) and contiguous runs. `None` if `query`
-/// is not a subsequence. Handles abbreviations like `refproc → RefundProcessor`,
-/// `usr → User`, `paymnt → Payments`.
-///
-/// Separators in the query are ignored, so a snake_case (or kebab) query matches
-/// a CamelCase name: `widget_controller` → `WidgetsController`. Candidate
-/// separators are skipped naturally as the scan walks the name.
-/// Largest gap (chars skipped) allowed between two matched query chars that
-/// land *mid-word* (not at a word boundary). Boundary jumps are how abbreviations
-/// work and stay unlimited; off-boundary we tolerate a couple of skipped chars —
-/// a consonant run like `ctrl`→`Controller` (the `c`→`t` skips `on`), or a typo —
-/// but no more. A bigger gap (the `s` in `employeescontroller` reaching past
-/// `XYZ`, three chars) is coincidence, not a match.
-const MAX_NONBOUNDARY_GAP: usize = 2;
-
-fn subsequence_score(query: &str, name: &str) -> Option<f64> {
-    let q: Vec<char> = query.chars().filter(|c| c.is_alphanumeric()).collect();
-    if q.is_empty() {
         return None;
     }
     let chars: Vec<char> = name.chars().collect();
+    let n = chars.len();
+    if q.len() > n {
+        return None;
+    }
     let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
     let boundary = boundaries(&chars);
 
-    let mut score = 0.0;
-    let mut qi = 0;
-    let mut prev: Option<usize> = None;
+    // table[qi][i] = best (score, backpointer) for aligning q[0..=qi] with q[qi]
+    // landing on name position `i`; `None` if q[qi] can't end there. The
+    // backpointer is the position where q[qi-1] matched (self for qi == 0).
+    let mut table: Vec<Vec<Option<(f64, usize)>>> = vec![vec![None; n]; q.len()];
+
     for (i, &c) in lower.iter().enumerate() {
-        if qi >= q.len() {
-            break;
-        }
-        if c != q[qi] {
-            continue;
-        }
-        score += 10.0; // base per matched char
-        if boundary[i] {
-            score += 15.0; // aligned to a word boundary
-        }
-        match prev {
-            Some(p) if p + 1 == i => score += 10.0, // contiguous
-            Some(p) => {
-                let gap = i - p - 1;
-                // A non-boundary match far from the previous one is noise, not
-                // signal: real abbreviations skip at word boundaries (rewarded
-                // above), and a typo skips at most one char. A larger mid-word
-                // gap — the `s` in `employeescontroller` landing past `XYZ` in
-                // `EmployeeXYZsController` — means this isn't really a match.
-                if !boundary[i] && gap > MAX_NONBOUNDARY_GAP {
-                    return None;
-                }
-                score -= gap as f64 * 0.5; // gap penalty
+        if c == q[0] {
+            let mut s = 10.0;
+            if boundary[i] {
+                s += 15.0;
             }
-            None if i == 0 => score += 20.0, // matches at the very start
-            None => {}
+            if i == 0 {
+                s += 20.0; // anchored at the very start
+            }
+            table[0][i] = Some((s, i));
         }
-        prev = Some(i);
-        qi += 1;
     }
 
-    if qi == q.len() {
-        Some(score.max(0.0))
-    } else {
-        None
+    for qi in 1..q.len() {
+        for i in qi..n {
+            if lower[i] != q[qi] {
+                continue;
+            }
+            let base = 10.0 + if boundary[i] { 15.0 } else { 0.0 };
+            // a non-boundary char can only follow within MAX_NONBOUNDARY_GAP;
+            // a boundary char may follow from anywhere (a skipped word)
+            let j_start = if boundary[i] {
+                qi - 1
+            } else {
+                (qi - 1).max(i.saturating_sub(MAX_NONBOUNDARY_GAP + 1))
+            };
+            let mut best: Option<(f64, usize)> = None;
+            let prev_row = &table[qi - 1];
+            for (j, cell) in prev_row.iter().enumerate().take(i).skip(j_start) {
+                let Some((pscore, _)) = cell else {
+                    continue;
+                };
+                let trans = if j + 1 == i {
+                    10.0 // contiguous run
+                } else {
+                    let gap = i - j - 1;
+                    if !boundary[i] && gap > MAX_NONBOUNDARY_GAP {
+                        continue; // mid-word leap — not a real match
+                    }
+                    -(gap as f64) * 0.5 // gap penalty
+                };
+                let cand = pscore + trans;
+                if best.is_none_or(|(b, _)| cand > b) {
+                    best = Some((cand, j));
+                }
+            }
+            if let Some((bscore, j)) = best {
+                table[qi][i] = Some((bscore + base, j));
+            }
+        }
     }
+
+    // best end position for the final query char, then backtrack to collect indices
+    let last = q.len() - 1;
+    let (mut pos, score) = (0..n)
+        .filter_map(|i| table[last][i].map(|(s, _)| (i, s)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    let mut positions = Vec::with_capacity(q.len());
+    for qi in (0..q.len()).rev() {
+        positions.push(pos);
+        pos = table[qi][pos].expect("backtrack hits a filled cell").1;
+    }
+    positions.reverse();
+    Some(Alignment {
+        score: score.max(0.0),
+        positions,
+    })
+}
+
+/// The char indices in `name` that `query` matched, from the best alignment —
+/// for highlighting *what* matched. Empty if `query` isn't a subsequence.
+pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
+    align(query, name).map(|a| a.positions).unwrap_or_default()
+}
+
+/// Score `query` as a subsequence of `name` (the best alignment's score), or
+/// `None` if it isn't a subsequence.
+fn subsequence_score(query: &str, name: &str) -> Option<f64> {
+    align(query, name).map(|a| a.score)
 }
 
 /// The filename stem of a repo-relative path: last segment, extension dropped.
@@ -342,6 +378,97 @@ mod tests {
         // separator-insensitive: snake query highlights across CamelCase
         assert_eq!(match_positions("wc", "WidgetController"), vec![0, 6]); // W, C
         assert!(match_positions("xyz", "FooThing").is_empty());
+    }
+
+    #[test]
+    fn prefers_the_contiguous_run_over_an_earlier_scattered_match() {
+        // the bug: a greedy scan anchored on the first `e` (in `xxxe`) and lit up
+        // a scattered match; the best alignment is the contiguous `employee`.
+        assert_eq!(
+            match_positions("employee", "xxxe_employee"),
+            vec![5, 6, 7, 8, 9, 10, 11, 12]
+        );
+        // align to the `controller` word, not a stray earlier `c` in `calc`
+        assert_eq!(
+            match_positions("controller", "calc_controller"),
+            (5..15).collect::<Vec<_>>()
+        );
+        // and to the camelCase humps across the whole name
+        assert_eq!(
+            match_positions("widgetcontroller", "WidgetController"),
+            (0..16).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn score_and_positions_come_from_the_same_alignment() {
+        // a match yields a score and exactly one highlight per query char
+        assert!(subsequence_score("refproc", "RefundProcessor").is_some());
+        assert_eq!(match_positions("refproc", "RefundProcessor").len(), 7);
+        // a non-match yields neither
+        assert!(subsequence_score("xyz", "RefundProcessor").is_none());
+        assert!(match_positions("xyz", "RefundProcessor").is_empty());
+    }
+
+    #[test]
+    fn highlights_are_ordered_in_bounds_and_correct_across_varied_inputs() {
+        let cases = [
+            ("usr", "UserService"),
+            ("paymnt", "Payments"),
+            ("wc", "WidgetController"),
+            ("ctrl", "Controller"),
+            ("gp", "get_post"),
+            ("ab", "alpha_beta"),
+            ("refproc", "RefundProcessor"),
+            ("emp", "EmployeesController"),
+            ("http", "HTTPParser"),
+        ];
+        for (q, name) in cases {
+            let nchars: Vec<char> = name.chars().collect();
+            let qchars: Vec<char> = q.chars().filter(|c| c.is_alphanumeric()).collect();
+            let pos = match_positions(q, name);
+            assert_eq!(
+                pos.len(),
+                qchars.len(),
+                "one highlight per query char: {q}/{name}"
+            );
+            assert!(
+                pos.windows(2).all(|w| w[0] < w[1]),
+                "strictly increasing: {q}/{name} {pos:?}"
+            );
+            for (qi, &p) in pos.iter().enumerate() {
+                assert!(p < nchars.len(), "in bounds: {q}/{name}");
+                assert_eq!(
+                    nchars[p].to_ascii_lowercase(),
+                    qchars[qi].to_ascii_lowercase(),
+                    "highlighted char equals the query char: {q}/{name} at {p}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_acronym_at_boundaries_outranks_a_mid_word_alignment() {
+        // both letters on word boundaries (acronym) beats them landing mid-word
+        let acronym = subsequence_score("wc", "WidgetController").unwrap();
+        let midword = subsequence_score("wc", "switchcase").unwrap();
+        assert!(acronym > midword, "{acronym} > {midword}");
+    }
+
+    #[test]
+    fn a_far_path_straggler_never_outranks_a_prefix_match() {
+        // "employees" can match the stem `employee_x_syy` only via a trailing `s`
+        // straggling to a far word boundary — a weak match. The real target, where
+        // "employees" is a prefix, dominates via the prefix layer.
+        let mut straggler = row("Thing", "class", 1);
+        straggler.file = "app/employee_x_syy.rb".into();
+        let prefixed = row("EmployeesController", "class", 1);
+        let pre = score("employees", &prefixed, None, Boosts::default())
+            .unwrap()
+            .total;
+        if let Some(s) = score("employees", &straggler, None, Boosts::default()) {
+            assert!(pre > s.total, "prefix {pre} > path straggler {}", s.total);
+        }
     }
 
     #[test]

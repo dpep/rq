@@ -256,7 +256,8 @@ fn cmd_search(
     if crate::trace::enabled() {
         crate::trace!(
             "query {query:?}: root={} identity={} coverage={} warming_ok={warming_ok} active={}",
-            root.as_deref().map_or("?".into(), |p| p.display().to_string()),
+            root.as_deref()
+                .map_or("?".into(), |p| p.display().to_string()),
             identity.as_deref().unwrap_or("none"),
             coverage.as_deref().unwrap_or("none"),
             active_paths.len(),
