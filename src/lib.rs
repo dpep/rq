@@ -4,6 +4,9 @@
 //! likely looking for as fast as possible — not to enumerate every match.
 //! See `docs/ARCHITECTURE.md` for the design these modules implement.
 
+#[macro_use]
+pub mod trace;
+
 pub mod cli;
 pub mod core;
 pub mod events;

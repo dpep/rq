@@ -115,11 +115,17 @@ struct Cli {
     /// Print a shell completion script (bash, zsh, fish, elvish, powershell).
     #[arg(long, value_name = "SHELL")]
     completions: Option<Shell>,
+
+    /// Trace what rq decides (root, coverage, warming, reconcile) to stderr —
+    /// for debugging. `RQ_LOG=1` does the same for an installed binary.
+    #[arg(short = 'v', long)]
+    verbose: bool,
 }
 
 /// Parse arguments and dispatch. Returns the process exit code.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
+    crate::trace::enable_from(cli.verbose);
 
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
@@ -205,6 +211,7 @@ fn cmd_search(
     } else {
         (want * 20).max(PATH_HEADROOM)
     };
+    let _timer = crate::trace::Timer::start("search done");
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
@@ -246,10 +253,20 @@ fn cmd_search(
     // subset (`--index --path …`, status "partial").
     let known = coverage.is_some();
     let warming_ok = (cwd_is_git || known) && coverage.as_deref() != Some("partial");
+    if crate::trace::enabled() {
+        crate::trace!(
+            "query {query:?}: root={} identity={} coverage={} warming_ok={warming_ok} active={}",
+            root.as_deref().map_or("?".into(), |p| p.display().to_string()),
+            identity.as_deref().unwrap_or("none"),
+            coverage.as_deref().unwrap_or("none"),
+            active_paths.len(),
+        );
+    }
     if warming_ok
         && coverage.as_deref() != Some("complete")
         && let Some(c) = &root
     {
+        crate::trace!("inline warm ({:?})", answer_warm_budget());
         let _ = crate::index::index_budgeted(&mut store, c, &active_paths, answer_warm_budget());
     }
 
@@ -326,6 +343,7 @@ fn cmd_search(
     {
         match coverage.as_deref() {
             Some("warming") => {
+                crate::trace!("empty → warming fallback: index more, then re-search");
                 let _ = crate::index::index_budgeted(
                     &mut store,
                     root,
@@ -336,6 +354,7 @@ fn cmd_search(
                     .unwrap_or_default();
             }
             None => {
+                crate::trace!("empty → live (in-memory) scan of an untracked dir");
                 let mut h =
                     crate::search::live_search(root, query, limit, &HashSet::new(), None, true);
                 if h.is_empty() {

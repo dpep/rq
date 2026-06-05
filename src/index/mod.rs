@@ -324,10 +324,18 @@ fn run_index(
     // a finished whole-repo sweep saw every live file → anything still indexed
     // (but not seen) was deleted on disk
     if completed && whole_repo {
+        let mut forgotten = 0;
         for path in stored.keys() {
             if !seen.contains(path) {
                 store.forget_file(repo_id, path)?;
+                forgotten += 1;
             }
+        }
+        if forgotten > 0 {
+            crate::trace!(
+                "reconcile {}: forgot {forgotten} file(s) not seen on disk",
+                root_display.display()
+            );
         }
         // record the commit the index now reflects, so a later search can detect
         // an unchanged committed tree and skip re-walking a large repo
@@ -360,6 +368,13 @@ fn run_index(
         stats.files_indexed as i64,
         status,
     )?;
+    crate::trace!(
+        "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",
+        root_display.display(),
+        stats.files_seen,
+        stats.files_indexed,
+        stats.symbols,
+    );
     Ok(stats)
 }
 
