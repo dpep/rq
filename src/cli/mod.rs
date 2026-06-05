@@ -256,8 +256,7 @@ fn cmd_search(
     if crate::trace::enabled() {
         crate::trace!(
             "query {query:?}: root={} identity={} coverage={} warming_ok={warming_ok} active={}",
-            root.as_deref()
-                .map_or("?".into(), |p| p.display().to_string()),
+            root.as_deref().map_or("?".into(), crate::trace::abbrev),
             identity.as_deref().unwrap_or("none"),
             coverage.as_deref().unwrap_or("none"),
             active_paths.len(),
@@ -681,7 +680,15 @@ fn hl_path(path: &str, query: &str, color: Option<&str>) -> String {
     };
     let base_byte = path.rfind('/').map(|b| b + 1).unwrap_or(0);
     let base_start = path[..base_byte].chars().count();
-    let positions: Vec<usize> = crate::search::match_positions(query, &path[base_byte..])
+    // align on the filename *stem* (drop the extension), the same string the
+    // scorer matched — so the query can't straggle into `.rb` instead of lighting
+    // up the logical name (`employees_controller`)
+    let base = &path[base_byte..];
+    let stem = match base.rfind('.') {
+        Some(i) if i > 0 => &base[..i],
+        _ => base,
+    };
+    let positions: Vec<usize> = crate::search::match_positions(query, stem)
         .into_iter()
         .map(|p| p + base_start)
         .collect();
@@ -885,5 +892,24 @@ mod tests {
         );
         // nothing matched → unchanged
         assert_eq!(highlight("FooThing", &[], "1;31"), "FooThing");
+    }
+
+    #[test]
+    fn hl_path_highlights_the_stem_not_the_extension() {
+        // matching `employeescontroller`, the highlight covers the logical name in
+        // the stem and never straggles into `.rb`
+        let out = hl_path(
+            "app/employees_controller.rb",
+            "employeescontroller",
+            Some("1;31"),
+        );
+        assert!(
+            out.starts_with("app/\u{1b}[1;31memployees"),
+            "stem highlighted: {out:?}"
+        );
+        assert!(
+            out.ends_with("controller\u{1b}[0m.rb"),
+            "`.rb` left un-highlighted: {out:?}"
+        );
     }
 }

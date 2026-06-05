@@ -389,7 +389,7 @@ fn run_index(
         if forgotten > 0 {
             crate::trace!(
                 "reconcile {}: forgot {forgotten} file(s) not seen on disk",
-                root_display.display()
+                crate::trace::abbrev(&root_display)
             );
         }
         // record the commit the index now reflects, so a later search can detect
@@ -425,7 +425,7 @@ fn run_index(
     )?;
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",
-        root_display.display(),
+        crate::trace::abbrev(&root_display),
         stats.files_seen,
         stats.files_indexed,
         stats.symbols,

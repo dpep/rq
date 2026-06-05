@@ -164,6 +164,13 @@ pub fn score(
 /// `XYZ`, three chars) is coincidence, not a match.
 const MAX_NONBOUNDARY_GAP: usize = 2;
 
+/// Penalty per skipped char between two matched chars. Strong enough that a
+/// closer match wins over a farther one — so the query's trailing chars don't
+/// straggle to a distant word boundary (the `r` of a query landing in `.rb`
+/// instead of `controller`) — but not so strong it lets a scattered mid-word
+/// alignment outrank a boundary-aligned abbreviation.
+const GAP_PENALTY: f64 = 3.0;
+
 /// One way `query` lines up against `name`: its score and the matched indices.
 struct Alignment {
     score: f64,
@@ -199,6 +206,12 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     }
     let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
     let boundary = boundaries(&chars);
+    // prefix count of word boundaries, so we can ask "is a whole word skipped
+    // between j and i?" in O(1) — the "only span adjacent words" rule
+    let mut bnd_prefix = vec![0usize; n + 1];
+    for i in 0..n {
+        bnd_prefix[i + 1] = bnd_prefix[i] + boundary[i] as usize;
+    }
 
     // table[qi][i] = best (score, backpointer) for aligning q[0..=qi] with q[qi]
     // landing on name position `i`; `None` if q[qi] can't end there. The
@@ -225,7 +238,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
             }
             let base = 10.0 + if boundary[i] { 15.0 } else { 0.0 };
             // a non-boundary char can only follow within MAX_NONBOUNDARY_GAP;
-            // a boundary char may follow from anywhere (a skipped word)
+            // a boundary char may follow from the previous word (scan back further)
             let j_start = if boundary[i] {
                 qi - 1
             } else {
@@ -241,10 +254,16 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
                     10.0 // contiguous run
                 } else {
                     let gap = i - j - 1;
-                    if !boundary[i] && gap > MAX_NONBOUNDARY_GAP {
+                    if boundary[i] {
+                        // jumping to a new word: only the *adjacent* one — reject
+                        // if a whole word boundary sits between j and i (skipped)
+                        if bnd_prefix[i] - bnd_prefix[j + 1] > 0 {
+                            continue;
+                        }
+                    } else if gap > MAX_NONBOUNDARY_GAP {
                         continue; // mid-word leap — not a real match
                     }
-                    -(gap as f64) * 0.5 // gap penalty
+                    -(gap as f64) * GAP_PENALTY
                 };
                 let cand = pscore + trans;
                 if best.is_none_or(|(b, _)| cand > b) {
@@ -398,6 +417,32 @@ mod tests {
             match_positions("widgetcontroller", "WidgetController"),
             (0..16).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn matches_only_span_adjacent_words() {
+        // a query char may jump to the *next* word but not skip a whole one
+        assert_eq!(
+            match_positions("employeescontroller", "employees_controller"),
+            // employees (0-8) + controller (10-19); the `_` at 9 is skipped
+            vec![
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+            ]
+        );
+        // the trailing `s` would have to skip the `x` word to reach `syy` — reject
+        assert!(subsequence_score("employees", "employee_x_syy").is_none());
+        // skipping a whole middle word isn't a match either
+        assert!(subsequence_score("rndsvc", "RefundProcessingService").is_none());
+        // adjacent-word abbreviations still match
+        assert!(subsequence_score("refproc", "RefundProcessor").is_some());
+        assert!(subsequence_score("refprocsvc", "RefundProcessingService").is_some());
+    }
+
+    #[test]
+    fn a_contiguous_match_beats_a_farther_boundary_jump() {
+        // both `r`s are reachable; the closer contiguous one wins, so the query
+        // doesn't straggle to a separated boundary `r` (e.g. a file extension)
+        assert_eq!(match_positions("car", "car_r"), vec![0, 1, 2]);
     }
 
     #[test]

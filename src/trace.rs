@@ -23,6 +23,18 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// A path for display in trace lines, with the home directory shown as `~`.
+pub fn abbrev(path: &std::path::Path) -> String {
+    let s = path.display().to_string();
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => match s.strip_prefix(&*home.to_string_lossy()) {
+            Some(rest) => format!("~{rest}"),
+            None => s,
+        },
+        _ => s,
+    }
+}
+
 /// Emit a trace line to stderr (prefixed `rq:`), only when enabled.
 #[macro_export]
 macro_rules! trace {
