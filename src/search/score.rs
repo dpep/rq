@@ -446,6 +446,33 @@ mod tests {
     }
 
     #[test]
+    fn acronyms_highlight_word_initials_across_adjacent_words() {
+        // crossing word boundaries IS correct for an acronym — each query char
+        // lands on a word start (`uc` → the U and C humps of UserController)
+        assert_eq!(match_positions("uc", "UserController"), vec![0, 4]);
+        assert_eq!(
+            match_positions("abc", "alpha_bravo_charlie"),
+            vec![0, 6, 12] // a, b, c — each a word initial
+        );
+        // but only *adjacent* words — skipping a whole word is not a match
+        assert!(subsequence_score("payrollcontroller", "payroll_runs_controller").is_none());
+        assert!(subsequence_score("apc", "alpha_bravo_charlie").is_none()); // alpha→charlie skips bravo
+    }
+
+    #[test]
+    fn a_contiguous_word_match_outranks_a_scattered_cross_word_one() {
+        // `test` scatters across `the`+`settings` (jump + dropped vowel — the same
+        // shape as a real abbreviation, so it still matches), but a clean
+        // contiguous match must rank well above it. Ranking, not rejection, is the
+        // defense against scatter.
+        let contiguous = total("test", "test_helper").unwrap(); // prefix
+        let scattered = total("test", "the_settings_store");
+        if let Some(s) = scattered {
+            assert!(contiguous > s, "contiguous {contiguous} > scattered {s}");
+        }
+    }
+
+    #[test]
     fn score_and_positions_come_from_the_same_alignment() {
         // a match yields a score and exactly one highlight per query char
         assert!(subsequence_score("refproc", "RefundProcessor").is_some());
