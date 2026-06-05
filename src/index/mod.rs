@@ -75,6 +75,168 @@ fn collect_cap() -> usize {
 /// size and how much parsed-but-unwritten work a cut-short pass can lose.
 const WRITE_BATCH: usize = 512;
 
+/// Accumulates parsed files and commits them to the store in `WRITE_BATCH`
+/// chunks, so a long or cut-short index persists incrementally rather than in one
+/// final write. The `stream_walk` sink for `run_index`.
+struct BatchWriter<'a> {
+    store: &'a mut Store,
+    repo_id: i64,
+    buf: Vec<crate::store::FileSymbols>,
+    files: usize,
+    symbols: usize,
+}
+
+impl<'a> BatchWriter<'a> {
+    fn new(store: &'a mut Store, repo_id: i64) -> Self {
+        Self {
+            store,
+            repo_id,
+            buf: Vec::new(),
+            files: 0,
+            symbols: 0,
+        }
+    }
+
+    fn push(&mut self, fs: crate::store::FileSymbols) -> Result<(), Box<dyn std::error::Error>> {
+        self.buf.push(fs);
+        if self.buf.len() >= WRITE_BATCH {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.buf.is_empty() {
+            let (f, sy) = self.store.replace_files(self.repo_id, &self.buf)?;
+            self.files += f;
+            self.symbols += sy;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+}
+
+/// The one fused walk→parse→consume engine. A walk thread streams the source
+/// paths that `keep` selects (in walk order, the instant each is found) through a
+/// bounded channel to a pool of parse workers; the workers parse in parallel
+/// (skipping files that lack `needle`, when set) and stream each result to `sink`
+/// on the calling thread. Bounded channels back-pressure the walk and workers so
+/// neither runs ahead into unbounded memory; `deadline`/`cap` bound the pass.
+/// `seen` is seeded by the caller and returned holding every source file walked
+/// (for deletion reconcile). The bool is whether walk *and* parse finished within
+/// budget. Streaming — never collect-then-parse — is what keeps a pass too big to
+/// finish from making zero progress.
+///
+/// `run_index` sinks to the store (writing in batches via [`BatchWriter`]); the
+/// live scans (`scan_for_query`, `scan_symbols_budgeted`) sink into a `Vec` they
+/// return — same engine, different consumer.
+#[allow(clippy::too_many_arguments)]
+fn stream_walk(
+    root: &Path,
+    walk_roots: &[std::path::PathBuf],
+    deadline: Option<Instant>,
+    cap: Option<usize>,
+    needle: Option<&[u8]>,
+    seen: HashSet<String>,
+    keep: impl Fn(&str, &Path) -> bool + Send,
+    mut sink: impl FnMut(crate::store::FileSymbols) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(HashSet<String>, bool), Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let parse_incomplete = AtomicBool::new(false);
+    let (path_tx, path_rx) = std::sync::mpsc::sync_channel::<std::path::PathBuf>(1024);
+    let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<crate::store::FileSymbols>(1024);
+    let path_rx = Arc::new(Mutex::new(path_rx));
+
+    let (seen, walk_finished) =
+        std::thread::scope(|s| -> Result<_, Box<dyn std::error::Error>> {
+            // walk thread: stream every kept path to the workers, in walk order,
+            // the instant it's found. No buffering or deferral — on a repo too big
+            // to finish in budget, anything held back would never be sent.
+            let walk = s.spawn(move || {
+                let mut seen = seen;
+                let mut finished = true;
+                let mut processed = 0usize;
+                'walk: for walk_root in walk_roots {
+                    for result in WalkBuilder::new(walk_root).build() {
+                        if past(deadline) {
+                            finished = false;
+                            break 'walk;
+                        }
+                        let Ok(entry) = result else { continue };
+                        if !entry.file_type().is_some_and(|t| t.is_file()) {
+                            continue;
+                        }
+                        let path = entry.path();
+                        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                            continue;
+                        };
+                        if lang::plugin_for_extension(ext).is_none() {
+                            continue;
+                        }
+                        let rel = path
+                            .strip_prefix(root)
+                            .unwrap_or(path)
+                            .to_string_lossy()
+                            .into_owned();
+                        if !seen.insert(rel.clone()) {
+                            continue; // already handled (active file), or a duplicate
+                        }
+                        if !keep(&rel, path) {
+                            continue; // caller skipped it (unchanged / already indexed)
+                        }
+                        if path_tx.send(path.to_path_buf()).is_err() {
+                            break 'walk;
+                        }
+                        processed += 1;
+                        if cap.is_some_and(|c| processed >= c) {
+                            finished = false;
+                            break 'walk;
+                        }
+                    }
+                }
+                drop(path_tx); // close → workers drain and exit
+                (seen, finished)
+            });
+
+            // parse workers: pull paths, parse (with the content pre-filter) in
+            // parallel, stream results out
+            let parse_incomplete = &parse_incomplete;
+            for _ in 0..workers {
+                let path_rx = Arc::clone(&path_rx);
+                let res_tx = res_tx.clone();
+                s.spawn(move || {
+                    loop {
+                        let got = { path_rx.lock().unwrap().recv() };
+                        let Ok(path) = got else { break }; // channel closed
+                        if past(deadline) {
+                            parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
+                            break;
+                        }
+                        if let Some(fs) = parse_file(root, &path, needle)
+                            && res_tx.send(fs).is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(res_tx); // the workers hold the live clones
+
+            // consumer (this thread): hand each parsed file to the sink as it arrives
+            while let Ok(fs) = res_rx.recv() {
+                sink(fs)?;
+            }
+            Ok(walk.join().unwrap())
+        })?;
+
+    Ok((seen, walk_finished && !parse_incomplete.load(Ordering::Relaxed)))
+}
+
 /// The shared indexing core behind both the explicit (`index_under`) and
 /// opportunistic (`index_budgeted`) paths, run as a single fused pipeline: one
 /// walk thread streams candidate paths (cheap, stat-only, mtime-skipping
@@ -95,9 +257,6 @@ fn run_index(
     subdirs: &[String],
     budget: Option<Duration>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
@@ -130,124 +289,29 @@ fn run_index(
         subdirs.iter().map(|s| root.join(s)).collect()
     };
 
-    // Fused walk → parse → write pipeline. Bounded channels give back-pressure, so
-    // a fast walk can't outrun the parsers (nor they the writer) into unbounded
-    // memory. The walk thread alone owns `seen` and returns it.
     let deadline = budget.map(|b| Instant::now() + b);
     let cap = budget.map(|_| collect_cap());
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    let parse_incomplete = AtomicBool::new(false);
-    let (path_tx, path_rx) = std::sync::mpsc::sync_channel::<std::path::PathBuf>(1024);
-    let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<crate::store::FileSymbols>(1024);
-    let path_rx = Arc::new(Mutex::new(path_rx));
-    // borrowed (not moved) so deletion reconcile can still read it after the walk
+
+    // Fused walk → parse → write: stream the walk through the shared pipeline,
+    // committing parsed files in batches as they arrive (so a budget-cut or killed
+    // pass keeps what it parsed). Only new or changed files are parsed; every
+    // source file walked lands in `seen` for deletion reconcile.
     let stored_ref = &stored;
-
-    let (walk_files, walk_symbols, seen, walk_finished) =
-        std::thread::scope(|s| -> Result<_, Box<dyn std::error::Error>> {
-            // walk thread: stream every path that needs a parse to the workers, in
-            // walk order, the instant it's found. No buffering or deferral — on a
-            // repo too big to finish in budget, anything held back would never be
-            // sent, so a streamed walk is what guarantees progress every pass.
-            let walk = s.spawn(move || {
-                let mut seen = seen;
-                let mut finished = true;
-                let mut processed = 0usize;
-                'walk: for walk_root in &walk_roots {
-                    for result in WalkBuilder::new(walk_root).build() {
-                        if past(deadline) {
-                            finished = false;
-                            break 'walk;
-                        }
-                        let Ok(entry) = result else { continue };
-                        if !entry.file_type().is_some_and(|t| t.is_file()) {
-                            continue;
-                        }
-                        let path = entry.path();
-                        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-                            continue;
-                        };
-                        if lang::plugin_for_extension(ext).is_none() {
-                            continue;
-                        }
-                        let rel = path
-                            .strip_prefix(root)
-                            .unwrap_or(path)
-                            .to_string_lossy()
-                            .into_owned();
-                        if !seen.insert(rel.clone()) {
-                            continue; // an active file re-seen, or a duplicate
-                        }
-                        // unchanged by mtime → already indexed, skip the parse
-                        if let Some(&Some(m)) = stored_ref.get(&rel)
-                            && Some(m) == file_mtime(path)
-                        {
-                            continue;
-                        }
-                        if path_tx.send(path.to_path_buf()).is_err() {
-                            break 'walk;
-                        }
-                        processed += 1;
-                        if cap.is_some_and(|c| processed >= c) {
-                            finished = false;
-                            break 'walk;
-                        }
-                    }
-                }
-                drop(path_tx); // close → workers drain and exit
-                (seen, finished)
-            });
-
-            // parse workers: pull paths, parse in parallel, stream symbols out
-            let parse_incomplete = &parse_incomplete;
-            for _ in 0..workers {
-                let path_rx = Arc::clone(&path_rx);
-                let res_tx = res_tx.clone();
-                s.spawn(move || {
-                    loop {
-                        let got = { path_rx.lock().unwrap().recv() };
-                        let Ok(path) = got else { break }; // channel closed
-                        if past(deadline) {
-                            parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
-                            break;
-                        }
-                        if let Some(fs) = parse_file(root, &path, None)
-                            && res_tx.send(fs).is_err()
-                        {
-                            break;
-                        }
-                    }
-                });
-            }
-            drop(res_tx); // the workers hold the live clones
-
-            // writer (this thread): commit batches as they arrive, so a cut-short
-            // pass keeps everything it managed to parse
-            let mut buf: Vec<crate::store::FileSymbols> = Vec::new();
-            let (mut wf, mut ws) = (0usize, 0usize);
-            while let Ok(fs) = res_rx.recv() {
-                buf.push(fs);
-                if buf.len() >= WRITE_BATCH {
-                    let (f, sy) = store.replace_files(repo_id, &buf)?;
-                    wf += f;
-                    ws += sy;
-                    buf.clear();
-                }
-            }
-            if !buf.is_empty() {
-                let (f, sy) = store.replace_files(repo_id, &buf)?;
-                wf += f;
-                ws += sy;
-            }
-            let (seen, finished) = walk.join().unwrap();
-            Ok((wf, ws, seen, finished))
-        })?;
-
+    let keep = |rel: &str, path: &Path| match stored_ref.get(rel) {
+        Some(&Some(m)) => Some(m) != file_mtime(path),
+        _ => true, // new file, or one stored without an mtime
+    };
+    let (seen, completed, walk_files, walk_symbols) = {
+        let mut writer = BatchWriter::new(&mut *store, repo_id);
+        let (seen, completed) =
+            stream_walk(root, &walk_roots, deadline, cap, None, seen, keep, |fs| {
+                writer.push(fs)
+            })?;
+        writer.flush()?;
+        (seen, completed, writer.files, writer.symbols)
+    };
     files_indexed += walk_files;
     symbols += walk_symbols;
-    let completed = walk_finished && !parse_incomplete.load(Ordering::Relaxed);
     let stats = Stats {
         files_seen: seen.len(),
         files_indexed,
@@ -484,9 +548,10 @@ fn parse_git_log(text: &str) -> HashMap<String, i64> {
 ///   substring) — the ripgrep-style pre-filter, which skips the tree-sitter
 ///   parse on files that can't hold an exact/prefix/substring match.
 ///
-/// The cheap walk collects candidate paths; the expensive read+filter+parse runs
-/// in parallel across CPUs (same engine as the indexer). The pre-filter can't
-/// see a fuzzy abbreviation (`usr` isn't a substring of `user`); callers retry
+/// Both scans run on the same fused [`stream_walk`] engine as the indexer — they
+/// just sink into a `Vec` instead of the store, so they parse-as-they-walk and
+/// never starve the way a collect-then-parse pass could. The pre-filter can't see
+/// a fuzzy abbreviation (`usr` isn't a substring of `user`); callers retry
 /// unfiltered when a filtered scan comes up empty.
 pub fn scan_symbols_budgeted(
     root: &Path,
@@ -495,16 +560,28 @@ pub fn scan_symbols_budgeted(
     needle: Option<&str>,
 ) -> Vec<crate::core::Symbol> {
     let needle = needle.map(str::as_bytes).filter(|n| !n.is_empty());
-    let paths = collect_source_paths(root, skip, deadline);
-    // parallel read + content-filter + parse (the expensive part)
-    let (parsed, _) = parse_files(root, &paths, deadline, needle);
-    parsed.into_iter().flat_map(|fs| fs.symbols).collect()
+    let mut out: Vec<crate::core::Symbol> = Vec::new();
+    let keep = |rel: &str, _: &Path| !skip.contains(rel); // skip already-indexed
+    let _ = stream_walk(
+        root,
+        &[root.to_path_buf()],
+        deadline,
+        None,
+        needle,
+        HashSet::new(),
+        keep,
+        |fs| {
+            out.extend(fs.symbols);
+            Ok(())
+        },
+    );
+    out
 }
 
-/// Content-scan `root` for files matching `query`, parsed in parallel, and
-/// return the parsed files so the caller can **persist** them — the warming
-/// fallback folds the scan into the index (demand-first coverage) instead of
-/// throwing the parse away. Skips already-indexed files; bounded by `deadline`.
+/// Content-scan `root` for files matching `query` and return the parsed files so
+/// the caller can **persist** them — warming folds the scan into the index
+/// (demand-first coverage) instead of throwing the parse away. Skips
+/// already-indexed files; bounded by `deadline`.
 pub fn scan_for_query(
     root: &Path,
     query: &str,
@@ -512,45 +589,22 @@ pub fn scan_for_query(
     deadline: Option<Instant>,
 ) -> Vec<crate::store::FileSymbols> {
     let needle = (!query.is_empty()).then_some(query.as_bytes());
-    let paths = collect_source_paths(root, skip, deadline);
-    parse_files(root, &paths, deadline, needle).0
-}
-
-/// Cheap serial walk collecting parseable, not-already-indexed source paths
-/// (the readdir half of a scan; the expensive read+parse is parallelized after).
-fn collect_source_paths(
-    root: &Path,
-    skip: &HashSet<String>,
-    deadline: Option<Instant>,
-) -> Vec<std::path::PathBuf> {
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
-    for result in WalkBuilder::new(root).build() {
-        if let Some(d) = deadline
-            && Instant::now() >= d
-        {
-            break;
-        }
-        let Ok(entry) = result else { continue };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        let path = entry.path();
-        let is_source = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| lang::plugin_for_extension(e).is_some());
-        if !is_source {
-            continue;
-        }
-        if !skip.is_empty()
-            && let Ok(rel) = path.strip_prefix(root)
-            && skip.contains(rel.to_string_lossy().as_ref())
-        {
-            continue;
-        }
-        paths.push(path.to_path_buf());
-    }
-    paths
+    let mut out: Vec<crate::store::FileSymbols> = Vec::new();
+    let keep = |rel: &str, _: &Path| !skip.contains(rel);
+    let _ = stream_walk(
+        root,
+        &[root.to_path_buf()],
+        deadline,
+        None,
+        needle,
+        HashSet::new(),
+        keep,
+        |fs| {
+            out.push(fs);
+            Ok(())
+        },
+    );
+    out
 }
 
 /// Case-insensitive (ASCII) substring test — `haystack` contains `needle`.
