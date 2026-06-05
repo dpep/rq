@@ -128,8 +128,7 @@ impl<'a> BatchWriter<'a> {
 /// finish from making zero progress.
 ///
 /// `run_index` sinks to the store (writing in batches via [`BatchWriter`]); the
-/// live scans (`scan_for_query`, `scan_symbols_budgeted`) sink into a `Vec` they
-/// return — same engine, different consumer.
+/// live [`scan`] sinks into a `Vec` it returns — same engine, different consumer.
 #[allow(clippy::too_many_arguments)]
 fn stream_walk(
     root: &Path,
