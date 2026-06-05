@@ -40,7 +40,7 @@ pub fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None, None)
+    run_index(store, root, &[], subdirs, None)
 }
 
 /// Opportunistic, time-bounded indexing — warm the index a little per call so no
@@ -54,30 +54,7 @@ pub fn index_budgeted(
     active: &[String],
     budget: Duration,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget), None)
-}
-
-/// Time-bounded indexing **targeted at a query**: only files whose content
-/// contains `query` (the ripgrep-style pre-filter) are parsed and persisted, so a
-/// relevant — even buried — symbol gets indexed fast, racing past files that
-/// can't hold it. Runs alongside the general [`index_budgeted`] warm on its own
-/// connection. It indexes a *subset*, so it never touches coverage or reconciles
-/// deletions — the general warm owns that.
-pub fn index_budgeted_for_query(
-    store: &mut Store,
-    root: &Path,
-    active: &[String],
-    budget: Duration,
-    query: &str,
-) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(
-        store,
-        root,
-        active,
-        &[],
-        Some(budget),
-        Some(query.as_bytes()),
-    )
+    run_index(store, root, active, &[], Some(budget))
 }
 
 /// Max files a single *bounded* (warming) pass walks before it stops. The walk
@@ -92,6 +69,35 @@ fn collect_cap() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(COLLECT_CAP)
+}
+
+/// Parse workers per indexer pass (`rq -j`); 0 = auto. A search warms with two
+/// indexers at once (general + content-scan), so the live load is ~2× this.
+static PARSE_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Set the parse-worker count (from `rq -j`/`RQ_JOBS`); 0 restores auto.
+pub fn set_parse_jobs(n: usize) {
+    PARSE_JOBS.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Parse workers for one indexer pass — the configured value, else `RQ_JOBS`,
+/// else an auto default. Parsing is CPU-bound but writes serialize through one
+/// SQLite writer, so flooding every core rarely pays; the default is tuned to
+/// leave headroom for the second warmer and the writer.
+fn parse_jobs() -> usize {
+    let configured = PARSE_JOBS.load(std::sync::atomic::Ordering::Relaxed);
+    if configured > 0 {
+        return configured;
+    }
+    if let Some(n) = std::env::var("RQ_JOBS").ok().and_then(|v| v.parse().ok())
+        && n > 0
+    {
+        return n;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    cores.clamp(1, 8)
 }
 
 /// Files buffered before a streaming write commits them — bounds per-transaction
@@ -212,9 +218,7 @@ fn stream_walk(
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let workers = parse_jobs();
     let parse_incomplete = AtomicBool::new(false);
     let (path_tx, path_rx) = std::sync::mpsc::sync_channel::<std::path::PathBuf>(1024);
     let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<crate::store::FileSymbols>(1024);
@@ -320,7 +324,6 @@ fn run_index(
     active: &[String],
     subdirs: &[String],
     budget: Option<Duration>,
-    needle: Option<&[u8]>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -385,7 +388,7 @@ fn run_index(
     let (seen, completed, walk_files, walk_symbols) = {
         let mut writer = BatchWriter::new(&mut *store, repo_id);
         let (seen, completed) =
-            stream_walk(root, candidates, deadline, cap, needle, seen, keep, |fs| {
+            stream_walk(root, candidates, deadline, cap, None, seen, keep, |fs| {
                 writer.push(fs)
             })?;
         writer.flush()?;
@@ -398,19 +401,6 @@ fn run_index(
         files_indexed,
         symbols,
     };
-
-    // A query-targeted (needle) pass only indexes a *subset* — it adds relevant
-    // symbols fast but doesn't represent the whole tree, so it never touches
-    // coverage or reconciles deletions. The general warm owns that bookkeeping.
-    if needle.is_some() {
-        crate::trace!(
-            "content-scan {} (budget {budget:?}): {} indexed, {} symbols",
-            crate::trace::abbrev(&root_display),
-            stats.files_indexed,
-            stats.symbols,
-        );
-        return Ok(stats);
-    }
 
     let whole_repo = subdirs.is_empty();
     // a finished whole-repo sweep saw every live file → anything still indexed
@@ -562,10 +552,7 @@ fn parse_files(
 ) -> (Vec<crate::store::FileSymbols>, bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(paths.len());
+    let workers = parse_jobs().min(paths.len());
 
     if workers <= 1 {
         let mut out = Vec::new();
