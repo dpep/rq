@@ -192,10 +192,12 @@ pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
 /// a CamelCase name: `widget_controller` → `WidgetsController`. Candidate
 /// separators are skipped naturally as the scan walks the name.
 /// Largest gap (chars skipped) allowed between two matched query chars that
-/// land *mid-word* (not at a word boundary). Boundary jumps are how
-/// abbreviations work and stay unlimited; off-boundary we tolerate a single
-/// skipped char (a typo) but no more — a bigger gap is coincidence, not a match.
-const MAX_NONBOUNDARY_GAP: usize = 1;
+/// land *mid-word* (not at a word boundary). Boundary jumps are how abbreviations
+/// work and stay unlimited; off-boundary we tolerate a couple of skipped chars —
+/// a consonant run like `ctrl`→`Controller` (the `c`→`t` skips `on`), or a typo —
+/// but no more. A bigger gap (the `s` in `employeescontroller` reaching past
+/// `XYZ`, three chars) is coincidence, not a match.
+const MAX_NONBOUNDARY_GAP: usize = 2;
 
 fn subsequence_score(query: &str, name: &str) -> Option<f64> {
     let q: Vec<char> = query.chars().filter(|c| c.is_alphanumeric()).collect();
@@ -319,6 +321,8 @@ mod tests {
         assert!(total("paymnt", "Payments").is_some());
         assert!(total("perf", "perform").is_some());
         assert!(total("usr", "User").is_some());
+        // a consonant run skipping a couple of chars (gap 2) still matches
+        assert!(total("ctrl", "Controller").is_some());
     }
 
     #[test]

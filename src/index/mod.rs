@@ -188,6 +188,7 @@ fn stream_walk(
                         continue; // caller skipped it (unchanged / already indexed)
                     }
                     if path_tx.send(path.to_path_buf()).is_err() {
+                        finished = false; // workers gone (deadline) — walk didn't complete
                         break 'walk;
                     }
                     processed += 1;

@@ -212,18 +212,27 @@ fn cmd_search(
     let cwd = std::env::current_dir().ok();
     let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
 
+    // Index relative to the repo ROOT, not wherever the search happens to run.
+    // Paths and the stored checkout root must be repo-root-relative and stable, or
+    // a search from a subdirectory would re-key the same repo under subdir-relative
+    // paths — and the deletion reconcile / staleness revalidation would then forget
+    // everything indexed from the root. Outside git, the root is just the cwd.
+    let root = cwd
+        .as_deref()
+        .map(|c| crate::index::repo_root(c).unwrap_or_else(|| c.to_path_buf()));
+
     // Files you're changing on this feature branch (and their directory
     // neighbors): the branch ranking boost, and the warm pass's priority set.
-    let active_paths: Vec<String> = match &cwd {
+    let active_paths: Vec<String> = match &root {
         Some(c) if cwd_is_git => crate::index::branch_changed_files(c),
         _ => Vec::new(),
     };
 
-    // Resolve identity for any cwd, cache-first: looked up by checkout root (no
-    // `git remote` fork), falling back to git only the first time we see a repo.
-    // Computed even for non-git dirs so an explicitly `--index`ed one is still
-    // recognized as the current repo below.
-    let identity = cwd.as_deref().map(|c| resolve_identity(&store, c));
+    // Resolve identity from the repo root, cache-first: looked up by checkout root
+    // (no `git remote` fork), falling back to git only the first time we see a
+    // repo. Computed even for non-git dirs so an explicitly `--index`ed one is
+    // still recognized as the current repo below.
+    let identity = root.as_deref().map(|c| resolve_identity(&store, c));
     let coverage = identity
         .as_deref()
         .and_then(|id| store.coverage_status(id).ok())
@@ -239,7 +248,7 @@ fn cmd_search(
     let warming_ok = (cwd_is_git || known) && coverage.as_deref() != Some("partial");
     if warming_ok
         && coverage.as_deref() != Some("complete")
-        && let Some(c) = &cwd
+        && let Some(c) = &root
     {
         let _ = crate::index::index_budgeted(&mut store, c, &active_paths, answer_warm_budget());
     }
@@ -261,7 +270,7 @@ fn cmd_search(
     // on a post-miss fallback. Bounded; skips already-indexed files.
     if warming_ok
         && coverage.as_deref() != Some("complete")
-        && let Some(c) = &cwd
+        && let Some(c) = &root
         && let Some(id) = current
     {
         let indexed: HashSet<String> = store
@@ -313,13 +322,13 @@ fn cmd_search(
     //     place a non-persisting live scan remains.
     //   - complete / partial: empty is a genuine miss (or outside the subset).
     if hits.is_empty()
-        && let Some(cwd) = &cwd
+        && let Some(root) = &root
     {
         match coverage.as_deref() {
             Some("warming") => {
                 let _ = crate::index::index_budgeted(
                     &mut store,
-                    cwd,
+                    root,
                     &active_paths,
                     live_fallback_budget(),
                 );
@@ -328,9 +337,16 @@ fn cmd_search(
             }
             None => {
                 let mut h =
-                    crate::search::live_search(cwd, query, limit, &HashSet::new(), None, true);
+                    crate::search::live_search(root, query, limit, &HashSet::new(), None, true);
                 if h.is_empty() {
-                    h = crate::search::live_search(cwd, query, limit, &HashSet::new(), None, false);
+                    h = crate::search::live_search(
+                        root,
+                        query,
+                        limit,
+                        &HashSet::new(),
+                        None,
+                        false,
+                    );
                 }
                 hits = h;
             }
@@ -440,7 +456,7 @@ fn cmd_search(
     // and a clean work tree). Small repos always warm — the walk is cheaper than
     // forking git for them — so they pay nothing for this check.
     if warming_ok
-        && let Some(c) = &cwd
+        && let Some(c) = &root
         && !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
     {
         let _ = crate::index::index_budgeted(&mut store, c, &active_paths, deferred_warm_budget());

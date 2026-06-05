@@ -377,6 +377,44 @@ fn lang_filter_scopes_by_language() {
 }
 
 #[test]
+fn searching_from_a_subdirectory_uses_the_repo_root() {
+    // Regression: warming/indexing must key off the repo root, not the cwd. A
+    // search run from a subdirectory previously re-keyed the same repo under
+    // subdir-relative paths and a fresh checkout root, so the reconcile and
+    // staleness revalidation forgot everything indexed from the root.
+    let (dir, db) = scratch("subdir");
+    git_init(&dir);
+    let sub = dir.join("nested");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(dir.join("top.rb"), "class TopWidget\nend\n").unwrap();
+    fs::write(sub.join("deep.rb"), "class DeepWidget\nend\n").unwrap();
+
+    // index the whole repo from its root — paths are repo-root-relative
+    let (ok, _) = rq(&db, &dir, &["--index"]);
+    assert!(ok);
+    let (_, out) = rq(&db, &dir, &["DeepWidget", "--no-record"]);
+    assert!(out.contains("nested/deep.rb"), "root-relative path: {out}");
+
+    // searching from the subdirectory must reuse the same repo, not fork a new
+    // one keyed at the subdir — the top-level symbol stays found, and there's
+    // still exactly one repository with both files.
+    let (_, out) = rq(&db, &sub, &["TopWidget", "--no-record"]);
+    assert!(
+        out.contains("TopWidget"),
+        "top symbol found from subdir: {out}"
+    );
+    let (_, status) = rq(&db, &dir, &["--status"]);
+    assert_eq!(
+        status.lines().count(),
+        1,
+        "one repo, not re-keyed: {status}"
+    );
+    assert!(status.contains("2 files"), "both files retained: {status}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);
