@@ -191,6 +191,10 @@ fn output_format(cli: &Cli) -> Output {
 /// aren't lost to the cutoff).
 const PATH_HEADROOM: usize = 200;
 
+/// How often the search re-checks the index while a cold repo warms on the
+/// background thread — short enough to feel instant, long enough not to spin.
+const POLL_INTERVAL: Duration = Duration::from_millis(15);
+
 /// Default action: search the index and print ranked results. `want` is the
 /// number of results to show (`--limit`).
 #[allow(clippy::too_many_arguments)]
@@ -262,50 +266,14 @@ fn cmd_search(
             active_paths.len(),
         );
     }
-    if warming_ok
-        && coverage.as_deref() != Some("complete")
-        && let Some(c) = &root
-    {
-        crate::trace!("inline warm ({:?})", answer_warm_budget());
-        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, answer_warm_budget());
-    }
-
     let current = identity
         .as_deref()
         .and_then(|id| store.repository_id(id).ok().flatten());
     let active = crate::search::ActiveFiles::new(active_paths.clone());
 
-    // Re-read coverage — the inline warm above may have just completed the repo.
-    let coverage = identity
-        .as_deref()
-        .and_then(|id| store.coverage_status(id).ok())
-        .flatten();
-
-    // Content scan up front (still-incomplete repos): index files whose *content*
-    // matches the query — beyond the path-matchers the warm already indexed — and
-    // persist them, so the first search is higher-confidence rather than relying
-    // on a post-miss fallback. Bounded; skips already-indexed files.
-    if warming_ok
-        && coverage.as_deref() != Some("complete")
-        && let Some(c) = &root
-        && let Some(id) = current
-    {
-        let indexed: HashSet<String> = store
-            .file_mtimes(id)
-            .map(|m| m.into_keys().collect())
-            .unwrap_or_default();
-        let deadline = std::time::Instant::now() + live_fallback_budget();
-        // content-scan for the query and persist the matches (demand-first)
-        let scanned = crate::index::scan(c, &indexed, Some(deadline), Some(query.as_bytes()));
-        if !scanned.is_empty() {
-            let _ = store.replace_files(id, &scanned);
-        }
-    }
-
-    // A repeated search (same query, nothing opened since) means last time
-    // missed — decay this query's learned boost before ranking so a stale
-    // learned pick stops dominating and alternatives surface. Skipped under
-    // --no-record so an agent's searches don't perturb the learned signal.
+    // A repeated search (same query, nothing opened since) means last time missed
+    // — decay this query's learned boost before ranking so a stale learned pick
+    // stops dominating. Skipped under --no-record so an agent doesn't perturb it.
     if !no_record && let Some(repo) = current {
         let qn = query.to_ascii_lowercase();
         if store.is_repeat_search(repo, &qn).unwrap_or(false) {
@@ -313,64 +281,91 @@ fn cmd_search(
         }
     }
 
-    let mut hits = match crate::search::search(&store, query, current, &active, limit) {
-        Ok(h) => h,
-        Err(e) => return fail(format_args!("rq: {e}")),
+    // Warm the index on a background thread (its own connection — WAL lets it
+    // write while we read), for the whole budget, whenever there's work: a
+    // not-yet-complete repo, or a complete one changed since it was indexed. One
+    // uninterrupted indexer replaces the old inline + content-scan + deferred
+    // phases; the search below reads whatever it has committed so far, and we
+    // block on it before exiting so the shell waits the same total time as before.
+    let warm_budget = answer_warm_budget() + deferred_warm_budget();
+    let want_warm = warming_ok
+        && match &root {
+            Some(c) => {
+                coverage.as_deref() != Some("complete")
+                    || !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
+            }
+            None => false,
+        };
+    // `warm_done` lets the poll stop the instant the indexer finishes — so a
+    // miss on a small repo returns as soon as it's fully indexed, instead of
+    // polling out the whole answer deadline for a match that can't appear.
+    let warm_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let indexer = want_warm.then(|| {
+        crate::trace!("background warm ({warm_budget:?})");
+        let root = root.clone().expect("want_warm implies a root");
+        let active = active_paths.clone();
+        let warm_done = std::sync::Arc::clone(&warm_done);
+        std::thread::spawn(move || {
+            if let Ok(mut idx) = open_store() {
+                let _ = crate::index::index_budgeted(&mut idx, &root, &active, warm_budget);
+            }
+            warm_done.store(true, std::sync::atomic::Ordering::Relaxed);
+        })
+    });
+
+    // Poll for results while a cold/partial repo warms: answer the moment the
+    // matching symbol lands in the index rather than waiting out the whole budget.
+    let answer_deadline = std::time::Instant::now() + answer_warm_budget();
+    let polling = indexer.is_some() && coverage.as_deref() != Some("complete");
+    let mut hits = loop {
+        match crate::search::search(&store, query, current, &active, limit) {
+            Ok(h) => {
+                if !h.is_empty()
+                    || !polling
+                    || warm_done.load(std::sync::atomic::Ordering::Relaxed)
+                    || std::time::Instant::now() >= answer_deadline
+                {
+                    break h;
+                }
+            }
+            Err(e) => {
+                if let Some(h) = indexer {
+                    let _ = h.join();
+                }
+                return fail(format_args!("rq: {e}"));
+            }
+        }
+        std::thread::sleep(POLL_INTERVAL);
     };
 
-    // Staleness: lazily revalidate the files behind the top hits; if any changed
-    // on disk, refresh them and re-rank once.
+    // Staleness: revalidate the files behind the top hits; re-rank once if changed.
     if !hits.is_empty() && revalidate_top(&mut store, &hits) {
-        hits = match crate::search::search(&store, query, current, &active, limit) {
-            Ok(h) => h,
-            Err(e) => return fail(format_args!("rq: {e}")),
-        };
+        hits = crate::search::search(&store, query, current, &active, limit).unwrap_or_default();
     }
 
-    // Fallback when the index *still* came up empty, keyed on the dir:
-    //   - warming (tracked, mid-warm): the substring content-scan already ran up
-    //     front, so an empty result means a fuzzy (non-substring) query that the
-    //     indexed slice didn't cover. A fuzzy query can't be content-filtered, so
-    //     index another bounded slice of the remainder — *persisting* it (the
-    //     same work the deferred warm would do, pulled forward, so it isn't
-    //     thrown away and the deferred pass then skips it) — and re-search.
-    //   - untracked (no coverage — a non-git dir we won't persist): scan it live
-    //     in-memory so we answer at all (substring, then fuzzy). This is the only
-    //     place a non-persisting live scan remains.
-    //   - complete / partial: empty is a genuine miss (or outside the subset).
+    // Untracked non-git dir — nothing persisted, no warmer running — so scan it
+    // live in-memory to answer at all (substring, then fuzzy). The only
+    // non-persisting scan left.
     if hits.is_empty()
+        && indexer.is_none()
+        && coverage.is_none()
         && let Some(root) = &root
     {
-        match coverage.as_deref() {
-            Some("warming") => {
-                crate::trace!("empty → warming fallback: index more, then re-search");
-                let _ = crate::index::index_budgeted(
-                    &mut store,
-                    root,
-                    &active_paths,
-                    live_fallback_budget(),
-                );
-                hits = crate::search::search(&store, query, current, &active, limit)
-                    .unwrap_or_default();
-            }
-            None => {
-                crate::trace!("empty → live (in-memory) scan of an untracked dir");
-                let mut h =
-                    crate::search::live_search(root, query, limit, &HashSet::new(), None, true);
-                if h.is_empty() {
-                    h = crate::search::live_search(
-                        root,
-                        query,
-                        limit,
-                        &HashSet::new(),
-                        None,
-                        false,
-                    );
-                }
-                hits = h;
-            }
-            _ => {}
+        crate::trace!("empty → live (in-memory) scan of an untracked dir");
+        let deadline = std::time::Instant::now() + live_fallback_budget();
+        let mut h =
+            crate::search::live_search(root, query, limit, &HashSet::new(), Some(deadline), true);
+        if h.is_empty() {
+            h = crate::search::live_search(
+                root,
+                query,
+                limit,
+                &HashSet::new(),
+                Some(deadline),
+                false,
+            );
         }
+        hits = h;
     }
 
     // post-filters: keep only results under a --path dir, of a --kind, and/or in
@@ -393,6 +388,10 @@ fn cmd_search(
             Output::Json => println!("[]"),
             Output::Ndjson => {}
             Output::Text => eprintln!("no matches for {query:?}"),
+        }
+        // a miss still warms for next time — block on the background pass
+        if let Some(h) = indexer {
+            let _ = h.join();
         }
         return ExitCode::FAILURE;
     }
@@ -465,20 +464,13 @@ fn cmd_search(
     }
     deferred_maintenance(&mut store);
 
-    // Now that results are out, warm the index a little more (bounded). This
-    // builds coverage on a large repo across queries and, on an already-complete
-    // repo, picks up new/changed files (active ones first) and drops deleted ones
-    // once a full sweep finishes — so the index tracks edits without a daemon.
-    //
-    // On a *large, complete* repo the per-search re-walk is the dominant cost;
-    // skip it when git confirms nothing changed since the index (HEAD identical
-    // and a clean work tree). Small repos always warm — the walk is cheaper than
-    // forking git for them — so they pay nothing for this check.
-    if warming_ok
-        && let Some(c) = &root
-        && !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
-    {
-        let _ = crate::index::index_budgeted(&mut store, c, &active_paths, deferred_warm_budget());
+    // Results are out; block until the background warm finishes its budget. It
+    // persists as it goes (incremental commits), so even a pass cut short by the
+    // budget keeps everything it parsed — building coverage across queries and,
+    // on a changed repo, picking up edits and reconciling deletions on a full
+    // sweep, all without a daemon.
+    if let Some(h) = indexer {
+        let _ = h.join();
     }
 
     ExitCode::SUCCESS
