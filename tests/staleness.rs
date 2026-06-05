@@ -48,16 +48,28 @@ fn refresh_picks_up_edits_and_deletes() {
         "Bar"
     );
 
-    // Delete the file: its symbols are forgotten.
+    // Delete the file. A search-time refresh is deliberately non-destructive — a
+    // failed read isn't proof of deletion, so it leaves the entry rather than
+    // risk forgetting live data on a bad root — and Bar stays findable.
     fs::remove_file(&file).unwrap();
     assert_eq!(
         index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
-        Refresh::Deleted
+        Refresh::Unchanged
     );
+    assert!(
+        !search::search(&store, "Bar", None, &search::ActiveFiles::default(), 5)
+            .unwrap()
+            .is_empty(),
+        "a search never forgets — the entry survives until a reindex reconciles it"
+    );
+
+    // An indexing pass sees the whole tree and reconciles the deletion away.
+    index::index_path(&mut store, &dir).unwrap();
     assert!(
         search::search(&store, "Bar", None, &search::ActiveFiles::default(), 5)
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "reconciled away by indexing"
     );
 
     fs::remove_dir_all(&dir).ok();

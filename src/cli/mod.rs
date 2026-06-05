@@ -740,7 +740,7 @@ fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
         let Some(root) = store.checkout_root(repo_id).ok().flatten() else {
             continue;
         };
-        if let Ok(crate::index::Refresh::Updated | crate::index::Refresh::Deleted) =
+        if let Ok(crate::index::Refresh::Updated) =
             crate::index::refresh_file(store, repo_id, std::path::Path::new(&root), &hit.file)
         {
             changed = true;
@@ -767,7 +767,12 @@ fn resolve_identity(store: &Store, cwd: &std::path::Path) -> String {
 }
 
 fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
-    let root = path.unwrap_or_else(|| PathBuf::from("."));
+    let target = path.unwrap_or_else(|| PathBuf::from("."));
+    // Normalize to the repo root: the index is repo-root-relative, so indexing
+    // from a subdirectory must still key off the root (a subdir-relative index
+    // would mismatch a later search and get reconciled away). `--path` scopes a
+    // subset; outside git the target is used as-is.
+    let root = crate::index::repo_root(&target).unwrap_or(target);
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),

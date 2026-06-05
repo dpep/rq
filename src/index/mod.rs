@@ -600,12 +600,11 @@ fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
 /// Result of revalidating a single file against what's on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refresh {
-    /// Content hash still matches the index.
+    /// Nothing to do — content hash still matches, or the file couldn't be read
+    /// right now (left in place rather than forgotten — see [`refresh_file`]).
     Unchanged,
     /// File changed; its symbols were re-extracted.
     Updated,
-    /// File no longer on disk; its symbols were forgotten.
-    Deleted,
 }
 
 /// Whether `root` is inside a git work tree. Implicit (opportunistic) indexing
@@ -689,9 +688,15 @@ fn trunk_ref(root: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Lazily revalidate one indexed file against disk: re-extract it if its
-/// content changed, forget it if it's gone. This is the staleness check search
-/// runs over its top results.
+/// Lazily revalidate one indexed file against disk: re-extract it if its content
+/// changed. This is the staleness check search runs over its top results.
+///
+/// It deliberately **never forgets** a file: a failed read isn't proof of
+/// deletion (a wrong checkout root, a transient FS error, or a race all look the
+/// same), and a search must never destroy index data over it — that bug dropped
+/// whole indexes when a stale checkout root made every read fail. Genuine
+/// deletions are reconciled by an indexing pass ([`run_index`]), which sees the
+/// whole tree at once and can tell "gone" from "couldn't read one file".
 pub fn refresh_file(
     store: &mut Store,
     repository_id: i64,
@@ -701,10 +706,7 @@ pub fn refresh_file(
     let path = root.join(rel);
     let source = match std::fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(_) => {
-            store.forget_file(repository_id, rel)?;
-            return Ok(Refresh::Deleted);
-        }
+        Err(_) => return Ok(Refresh::Unchanged), // unreadable now — leave it, don't forget
     };
     let hash = content_hash(&source);
     if store.file_unchanged(repository_id, rel, &hash)? {
