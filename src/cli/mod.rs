@@ -313,15 +313,21 @@ fn cmd_search(
         })
     });
 
-    // Poll for results while a cold/partial repo warms: answer the moment the
-    // matching symbol lands in the index rather than waiting out the whole budget.
+    // Poll while a cold/partial repo warms. Don't print the first hit off a
+    // sparse index — a fuzzy or path match can be wrong once more is indexed.
+    // Hold until a *high-confidence* (exact or prefix name) match appears, which
+    // means the index has built enough to rank it; otherwise keep building until
+    // warming finishes or the answer deadline passes, then rank the fuller index.
     let answer_deadline = std::time::Instant::now() + answer_warm_budget();
     let polling = indexer.is_some() && coverage.as_deref() != Some("complete");
     let mut hits = loop {
         match crate::search::search(&store, query, current, &active, limit) {
             Ok(h) => {
-                if !h.is_empty()
-                    || !polling
+                let confident = h
+                    .first()
+                    .is_some_and(|hit| hit.features.iter().any(|f| matches!(f.name, "exact" | "prefix")));
+                if !polling
+                    || confident
                     || warm_done.load(std::sync::atomic::Ordering::Relaxed)
                     || std::time::Instant::now() >= answer_deadline
                 {
