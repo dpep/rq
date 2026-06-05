@@ -254,14 +254,20 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
                     10.0 // contiguous run
                 } else {
                     let gap = i - j - 1;
+                    let crossed_word = bnd_prefix[i] - bnd_prefix[j + 1] > 0;
                     if boundary[i] {
-                        // jumping to a new word: only the *adjacent* one — reject
-                        // if a whole word boundary sits between j and i (skipped)
-                        if bnd_prefix[i] - bnd_prefix[j + 1] > 0 {
+                        // entering a new word: only the *adjacent* one — reject if
+                        // a whole word boundary sits between j and i (a word skipped)
+                        if crossed_word {
                             continue;
                         }
-                    } else if gap > MAX_NONBOUNDARY_GAP {
-                        continue; // mid-word leap — not a real match
+                    } else if gap > MAX_NONBOUNDARY_GAP || crossed_word {
+                        // a mid-word target may follow only a small same-word gap (a
+                        // dropped vowel). A larger gap, or one that crosses into a
+                        // new word, is scatter — you enter a new word at its
+                        // boundary, never mid-word (the `ees` of `employees`
+                        // threading employee→b[e]fore→[s]tarting).
+                        continue;
                     }
                     -(gap as f64) * GAP_PENALTY
                 };
@@ -457,6 +463,22 @@ mod tests {
         // but only *adjacent* words — skipping a whole word is not a match
         assert!(subsequence_score("payrollcontroller", "payroll_runs_controller").is_none());
         assert!(subsequence_score("apc", "alpha_bravo_charlie").is_none()); // alpha→charlie skips bravo
+    }
+
+    #[test]
+    fn a_gap_cannot_cross_a_word_boundary_into_a_mid_word_char() {
+        // the reported scatter: `employeescontroller` threaded its `ees` through
+        // employee → b[e]fore → [s]tarting (small gaps crossing word boundaries
+        // into mid-word chars). You enter a new word at its boundary, not mid-word.
+        assert!(
+            subsequence_score("employeescontroller", "employee_before_starting_controller")
+                .is_none()
+        );
+        // the clean target still matches
+        assert!(subsequence_score("employeescontroller", "employees_controller").is_some());
+        // and within-word vowel drops still match (the gap stays in one word)
+        assert!(subsequence_score("usr", "user").is_some());
+        assert!(subsequence_score("cfg", "config").is_some());
     }
 
     #[test]
