@@ -107,19 +107,17 @@ fn collect_cap() -> usize {
         .unwrap_or(COLLECT_CAP)
 }
 
-/// Parse workers per indexer pass (`rq -j`); 0 = auto. A search warms with two
-/// indexers at once (general + content-scan), so the live load is ~2× this.
+/// Parse workers the background warmer uses (`--jobs`); 0 = auto.
 static PARSE_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Set the parse-worker count (from `rq -j`/`RQ_JOBS`); 0 restores auto.
+/// Set the parse-worker count (from `--jobs`/`RQ_JOBS`); 0 restores auto.
 pub fn set_parse_jobs(n: usize) {
     PARSE_JOBS.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Parse workers for one indexer pass — the configured value, else `RQ_JOBS`,
 /// else an auto default. Parsing is CPU-bound but writes serialize through one
-/// SQLite writer, so flooding every core rarely pays; the default is tuned to
-/// leave headroom for the second warmer and the writer.
+/// SQLite writer, so flooding every core rarely pays; the default caps at 8.
 fn parse_jobs() -> usize {
     let configured = PARSE_JOBS.load(std::sync::atomic::Ordering::Relaxed);
     if configured > 0 {
