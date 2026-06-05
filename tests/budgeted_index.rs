@@ -33,7 +33,14 @@ fn a_zero_budget_still_indexes_the_active_files() {
     let mut store = Store::open_in_memory().unwrap();
     // budget exhausted immediately: only the active file is indexed, the walk is
     // skipped, and coverage is left "warming" (not yet complete)
-    index::index_budgeted(&mut store, &dir, &["a.rb".to_string()], Duration::ZERO).unwrap();
+    index::index_budgeted(
+        &mut store,
+        &dir,
+        &["a.rb".to_string()],
+        Duration::ZERO,
+        None,
+    )
+    .unwrap();
 
     assert!(finds(&store, "Widget"), "active file is indexed regardless");
     assert!(!finds(&store, "Gadget"), "the walk hasn't run yet");
@@ -50,7 +57,7 @@ fn a_full_sweep_completes_and_tracks_added_and_deleted_files() {
 
     let mut store = Store::open_in_memory().unwrap();
     let ample = Duration::from_secs(5);
-    index::index_budgeted(&mut store, &dir, &[], ample).unwrap();
+    index::index_budgeted(&mut store, &dir, &[], ample, None).unwrap();
 
     assert!(finds(&store, "Widget"));
     assert!(finds(&store, "Gadget"));
@@ -58,12 +65,12 @@ fn a_full_sweep_completes_and_tracks_added_and_deleted_files() {
 
     // a new file appears — a later sweep picks it up
     fs::write(dir.join("c.rb"), "class Sprocket\nend\n").unwrap();
-    index::index_budgeted(&mut store, &dir, &[], ample).unwrap();
+    index::index_budgeted(&mut store, &dir, &[], ample, None).unwrap();
     assert!(finds(&store, "Sprocket"));
 
     // a file is deleted — a completed sweep reconciles it out of the index
     fs::remove_file(dir.join("b.rb")).unwrap();
-    index::index_budgeted(&mut store, &dir, &[], ample).unwrap();
+    index::index_budgeted(&mut store, &dir, &[], ample, None).unwrap();
     assert!(
         !finds(&store, "Gadget"),
         "deleted file's symbols are forgotten"

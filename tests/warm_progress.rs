@@ -54,7 +54,7 @@ fn a_bounded_pass_makes_incremental_progress() {
     // generous budget: the cap, not the clock, bounds the pass
     let budget = Duration::from_secs(5);
 
-    let s1 = index::index_budgeted(&mut store, &dir, &[], budget).unwrap();
+    let s1 = index::index_budgeted(&mut store, &dir, &[], budget, None).unwrap();
     assert!(
         s1.files_indexed > 0,
         "a bounded pass made no progress: {s1:?}"
@@ -70,7 +70,7 @@ fn a_bounded_pass_makes_incremental_progress() {
         if last as usize >= FILES {
             break;
         }
-        index::index_budgeted(&mut store, &dir, &[], budget).unwrap();
+        index::index_budgeted(&mut store, &dir, &[], budget, None).unwrap();
         let now = total_files(&store, &dir);
         assert!(now > last, "coverage stalled at {last}");
         last = now;

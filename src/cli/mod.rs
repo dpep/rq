@@ -308,10 +308,13 @@ fn cmd_search(
         crate::trace!("background warm ({warm_budget:?})");
         let root = root.clone().expect("checked");
         let active = active_paths.clone();
+        let q = query.to_string();
         let warm_done = std::sync::Arc::clone(&warm_done);
         std::thread::spawn(move || {
             if let Ok(mut idx) = open_store() {
-                let _ = crate::index::index_budgeted(&mut idx, &root, &active, warm_budget);
+                // path-prioritize toward the query so the relevant file indexes first
+                let _ =
+                    crate::index::index_budgeted(&mut idx, &root, &active, warm_budget, Some(&q));
             }
             warm_done.store(true, std::sync::atomic::Ordering::Relaxed);
         })

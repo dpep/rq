@@ -40,21 +40,57 @@ pub fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None)
+    run_index(store, root, &[], subdirs, None, None)
+}
+
+/// Move the candidate paths whose (separator-stripped, lowercased) repo-relative
+/// path contains the query to the front, preserving order within each group, so a
+/// warming pass parses query-relevant files first. Cheap — string matching over
+/// the in-memory path list, no file reads. A no-op for an empty/absent query.
+fn prioritize_by_path(
+    paths: Vec<std::path::PathBuf>,
+    root: &Path,
+    query: Option<&str>,
+) -> Vec<std::path::PathBuf> {
+    let needle: String = query
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if needle.is_empty() {
+        return paths;
+    }
+    let matches = |p: &Path| {
+        let rel = p.strip_prefix(root).unwrap_or(p);
+        let norm: String = rel
+            .to_string_lossy()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        norm.contains(&needle)
+    };
+    let (mut prio, rest): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| matches(p));
+    prio.extend(rest);
+    prio
 }
 
 /// Opportunistic, time-bounded indexing — warm the index a little per call so no
 /// single query blocks on a full walk of a large repo. `active` (branch) files
 /// are parsed first and ignore the budget (the working set stays fresh); then the
-/// walk streams the rest, honoring `budget`. A sweep that finishes within budget
-/// marks coverage `complete` (and reconciles deletions), else `warming`.
+/// walk streams the rest, honoring `budget`. When `query` is set, files whose
+/// *path* matches it are parsed first (a cheap, in-memory reorder of the
+/// candidate list — no file reads), so a relevant symbol indexes fast. A sweep
+/// that finishes within budget marks coverage `complete`, else `warming`.
 pub fn index_budgeted(
     store: &mut Store,
     root: &Path,
     active: &[String],
     budget: Duration,
+    query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget))
+    run_index(store, root, active, &[], Some(budget), query)
 }
 
 /// Max files a single *bounded* (warming) pass walks before it stops. The walk
@@ -324,6 +360,7 @@ fn run_index(
     active: &[String],
     subdirs: &[String],
     budget: Option<Duration>,
+    query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -369,7 +406,8 @@ fn run_index(
         .and_then(|_| git_source_candidates(root))
         .filter(|paths| !paths.is_empty());
     let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
-        Some(paths) => Box::new(paths.into_iter()),
+        // parse query-relevant files (by path) first — a cheap in-memory reorder
+        Some(paths) => Box::new(prioritize_by_path(paths, root, query).into_iter()),
         None => Box::new(fs_walk_candidates(walk_roots)),
     };
 
@@ -894,6 +932,25 @@ mod tests {
         assert!(is_trunk("master"));
         assert!(!is_trunk("feature/x"));
         assert!(!is_trunk("dpep/fix"));
+    }
+
+    #[test]
+    fn prioritize_by_path_moves_query_matches_first() {
+        let root = Path::new("/repo");
+        let paths: Vec<std::path::PathBuf> = ["aaa.rb", "app/employees_controller.rb", "bbb.rb"]
+            .iter()
+            .map(|p| root.join(p))
+            .collect();
+        // separator-insensitive: the snake-case path matches the run-together query
+        let out = prioritize_by_path(paths.clone(), root, Some("employeescontroller"));
+        assert!(
+            out[0].ends_with("employees_controller.rb"),
+            "match first: {out:?}"
+        );
+        // order within the non-matching tail is preserved
+        assert!(out[1].ends_with("aaa.rb") && out[2].ends_with("bbb.rb"));
+        // no query → unchanged
+        assert_eq!(prioritize_by_path(paths.clone(), root, None), paths);
     }
 
     #[test]
