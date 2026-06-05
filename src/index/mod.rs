@@ -40,7 +40,7 @@ pub fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None)
+    run_index(store, root, &[], subdirs, None, None)
 }
 
 /// Opportunistic, time-bounded indexing — warm the index a little per call so no
@@ -54,7 +54,30 @@ pub fn index_budgeted(
     active: &[String],
     budget: Duration,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget))
+    run_index(store, root, active, &[], Some(budget), None)
+}
+
+/// Time-bounded indexing **targeted at a query**: only files whose content
+/// contains `query` (the ripgrep-style pre-filter) are parsed and persisted, so a
+/// relevant — even buried — symbol gets indexed fast, racing past files that
+/// can't hold it. Runs alongside the general [`index_budgeted`] warm on its own
+/// connection. It indexes a *subset*, so it never touches coverage or reconciles
+/// deletions — the general warm owns that.
+pub fn index_budgeted_for_query(
+    store: &mut Store,
+    root: &Path,
+    active: &[String],
+    budget: Duration,
+    query: &str,
+) -> Result<Stats, Box<dyn std::error::Error>> {
+    run_index(
+        store,
+        root,
+        active,
+        &[],
+        Some(budget),
+        Some(query.as_bytes()),
+    )
 }
 
 /// Max files a single *bounded* (warming) pass walks before it stops. The walk
@@ -297,6 +320,7 @@ fn run_index(
     active: &[String],
     subdirs: &[String],
     budget: Option<Duration>,
+    needle: Option<&[u8]>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -361,7 +385,7 @@ fn run_index(
     let (seen, completed, walk_files, walk_symbols) = {
         let mut writer = BatchWriter::new(&mut *store, repo_id);
         let (seen, completed) =
-            stream_walk(root, candidates, deadline, cap, None, seen, keep, |fs| {
+            stream_walk(root, candidates, deadline, cap, needle, seen, keep, |fs| {
                 writer.push(fs)
             })?;
         writer.flush()?;
@@ -374,6 +398,19 @@ fn run_index(
         files_indexed,
         symbols,
     };
+
+    // A query-targeted (needle) pass only indexes a *subset* — it adds relevant
+    // symbols fast but doesn't represent the whole tree, so it never touches
+    // coverage or reconciles deletions. The general warm owns that bookkeeping.
+    if needle.is_some() {
+        crate::trace!(
+            "content-scan {} (budget {budget:?}): {} indexed, {} symbols",
+            crate::trace::abbrev(&root_display),
+            stats.files_indexed,
+            stats.symbols,
+        );
+        return Ok(stats);
+    }
 
     let whole_repo = subdirs.is_empty();
     // a finished whole-repo sweep saw every live file → anything still indexed

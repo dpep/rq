@@ -281,37 +281,64 @@ fn cmd_search(
         }
     }
 
-    // Warm the index on a background thread (its own connection — WAL lets it
-    // write while we read), for the whole budget, whenever there's work: a
-    // not-yet-complete repo, or a complete one changed since it was indexed. One
-    // uninterrupted indexer replaces the old inline + content-scan + deferred
-    // phases; the search below reads whatever it has committed so far, and we
-    // block on it before exiting so the shell waits the same total time as before.
+    // Warm in the background on its own connection(s) — WAL lets a writer and our
+    // reader coexist — whenever there's work: a not-yet-complete repo, or a
+    // complete one changed since it was indexed. Two threads while warming: a
+    // *general* warm building full coverage, and a *content-scan* (ripgrep-style:
+    // only files whose text contains the query) that races toward the answer so a
+    // buried exact/substring match indexes fast. We block on both before exiting,
+    // so the shell waits the same total time but the index keeps building.
+    use std::sync::atomic::Ordering::Relaxed;
     let warm_budget = answer_warm_budget() + deferred_warm_budget();
+    let was_warming = coverage.as_deref() != Some("complete");
     let want_warm = warming_ok
         && match &root {
             Some(c) => {
-                coverage.as_deref() != Some("complete")
-                    || !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
+                was_warming || !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
             }
             None => false,
         };
-    // `warm_done` lets the poll stop the instant the indexer finishes — so a
-    // miss on a small repo returns as soon as it's fully indexed, instead of
-    // polling out the whole answer deadline for a match that can't appear.
-    let warm_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let indexer = want_warm.then(|| {
-        crate::trace!("background warm ({warm_budget:?})");
-        let root = root.clone().expect("want_warm implies a root");
-        let active = active_paths.clone();
-        let warm_done = std::sync::Arc::clone(&warm_done);
-        std::thread::spawn(move || {
+    // counts the running warmers so the poll can stop the instant they all finish
+    // — a miss on a small repo returns as soon as it's indexed, not at the deadline
+    let warmers_running = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut warmers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    if want_warm && let Some(root) = root.clone() {
+        // general warm: full coverage (and active-branch files first)
+        warmers_running.fetch_add(1, Relaxed);
+        let (groot, active, running) = (
+            root.clone(),
+            active_paths.clone(),
+            std::sync::Arc::clone(&warmers_running),
+        );
+        warmers.push(std::thread::spawn(move || {
             if let Ok(mut idx) = open_store() {
-                let _ = crate::index::index_budgeted(&mut idx, &root, &active, warm_budget);
+                let _ = crate::index::index_budgeted(&mut idx, &groot, &active, warm_budget);
             }
-            warm_done.store(true, std::sync::atomic::Ordering::Relaxed);
-        })
-    });
+            running.fetch_sub(1, Relaxed);
+        }));
+        // content-scan: only while still warming (on a complete repo the query's
+        // files are already indexed, so it would just re-stat everything)
+        if was_warming {
+            warmers_running.fetch_add(1, Relaxed);
+            let (q, running) = (query.to_string(), std::sync::Arc::clone(&warmers_running));
+            warmers.push(std::thread::spawn(move || {
+                if let Ok(mut idx) = open_store() {
+                    let _ = crate::index::index_budgeted_for_query(
+                        &mut idx,
+                        &root,
+                        &[],
+                        warm_budget,
+                        &q,
+                    );
+                }
+                running.fetch_sub(1, Relaxed);
+            }));
+        }
+        crate::trace!(
+            "background warm ({warm_budget:?}, {} thread(s))",
+            warmers.len()
+        );
+    }
 
     // Poll while a cold/partial repo warms. Don't print the first hit off a
     // sparse index — a fuzzy or path match can be wrong once more is indexed.
@@ -319,23 +346,25 @@ fn cmd_search(
     // means the index has built enough to rank it; otherwise keep building until
     // warming finishes or the answer deadline passes, then rank the fuller index.
     let answer_deadline = std::time::Instant::now() + answer_warm_budget();
-    let polling = indexer.is_some() && coverage.as_deref() != Some("complete");
+    let polling = !warmers.is_empty() && was_warming;
     let mut hits = loop {
         match crate::search::search(&store, query, current, &active, limit) {
             Ok(h) => {
-                let confident = h
-                    .first()
-                    .is_some_and(|hit| hit.features.iter().any(|f| matches!(f.name, "exact" | "prefix")));
+                let confident = h.first().is_some_and(|hit| {
+                    hit.features
+                        .iter()
+                        .any(|f| matches!(f.name, "exact" | "prefix"))
+                });
                 if !polling
                     || confident
-                    || warm_done.load(std::sync::atomic::Ordering::Relaxed)
+                    || warmers_running.load(Relaxed) == 0
                     || std::time::Instant::now() >= answer_deadline
                 {
                     break h;
                 }
             }
             Err(e) => {
-                if let Some(h) = indexer {
+                for h in warmers {
                     let _ = h.join();
                 }
                 return fail(format_args!("rq: {e}"));
@@ -353,7 +382,7 @@ fn cmd_search(
     // live in-memory to answer at all (substring, then fuzzy). The only
     // non-persisting scan left.
     if hits.is_empty()
-        && indexer.is_none()
+        && warmers.is_empty()
         && coverage.is_none()
         && let Some(root) = &root
     {
@@ -395,8 +424,8 @@ fn cmd_search(
             Output::Ndjson => {}
             Output::Text => eprintln!("no matches for {query:?}"),
         }
-        // a miss still warms for next time — block on the background pass
-        if let Some(h) = indexer {
+        // a miss still warms for next time — block on the background passes
+        for h in warmers {
             let _ = h.join();
         }
         return ExitCode::FAILURE;
@@ -470,12 +499,12 @@ fn cmd_search(
     }
     deferred_maintenance(&mut store);
 
-    // Results are out; block until the background warm finishes its budget. It
-    // persists as it goes (incremental commits), so even a pass cut short by the
+    // Results are out; block until the background warms finish their budget. They
+    // persist as they go (incremental commits), so even a pass cut short by the
     // budget keeps everything it parsed — building coverage across queries and,
     // on a changed repo, picking up edits and reconciling deletions on a full
     // sweep, all without a daemon.
-    if let Some(h) = indexer {
+    for h in warmers {
         let _ = h.join();
     }
 
