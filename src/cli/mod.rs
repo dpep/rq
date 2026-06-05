@@ -269,7 +269,8 @@ fn cmd_search(
             .map(|m| m.into_keys().collect())
             .unwrap_or_default();
         let deadline = std::time::Instant::now() + live_fallback_budget();
-        let scanned = crate::index::scan_for_query(c, query, &indexed, Some(deadline));
+        // content-scan for the query and persist the matches (demand-first)
+        let scanned = crate::index::scan(c, &indexed, Some(deadline), Some(query.as_bytes()));
         if !scanned.is_empty() {
             let _ = store.replace_files(id, &scanned);
         }

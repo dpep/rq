@@ -193,10 +193,11 @@ pub fn live_search(
     deadline: Option<Instant>,
     prefilter: bool,
 ) -> Vec<Hit> {
-    let needle = prefilter.then_some(query);
+    let needle = prefilter.then_some(query.as_bytes());
     let identity = crate::index::detect_identity(root).to_string();
-    let mut hits: Vec<Hit> = crate::index::scan_symbols_budgeted(root, skip, deadline, needle)
+    let mut hits: Vec<Hit> = crate::index::scan(root, skip, deadline, needle)
         .into_iter()
+        .flat_map(|fs| fs.symbols)
         .filter_map(|s| {
             let row = SymbolRow {
                 name: s.name,
