@@ -48,6 +48,25 @@ fn git_init(dir: &Path) {
         .output();
 }
 
+/// `git init` + commit everything, so files are *tracked* (warming enumerates a
+/// committed repo from `git ls-files`, not a filesystem walk).
+fn git_init_commit(dir: &Path) {
+    git_init(dir);
+    let git = |args: &[&str]| {
+        let _ = Command::new("git").args(args).current_dir(dir).output();
+    };
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=t@e.st",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-qm",
+        "init",
+    ]);
+}
+
 #[test]
 fn index_search_and_learn_through_the_cli() {
     let (dir, db) = scratch("learn");
@@ -410,6 +429,28 @@ fn searching_from_a_subdirectory_uses_the_repo_root() {
         "one repo, not re-keyed: {status}"
     );
     assert!(status.contains("2 files"), "both files retained: {status}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn warming_a_committed_repo_indexes_tracked_source() {
+    // A committed git repo enumerates candidates from `git ls-files` (reading
+    // git's index) instead of walking the filesystem — the path that keeps a huge
+    // repo from burning its warm budget on a non-source tree. The tracked source
+    // is found on the first search; a non-source file is ignored.
+    let (dir, db) = scratch("gitwarm");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(dir.join("lib/widget.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("README.md"), "# docs, not source\n").unwrap();
+    git_init_commit(&dir);
+
+    let (ok, out) = rq(&db, &dir, &["Widget", "--no-record"]);
+    assert!(ok, "warmed search failed: {out}");
+    assert!(
+        out.contains("lib/widget.rb"),
+        "tracked source warmed: {out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

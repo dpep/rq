@@ -116,6 +116,52 @@ impl<'a> BatchWriter<'a> {
     }
 }
 
+/// Source-file candidates from `git ls-files` — read out of git's index, not by
+/// walking the filesystem. On a huge repo this is the difference between
+/// answering and timing out: enumeration is O(index read), and source-extension
+/// pathspecs make git hand back only files we can parse, so warming never burns
+/// its budget re-traversing non-source trees. Tracked files only (untracked are
+/// caught by an explicit `rq --index`'s filesystem walk). `None` outside a git
+/// work tree, so the caller falls back to walking the filesystem.
+fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
+    if !is_git_repo(root) {
+        return None;
+    }
+    let globs: Vec<String> = lang::registry()
+        .iter()
+        .flat_map(|p| p.extensions().iter().map(|e| format!("*.{e}")))
+        .collect();
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--cached", "--"])
+        .args(&globs);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        out.stdout
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| root.join(String::from_utf8_lossy(s).as_ref()))
+            .collect(),
+    )
+}
+
+/// A lazy, streaming filesystem walk of `roots` yielding file paths — the
+/// fallback when git can't enumerate (an explicit unbounded index, or a non-git
+/// dir). Honors `.gitignore`/hidden rules via the `ignore` crate.
+fn fs_walk_candidates(roots: Vec<std::path::PathBuf>) -> impl Iterator<Item = std::path::PathBuf> {
+    roots.into_iter().flat_map(|root| {
+        WalkBuilder::new(&root)
+            .build()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+            .map(ignore::DirEntry::into_path)
+    })
+}
+
 /// The one fused walk→parse→consume engine. A walk thread streams the source
 /// paths that `keep` selects (in walk order, the instant each is found) through a
 /// bounded channel to a pool of parse workers; the workers parse in parallel
@@ -132,7 +178,7 @@ impl<'a> BatchWriter<'a> {
 #[allow(clippy::too_many_arguments)]
 fn stream_walk(
     root: &Path,
-    walk_roots: &[std::path::PathBuf],
+    candidates: impl Iterator<Item = std::path::PathBuf> + Send,
     deadline: Option<Instant>,
     cap: Option<usize>,
     needle: Option<&[u8]>,
@@ -152,50 +198,43 @@ fn stream_walk(
     let path_rx = Arc::new(Mutex::new(path_rx));
 
     let (seen, walk_finished) = std::thread::scope(|s| -> Result<_, Box<dyn std::error::Error>> {
-        // walk thread: stream every kept path to the workers, in walk order,
-        // the instant it's found. No buffering or deferral — on a repo too big
-        // to finish in budget, anything held back would never be sent.
+        // walk thread: stream every kept source path to the workers, in order, the
+        // instant it's found. No buffering or deferral — on a repo too big to
+        // finish in budget, anything held back would never be sent.
         let walk = s.spawn(move || {
             let mut seen = seen;
             let mut finished = true;
             let mut processed = 0usize;
-            'walk: for walk_root in walk_roots {
-                for result in WalkBuilder::new(walk_root).build() {
-                    if past(deadline) {
-                        finished = false;
-                        break 'walk;
-                    }
-                    let Ok(entry) = result else { continue };
-                    if !entry.file_type().is_some_and(|t| t.is_file()) {
-                        continue;
-                    }
-                    let path = entry.path();
-                    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-                        continue;
-                    };
-                    if lang::plugin_for_extension(ext).is_none() {
-                        continue;
-                    }
-                    let rel = path
-                        .strip_prefix(root)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .into_owned();
-                    if !seen.insert(rel.clone()) {
-                        continue; // already handled (active file), or a duplicate
-                    }
-                    if !keep(&rel, path) {
-                        continue; // caller skipped it (unchanged / already indexed)
-                    }
-                    if path_tx.send(path.to_path_buf()).is_err() {
-                        finished = false; // workers gone (deadline) — walk didn't complete
-                        break 'walk;
-                    }
-                    processed += 1;
-                    if cap.is_some_and(|c| processed >= c) {
-                        finished = false;
-                        break 'walk;
-                    }
+            for path in candidates {
+                if past(deadline) {
+                    finished = false;
+                    break;
+                }
+                let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                    continue;
+                };
+                if lang::plugin_for_extension(ext).is_none() {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                if !seen.insert(rel.clone()) {
+                    continue; // already handled (active file), or a duplicate
+                }
+                if !keep(&rel, &path) {
+                    continue; // caller skipped it (unchanged / already indexed)
+                }
+                if path_tx.send(path).is_err() {
+                    finished = false; // workers gone (deadline) — walk didn't complete
+                    break;
+                }
+                processed += 1;
+                if cap.is_some_and(|c| processed >= c) {
+                    finished = false;
+                    break;
                 }
             }
             drop(path_tx); // close → workers drain and exit
@@ -291,13 +330,29 @@ fn run_index(
         subdirs.iter().map(|s| root.join(s)).collect()
     };
 
+    // Enumerate candidates. A budgeted (warming) pass on a git repo reads git's
+    // index — O(index read), no filesystem traversal — so a huge repo isn't stuck
+    // re-walking non-source trees every pass and never reaching source. An
+    // explicit unbounded index, or a non-git dir, walks the filesystem (thorough;
+    // catches untracked files). `git ls-files` runs *before* the deadline so its
+    // (cheap) work never eats the parse budget.
+    // An empty result means nothing is tracked yet (a fresh/uncommitted repo), so
+    // fall back to the filesystem walk, which sees untracked files.
+    let git_candidates = budget
+        .and_then(|_| git_source_candidates(root))
+        .filter(|paths| !paths.is_empty());
+    let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
+        Some(paths) => Box::new(paths.into_iter()),
+        None => Box::new(fs_walk_candidates(walk_roots)),
+    };
+
     let deadline = budget.map(|b| Instant::now() + b);
     let cap = budget.map(|_| collect_cap());
 
-    // Fused walk → parse → write: stream the walk through the shared pipeline,
+    // Fused walk → parse → write: stream candidates through the shared pipeline,
     // committing parsed files in batches as they arrive (so a budget-cut or killed
     // pass keeps what it parsed). Only new or changed files are parsed; every
-    // source file walked lands in `seen` for deletion reconcile.
+    // source file seen lands in `seen` for deletion reconcile.
     let stored_ref = &stored;
     let keep = |rel: &str, path: &Path| match stored_ref.get(rel) {
         Some(&Some(m)) => Some(m) != file_mtime(path),
@@ -306,7 +361,7 @@ fn run_index(
     let (seen, completed, walk_files, walk_symbols) = {
         let mut writer = BatchWriter::new(&mut *store, repo_id);
         let (seen, completed) =
-            stream_walk(root, &walk_roots, deadline, cap, None, seen, keep, |fs| {
+            stream_walk(root, candidates, deadline, cap, None, seen, keep, |fs| {
                 writer.push(fs)
             })?;
         writer.flush()?;
@@ -583,11 +638,18 @@ pub fn scan(
     needle: Option<&[u8]>,
 ) -> Vec<crate::store::FileSymbols> {
     let needle = needle.filter(|n| !n.is_empty());
+    // git's index for a git repo (content-scan a huge repo without traversing it),
+    // else a filesystem walk (the live scan of a non-git dir)
+    let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> =
+        match git_source_candidates(root).filter(|paths| !paths.is_empty()) {
+            Some(paths) => Box::new(paths.into_iter()),
+            None => Box::new(fs_walk_candidates(vec![root.to_path_buf()])),
+        };
     let mut out: Vec<crate::store::FileSymbols> = Vec::new();
     let keep = |rel: &str, _: &Path| !skip.contains(rel); // skip already-indexed
     let _ = stream_walk(
         root,
-        &[root.to_path_buf()],
+        candidates,
         deadline,
         None,
         needle,
