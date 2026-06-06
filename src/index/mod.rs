@@ -168,6 +168,9 @@ struct BatchWriter<'a> {
     buf: Vec<crate::store::FileSymbols>,
     files: usize,
     symbols: usize,
+    /// Cumulative time spent in `replace_files` (the single-writer store path) —
+    /// surfaced under `-v` so we can see write vs. walk/parse contention.
+    write_time: Duration,
 }
 
 impl<'a> BatchWriter<'a> {
@@ -178,6 +181,7 @@ impl<'a> BatchWriter<'a> {
             buf: Vec::new(),
             files: 0,
             symbols: 0,
+            write_time: Duration::ZERO,
         }
     }
 
@@ -191,7 +195,9 @@ impl<'a> BatchWriter<'a> {
 
     fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if !self.buf.is_empty() {
+            let t = Instant::now();
             let (f, sy) = self.store.replace_files(self.repo_id, &self.buf)?;
+            self.write_time += t.elapsed();
             self.files += f;
             self.symbols += sy;
             self.buf.clear();
@@ -390,6 +396,16 @@ fn run_index(
     let stored = store.file_mtimes(repo_id)?;
     let mut seen: HashSet<String> = HashSet::new();
 
+    // A cold, unbounded index (no prior coverage, the explicit `rq --index`)
+    // suspends per-row FTS maintenance and rebuilds the trigram index in one bulk
+    // pass at the end — the per-row trigger is ~70% of the write cost. Scoped to
+    // the cold full path so incremental re-index and budgeted warming (which may
+    // run concurrently and only touch a few files) keep the per-row trigger.
+    let bulk_fts = budget.is_none() && stored.is_empty();
+    if bulk_fts {
+        store.defer_fts_insert()?;
+    }
+
     // Active (branch) files first: always parsed and written, so the working set
     // stays fresh even when a tight budget cuts the walk short.
     let mut active_to_parse: Vec<std::path::PathBuf> = Vec::new();
@@ -442,15 +458,38 @@ fn run_index(
         Some(&Some(m)) => Some(m) != file_mtime(path),
         _ => true, // new file, or one stored without an mtime
     };
-    let (seen, completed, walk_files, walk_symbols) = {
+    let stream_start = Instant::now();
+    let (seen, completed, walk_files, walk_symbols, write_time) = {
         let mut writer = BatchWriter::new(&mut *store, repo_id);
         let (seen, completed) =
             stream_walk(root, candidates, deadline, cap, None, seen, keep, |fs| {
                 writer.push(fs)
             })?;
         writer.flush()?;
-        (seen, completed, writer.files, writer.symbols)
+        (
+            seen,
+            completed,
+            writer.files,
+            writer.symbols,
+            writer.write_time,
+        )
     };
+    if crate::trace::enabled() {
+        let elapsed = stream_start.elapsed();
+        crate::trace!(
+            "walk+parse+write {} file(s)/{} symbol(s) in {} ms ({} ms in store writes, {} parse jobs)",
+            walk_files,
+            walk_symbols,
+            elapsed.as_millis(),
+            write_time.as_millis(),
+            parse_jobs(),
+        );
+    }
+    if bulk_fts {
+        let t = crate::trace::Timer::start("fts bulk rebuild");
+        store.rebuild_fts()?;
+        drop(t);
+    }
     files_indexed += walk_files;
     symbols += walk_symbols;
     let stats = Stats {

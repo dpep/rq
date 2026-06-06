@@ -97,7 +97,8 @@ impl Store {
         // second writer (e.g. two `rq` processes in two terminals, both warming)
         // wait briefly instead of erroring with "database is locked".
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;",
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000; \
+             PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16384;",
         )?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version == 0 {
@@ -315,6 +316,30 @@ impl Store {
             tx.commit()?;
         }
         Ok((files_written, symbols_written))
+    }
+
+    /// Suspend per-row FTS maintenance for a cold bulk index: drop the
+    /// `AFTER INSERT` trigger so symbol inserts skip the expensive per-row
+    /// trigram tokenization. Pair with [`rebuild_fts`](Self::rebuild_fts), which
+    /// rebuilds the index in one pass and restores the trigger. No-op safe to
+    /// call when the trigger is already gone.
+    pub fn defer_fts_insert(&self) -> Result<()> {
+        self.conn
+            .execute_batch("DROP TRIGGER IF EXISTS symbols_ai;")?;
+        Ok(())
+    }
+
+    /// Rebuild the trigram FTS index from the symbols table in one bulk pass —
+    /// far cheaper than the per-row trigger on a cold index — then recreate the
+    /// `AFTER INSERT` trigger so later incremental writes stay in sync. The
+    /// inverse of [`defer_fts_insert`](Self::defer_fts_insert).
+    pub fn rebuild_fts(&self) -> Result<()> {
+        let sql = format!(
+            "INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild');\n{}",
+            schema::FTS_INSERT_TRIGGER
+        );
+        self.conn.execute_batch(&sql)?;
+        Ok(())
     }
 
     /// Record indexing coverage for a repository (scope `full`).

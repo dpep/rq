@@ -61,6 +61,8 @@ CREATE VIRTUAL TABLE symbols_fts USING fts5(
 );
 
 -- keep the external-content FTS index in sync with symbols
+-- (the AFTER INSERT trigger is also defined as FTS_INSERT_TRIGGER below — keep
+-- them identical; a cold bulk index drops and recreates it around a rebuild)
 CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
 END;
@@ -153,4 +155,13 @@ CREATE TABLE IF NOT EXISTS meta (
 /// ranking signal.
 pub const MIGRATION_V3: &str = r#"
 ALTER TABLE files ADD COLUMN git_ts INTEGER;
+"#;
+
+/// The `AFTER INSERT` FTS-sync trigger, kept identical to the copy in [`SCHEMA`].
+/// A cold bulk index drops this trigger, inserts symbols without per-row FTS
+/// maintenance, rebuilds the FTS index in one pass, then recreates it here.
+pub const FTS_INSERT_TRIGGER: &str = r#"
+CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
+  INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
+END;
 "#;

@@ -173,6 +173,24 @@ fn a_wildcard_bridges_an_explicit_gap() {
 }
 
 #[test]
+fn cold_index_builds_a_working_fuzzy_index() {
+    // a cold `--index` defers per-row FTS and rebuilds the trigram index in bulk;
+    // a mid-word substring (not a prefix of the name) only resolves through that
+    // FTS recall, so this proves the bulk rebuild produced a usable index
+    let (dir, db) = scratch("coldfts");
+    fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
+    let (ok, out) = rq(&db, &dir, &["--index"]);
+    assert!(ok, "index failed: {out}");
+
+    // "widget" is mid-word in AlphaWidgetController — exact/prefix can't reach it
+    let (ok, out) = rq(&db, &dir, &["widget", "--no-record"]);
+    assert!(ok, "fuzzy recall should find it: {out}");
+    assert!(out.contains("AlphaWidgetController"), "fts recall: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn empty_status_points_at_the_real_index_flag() {
     // the hint must name the actual flag (`rq --index`), not a non-existent
     // `rq index` subcommand
