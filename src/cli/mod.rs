@@ -222,6 +222,7 @@ fn cmd_search(
         (want * 20).max(PATH_HEADROOM)
     };
     let _timer = crate::trace::Timer::start("search done");
+    let t_setup = std::time::Instant::now();
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
@@ -328,6 +329,10 @@ fn cmd_search(
     // Hold until a *high-confidence* (exact or prefix name) match appears, which
     // means the index has built enough to rank it; otherwise keep building until
     // warming finishes or the answer deadline passes, then rank the fuller index.
+    crate::trace!(
+        "setup (open + repo detect + warm decision): {} ms",
+        t_setup.elapsed().as_millis()
+    );
     let answer_deadline = std::time::Instant::now() + answer_warm_budget();
     let polling = indexer.is_some() && was_warming;
     let mut hits = loop {

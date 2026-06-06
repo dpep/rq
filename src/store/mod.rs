@@ -741,10 +741,22 @@ impl Store {
         Ok(())
     }
 
-    /// Candidate symbols for a query, drawn from two cheap layers and merged:
-    /// exact/prefix on `name_lower`, plus a trigram-FTS pass for fuzzy recall.
-    /// Ranking happens in `crate::search`; this only narrows the field.
-    pub fn search_candidates(&self, query: &str, limit: usize) -> Result<Vec<SymbolRow>> {
+    /// Candidate symbols for a query, drawn from cheap layers and merged:
+    /// exact/prefix on `name_lower`, then broad fuzzy recall (first-char anchor,
+    /// trigram FTS, path). Ranking happens in `crate::search`; this only narrows
+    /// the field.
+    ///
+    /// When `force_fuzzy` is false and exact/prefix already matched, the broad
+    /// fuzzy layers are skipped: the relevance gate drops every fuzzy candidate
+    /// once a strong (exact/prefix) hit exists, so fetching and scoring them is
+    /// wasted. A wildcard query passes `force_fuzzy = true` — it isn't gated and
+    /// always needs the trigram recall.
+    pub fn search_candidates(
+        &self,
+        query: &str,
+        limit: usize,
+        force_fuzzy: bool,
+    ) -> Result<Vec<SymbolRow>> {
         let q = query.to_ascii_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
 
@@ -778,6 +790,14 @@ impl Store {
                 let (id, cand) = row?;
                 found.entry(id).or_insert(cand);
             }
+        }
+
+        // Fast path: a strong (exact/prefix) match exists, so the relevance gate
+        // will discard everything the broad layers below would add. Skip them —
+        // identical results, no wasted fetch/score. (Wildcard queries force the
+        // fuzzy layers; they aren't gated.)
+        if !force_fuzzy && !found.is_empty() {
+            return Ok(found.into_values().collect());
         }
 
         // Layer 2: first-character anchor (index-backed scan) for short
@@ -968,7 +988,7 @@ mod tests {
         let times = HashMap::from([("a.rb".to_string(), 1_700_000_000_i64)]);
         store.set_file_git_ts(repo, &times).unwrap();
 
-        let cands = store.search_candidates("foo", 10).unwrap();
+        let cands = store.search_candidates("foo", 10, false).unwrap();
         assert_eq!(cands[0].git_ts, Some(1_700_000_000));
     }
 

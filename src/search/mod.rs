@@ -111,7 +111,13 @@ pub fn search(
     } else {
         query
     };
-    let candidates = store.search_candidates(recall, CANDIDATE_LIMIT)?;
+    let trace_on = crate::trace::enabled();
+    let t = std::time::Instant::now();
+    let candidates =
+        store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(query))?;
+    let n_candidates = candidates.len();
+    let t_recall = t.elapsed();
+    let t = std::time::Instant::now();
     let learned = learned_boosts(store, query)?;
     let now = now_unix();
 
@@ -133,8 +139,19 @@ pub fn search(
             rank_one(query, c, current_repo_id, boosts)
         })
         .collect();
+    let n_hits = hits.len();
+    let t_score = t.elapsed();
 
+    let t = std::time::Instant::now();
     sort_and_truncate(&mut hits, limit);
+    if trace_on {
+        crate::trace!(
+            "search {query:?}: recall {n_candidates} cand in {} ms, score→{n_hits} hits in {} ms, sort {} ms",
+            t_recall.as_millis(),
+            t_score.as_millis(),
+            t.elapsed().as_millis(),
+        );
+    }
     Ok(hits)
 }
 
