@@ -111,6 +111,38 @@ fn index_search_and_learn_through_the_cli() {
 }
 
 #[test]
+fn a_strong_match_suppresses_the_scattered_tail() {
+    // when the query lands an exact/prefix name match, fuzzy near-matches are
+    // dropped — `employeescontroller` keeps EmployeesController, not the scattered
+    // EmployeeStatusController (employee + s + …controller, skipping "tatus").
+    let (dir, db) = scratch("gate");
+    fs::write(
+        dir.join("employees_controller.rb"),
+        "class EmployeesController\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("employee_status_controller.rb"),
+        "class EmployeeStatusController\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (_, out) = rq(
+        &db,
+        &dir,
+        &["employeescontroller", "--no-record", "--ndjson"],
+    );
+    assert!(out.contains("EmployeesController"), "exact kept: {out}");
+    assert!(
+        !out.contains("EmployeeStatusController"),
+        "scattered fuzzy dropped: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn record_is_a_searchable_word_not_a_subcommand() {
     let (dir, db) = scratch("disambig");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

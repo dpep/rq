@@ -383,6 +383,19 @@ fn cmd_search(
         hits = h;
     }
 
+    // Relevance gate: when the query lands a real name match (exact or prefix),
+    // drop the scattered fuzzy / path-only near-matches — they're noise next to a
+    // solid hit, and rq favors fewer, better results. A purely-fuzzy query (no
+    // exact/prefix anywhere) keeps its matches.
+    let strong = |h: &crate::search::Hit| {
+        h.features
+            .iter()
+            .any(|f| matches!(f.name, "exact" | "prefix"))
+    };
+    if hits.iter().any(strong) {
+        hits.retain(strong);
+    }
+
     // post-filters: keep only results under a --path dir, of a --kind, and/or in
     // a --lang, then trim to the requested count.
     if !paths.is_empty() {

@@ -70,16 +70,29 @@ fn prioritize_by_path(
     if k == 0 {
         return paths;
     }
-    let kgrams: Vec<&[u8]> = needle.as_bytes().windows(k).collect();
-    let relevant = |p: &Path| {
-        let Some(stem) = p.file_stem() else {
-            return false;
-        };
-        let stem = alnum_lower(&stem.to_string_lossy());
+    let kgrams: std::collections::HashSet<&[u8]> = needle.as_bytes().windows(k).collect();
+    // one pass, reusing a scratch buffer for the normalized stem and an O(1)
+    // k-gram lookup — string-only, no per-file allocation
+    let mut prio = Vec::new();
+    let mut rest = Vec::new();
+    let mut stem = String::new();
+    for p in paths {
+        stem.clear();
+        if let Some(s) = p.file_stem() {
+            stem.extend(
+                s.to_string_lossy()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .map(|c| c.to_ascii_lowercase()),
+            );
+        }
         // shares a k-char run with the query (a common substring of length ≥ k)
-        stem.as_bytes().windows(k).any(|w| kgrams.contains(&w))
-    };
-    let (mut prio, rest): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| relevant(p));
+        if stem.as_bytes().windows(k).any(|w| kgrams.contains(w)) {
+            prio.push(p);
+        } else {
+            rest.push(p);
+        }
+    }
     prio.extend(rest);
     prio
 }
