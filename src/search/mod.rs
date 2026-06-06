@@ -102,7 +102,16 @@ pub fn search(
     active: &ActiveFiles,
     limit: usize,
 ) -> crate::store::Result<Vec<Hit>> {
-    let candidates = store.search_candidates(query, CANDIDATE_LIMIT)?;
+    // A wildcard query keys candidate recall off its literal chars (the store
+    // indexes literal trigrams); the glob then matches precisely during scoring.
+    let stripped;
+    let recall = if score::has_wildcard(query) {
+        stripped = score::strip_wildcards(query);
+        stripped.as_str()
+    } else {
+        query
+    };
+    let candidates = store.search_candidates(recall, CANDIDATE_LIMIT)?;
     let learned = learned_boosts(store, query)?;
     let now = now_unix();
 

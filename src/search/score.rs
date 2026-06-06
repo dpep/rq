@@ -51,7 +51,19 @@ pub fn score(
     let mut features = Vec::new();
 
     // Match quality on the symbol name — the dominant term.
-    let name_matched = if name_lower == q {
+    let wildcard = has_wildcard(&q);
+    let name_matched = if wildcard {
+        // explicit glob: literal segments separated by the user's `*`/`?` gaps
+        if let Some(s) = wildcard_score(&q, &cand.name) {
+            features.push(Feature {
+                name: "wildcard",
+                value: s.min(600.0),
+            });
+            true
+        } else {
+            false
+        }
+    } else if name_lower == q {
         features.push(Feature {
             name: "exact",
             value: 1000.0,
@@ -75,9 +87,13 @@ pub fn score(
         false
     };
 
-    // Layer 3: path / filename matching.
+    // Layer 3: path / filename matching (same glob/fuzzy split as the name).
     let stem = path_stem(&cand.file);
-    let path_match = subsequence_score(&q, stem);
+    let path_match = if wildcard {
+        wildcard_score(&q, stem)
+    } else {
+        subsequence_score(&q, stem)
+    };
     if name_matched {
         // a file named after the query reinforces a name match (small bonus)
         if let Some(ps) = path_match {
@@ -302,6 +318,9 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
 /// The char indices in `name` that `query` matched, from the best alignment —
 /// for highlighting *what* matched. Empty if `query` isn't a subsequence.
 pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
+    if has_wildcard(query) {
+        return glob_positions(query, name).unwrap_or_default();
+    }
     align(query, name).map(|a| a.positions).unwrap_or_default()
 }
 
@@ -309,6 +328,127 @@ pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
 /// `None` if it isn't a subsequence.
 fn subsequence_score(query: &str, name: &str) -> Option<f64> {
     align(query, name).map(|a| a.score)
+}
+
+/// Does `query` use wildcard syntax — `*` (any run), `?`/`.` (one char)? When it
+/// does, matching switches from fuzzy subsequence to an explicit glob: literal
+/// chars match *contiguously*, and the only gaps are the ones the user marked.
+/// `find*controller` keeps `FindController` and `FindUserController` but, unlike
+/// fuzzy, won't reach into a scattered `FxIxNxDxController`.
+pub fn has_wildcard(query: &str) -> bool {
+    query.contains(['*', '?', '.'])
+}
+
+/// A wildcard query's literal characters, metachars removed — used to seed the
+/// store's candidate recall (which keys off literal trigrams) before the glob
+/// does the precise matching. `find*controller` → `findcontroller`.
+pub fn strip_wildcards(query: &str) -> String {
+    query
+        .chars()
+        .filter(|c| !matches!(c, '*' | '?' | '.'))
+        .collect()
+}
+
+/// One token of a compiled wildcard pattern.
+enum Glob {
+    Lit(char), // a literal (lowercased) char — matches itself
+    Any,       // `?` / `.` — exactly one char
+    Star,      // `*` — zero or more chars
+}
+
+/// Compile a wildcard query into glob tokens. The query's own separators
+/// (`_`, `-`, …) are ignored, like the fuzzy matcher, so `emp_*_ctrl` and
+/// `emp*ctrl` compile alike.
+fn compile_glob(query: &str) -> Vec<Glob> {
+    query
+        .chars()
+        .filter_map(|c| match c {
+            '*' => Some(Glob::Star),
+            '?' | '.' => Some(Glob::Any),
+            c if c.is_alphanumeric() => Some(Glob::Lit(c.to_ascii_lowercase())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Match a wildcard `query` against `name`, unanchored (the pattern may match any
+/// substring — implicit `*` at both ends). Returns the indices the *literal*
+/// chars matched (the highlight), or `None` if it doesn't match. Classic
+/// two-pointer glob with `*` backtracking; literal positions are recorded and
+/// rolled back on each backtrack.
+fn glob_positions(query: &str, name: &str) -> Option<Vec<usize>> {
+    let mut toks = vec![Glob::Star];
+    toks.extend(compile_glob(query));
+    toks.push(Glob::Star);
+
+    let lower: Vec<char> = name.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut ti = 0;
+    let mut ni = 0;
+    let mut positions: Vec<usize> = Vec::new();
+    // the last `*` to fall back to: (token index after it, name index, #positions)
+    let mut star: Option<(usize, usize, usize)> = None;
+
+    while ni < lower.len() {
+        match toks.get(ti) {
+            Some(Glob::Lit(c)) if lower[ni] == *c => {
+                positions.push(ni);
+                ti += 1;
+                ni += 1;
+            }
+            Some(Glob::Any) => {
+                ti += 1;
+                ni += 1;
+            }
+            Some(Glob::Star) => {
+                star = Some((ti + 1, ni, positions.len()));
+                ti += 1;
+            }
+            // mismatch, or pattern ran out with chars left: extend the last star
+            // by one char and retry from just after it; no star to fall back to
+            // means no match
+            _ => match star {
+                Some((sti, sni, plen)) => {
+                    ti = sti;
+                    ni = sni + 1;
+                    star = Some((sti, sni + 1, plen));
+                    positions.truncate(plen);
+                }
+                None => return None,
+            },
+        }
+    }
+    while matches!(toks.get(ti), Some(Glob::Star)) {
+        ti += 1;
+    }
+    (ti == toks.len()).then_some(positions)
+}
+
+/// Score a wildcard match from its literal positions — the same boundary /
+/// contiguity / start signals as the fuzzy scorer, but no gap penalty: the gaps
+/// are the `*`/`?` the user placed deliberately. `None` when it doesn't match,
+/// or when nothing literal matched (an all-wildcard query like `*`).
+fn wildcard_score(query: &str, name: &str) -> Option<f64> {
+    let positions = glob_positions(query, name)?;
+    if positions.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = name.chars().collect();
+    let boundary = boundaries(&chars);
+    let mut score = 0.0;
+    let mut prev: Option<usize> = None;
+    for &i in &positions {
+        score += 10.0;
+        if boundary[i] {
+            score += 15.0;
+        }
+        match prev {
+            Some(p) if p + 1 == i => score += 10.0, // contiguous literal run
+            None if i == 0 => score += 20.0,        // anchored at the very start
+            _ => {}
+        }
+        prev = Some(i);
+    }
+    Some(score)
 }
 
 /// The filename stem of a repo-relative path: last segment, extension dropped.
@@ -573,6 +713,48 @@ mod tests {
         assert!(total("widget_controller", "WidgetController").is_some());
         // unrelated controller still doesn't match
         assert!(total("widget_controller", "AdminController").is_none());
+    }
+
+    #[test]
+    fn wildcard_star_spans_an_explicit_gap() {
+        // `*` bridges any run, so the scattered tail the fuzzy gate rejects is
+        // exactly what an explicit star asks for
+        assert!(total("find*controller", "FindController").is_some());
+        assert!(total("find*controller", "FindUserController").is_some());
+        assert!(total("find*controller", "FindUserAccountController").is_some());
+        // but the literals must still appear contiguously — `controller` is a
+        // literal, not an abbreviation
+        assert!(total("find*ctrlr", "FindController").is_none());
+        // and a name missing a literal segment doesn't match
+        assert!(total("find*controller", "FindService").is_none());
+    }
+
+    #[test]
+    fn wildcard_question_mark_matches_one_char() {
+        // `?` and `.` each consume exactly one char
+        assert!(total("find?controller", "FindXController").is_some());
+        assert!(total("find.controller", "Find1Controller").is_some());
+        // zero chars or two chars in the slot don't fit a single `?`
+        assert!(total("find?controller", "FindController").is_none());
+        assert!(total("find?controller", "FindXyController").is_none());
+    }
+
+    #[test]
+    fn wildcard_highlights_only_the_literals() {
+        // the gap chars aren't highlighted, only the literals the user typed
+        assert_eq!(
+            match_positions("find*er", "FindController"),
+            vec![0, 1, 2, 3, 12, 13] // Find + er
+        );
+    }
+
+    #[test]
+    fn wildcard_prefers_boundary_aligned_matches() {
+        // a star landing the second literal on a word boundary outranks one
+        // landing it mid-word
+        let boundary = total("a*b", "Alpha_Bravo").unwrap();
+        let midword = total("a*b", "Alphabet").unwrap();
+        assert!(boundary > midword, "{boundary} > {midword}");
     }
 
     #[test]

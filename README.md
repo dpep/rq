@@ -12,6 +12,7 @@ rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
 rq perform       # → the perform you actually meant, ranked first
 rq usr           # → User              app/models/user.rb:1
 rq refundproc    # → RefundProcessor   (fuzzy, abbreviation-aware)
+rq refund*proc   # → explicit gaps: `*` any run, `?`/`.` one char
 ```
 
 Search is the default action (`rq <query>`, not `rq search …`), aiming to feel

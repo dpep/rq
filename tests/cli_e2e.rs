@@ -143,6 +143,36 @@ fn a_strong_match_suppresses_the_scattered_tail() {
 }
 
 #[test]
+fn a_wildcard_bridges_an_explicit_gap() {
+    // `*` reaches across words the fuzzy matcher deliberately won't skip:
+    // `widget*controller` finds WidgetAlphaBravoController, where the plain
+    // `widgetcontroller` query is rejected (it would have to skip whole words).
+    // An unrelated file stays out.
+    let (dir, db) = scratch("wildcard");
+    fs::write(
+        dir.join("widget_alpha_bravo_controller.rb"),
+        "class WidgetAlphaBravoController\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("gadget_service.rb"), "class GadgetService\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["widget*controller", "--no-record", "--ndjson"]);
+    assert!(ok, "wildcard search should match: {out}");
+    assert!(
+        out.contains("WidgetAlphaBravoController"),
+        "star bridges the gap: {out}"
+    );
+    assert!(!out.contains("GadgetService"), "non-match excluded: {out}");
+
+    // the same query without the star is too scattered for the fuzzy matcher
+    let (matched, _) = rq(&db, &dir, &["widgetcontroller", "--no-record"]);
+    assert!(!matched, "plain fuzzy won't skip whole words");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn record_is_a_searchable_word_not_a_subcommand() {
     let (dir, db) = scratch("disambig");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

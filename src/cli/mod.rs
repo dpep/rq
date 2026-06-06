@@ -305,7 +305,10 @@ fn cmd_search(
     // on a small repo returns as soon as it's indexed, not at the deadline.
     let warm_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let indexer = (want_warm && root.is_some()).then(|| {
-        crate::trace!("background warm ({warm_budget:?})");
+        crate::trace!(
+            "background warm ({warm_budget:?}, {} jobs)",
+            crate::index::parse_jobs()
+        );
         let root = root.clone().expect("checked");
         let active = active_paths.clone();
         let q = query.to_string();

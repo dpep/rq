@@ -139,7 +139,7 @@ pub fn set_parse_jobs(n: usize) {
 /// Parse workers for one indexer pass — the configured value, else `RQ_JOBS`,
 /// else an auto default. Parsing is CPU-bound but writes serialize through one
 /// SQLite writer, so flooding every core rarely pays; the default caps at 8.
-fn parse_jobs() -> usize {
+pub fn parse_jobs() -> usize {
     let configured = PARSE_JOBS.load(std::sync::atomic::Ordering::Relaxed);
     if configured > 0 {
         return configured;
