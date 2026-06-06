@@ -62,8 +62,17 @@ impl Ctx<'_> {
                         Kind::Module
                     };
                     if let Some(name) = self.field_text(child, "name") {
-                        out.push(self.symbol(&name, kind, child, parent));
-                        let qualified = qualify(parent, &name, "::");
+                        // a compact definition (`class A::B::C`) names the leaf `C`
+                        // with `A::B` folded into the parent — same shape as the
+                        // nested `module A; module B; class C` form, so the class
+                        // is found by its leaf name either way
+                        let (leaf, prefix) = split_qualified(&name);
+                        let effective_parent = match prefix {
+                            Some(p) => Some(qualify(parent, p, "::")),
+                            None => parent.map(str::to_string),
+                        };
+                        out.push(self.symbol(leaf, kind, child, effective_parent.as_deref()));
+                        let qualified = qualify(effective_parent.as_deref(), leaf, "::");
                         self.walk(child, Some(&qualified), out);
                     } else {
                         self.walk(child, parent, out);
@@ -95,6 +104,19 @@ impl Ctx<'_> {
             line: node.start_position().row as u32 + 1,
             parent: parent.map(str::to_string),
         }
+    }
+}
+
+/// Split a possibly compact-qualified definition name (`A::B::C`) into its leaf
+/// (`C`) and namespace prefix (`A::B`). A plain name has no prefix; a leading
+/// `::` (absolute `::Foo`) yields no prefix either.
+fn split_qualified(name: &str) -> (&str, Option<&str>) {
+    match name.rfind("::") {
+        Some(i) => {
+            let prefix = &name[..i];
+            (&name[i + 2..], (!prefix.is_empty()).then_some(prefix))
+        }
+        None => (name, None),
     }
 }
 
@@ -151,6 +173,25 @@ end
         let build = find(&syms, "build");
         assert_eq!(build.kind, Kind::Method);
         assert_eq!(build.parent.as_deref(), Some("Billing::RefundProcessor"));
+    }
+
+    #[test]
+    fn compact_namespace_is_split_into_leaf_and_parent() {
+        // `class A::B::C` names the leaf `C`, with `A::B` folded into the parent —
+        // so it's found by its leaf name just like the nested form, and a method
+        // inside it still qualifies fully
+        let src = "class My::Module::EmployeesController\n  def index\n  end\nend\n";
+        let syms = extract(src);
+
+        let class = find(&syms, "EmployeesController");
+        assert_eq!(class.kind, Kind::Class);
+        assert_eq!(class.parent.as_deref(), Some("My::Module"));
+
+        let index = find(&syms, "index");
+        assert_eq!(
+            index.parent.as_deref(),
+            Some("My::Module::EmployeesController")
+        );
     }
 
     #[test]

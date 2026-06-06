@@ -191,6 +191,37 @@ fn cold_index_builds_a_working_fuzzy_index() {
 }
 
 #[test]
+fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
+    // `class A::B::EmployeesController` must be found by `employeescontroller`
+    // (its leaf), and must survive next to a top-level EmployeesController — the
+    // relevance gate shouldn't prune a legitimate exact-leaf match
+    let (dir, db) = scratch("namespaced");
+    fs::write(
+        dir.join("a.rb"),
+        "class My::Module::EmployeesController\n  def index; end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.rb"),
+        "class EmployeesController\n  def show; end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["employeescontroller", "--no-record", "--ndjson"],
+    );
+    assert!(ok, "search failed: {out}");
+    // both files surface — the namespaced one isn't pruned
+    assert!(out.contains("a.rb"), "namespaced class kept: {out}");
+    assert!(out.contains("b.rb"), "top-level class kept: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn empty_status_points_at_the_real_index_flag() {
     // the hint must name the actual flag (`rq --index`), not a non-existent
     // `rq index` subcommand
