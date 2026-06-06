@@ -848,7 +848,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(format_args!("rq index: {e}")),
+        Err(e) => fail(format_args!("rq --index: {e}")),
     }
 }
 
@@ -859,7 +859,7 @@ fn cmd_status() -> ExitCode {
     };
     match store.coverage_overview() {
         Ok(rows) if rows.is_empty() => {
-            println!("no repositories indexed yet (try `rq index`)");
+            println!("no repositories indexed yet (try `rq --index`)");
             ExitCode::SUCCESS
         }
         Ok(rows) => {
@@ -871,7 +871,7 @@ fn cmd_status() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(format_args!("rq status: {e}")),
+        Err(e) => fail(format_args!("rq --status: {e}")),
     }
 }
 

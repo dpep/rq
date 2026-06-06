@@ -173,6 +173,18 @@ fn a_wildcard_bridges_an_explicit_gap() {
 }
 
 #[test]
+fn empty_status_points_at_the_real_index_flag() {
+    // the hint must name the actual flag (`rq --index`), not a non-existent
+    // `rq index` subcommand
+    let (dir, db) = scratch("empty-status");
+    let (ok, out) = rq(&db, &dir, &["--status"]);
+    assert!(ok, "status on an empty db should succeed: {out}");
+    assert!(out.contains("rq --index"), "hint names the flag: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn record_is_a_searchable_word_not_a_subcommand() {
     let (dir, db) = scratch("disambig");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
