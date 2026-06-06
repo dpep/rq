@@ -507,13 +507,13 @@ fn cmd_search(
     ExitCode::SUCCESS
 }
 
-/// Above this many indexed files, a complete repo checks git for changes before
-/// re-walking; below it the walk is cheap enough to just run.
-const WARM_SKIP_MIN_FILES: i64 = 2000;
-
-/// Whether a large, complete repo is provably unchanged since its last index —
-/// same HEAD and a clean work tree — so the deferred re-walk can be skipped.
-/// Conservative: any uncertainty (small repo, not complete, git hiccup) returns
+/// Whether a complete repo is provably unchanged since its last index — same
+/// HEAD and a clean work tree — so the deferred re-walk can be skipped. The git
+/// HEAD + dirty check is cheap (~tens of ms) and authoritative at any size, so
+/// it gates warming for small and large repos alike: a clean, fully-indexed repo
+/// has nothing to warm, and re-walking it on every query just to discover that
+/// wasted a full sweep (~hundreds of ms) per search. Conservative: any
+/// uncertainty (not complete, non-git / no recorded head, git hiccup) returns
 /// false, so we warm.
 fn repo_unchanged_since_index(
     store: &Store,
@@ -525,13 +525,9 @@ fn repo_unchanged_since_index(
         return false;
     }
     let Some(id) = current else { return false };
-    let files = store.repo_totals(id).map(|(f, _)| f).unwrap_or(0);
-    if files <= WARM_SKIP_MIN_FILES {
-        return false;
-    }
     let indexed_head = store.indexed_head(id).ok().flatten();
-    crate::index::git_head(cwd) == indexed_head
-        && indexed_head.is_some()
+    indexed_head.is_some()
+        && crate::index::git_head(cwd) == indexed_head
         && !crate::index::is_dirty(cwd)
 }
 
@@ -817,17 +813,31 @@ fn resolve_identity(store: &Store, cwd: &std::path::Path) -> String {
 }
 
 fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
+    let explicit = path.is_some();
     let target = path.unwrap_or_else(|| PathBuf::from("."));
     // Normalize to the repo root: the index is repo-root-relative, so indexing
     // from a subdirectory must still key off the root (a subdir-relative index
     // would mismatch a later search and get reconciled away). `--path` scopes a
     // subset; outside git the target is used as-is.
-    let root = crate::index::repo_root(&target).unwrap_or(target);
+    let root = crate::index::repo_root(&target).unwrap_or_else(|| target.clone());
+    // An explicit TARGET *inside* the repo scopes the index to that subtree — the
+    // user pointed at a subdir, not the whole repo, and shouldn't pay to walk
+    // everything. Folded in alongside any `--path` subdirs. (A bare `rq --index`
+    // with no target still walks the whole repo.)
+    let mut subdirs = subdirs.to_vec();
+    if explicit
+        && let (Ok(t), Ok(r)) = (target.canonicalize(), root.canonicalize())
+        && t != r
+        && let Ok(rel) = t.strip_prefix(&r)
+        && !rel.as_os_str().is_empty()
+    {
+        subdirs.push(rel.to_string_lossy().into_owned());
+    }
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
-    match crate::index::index_under(&mut store, &root, subdirs) {
+    match crate::index::index_under(&mut store, &root, &subdirs) {
         Ok(stats) => {
             let scope = if subdirs.is_empty() { "" } else { " (partial)" };
             // distinguish this run's incremental work from the index totals

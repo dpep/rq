@@ -222,6 +222,67 @@ fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
 }
 
 #[test]
+fn a_clean_complete_repo_does_not_re_warm_on_search() {
+    // a fully-indexed, clean git repo is provably unchanged (HEAD matches, no
+    // dirty files), so a search must skip the background warm entirely rather
+    // than re-walk the whole tree per query — at any size
+    let (dir, db) = scratch("nowarm");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    // -v traces "background warm" to stderr only when it actually warms
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["-v", "widget", "--no-record"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .output()
+        .expect("run rq");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        !stderr.contains("background warm"),
+        "clean complete repo should not re-warm: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
+    // `rq --index <subdir>` indexes only that subtree (not the whole repo), yet
+    // stores paths relative to the repo root so a later search still resolves them
+    let (dir, db) = scratch("index-subdir");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::create_dir_all(dir.join("other")).unwrap();
+    fs::write(dir.join("sub/a.rb"), "class InScope\nend\n").unwrap();
+    fs::write(dir.join("other/b.rb"), "class OutOfScope\nend\n").unwrap();
+    git_init_commit(&dir);
+
+    let (ok, out) = rq(&db, &dir, &["--index", "sub"]);
+    assert!(ok, "scoped index failed: {out}");
+    assert!(out.contains("partial"), "subdir index is partial: {out}");
+    assert!(
+        out.contains("1 files"),
+        "indexed exactly the one in-scope file: {out}"
+    );
+
+    // the in-scope class is found, at a repo-root-relative path
+    let (ok, out) = rq(&db, &dir, &["inscope", "--no-record", "--ndjson"]);
+    assert!(ok, "search failed: {out}");
+    assert!(out.contains("InScope"), "in-scope class indexed: {out}");
+    assert!(
+        out.contains("\"file\":\"sub/a.rb\""),
+        "path is root-relative, not subdir-relative: {out}"
+    );
+
+    // the out-of-scope class was never walked
+    let (found, _) = rq(&db, &dir, &["outofscope", "--no-record"]);
+    assert!(!found, "out-of-scope subtree not indexed");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn empty_status_points_at_the_real_index_flag() {
     // the hint must name the actual flag (`rq --index`), not a non-existent
     // `rq index` subcommand
