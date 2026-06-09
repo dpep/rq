@@ -39,6 +39,18 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
+/// Run a `-v` search and report whether it spawned a background warm (traced to
+/// stderr). Lets tests assert on the warm decision without timing flakiness.
+fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["-v", query, "--no-record"])
+        .current_dir(cwd)
+        .env("RQ_DB", db)
+        .output()
+        .expect("run rq");
+    String::from_utf8_lossy(&run.stderr).contains("background warm")
+}
+
 /// `git init` a directory (no commits needed) so it reads as a git repo.
 fn git_init(dir: &Path) {
     let _ = Command::new("git")
@@ -231,17 +243,34 @@ fn a_clean_complete_repo_does_not_re_warm_on_search() {
     git_init_commit(&dir);
     rq(&db, &dir, &["--index"]);
 
-    // -v traces "background warm" to stderr only when it actually warms
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["-v", "widget", "--no-record"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
-        .output()
-        .expect("run rq");
-    let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
-        !stderr.contains("background warm"),
-        "clean complete repo should not re-warm: {stderr}"
+        !warmed(&db, &dir, "widget"),
+        "clean complete repo should not re-warm"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
+    // the dirty check skips the untracked-file scan for speed: a tracked edit
+    // still triggers a warm (so the change is picked up), but a brand-new
+    // untracked file is the accepted tradeoff — not seen until committed/indexed
+    let (dir, db) = scratch("dirty-check");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    fs::write(dir.join("a.rb"), "class Widget\n  def go; end\nend\n").unwrap();
+    assert!(warmed(&db, &dir, "widget"), "tracked edit triggers a warm");
+
+    // restore the tracked file to its committed content (tree clean again), then
+    // add an untracked file — which the cheaper check intentionally ignores
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    assert!(
+        !warmed(&db, &dir, "widget"),
+        "a new untracked file does not trigger a warm (accepted tradeoff)"
     );
 
     let _ = fs::remove_dir_all(&dir);

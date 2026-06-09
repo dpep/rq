@@ -828,11 +828,20 @@ pub fn git_head(root: &Path) -> Option<String> {
     git_output(root, &["rev-parse", "HEAD"])
 }
 
-/// Whether the work tree has uncommitted changes (tracked or untracked).
-/// `git status --porcelain` prints nothing when clean, so empty stdout (which
-/// `git_output` reports as `None`) means clean.
+/// Whether the work tree has uncommitted changes to *tracked* files (staged or
+/// unstaged). `--untracked-files=no` skips the work-tree-wide untracked-file
+/// scan — the expensive, cold-cache-sensitive part of `git status` on a large
+/// repo (it walks to classify every path against `.gitignore`). This runs on
+/// every search to gate warming, so the scan dominated query-time variance.
+///
+/// The tradeoff: a brand-new *untracked* file isn't seen as a change here, so it
+/// won't be picked up by the opportunistic warm until it's committed (HEAD moves
+/// → warm) or `rq --index`ed. Tracked edits, the common case, are still caught,
+/// and `git status` still refreshes the index so a touched-but-unchanged file
+/// doesn't read as dirty. Empty stdout (clean) reports as `None` via
+/// `git_output`.
 pub fn is_dirty(root: &Path) -> bool {
-    git_output(root, &["status", "--porcelain"]).is_some()
+    git_output(root, &["status", "--porcelain", "--untracked-files=no"]).is_some()
 }
 
 /// Repo-relative files you're working on this branch: committed changes since
