@@ -164,11 +164,53 @@ model, not leaking a language into `index`/`search`/scoring.
 - `rq --index --path DIR` — partial index of a subtree (for big monorepos);
   a later search won't silently full-index over it
 
+## Exploratory — semantic / association layer
+
+Speculative; not committed. The idea: surface *related* symbols, not just
+lexically-matching ones — `refund` leading you toward `Chargeback` even with no
+shared characters. The interesting bet is to mint associations **from the repo
+itself** (distributional semantics — word2vec/GloVe/LSA from co-occurrence), not
+a pretrained model, so it stays local, cheap, and in character with the rest.
+
+- [ ] self-derived associations from symbol proximity. Signals rq can use, some
+      already captured: same-file / same-scope / N-line-window co-occurrence;
+      `parent` nesting; **git co-change** (files committed together — already
+      sourced for recency); **behavioral co-selection** (the `events` /
+      `selection_stats` already record which pick answered which query).
+- [ ] two flavors, increasing in ambition:
+  - sparse **association graph** — a `cooccurrence(a, b, count)` table
+    accumulated during the parse walk. Query → top co-occurring symbols (query
+    expansion / "related"). Cheap, incremental, and **explainable** ("related:
+    co-occurs in 14 files, co-changed in 9 commits"), which a neural cosine is
+    not. Compounds with the learned ranking already in place.
+  - dense **self-derived vectors** — factorize the co-occurrence matrix
+    (PMI + truncated SVD), store ~100-dim int8 per symbol (~100 B; cheaper than
+    neural since the vocabulary is repo-scale), ANN-recall as a gated `semantic`
+    feature in the additive scorer. The query embeds by averaging its
+    in-vocabulary token vectors — pure arithmetic, no model in memory.
+- why it fits: local, no model / network / **no resident daemon**, CPU-cheap,
+  incremental, explainable, and degrades to today's behavior with no association
+  table. It sidesteps the fatal flaw of pretrained embeddings for a fork-per-
+  query CLI — loading a neural model per invocation (100 ms–1 s) blows the
+  latency budget.
+- limitation: associations are bound to *this repo's* vocabulary — great for
+  "things this codebase uses together," but no generic cross-vocabulary synonyms
+  (`authentication`↛`login` unless they co-occur here). Subword splitting widens
+  it; lexical stays the fallback. Sparse stats cold-start on small/new repos.
+- if pretrained **neural** embeddings are ever wanted (for cross-vocabulary
+  semantics), the model + inference runtime + resident process belong in a
+  sibling `rq-embed` binary in a Cargo workspace sharing `store`/`core` — never
+  linked into the lean default binary. The self-derived approach above needs
+  none of that.
+
 ## Explicit non-goals
 
 Not in scope (revisit only with a strong reason):
 
 - call graphs, type inference, reference tracking, inheritance analysis
 - full LSP feature set
+- pretrained-model embedding search **in the core binary** — a model + inference
+  runtime + resident daemon don't belong in the fork-per-query CLI (see the
+  exploratory association layer above for the local, daemon-free alternative)
 - being an exhaustive search engine — `rq` ranks aggressively and returns
   fewer, better results on purpose
