@@ -35,20 +35,26 @@ fi
 
 # A result line looks like:  path/to/file.rb:42  kind Name · Parent
 loc="${choice%% *}"          # first token: path:line
-file="${loc%:*}"
+file="${loc%:*}"             # repo-root-relative path (matches the index)
 line="${loc##*:}"
 
-# Record the pick so ranking learns (best-effort; never block the open).
+# Record the pick so ranking learns. Use the *relative* path — that's what rq
+# indexed, so the behavioral signal lands on the right symbol. Best-effort;
+# never block the open.
 rq --record --file "$file" --line "$line" "$query" || true
 
-# Open at the line.
+# Open at the line. rq prints repo-root-relative paths, so resolve against the
+# work-tree root — the bare path won't open from a subdirectory otherwise.
+root="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+target="$root/$file"
+
 if command -v code >/dev/null 2>&1; then
-  exec code --goto "$file:$line"
+  exec code --goto "$target:$line"
 elif [ -n "${EDITOR:-}" ]; then
   case "$EDITOR" in
-    *vim*|*nvim*) exec "$EDITOR" "+$line" "$file" ;;
-    *)            exec "$EDITOR" "$file" ;;
+    *vim*|*nvim*) exec "$EDITOR" "+$line" "$target" ;;
+    *)            exec "$EDITOR" "$target" ;;
   esac
 else
-  echo "$file:$line"
+  echo "$target:$line"
 fi
