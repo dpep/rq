@@ -81,6 +81,23 @@ fn a_full_sweep_completes_and_tracks_added_and_deleted_files() {
 }
 
 #[test]
+fn an_empty_source_tree_never_reports_complete() {
+    // a tree with no indexable source must not settle as "complete" with zero
+    // files — that's almost always a failed enumeration, and (with warm-skip) it
+    // would strand the repo at zero. It stays "warming" so queries keep polling.
+    let dir = scratch_dir("empty-src");
+    fs::write(dir.join("notes.txt"), "not source\n").unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    index::index_budgeted(&mut store, &dir, &[], Duration::from_secs(5), None).unwrap();
+
+    assert_eq!(store.coverage_overview().unwrap()[0].status, "warming");
+    assert!(!finds(&store, "anything"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn a_content_scan_returns_only_matching_files_to_persist() {
     use std::collections::HashSet;
 

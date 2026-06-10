@@ -366,6 +366,39 @@ fn stream_walk(
     ))
 }
 
+/// Decide an index sweep's outcome: whether to *finalize* (reconcile deletions +
+/// record the indexed HEAD) and the coverage `status` to store.
+///
+/// The guard (budgeted/warm passes only): a completed whole-repo warm that saw
+/// **zero** source files while the index already held some is almost certainly a
+/// failed enumeration (a `git ls-files` hiccup, a wrong root), not "every file
+/// was deleted". Finalizing it would forget the entire index and mark it
+/// `complete` — which warm-skip then strands at zero forever (a clean, "complete"
+/// repo isn't re-warmed). So it isn't finalized and stays `warming` for the next
+/// query to retry. An explicit `rq --index` (unbounded, `budgeted = false`) walks
+/// the filesystem and is user-initiated, so it's trusted: an empty tree really
+/// does reconcile the index away. A genuinely empty repo (nothing stored before)
+/// also completes.
+fn sweep_outcome(
+    completed: bool,
+    whole_repo: bool,
+    seen_empty: bool,
+    had_stored: bool,
+    budgeted: bool,
+) -> (bool, &'static str) {
+    if !whole_repo {
+        return (false, "partial");
+    }
+    if budgeted && completed && seen_empty && had_stored {
+        return (false, "warming"); // suspicious empty warm — don't wipe the index
+    }
+    if completed {
+        (true, "complete")
+    } else {
+        (false, "warming")
+    }
+}
+
 /// The shared indexing core behind both the explicit (`index_under`) and
 /// opportunistic (`index_budgeted`) paths, run as a single fused pipeline: one
 /// walk thread streams candidate paths (cheap, stat-only, mtime-skipping
@@ -499,9 +532,18 @@ fn run_index(
     };
 
     let whole_repo = subdirs.is_empty();
-    // a finished whole-repo sweep saw every live file → anything still indexed
-    // (but not seen) was deleted on disk
-    if completed && whole_repo {
+    let (finalize, status) = sweep_outcome(
+        completed,
+        whole_repo,
+        seen.is_empty(),
+        !stored.is_empty(),
+        budget.is_some(),
+    );
+    // a finalized whole-repo sweep saw every live file → anything still indexed
+    // (but not seen) was deleted on disk. A sweep that saw *zero* files while the
+    // index held some is treated as a failed enumeration (see `sweep_outcome`),
+    // not finalized — so a transient empty walk can't wipe a populated index.
+    if finalize {
         let mut forgotten = 0;
         for path in stored.keys() {
             if !seen.contains(path) {
@@ -533,12 +575,16 @@ fn run_index(
         }
     }
 
-    let status = if !whole_repo {
-        "partial"
-    } else if completed {
-        "complete"
-    } else {
+    // Never persist "complete" for an empty index: a zero-file complete is almost
+    // by definition wrong (a failed enumeration), and warm-skip would then strand
+    // the repo at zero. Keep it "warming" so the next query keeps polling for
+    // files to index. Counts the repo's *total* indexed files, not this run's —
+    // a warm of an already-indexed repo re-parses nothing yet isn't empty.
+    let total_files = store.repo_totals(repo_id).map(|(f, _)| f).unwrap_or(0);
+    let status = if status == "complete" && total_files == 0 {
         "warming"
+    } else {
+        status
     };
     store.set_coverage(
         repo_id,
@@ -980,6 +1026,41 @@ fn file_mtime(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sweep_outcome_guards_against_a_failed_empty_walk() {
+        // normal warm: completed whole-repo sweep finalizes and completes
+        assert_eq!(
+            sweep_outcome(true, true, false, true, true),
+            (true, "complete")
+        );
+        // a genuinely empty repo (nothing stored before) still completes
+        assert_eq!(
+            sweep_outcome(true, true, true, false, true),
+            (true, "complete")
+        );
+        // THE GUARD (warm only): completed but saw zero files while the index
+        // held some → don't finalize (don't wipe), stay warming to retry
+        assert_eq!(
+            sweep_outcome(true, true, true, true, true),
+            (false, "warming")
+        );
+        // an explicit `--index` (unbounded) is trusted: an empty tree reconciles
+        assert_eq!(
+            sweep_outcome(true, true, true, true, false),
+            (true, "complete")
+        );
+        // a budget-cut sweep stays warming and doesn't reconcile
+        assert_eq!(
+            sweep_outcome(false, true, false, true, true),
+            (false, "warming")
+        );
+        // a subtree index is always partial, never reconciles
+        assert_eq!(
+            sweep_outcome(true, false, false, true, true),
+            (false, "partial")
+        );
+    }
 
     #[test]
     fn content_hash_is_stable_and_distinguishes() {
