@@ -324,6 +324,43 @@ fn empty_status_points_at_the_real_index_flag() {
 }
 
 #[test]
+fn open_launches_and_records_the_pick() {
+    // `rq --open` picks the top hit, records it as a selection (so ranking
+    // learns), and execs the launcher. RQ_OPEN drives a harmless command here.
+    let (dir, db) = scratch("open");
+    fs::write(dir.join("user.rb"), "class User\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // RQ_OPEN runs `true` — exits 0, no editor needed; non-TTY takes the top hit
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["--open", "user"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_OPEN", "true")
+        .output()
+        .expect("run rq");
+    assert!(run.status.success(), "open should exit 0 via the launcher");
+
+    // with no launcher and no editor, --open prints the resolved path:line
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["--open", "user", "--no-record"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env_remove("EDITOR")
+        .env_remove("VISUAL")
+        .env("PATH", "/nonexistent") // hide any `code` on PATH
+        .output()
+        .expect("run rq");
+    let printed = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        printed.trim().ends_with("user.rb:1"),
+        "prints resolved path:line: {printed}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn record_is_a_searchable_word_not_a_subcommand() {
     let (dir, db) = scratch("disambig");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

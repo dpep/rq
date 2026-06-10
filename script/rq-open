@@ -9,8 +9,10 @@
 # the top-ranked result. Opening: VS Code (`code --goto`) if present, else
 # $EDITOR, else just prints the location.
 #
-# This is the reference "shell hook" — it's all `rq` plus `rq --record`, so any
-# editor or launcher can do the same. See docs/EDITORS.md.
+# `rq -o/--open` now does this natively (top match → open → record). This wrapper
+# stays as the reference "shell hook" for an interactive fzf picker or a custom
+# flow — it's all `rq` plus `rq --record`, so any editor or launcher can do the
+# same. See docs/EDITORS.md.
 
 set -euo pipefail
 

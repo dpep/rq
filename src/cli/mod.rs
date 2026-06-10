@@ -33,6 +33,7 @@ rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
 rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python)\n  \
+rq -o thing               open the best match in your editor (and record it)\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n\n\
 RECORDING (editor/shell hook):\n  \
@@ -59,6 +60,13 @@ struct Cli {
     /// Don't record this search as a behavioral signal (for agents/scripts).
     #[arg(long)]
     no_record: bool,
+
+    /// Open the best match in your editor and record the pick, so ranking learns.
+    /// On a terminal with several matches, prompts to choose. Launcher: `RQ_OPEN`
+    /// (a template with `{file}`/`{line}`/`{}` = path:line), else VS Code
+    /// (`code`), else `$VISUAL`/`$EDITOR`, else prints the resolved path:line.
+    #[arg(short = 'o', long, conflicts_with_all = ["index", "status", "record", "json", "ndjson"])]
+    open: bool,
 
     /// Emit results as a JSON array (for editors and scripts).
     #[arg(short = 'j', long)]
@@ -166,6 +174,7 @@ pub fn run() -> ExitCode {
             &langs,
             cli.limit,
             cli.no_record,
+            cli.open,
         ),
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
@@ -213,6 +222,7 @@ fn cmd_search(
     langs: &[String],
     want: usize,
     no_record: bool,
+    open: bool,
 ) -> ExitCode {
     // post-filters (--path, --kind, --lang) need headroom before the cutoff so a
     // filtered-in result isn't lost to the top-N truncation
@@ -438,6 +448,20 @@ fn cmd_search(
         hit.signature = read_signature(&store, hit, cwd.as_deref());
     }
 
+    // --open: pick the best match (prompting on a TTY with several), record the
+    // pick so ranking learns, and hand off to the editor. Returns before the
+    // normal print / warm-join — opening should be snappy, and a launcher `exec`s.
+    if open {
+        return finish_open(
+            &mut store,
+            &hits,
+            query,
+            current,
+            root.as_deref(),
+            no_record,
+        );
+    }
+
     match out {
         Output::Ndjson => {
             for hit in &hits {
@@ -510,6 +534,148 @@ fn cmd_search(
     }
 
     ExitCode::SUCCESS
+}
+
+/// Pick a hit for `--open`: the top match, unless we're on an interactive
+/// terminal with several — then print a short numbered menu and read a choice
+/// (empty = the top match). `None` means abort (EOF or unparseable input).
+fn choose_hit(hits: &[crate::search::Hit]) -> Option<&crate::search::Hit> {
+    use std::io::{IsTerminal, Write};
+    if hits.len() == 1 || !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return hits.first();
+    }
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "rq: {} matches — pick one (enter = 1):", hits.len());
+    for (i, h) in hits.iter().enumerate() {
+        let _ = writeln!(
+            err,
+            "  {}. {}:{}  {} {}",
+            i + 1,
+            h.file,
+            h.line,
+            h.kind,
+            h.name
+        );
+    }
+    let _ = write!(err, "rq> ");
+    let _ = err.flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+        return None; // Ctrl-D
+    }
+    parse_choice(&line, hits.len()).and_then(|i| hits.get(i))
+}
+
+/// Resolve a menu reply to a 0-based index: blank → 0 (the top match), `N` → N-1
+/// when in range, anything else → `None` (abort). Pure, so it's unit-tested.
+fn parse_choice(input: &str, n: usize) -> Option<usize> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Some(0);
+    }
+    let i = s.parse::<usize>().ok()?.checked_sub(1)?;
+    (i < n).then_some(i)
+}
+
+/// `--open`: choose a hit, record it as a selection so ranking learns, then hand
+/// off to the editor. The launcher `exec`s (replacing this process), so the shell
+/// waits on the editor — not on rq's background warm.
+fn finish_open(
+    store: &mut Store,
+    hits: &[crate::search::Hit],
+    query: &str,
+    current: Option<i64>,
+    root: Option<&std::path::Path>,
+    no_record: bool,
+) -> ExitCode {
+    let Some(hit) = choose_hit(hits) else {
+        return ExitCode::SUCCESS; // aborted at the prompt
+    };
+
+    // Record the pick — same signal as `rq --record`. The hit's path is already
+    // repo-relative, which is what the selection rollup keys off.
+    if !no_record {
+        let _ = store.record_event(
+            "select",
+            Some(&query.to_ascii_lowercase()),
+            current,
+            Some(&hit.file),
+            Some(hit.line),
+            None,
+        );
+        deferred_maintenance(store);
+    }
+
+    // Results are repo-root-relative, so resolve against the root — the bare path
+    // wouldn't open from a subdirectory.
+    let target = match root {
+        Some(r) => r.join(&hit.file),
+        None => PathBuf::from(&hit.file),
+    };
+    launch_editor(&target, hit.line)
+}
+
+/// Launch the editor on `file:line`, resolving the command in order: `RQ_OPEN`
+/// template → VS Code (`code`) → `$VISUAL`/`$EDITOR` → print the location. The
+/// chosen command replaces this process via `exec`.
+fn launch_editor(file: &std::path::Path, line: i64) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    let loc = format!("{}:{}", file.display(), line);
+    match open_command(file, line, &loc) {
+        Some((prog, args)) => {
+            // exec returns only on failure
+            let err = std::process::Command::new(&prog).args(&args).exec();
+            fail(format_args!("rq --open: cannot run {prog}: {err}"))
+        }
+        None => {
+            println!("{loc}");
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// Resolve the editor command + args. `None` → no launcher configured (the
+/// caller prints the location). `RQ_OPEN` is split on whitespace (no shell) with
+/// `{file}` / `{line}` / `{}` (= `path:line`) substituted per token.
+fn open_command(file: &std::path::Path, line: i64, loc: &str) -> Option<(String, Vec<String>)> {
+    let fstr = file.to_string_lossy().into_owned();
+
+    if let Some(t) = std::env::var_os("RQ_OPEN") {
+        let t = t.to_string_lossy();
+        let mut parts = t.split_whitespace().map(|p| {
+            p.replace("{file}", &fstr)
+                .replace("{line}", &line.to_string())
+                .replace("{}", loc)
+        });
+        if let Some(prog) = parts.next() {
+            return Some((prog, parts.collect()));
+        }
+    }
+
+    if on_path("code") {
+        return Some(("code".into(), vec!["--goto".into(), loc.into()]));
+    }
+
+    if let Some(ed) = std::env::var_os("VISUAL").or_else(|| std::env::var_os("EDITOR")) {
+        let ed = ed.to_string_lossy().into_owned();
+        let l = ed.to_ascii_lowercase();
+        // line-aware launch for the common terminal editors; others just get the file
+        if ["vim", "nvim", "vi", "nano", "emacs", "kak", "micro"]
+            .iter()
+            .any(|e| l.contains(e))
+        {
+            return Some((ed, vec![format!("+{line}"), fstr]));
+        }
+        return Some((ed, vec![fstr]));
+    }
+
+    None
+}
+
+/// Whether `prog` resolves on `PATH` (a regular file; symlinks followed).
+fn on_path(prog: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(prog).is_file()))
 }
 
 /// Whether a complete repo is provably unchanged since its last index — same
@@ -916,6 +1082,19 @@ fn fail(args: std::fmt::Arguments) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_menu_choice_parsing() {
+        // blank reply takes the top match; a valid number maps to its index
+        assert_eq!(parse_choice("\n", 5), Some(0));
+        assert_eq!(parse_choice("  ", 5), Some(0));
+        assert_eq!(parse_choice("3", 5), Some(2));
+        assert_eq!(parse_choice("5", 5), Some(4));
+        // out of range, zero, or non-numeric aborts
+        assert_eq!(parse_choice("6", 5), None);
+        assert_eq!(parse_choice("0", 5), None);
+        assert_eq!(parse_choice("q", 5), None);
+    }
 
     #[test]
     fn highlight_wraps_matched_runs() {

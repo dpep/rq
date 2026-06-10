@@ -46,10 +46,28 @@ rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
 rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python (prefix-matched; r=ruby+rust)
 rq <query> -l/--limit N     # cap the number of results (default 10)
+rq <query> -o/--open        # open the best match in your editor + record the pick
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # index only a subtree (partial — for big monorepos)
 rq --status                 # indexing coverage per known repository
 ```
+
+## Opening results
+
+`rq -o <query>` jumps straight to the best match in your editor and records the
+pick, so ranking learns which result you actually wanted. On a terminal with
+several matches it prompts you to choose; otherwise it takes the top hit. The
+launcher is resolved in order: `RQ_OPEN` (a command template with `{file}`,
+`{line}`, or `{}` = `path:line`), then VS Code (`code`), then `$VISUAL`/`$EDITOR`,
+and failing all that it just prints the resolved `path:line`.
+
+```sh
+rq -o refund                          # open the top match, record it
+RQ_OPEN='vim +{line} {file}' rq -o x  # force a specific launcher
+```
+
+For an interactive fzf picker (or to wire a custom flow), `script/rq-open` is a
+small reference wrapper around `rq` + `rq --record`.
 
 ## For agents / scripts
 

@@ -130,7 +130,12 @@ signal slots into the scorer without threading new parameters.
 - [x] ingestion point — `rq --record` (plus `-C` to target a workspace); no
       daemon, just CLI calls
 - [x] result-opening protocol — every result is a `path:line`
-- [x] reference shell wrapper — `script/rq-open` (search → pick → open → record)
+- [x] native open-and-record — `rq -o/--open` jumps to the best match (prompting
+      on a TTY with several), records the pick, and `exec`s the launcher
+      (`RQ_OPEN` template → `code` → `$VISUAL`/`$EDITOR` → print). Bare `rq` stays
+      a `path:line` printer; the model + record path are unchanged
+- [x] reference shell wrapper — `script/rq-open` (search → pick → open → record),
+      now for interactive fzf picking / custom flows; `rq -o` covers the default
 - [x] integration guide — docs/EDITORS.md (VS Code task + extension sketch, Neovim)
 - [ ] a packaged VS Code extension (the doc has the sketch; not yet shipped)
 
@@ -157,6 +162,8 @@ model, not leaking a language into `index`/`search`/scoring.
 - `-x/--lang` — restrict to language: ruby/rust/go/python (aliases; `r`=ruby+rust)
 - `-l/--limit N` — cap the number of results
 - `--no-record` — search without recording a behavioral signal (for agents)
+- `-o/--open` — open the best match in your editor and record the pick; prompts
+  to choose on a TTY with several. Launcher: `RQ_OPEN` → `code` → `$VISUAL`/`$EDITOR`
 - `-e/--explain` — per-result score breakdown
 - match highlighting — text results color the matched chars (TTY-only; honors
   `NO_COLOR` and `GREP_COLORS`)

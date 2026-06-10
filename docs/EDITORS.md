@@ -13,6 +13,15 @@ rq --record --file <path> --line <n> <query>
 That's the whole contract. No daemon, no socket — just two CLI calls. Everything
 below is a thin wrapper around them.
 
+## Native (works today)
+
+`rq -o/--open <query>` does both steps for you: it opens the best match (prompting
+to choose on a TTY with several) and records the pick. The launcher resolves
+`RQ_OPEN` (a template with `{file}`/`{line}`/`{}` = `path:line`) → `code` →
+`$VISUAL`/`$EDITOR` → printing the location. Simplest integration: bind a key to
+`rq -o`. The wrappers below remain useful for an interactive fzf picker or a
+custom flow.
+
 ## Shell (works today)
 
 [`script/rq-open`](../script/rq-open) does search → pick → open → record:
