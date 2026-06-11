@@ -46,9 +46,13 @@ The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms
 automatically on the first search in a git repo."
 )]
 struct Cli {
-    /// Search query. With --index, the path to index; with --record, the query
-    /// the selection was made for.
-    #[arg(value_name = "TARGET")]
+    /// Search query. With --drop, the repo path/identity to drop; with --record,
+    /// the query the selection was made for.
+    //
+    // `Other` keeps shells from offering filenames here: a search query isn't a
+    // path. The path-valued operations (--index, --symbols) carry their own
+    // value with a path hint instead, so completion is scoped to them.
+    #[arg(value_name = "TARGET", value_hint = clap::ValueHint::Other)]
     target: Option<String>,
 
     /// Directories to restrict results to (rg-style; same as repeated --path).
@@ -97,18 +101,18 @@ struct Cli {
     #[arg(short = 'x', long = "lang", value_name = "LANG", value_delimiter = ',')]
     lang: Vec<String>,
 
-    /// Index a repository (TARGET path, or the current directory).
-    #[arg(long, conflicts_with_all = ["status", "record"])]
-    index: bool,
+    /// Index a repository (PATH, or the current directory).
+    #[arg(long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["status", "record"])]
+    index: Option<Option<String>>,
 
     /// Show indexing coverage per known repository.
     #[arg(long, conflicts_with_all = ["index", "record"])]
     status: bool,
 
-    /// List the symbols defined in a file (TARGET), in line order — a structural
-    /// outline, not a ranked search. Honors -k/-x to filter by kind/language.
-    #[arg(long, conflicts_with_all = ["index", "status", "record", "drop", "open"])]
-    symbols: bool,
+    /// List the symbols defined in FILE, in line order — a structural outline,
+    /// not a ranked search. Honors -k/-x to filter by kind/language.
+    #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "record", "drop", "open"])]
+    symbols: Option<String>,
 
     /// Drop a repository's index — the opposite of --index. Removes its symbols,
     /// files, coverage, and learned ranking. TARGET is the repo's path (or the
@@ -158,10 +162,10 @@ pub fn run() -> ExitCode {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
         return ExitCode::SUCCESS;
     }
-    if cli.index {
-        // index TARGET (else cwd); with --path, only those subtrees (partial)
+    if let Some(path) = &cli.index {
+        // index PATH (else cwd); with --path, only those subtrees (partial)
         let out = output_format(&cli);
-        return cmd_index(cli.target.map(PathBuf::from), &cli.path, out);
+        return cmd_index(path.as_deref().map(PathBuf::from), &cli.path, out);
     }
     if cli.status {
         return cmd_status(output_format(&cli));
@@ -182,8 +186,8 @@ pub fn run() -> ExitCode {
     let kinds: Vec<String> = cli.kind.iter().map(|k| canonical_kind(k)).collect();
     // a language token can expand to several tags (`r` → ruby + rust)
     let langs: Vec<String> = cli.lang.iter().flat_map(|x| canonical_langs(x)).collect();
-    if cli.symbols {
-        return cmd_symbols(cli.target.as_deref(), &kinds, &langs, out);
+    if let Some(file) = &cli.symbols {
+        return cmd_symbols(file, &kinds, &langs, out);
     }
     match cli.target {
         Some(query) => cmd_search(
@@ -865,12 +869,7 @@ struct SymbolOut {
 /// outline, not a ranked search. Warms the file's repo if it's cold/partial or
 /// changed (same gate as search), then reads straight from the index. Honors
 /// --kind/--lang filters and --json/--ndjson.
-fn cmd_symbols(target: Option<&str>, kinds: &[String], langs: &[String], out: Output) -> ExitCode {
-    let Some(file_arg) = target else {
-        return fail(format_args!(
-            "rq --symbols: needs a FILE (e.g. `rq --symbols src/main.rs`)"
-        ));
-    };
+fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
