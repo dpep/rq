@@ -26,6 +26,14 @@ product vision, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and
   `--explain` must always be able to show why a result ranked where it did.
 - **Partial is normal.** Never assume a complete index. Code must work at 0%,
   5%, and 100% coverage.
+- **Every command is agent/script-friendly.** Any command that prints output
+  honors `--json`/`--ndjson`, not just search — `--status`, `--index`, `--drop`,
+  and anything new. `--json` is a pretty object (single-result commands) or array
+  (multi-row); `--ndjson` is one compact object per line. Keep field names stable
+  and consistent across commands (a repo identity is always `repo`). Route
+  single-object commands through the `emit_json` helper. Exit codes stay
+  meaningful (0 = something happened/matched, non-zero = nothing). When you add a
+  command, add its structured output and an e2e assertion in the same change.
 
 ## Language and toolchain
 

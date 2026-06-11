@@ -107,7 +107,7 @@ struct Cli {
     /// Drop a repository's index — the opposite of --index. Removes its symbols,
     /// files, coverage, and learned ranking. TARGET is the repo's path (or the
     /// current repo); a known identity string (as shown by --status) also works.
-    #[arg(long, conflicts_with_all = ["index", "status", "record", "open", "json", "ndjson"])]
+    #[arg(long, conflicts_with_all = ["index", "status", "record", "open"])]
     drop: bool,
 
     /// Record an interaction (editor/shell hook): the result opened for a query.
@@ -161,7 +161,8 @@ pub fn run() -> ExitCode {
         return cmd_status(output_format(&cli));
     }
     if cli.drop {
-        return cmd_drop(cli.target);
+        let out = output_format(&cli);
+        return cmd_drop(cli.target, out);
     }
     if cli.record {
         // clap guarantees --file is present via `requires`
@@ -1044,23 +1045,17 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
                         Some((f, s)) => (Some(f), Some(s)),
                         None => (None, None),
                     };
-                    let obj = serde_json::json!({
-                        "repo": identity,
-                        "scope": if partial { "partial" } else { "full" },
-                        "files_added": stats.files_indexed,
-                        "symbols_added": stats.symbols,
-                        "files": files,
-                        "symbols": symbols,
-                    });
-                    let rendered = if out == Output::Json {
-                        serde_json::to_string_pretty(&obj)
-                    } else {
-                        serde_json::to_string(&obj)
-                    };
-                    match rendered {
-                        Ok(s) => println!("{s}"),
-                        Err(e) => return fail(format_args!("rq: {e}")),
-                    }
+                    return emit_json(
+                        out,
+                        &serde_json::json!({
+                            "repo": identity,
+                            "scope": if partial { "partial" } else { "full" },
+                            "files_added": stats.files_indexed,
+                            "symbols_added": stats.symbols,
+                            "files": files,
+                            "symbols": symbols,
+                        }),
+                    );
                 }
                 Output::Text => {
                     let scope = if partial { " (partial)" } else { "" };
@@ -1082,7 +1077,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
     }
 }
 
-fn cmd_drop(target: Option<String>) -> ExitCode {
+fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
@@ -1105,18 +1100,52 @@ fn cmd_drop(target: Option<String>) -> ExitCode {
         }),
         Err(e) => return fail(format_args!("rq --drop: {e}")),
     };
+
     let Some((identity, repo_id)) = resolved else {
-        println!("not indexed: {from_path}");
-        return ExitCode::SUCCESS;
+        // nothing to drop — idempotent. `dropped: false` lets a script tell.
+        return match out {
+            Output::Text => {
+                println!("not indexed: {from_path}");
+                ExitCode::SUCCESS
+            }
+            _ => emit_json(
+                out,
+                &serde_json::json!({"repo": from_path, "files": 0, "symbols": 0, "dropped": false}),
+            ),
+        };
     };
 
     let (files, symbols) = store.repo_totals(repo_id).unwrap_or((0, 0));
     match store.drop_repository(repo_id) {
-        Ok(()) => {
-            println!("dropped {identity} ({files} file(s), {symbols} symbol(s))");
+        Ok(()) => match out {
+            Output::Text => {
+                println!("dropped {identity} ({files} file(s), {symbols} symbol(s))");
+                ExitCode::SUCCESS
+            }
+            _ => emit_json(
+                out,
+                &serde_json::json!({"repo": identity, "files": files, "symbols": symbols, "dropped": true}),
+            ),
+        },
+        Err(e) => fail(format_args!("rq --drop: {e}")),
+    }
+}
+
+/// Print a single value as JSON: `--json` pretty, `--ndjson` compact one-liner.
+/// Used by the single-object operations (`--index`, `--drop`); `--status` builds
+/// an array / one-row-per-line itself.
+fn emit_json<T: serde::Serialize>(out: Output, value: &T) -> ExitCode {
+    let rendered = if out == Output::Json {
+        serde_json::to_string_pretty(value)
+    } else {
+        serde_json::to_string(value)
+    };
+    match rendered {
+        Ok(s) => {
+            println!("{s}");
             ExitCode::SUCCESS
         }
-        Err(e) => fail(format_args!("rq --drop: {e}")),
+        Err(e) => fail(format_args!("rq: {e}")),
     }
 }
 

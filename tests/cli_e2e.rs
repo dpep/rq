@@ -361,6 +361,30 @@ fn open_launches_and_records_the_pick() {
 }
 
 #[test]
+fn drop_honors_json_output() {
+    // --drop --json/-J report what was removed, so a script can act on it
+    let (dir, db) = scratch("drop-json");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["--drop", "--json"]);
+    assert!(ok, "drop --json failed: {out}");
+    assert!(out.trim_start().starts_with('{'), "json object: {out}");
+    assert!(out.contains("\"dropped\": true"), "reports dropped: {out}");
+
+    // already gone → compact ndjson, dropped:false, still exit 0 (idempotent)
+    let (ok, out) = rq(&db, &dir, &["--drop", "--ndjson"]);
+    assert!(ok, "second drop should not error: {out}");
+    let line = out.lines().next().unwrap_or("");
+    assert!(
+        line.starts_with('{') && line.contains("\"dropped\":false"),
+        "ndjson dropped:false: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn drop_removes_a_repos_index() {
     // --drop is the inverse of --index: the repo disappears from coverage, and
     // dropping again is idempotent (a clear message, no error)
