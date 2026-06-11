@@ -173,6 +173,9 @@ model, not leaking a language into `index`/`search`/scoring.
 - `rq --drop [PATH|IDENTITY]` — remove a repo's index (symbols, files, coverage,
   learned ranking); the inverse of `--index`. By path (or current repo), or by an
   identity string from `--status` to clear orphaned cruft
+- `rq --symbols FILE` — outline one file's definitions in line order (kind,
+  parent, signature); a structural read of a file you're already at, not a
+  ranked search. Honors `-k`/`-x` and `--json`/`--ndjson`
 
 ## Exploratory — semantic / association layer
 

@@ -32,6 +32,7 @@ rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
 rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
+rq --symbols FILE         outline a file's definitions, in line order\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python)\n  \
 rq -o thing               open the best match in your editor (and record it)\n  \
 rq --index                index the current repository\n  \
@@ -103,6 +104,11 @@ struct Cli {
     /// Show indexing coverage per known repository.
     #[arg(long, conflicts_with_all = ["index", "record"])]
     status: bool,
+
+    /// List the symbols defined in a file (TARGET), in line order — a structural
+    /// outline, not a ranked search. Honors -k/-x to filter by kind/language.
+    #[arg(long, conflicts_with_all = ["index", "status", "record", "drop", "open"])]
+    symbols: bool,
 
     /// Drop a repository's index — the opposite of --index. Removes its symbols,
     /// files, coverage, and learned ranking. TARGET is the repo's path (or the
@@ -176,6 +182,9 @@ pub fn run() -> ExitCode {
     let kinds: Vec<String> = cli.kind.iter().map(|k| canonical_kind(k)).collect();
     // a language token can expand to several tags (`r` → ruby + rust)
     let langs: Vec<String> = cli.lang.iter().flat_map(|x| canonical_langs(x)).collect();
+    if cli.symbols {
+        return cmd_symbols(cli.target.as_deref(), &kinds, &langs, out);
+    }
     match cli.target {
         Some(query) => cmd_search(
             &query,
@@ -466,7 +475,13 @@ fn cmd_search(
     // Attach each result's definition line (e.g. `def perform(refund)`) — shown
     // in text output and carried in JSON. Cheap: only the displayed results.
     for hit in &mut hits {
-        hit.signature = read_signature(&store, hit, cwd.as_deref());
+        hit.signature = read_signature(
+            &store,
+            &hit.repo_identity,
+            &hit.file,
+            hit.line,
+            cwd.as_deref(),
+        );
     }
 
     // --open: pick the best match (prompting on a TTY with several), record the
@@ -804,20 +819,156 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
 /// the repo root from the store (or the cwd for live results). Best-effort.
 fn read_signature(
     store: &Store,
-    hit: &crate::search::Hit,
+    repo_identity: &str,
+    file: &str,
+    line: i64,
     cwd: Option<&std::path::Path>,
 ) -> Option<String> {
     let root = store
-        .repository_id(&hit.repo_identity)
+        .repository_id(repo_identity)
         .ok()
         .flatten()
         .and_then(|id| store.checkout_root(id).ok().flatten())
         .map(PathBuf::from)
         .or_else(|| cwd.map(std::path::Path::to_path_buf))?;
-    let content = std::fs::read_to_string(root.join(&hit.file)).ok()?;
-    let idx = usize::try_from(hit.line).ok()?.checked_sub(1)?;
-    let line = content.lines().nth(idx)?.trim();
-    (!line.is_empty()).then(|| line.to_string())
+    let content = std::fs::read_to_string(root.join(file)).ok()?;
+    signature_in(&content, line)
+}
+
+/// The trimmed source line `line` (1-based) of already-read `content`, if
+/// non-empty — a symbol's definition line. Splitting this out lets `--symbols`
+/// read one file once instead of re-reading it per symbol.
+fn signature_in(content: &str, line: i64) -> Option<String> {
+    let idx = usize::try_from(line).ok()?.checked_sub(1)?;
+    let l = content.lines().nth(idx)?.trim();
+    (!l.is_empty()).then(|| l.to_string())
+}
+
+/// One symbol in `rq --symbols` output. Same field names as a search hit
+/// (`repo`, `signature`) for agent consistency, but no score/features — an
+/// outline is structural, not ranked.
+#[derive(serde::Serialize)]
+struct SymbolOut {
+    name: String,
+    kind: String,
+    language: String,
+    file: String,
+    line: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+    repo: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+}
+
+/// `rq --symbols <file>`: list a file's symbols in line order — a structural
+/// outline, not a ranked search. Warms the file's repo if it's cold/partial or
+/// changed (same gate as search), then reads straight from the index. Honors
+/// --kind/--lang filters and --json/--ndjson.
+fn cmd_symbols(target: Option<&str>, kinds: &[String], langs: &[String], out: Output) -> ExitCode {
+    let Some(file_arg) = target else {
+        return fail(format_args!(
+            "rq --symbols: needs a FILE (e.g. `rq --symbols src/main.rs`)"
+        ));
+    };
+    let mut store = match open_store() {
+        Ok(s) => s,
+        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = crate::index::repo_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let rel = repo_relative(&root, &cwd, file_arg);
+
+    let identity = resolve_identity(&store, &root);
+    let coverage = store.coverage_status(&identity).ok().flatten();
+    let warming_ok = (crate::index::is_git_repo(&root) || coverage.is_some())
+        && coverage.as_deref() != Some("partial");
+    let current = store.repository_id(&identity).ok().flatten();
+    let needs_warm = warming_ok
+        && (coverage.as_deref() != Some("complete")
+            || !repo_unchanged_since_index(&store, &root, current, coverage.as_deref()));
+    if needs_warm {
+        // Path-prioritize the warm toward the requested file so it indexes first.
+        let budget = answer_warm_budget() + deferred_warm_budget();
+        let _ = crate::index::index_budgeted(&mut store, &root, &[], budget, Some(&rel));
+    }
+
+    let Some(repo_id) = store.repository_id(&identity).ok().flatten() else {
+        return emit_symbols(out, &[]); // unknown / un-indexed repo → nothing
+    };
+    let mut rows = match store.symbols_in_file(repo_id, &rel) {
+        Ok(r) => r,
+        Err(e) => return fail(format_args!("rq: {e}")),
+    };
+    if !kinds.is_empty() {
+        rows.retain(|r| kinds.iter().any(|k| k == &r.kind));
+    }
+    if !langs.is_empty() {
+        rows.retain(|r| langs.iter().any(|l| l == &r.language));
+    }
+
+    // Read the source once for signatures (every row is the same file).
+    let file_root = store
+        .checkout_root(repo_id)
+        .ok()
+        .flatten()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.clone());
+    let content = std::fs::read_to_string(file_root.join(&rel)).ok();
+    let syms: Vec<SymbolOut> = rows
+        .into_iter()
+        .map(|r| SymbolOut {
+            signature: content.as_deref().and_then(|c| signature_in(c, r.line)),
+            name: r.name,
+            kind: r.kind,
+            language: r.language,
+            file: r.file,
+            line: r.line,
+            parent: r.parent,
+            repo: r.repo_identity,
+        })
+        .collect();
+    emit_symbols(out, &syms)
+}
+
+/// Render the outline. Exit 0 if any symbols, non-zero if none — rq's exit-code
+/// convention, matching how search reports an empty result per format.
+fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
+    if syms.is_empty() {
+        match out {
+            Output::Json => println!("[]"),
+            Output::Ndjson => {}
+            Output::Text => eprintln!("no symbols"),
+        }
+        return ExitCode::FAILURE;
+    }
+    match out {
+        Output::Ndjson => {
+            for s in syms {
+                match serde_json::to_string(s) {
+                    Ok(line) => println!("{line}"),
+                    Err(e) => return fail(format_args!("rq: {e}")),
+                }
+            }
+        }
+        Output::Json => match serde_json::to_string_pretty(&syms) {
+            Ok(s) => println!("{s}"),
+            Err(e) => return fail(format_args!("rq: {e}")),
+        },
+        Output::Text => {
+            for s in syms {
+                let qualified = match &s.parent {
+                    Some(p) => format!("{} · {p}", s.name),
+                    None => s.name.clone(),
+                };
+                println!("{}:{}  {} {}", s.file, s.line, s.kind, qualified);
+                if let Some(sig) = &s.signature {
+                    println!("    {sig}");
+                }
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.

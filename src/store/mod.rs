@@ -465,6 +465,23 @@ impl Store {
         Ok((files, symbols))
     }
 
+    /// Every symbol defined in one file (repo-relative path), in line order — a
+    /// structural outline rather than a ranked search. Backed by `idx_symbols_file`.
+    pub fn symbols_in_file(&self, repository_id: i64, path: &str) -> Result<Vec<SymbolRow>> {
+        let sql = format!(
+            "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
+             WHERE s.repository_id = ?1 AND fi.path = ?2 \
+             ORDER BY s.line, s.name"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![repository_id, path], row_to_candidate)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?.1);
+        }
+        Ok(out)
+    }
+
     /// The on-disk root of a repository's checkout, used to resolve relative
     /// paths when validating staleness.
     pub fn checkout_root(&self, repository_id: i64) -> Result<Option<String>> {

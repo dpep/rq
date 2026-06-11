@@ -845,6 +845,54 @@ fn warming_a_committed_repo_indexes_tracked_source() {
 }
 
 #[test]
+fn symbols_outlines_a_file_in_line_order() {
+    let (dir, db) = scratch("symbols");
+    fs::write(
+        dir.join("widget.rb"),
+        "class Widget\n  def build\n  end\n  def render\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("other.rb"), "class Other\nend\n").unwrap();
+    git_init_commit(&dir);
+
+    // ndjson outline: the file's symbols, in line order, with kind/parent/signature.
+    let (ok, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
+    assert!(ok, "symbols failed: {out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 3, "class + two methods: {out}");
+    assert!(
+        first_line(&out).contains("\"name\":\"Widget\""),
+        "class first: {out}"
+    );
+    assert!(out.contains("\"name\":\"build\""), "build present: {out}");
+    assert!(
+        out.contains("\"parent\":\"Widget\""),
+        "method nests under class: {out}"
+    );
+    assert!(
+        out.contains("\"signature\":\"def build\""),
+        "signature read: {out}"
+    );
+    // scoped to the named file only
+    assert!(!out.contains("Other"), "other file excluded: {out}");
+
+    // --kind filters the outline to just methods (drops the class).
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["--symbols", "widget.rb", "-k", "method", "--ndjson"],
+    );
+    assert!(ok, "filtered symbols failed: {out}");
+    assert_eq!(out.lines().count(), 2, "two methods only: {out}");
+    assert!(
+        !out.contains("\"name\":\"Widget\""),
+        "class filtered out: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);
