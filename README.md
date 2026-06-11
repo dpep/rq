@@ -49,6 +49,7 @@ rq <query> -l/--limit N     # cap the number of results (default 10)
 rq <query> -o/--open        # open the best match in your editor + record the pick
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # index only a subtree (partial — for big monorepos)
+rq --drop [PATH|IDENTITY]   # remove a repo's index (opposite of --index)
 rq --status                 # indexing coverage per known repository
 ```
 

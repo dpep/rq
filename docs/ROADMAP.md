@@ -170,6 +170,9 @@ model, not leaking a language into `index`/`search`/scoring.
 - `--completions <shell>` — shell completion scripts
 - `rq --index --path DIR` — partial index of a subtree (for big monorepos);
   a later search won't silently full-index over it
+- `rq --drop [PATH|IDENTITY]` — remove a repo's index (symbols, files, coverage,
+  learned ranking); the inverse of `--index`. By path (or current repo), or by an
+  identity string from `--status` to clear orphaned cruft
 
 ## Exploratory — semantic / association layer
 

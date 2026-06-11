@@ -35,7 +35,8 @@ rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python)\n  \
 rq -o thing               open the best match in your editor (and record it)\n  \
 rq --index                index the current repository\n  \
-rq --status               show indexing coverage\n\n\
+rq --status               show indexing coverage\n  \
+rq --drop                 remove this repo's index (opposite of --index)\n\n\
 RECORDING (editor/shell hook):\n  \
 rq --record --file <path> --line <n> <query>\n  \
 Tells rq which result you opened for a query, so ranking learns. Editors and \
@@ -103,6 +104,12 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["index", "record"])]
     status: bool,
 
+    /// Drop a repository's index — the opposite of --index. Removes its symbols,
+    /// files, coverage, and learned ranking. TARGET is the repo's path (or the
+    /// current repo); a known identity string (as shown by --status) also works.
+    #[arg(long, conflicts_with_all = ["index", "status", "record", "open", "json", "ndjson"])]
+    drop: bool,
+
     /// Record an interaction (editor/shell hook): the result opened for a query.
     /// Requires --file.
     #[arg(long, requires = "file", conflicts_with_all = ["index", "status"])]
@@ -151,6 +158,9 @@ pub fn run() -> ExitCode {
     }
     if cli.status {
         return cmd_status();
+    }
+    if cli.drop {
+        return cmd_drop(cli.target);
     }
     if cli.record {
         // clap guarantees --file is present via `requires`
@@ -1030,6 +1040,44 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => fail(format_args!("rq --index: {e}")),
+    }
+}
+
+fn cmd_drop(target: Option<String>) -> ExitCode {
+    let mut store = match open_store() {
+        Ok(s) => s,
+        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+    };
+
+    // Resolve the repo to drop: TARGET as a path (→ repo root → identity, like
+    // --index), falling back to TARGET as a literal identity string — so cruft
+    // shown by --status can be dropped by name even if the checkout is gone.
+    let path = PathBuf::from(target.clone().unwrap_or_else(|| ".".to_string()));
+    let root = crate::index::repo_root(&path).unwrap_or(path);
+    let from_path = crate::index::detect_identity(&root).to_string();
+    let resolved = match store.repository_id(&from_path) {
+        Ok(Some(id)) => Some((from_path.clone(), id)),
+        Ok(None) => target.as_deref().and_then(|s| {
+            store
+                .repository_id(s)
+                .ok()
+                .flatten()
+                .map(|id| (s.to_string(), id))
+        }),
+        Err(e) => return fail(format_args!("rq --drop: {e}")),
+    };
+    let Some((identity, repo_id)) = resolved else {
+        println!("not indexed: {from_path}");
+        return ExitCode::SUCCESS;
+    };
+
+    let (files, symbols) = store.repo_totals(repo_id).unwrap_or((0, 0));
+    match store.drop_repository(repo_id) {
+        Ok(()) => {
+            println!("dropped {identity} ({files} file(s), {symbols} symbol(s))");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(format_args!("rq --drop: {e}")),
     }
 }
 

@@ -361,6 +361,36 @@ fn open_launches_and_records_the_pick() {
 }
 
 #[test]
+fn drop_removes_a_repos_index() {
+    // --drop is the inverse of --index: the repo disappears from coverage, and
+    // dropping again is idempotent (a clear message, no error)
+    let (dir, db) = scratch("drop");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (_, before) = rq(&db, &dir, &["--status"]);
+    assert!(before.contains("symbol"), "indexed before drop: {before}");
+
+    let (ok, out) = rq(&db, &dir, &["--drop"]);
+    assert!(ok, "drop failed: {out}");
+    assert!(out.contains("dropped"), "drop confirms: {out}");
+
+    let (ok2, after) = rq(&db, &dir, &["--status"]);
+    assert!(ok2, "status after drop: {after}");
+    assert!(
+        !after.contains("symbol"),
+        "coverage gone after drop: {after}"
+    );
+
+    // idempotent: nothing left to drop, but not an error
+    let (ok3, again) = rq(&db, &dir, &["--drop"]);
+    assert!(ok3, "second drop should not error: {again}");
+    assert!(again.contains("not indexed"), "idempotent message: {again}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn record_is_a_searchable_word_not_a_subcommand() {
     let (dir, db) = scratch("disambig");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

@@ -491,6 +491,26 @@ impl Store {
         tx.commit()
     }
 
+    /// Drop a repository entirely — the inverse of indexing it: its symbols (and
+    /// their FTS rows, via trigger), files, coverage, learned selections, events,
+    /// checkout, and the repository row. Deleted in FK-safe order in one
+    /// transaction.
+    pub fn drop_repository(&mut self, repository_id: i64) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for sql in [
+            "DELETE FROM symbols WHERE repository_id = ?1",
+            "DELETE FROM files WHERE repository_id = ?1",
+            "DELETE FROM coverage WHERE repository_id = ?1",
+            "DELETE FROM selection_stats WHERE repository_id = ?1",
+            "DELETE FROM events WHERE repository_id = ?1",
+            "DELETE FROM checkouts WHERE repository_id = ?1",
+            "DELETE FROM repositories WHERE id = ?1",
+        ] {
+            tx.execute(sql, params![repository_id])?;
+        }
+        tx.commit()
+    }
+
     // ----- behavioral learning -----
 
     /// Append a raw interaction event (the cheap write on the hot path; rollup
