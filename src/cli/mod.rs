@@ -427,7 +427,16 @@ fn cmd_search(
     // post-filters: keep only results under a --path dir, of a --kind, and/or in
     // a --lang, then trim to the requested count.
     if !paths.is_empty() {
-        hits.retain(|h| under_any(&h.file, paths));
+        // --path values may be absolute or cwd-relative; stored files are
+        // repo-root-relative, so normalize before prefix-matching or an
+        // absolute path would silently filter everything out.
+        let here = cwd.clone().unwrap_or_else(|| PathBuf::from("."));
+        let base = root.clone().unwrap_or_else(|| here.clone());
+        let norm: Vec<String> = paths
+            .iter()
+            .map(|p| repo_relative(&base, &here, p))
+            .collect();
+        hits.retain(|h| under_any(&h.file, &norm));
     }
     if !kinds.is_empty() {
         hits.retain(|h| kinds.iter().any(|k| k == &h.kind));

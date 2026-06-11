@@ -405,6 +405,50 @@ fn record_is_a_searchable_word_not_a_subcommand() {
 }
 
 #[test]
+fn status_and_index_honor_json_output() {
+    let (dir, db) = scratch("ops-json");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+
+    // --index --json: a single object with this-run and total counts
+    let (ok, out) = rq(&db, &dir, &["--index", "--json"]);
+    assert!(ok, "index --json failed: {out}");
+    assert!(
+        out.trim_start().starts_with('{'),
+        "index json object: {out}"
+    );
+    assert!(out.contains("\"files_added\""), "index run counts: {out}");
+    assert!(out.contains("\"repo\""), "index repo field: {out}");
+
+    // --status --json: an array of coverage rows
+    let (ok, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert!(ok, "status --json failed: {out}");
+    assert!(
+        out.trim_start().starts_with('['),
+        "status json array: {out}"
+    );
+    assert!(
+        out.contains("\"status\": \"complete\""),
+        "status field: {out}"
+    );
+
+    // --status -J: one compact object per line
+    let (ok, out) = rq(&db, &dir, &["--status", "--ndjson"]);
+    assert!(ok, "status -J failed: {out}");
+    let line = out.lines().next().unwrap_or("");
+    assert!(
+        line.starts_with('{') && line.ends_with('}') && line.contains("\"repo\""),
+        "ndjson object per line: {out}"
+    );
+
+    // with nothing indexed, --status --json is still well-formed (an empty array)
+    rq(&db, &dir, &["--drop"]);
+    let (ok, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert!(ok && out.trim() == "[]", "empty status json is []: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn json_and_ndjson_output() {
     let (dir, db) = scratch("json");
     fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
@@ -476,6 +520,47 @@ fn path_filter_restricts_results() {
         !out.contains("app/models/widget.rb"),
         "models hit filtered out: {out}"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn path_filter_accepts_absolute_and_relative_paths() {
+    let (dir, db) = scratch("path-abs");
+    fs::create_dir_all(dir.join("app/services")).unwrap();
+    fs::create_dir_all(dir.join("app/models")).unwrap();
+    fs::write(
+        dir.join("app/services/widget.rb"),
+        "class WidgetService\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("app/models/widget.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // absolute, ./-relative, and bare repo-relative all normalize to the same
+    // filter and keep only the services hit.
+    let abs = dir.join("app/services");
+    let abs = abs.to_str().unwrap();
+    for spec in [abs, "./app/services", "app/services"] {
+        let (ok, out) = rq(&db, &dir, &["widget", "--path", spec, "--ndjson"]);
+        assert!(ok, "path search failed for {spec:?}: {out}");
+        assert!(
+            out.contains("app/services/widget.rb"),
+            "services kept for {spec:?}: {out}"
+        );
+        assert!(
+            !out.contains("app/models/widget.rb"),
+            "models filtered for {spec:?}: {out}"
+        );
+    }
+
+    // a path outside the repo normalizes to nothing, not everything
+    let (_, out) = rq(
+        &db,
+        &dir,
+        &["widget", "--path", "/nonexistent/elsewhere", "--ndjson"],
+    );
+    assert!(out.trim().is_empty(), "outside path yields no hits: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }
