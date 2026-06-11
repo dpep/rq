@@ -154,10 +154,11 @@ pub fn run() -> ExitCode {
     }
     if cli.index {
         // index TARGET (else cwd); with --path, only those subtrees (partial)
-        return cmd_index(cli.target.map(PathBuf::from), &cli.path);
+        let out = output_format(&cli);
+        return cmd_index(cli.target.map(PathBuf::from), &cli.path, out);
     }
     if cli.status {
-        return cmd_status();
+        return cmd_status(output_format(&cli));
     }
     if cli.drop {
         return cmd_drop(cli.target);
@@ -1002,7 +1003,7 @@ fn resolve_identity(store: &Store, cwd: &std::path::Path) -> String {
     crate::index::detect_identity(cwd).to_string()
 }
 
-fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
+fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode {
     let explicit = path.is_some();
     let target = path.unwrap_or_else(|| PathBuf::from("."));
     // Normalize to the repo root: the index is repo-root-relative, so indexing
@@ -1027,24 +1028,53 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String]) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
+    let identity = crate::index::detect_identity(&root).to_string();
     match crate::index::index_under(&mut store, &root, &subdirs) {
         Ok(stats) => {
-            let scope = if subdirs.is_empty() { "" } else { " (partial)" };
+            let partial = !subdirs.is_empty();
             // distinguish this run's incremental work from the index totals
             let totals = store
-                .repository_id(&crate::index::detect_identity(&root).to_string())
+                .repository_id(&identity)
                 .ok()
                 .flatten()
                 .and_then(|id| store.repo_totals(id).ok());
-            match totals {
-                Some((files, symbols)) => println!(
-                    "{} file(s)/{} symbol(s) added this run; index{scope} now {files} files, {symbols} symbols",
-                    stats.files_indexed, stats.symbols
-                ),
-                None => println!(
-                    "{} file(s)/{} symbol(s) added this run{scope}",
-                    stats.files_indexed, stats.symbols
-                ),
+            match out {
+                Output::Json | Output::Ndjson => {
+                    let (files, symbols) = match totals {
+                        Some((f, s)) => (Some(f), Some(s)),
+                        None => (None, None),
+                    };
+                    let obj = serde_json::json!({
+                        "repo": identity,
+                        "scope": if partial { "partial" } else { "full" },
+                        "files_added": stats.files_indexed,
+                        "symbols_added": stats.symbols,
+                        "files": files,
+                        "symbols": symbols,
+                    });
+                    let rendered = if out == Output::Json {
+                        serde_json::to_string_pretty(&obj)
+                    } else {
+                        serde_json::to_string(&obj)
+                    };
+                    match rendered {
+                        Ok(s) => println!("{s}"),
+                        Err(e) => return fail(format_args!("rq: {e}")),
+                    }
+                }
+                Output::Text => {
+                    let scope = if partial { " (partial)" } else { "" };
+                    match totals {
+                        Some((files, symbols)) => println!(
+                            "{} file(s)/{} symbol(s) added this run; index{scope} now {files} files, {symbols} symbols",
+                            stats.files_indexed, stats.symbols
+                        ),
+                        None => println!(
+                            "{} file(s)/{} symbol(s) added this run{scope}",
+                            stats.files_indexed, stats.symbols
+                        ),
+                    }
+                }
             }
             ExitCode::SUCCESS
         }
@@ -1090,27 +1120,41 @@ fn cmd_drop(target: Option<String>) -> ExitCode {
     }
 }
 
-fn cmd_status() -> ExitCode {
+fn cmd_status(out: Output) -> ExitCode {
     let store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
-    match store.coverage_overview() {
-        Ok(rows) if rows.is_empty() => {
-            println!("no repositories indexed yet (try `rq --index`)");
-            ExitCode::SUCCESS
+    let rows = match store.coverage_overview() {
+        Ok(rows) => rows,
+        Err(e) => return fail(format_args!("rq --status: {e}")),
+    };
+    match out {
+        Output::Json => match serde_json::to_string_pretty(&rows) {
+            Ok(s) => println!("{s}"),
+            Err(e) => return fail(format_args!("rq: {e}")),
+        },
+        Output::Ndjson => {
+            for r in &rows {
+                match serde_json::to_string(r) {
+                    Ok(line) => println!("{line}"),
+                    Err(e) => return fail(format_args!("rq: {e}")),
+                }
+            }
         }
-        Ok(rows) => {
-            for r in rows {
+        Output::Text if rows.is_empty() => {
+            println!("no repositories indexed yet (try `rq --index`)");
+        }
+        Output::Text => {
+            for r in &rows {
                 println!(
                     "{:<10} {:>6} files  {:>7} symbols  {}",
                     r.status, r.files, r.symbols, r.identity
                 );
             }
-            ExitCode::SUCCESS
         }
-        Err(e) => fail(format_args!("rq --status: {e}")),
     }
+    ExitCode::SUCCESS
 }
 
 /// Open the rq database, honoring `RQ_DB` and creating parent dirs.

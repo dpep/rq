@@ -70,8 +70,11 @@ pub struct FileSymbols {
 
 /// One row of `rq status` output — the current indexed totals for a repo (not
 /// any single run's incremental counts).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CoverageRow {
+    /// Repository identity (`github.com/org/repo` or `local:/path`). Named `repo`
+    /// in JSON, matching the search result field.
+    #[serde(rename = "repo")]
     pub identity: String,
     pub status: String,
     pub files: i64,

@@ -79,6 +79,10 @@ scoring `features`, and `signature` (the definition's source line, so you can
 judge a result without opening the file). Exit code is `0` when something
 matched, non-zero when nothing did.
 
+`--json`/`--ndjson` work for the operations too: `rq --status --json` emits the
+coverage rows (`repo`, `status`, `files`, `symbols`), and `rq --index --json`
+emits this run's counts plus the index totals.
+
 Reach for `rq` over `grep`/`rg` when you want **where a symbol is defined** —
 it returns the most likely definition first instead of every textual mention.
 Narrow with `--path` when you know the area:
