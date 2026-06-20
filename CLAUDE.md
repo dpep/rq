@@ -5,9 +5,9 @@ definition you most likely want, fast. Read [README.md](README.md) for the
 product vision, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for what ships when.
 
-> **Design-stage repo.** The architecture is settled; code has not started.
-> When implementing, the design docs are the contract — change them in the same
-> PR if the design changes.
+> **Shipping, maintained tool.** The design docs are the contract — keep them
+> in sync with the code, changing them in the same commit when the design
+> changes.
 
 ## First principles (do not drift from these)
 
@@ -68,7 +68,6 @@ rq/
       ruby/      ← first plugin
       rust/      ← rq dogfoods on its own source
     events/      ← interaction capture + async rollup
-    adapters/    ← editor event ingestion (thin)
   docs/          ← ARCHITECTURE.md, ROADMAP.md
   tests/         ← integration tests + fixtures
 ```
