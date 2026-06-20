@@ -1,28 +1,24 @@
 rq — Reference Query
 ====================
 
-**Find the code you're looking for.** rq is a code *navigation* engine, not a
-search engine: it ranks aggressively to take you to the file, symbol, or
-definition you most likely want, instead of enumerating every match. A good
-result feels like *"that's exactly the one I wanted"* even when hundreds of
-others technically match.
+**rq finds where a symbol is *defined* and ranks the one you meant to the top.** Ask for a name and you get the single most-likely definition first — a class, method, function, struct — not every line that mentions it. Navigation, not enumeration.
 
 ```sh
 rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
 rq perform       # → the perform you actually meant, ranked first
-rq usr           # → User              app/models/user.rb:1
-rq refundproc    # → RefundProcessor   (fuzzy, abbreviation-aware)
+rq usr           # → User              app/models/user.rb:1  (fuzzy, abbreviation-aware)
 rq refund*proc   # → explicit gaps: `*` any run, `?`/`.` one char
 ```
 
-Search is the default action (`rq <query>`, not `rq search …`), aiming to feel
-as immediate as `rg`, `fd`, and `fzf`.
+Search is the default action — `rq <query>`, no subcommand. Every *operation* is a flag (`--index`, `--status`, `--symbols`), so no word is reserved: `rq index` searches for a symbol named "index" like any other query. The feel is `rg`/`fd`: type a name, get an answer.
 
-> **Status: early, working.** Ranking (exact/prefix, abbreviation-fuzzy, path,
-> current-repo, recency, and learned-from-your-picks signals) is functional for
-> Ruby, Rust, Go, and Python (rq indexes its own source); the index warms on
-> first use and self-heals. Shipped editor hooks + a shell wrapper; a packaged
-> extension and more languages are next. See [docs/ROADMAP.md](docs/ROADMAP.md).
+## Why not grep / ctags / an LSP?
+
+- **grep / rg** give every textual mention; rq gives the one place a symbol is *defined*, ranked.
+- **ctags** is static and relevance-blind; rq ranks by match quality, your current repo, recency, and what you've opened before.
+- **an LSP** is heavy — per-language, per-project, slow to warm. rq is one fast binary across all your repos: in-process search at `rg` speed (sub-millisecond), warms itself on first use, self-heals on edits, and learns from the results you actually open.
+
+Definitions come from [Tree-sitter](https://tree-sitter.github.io/) for Ruby, Rust, Go, and Python.
 
 ## Install
 
@@ -47,6 +43,7 @@ rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|str
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python (prefix-matched; r=ruby+rust)
 rq <query> -l/--limit N     # cap the number of results (default 10)
 rq <query> -o/--open        # open the best match in your editor + record the pick
+rq --symbols FILE           # outline a file's definitions, in line order
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # index only a subtree (partial — for big monorepos)
 rq --drop [PATH|IDENTITY]   # remove a repo's index (opposite of --index)
@@ -108,14 +105,27 @@ no word is reserved — `rq index`, `rq status`, and `rq record` search for thos
 symbols like any other query. rq works on the current repository; to target
 another, run it from there.
 
+## File outline
+
+`rq --symbols <file>` lists every definition in a file, in line order — a
+structural outline, not a ranked search. Honors `-k/--kind` and `-x/--lang`, and
+emits `--json`/`--ndjson` like everything else.
+
+```sh
+rq --symbols src/search/score.rs
+rq --symbols src/store/schema.rs -k struct,enum --json
+```
+
 Each result is a navigable `path:line`. `--explain` shows the additive score:
 
 ```sh
-$ rq corpus --explain
-lib/iriq/corpus.rb:14  class Corpus · Iriq
-    score 1015 = exact 1000 + kind 15
-lib/iriq/corpus.rb:431  method corpus_token · Iriq::Corpus
-    score 694 = prefix 694
+$ rq Store --explain
+src/store/mod.rs:56  struct Store
+    pub struct Store {
+    score 1290 = exact 1000 + kind 15 + current_repo 200 + recency 75
+src/search/mod.rs:316  function store_with · tests
+    fn store_with(symbols: &[Symbol]) -> Store {
+    score 954 = prefix 695 + current_repo 200 + recency 59
 ```
 
 ## Ranking
@@ -162,6 +172,9 @@ result you opened, so a `learned` boost lifts it next time:
 rq --record --file app/services/refund_processor.rb --line 7 refund
 ```
 
+The `--event` kind is `select` (chosen from results) or `open` (jumped to in an
+editor) — both feed the `learned` boost; `select` is the default.
+
 A pick for a shorter query (`ref`) also informs longer ones (`refund`), and
 repeating a search without opening anything is read as a miss — that query's
 learned boost decays so a stale favorite stops dominating.
@@ -184,9 +197,9 @@ Homebrew installs bash/zsh completions automatically.
 
 ## Performance
 
-On iriq's Ruby library (412 symbols) the in-process search pipeline measures
-p50 ~160 µs, max < 0.25 ms — ~200× under the 50 ms target. Re-run with
-`make bench REPO=/path/to/repo`.
+The in-process search pipeline measures p50 ~160 µs, max < 0.25 ms on a mid-size
+library (a few hundred symbols) — ~200× under the 50 ms target. Benchmark your
+own tree: `make bench REPO=/path/to/repo`.
 
 ## Scope
 

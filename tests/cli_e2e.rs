@@ -897,7 +897,10 @@ fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);
     assert!(ok, "bare rq should exit 0");
-    assert!(out.contains("Reference Query"), "help banner: {out}");
+    assert!(
+        out.contains("rq finds where a symbol is defined"),
+        "help banner: {out}"
+    );
     assert!(out.contains("Usage:"), "usage in help: {out}");
 
     let _ = fs::remove_dir_all(&dir);

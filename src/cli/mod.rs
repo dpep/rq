@@ -18,18 +18,18 @@ use crate::store::Store;
 #[command(
     name = "rq",
     version,
-    about = "Reference Query — find the code you're looking for.",
-    long_about = "Reference Query (rq) finds the code you're looking for. It ranks aggressively \
-to surface the one definition you most likely want, rather than listing every match.\n\n\
-Search is the default action — operations are flags, not subcommands, so every \
-word (including \"index\", \"status\", \"record\") stays searchable. Ranking \
-learns from the results you open (see RECORDING below) and favors your current \
-repo and recently-active files. Run `rq <query> --explain` to see the score \
-behind each result.",
+    about = "Ranked definition lookup — the one place a symbol is defined, first.",
+    long_about = "rq finds where a symbol is defined and ranks the one you most \
+likely meant to the top — not every match.\n\n\
+Search is the default action; operations are flags, not subcommands, so every \
+word (including \"index\", \"status\", \"record\") stays searchable. Ranking favors \
+your current repo and recently-active files, and learns from the results you open \
+(see RECORDING below). Run `rq <query> --explain` to see the score behind each result.",
     after_help = "EXAMPLES:\n  \
 rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
+rq thing --no-record      search without recording it (speculative/agent queries)\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
 rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
 rq --symbols FILE         outline a file's definitions, in line order\n  \
@@ -38,10 +38,12 @@ rq -o thing               open the best match in your editor (and record it)\n  
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n  \
 rq --drop                 remove this repo's index (opposite of --index)\n\n\
+SHORT FLAGS (easy to misread):\n  \
+-j = --json (not jobs; --jobs is long-only)   -l = --limit (not lang)   -x = --lang\n\n\
 RECORDING (editor/shell hook):\n  \
 rq --record --file <path> --line <n> <query>\n  \
-Tells rq which result you opened for a query, so ranking learns. Editors and \
-the script/rq-open wrapper call this for you.\n\n\
+Tells rq which result you opened for a query, so ranking learns. Pass --no-record \
+to a search to skip this. Editors and the script/rq-open wrapper call --record for you.\n\n\
 The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms \
 automatically on the first search in a git repo."
 )]
