@@ -1,8 +1,8 @@
 //! Candidate retrieval must not drop an exact match when its first-character
 //! bucket overflows the per-layer cap — the failure mode on a huge repo.
 
-use rq::core::{Kind, RepoIdentity, Symbol};
-use rq::store::Store;
+use reference_query::core::{Kind, RepoIdentity, Symbol};
+use reference_query::store::Store;
 
 fn sym(name: &str) -> Symbol {
     Symbol {

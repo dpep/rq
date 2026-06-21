@@ -7,9 +7,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rq::index;
-use rq::search::{self, ActiveFiles};
-use rq::store::Store;
+use reference_query::index;
+use reference_query::search::{self, ActiveFiles};
+use reference_query::store::Store;
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rq-budget-{tag}-{}", std::process::id()));

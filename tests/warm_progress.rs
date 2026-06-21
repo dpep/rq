@@ -12,8 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rq::index;
-use rq::store::Store;
+use reference_query::index;
+use reference_query::store::Store;
 
 const FILES: usize = 1000;
 const CAP: usize = 200;

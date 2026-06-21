@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rq::index::index_path;
-use rq::store::Store;
+use reference_query::index::index_path;
+use reference_query::store::Store;
 
 /// A unique temp directory for this test process (no tempfile dependency).
 fn scratch_dir() -> PathBuf {

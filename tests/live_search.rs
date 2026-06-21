@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-use rq::search;
+use reference_query::search;
 
 fn scratch_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rq-live-{}-{label}", std::process::id()));

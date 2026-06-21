@@ -5,9 +5,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rq::index;
-use rq::search::{self, ActiveFiles};
-use rq::store::Store;
+use reference_query::index;
+use reference_query::search::{self, ActiveFiles};
+use reference_query::store::Store;
 
 /// The fixture source, embedded at compile time so there's no runtime path to
 /// resolve. Written into a throwaway repo dir the test indexes.

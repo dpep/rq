@@ -3,9 +3,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rq::index;
-use rq::search;
-use rq::store::Store;
+use reference_query::index;
+use reference_query::search;
+use reference_query::store::Store;
 
 fn scratch_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rq-learn-{}-{label}", std::process::id()));

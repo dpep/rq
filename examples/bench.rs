@@ -9,9 +9,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use rq::index;
-use rq::search;
-use rq::store::Store;
+use reference_query::index;
+use reference_query::search;
+use reference_query::store::Store;
 
 const QUERIES: &[&str] = &[
     "user",

@@ -1,17 +1,15 @@
 [package]
-name = "rq"
+name = "reference-query"
 version = "0.24.1"
 edition = "2024"
 description = "Reference Query — find the code you're looking for."
 license = "MIT"
+repository = "https://github.com/dpep/rq"
 
+# Published as `reference-query`; binary stays `rq`.
 [[bin]]
 name = "rq"
 path = "src/main.rs"
-
-[lib]
-name = "rq"
-path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
