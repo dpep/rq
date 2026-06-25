@@ -845,6 +845,36 @@ fn warming_a_committed_repo_indexes_tracked_source() {
 }
 
 #[test]
+fn an_interactive_cold_repo_indexes_to_an_answer_instead_of_a_false_miss() {
+    // The cold-start escalation: a human at a terminal querying an unindexed repo
+    // would otherwise hit the bounded budget and see a *false* "no matches". With
+    // a tiny answer budget the bounded path gives up before the symbol is indexed;
+    // forcing interactive turns on escalation, which keeps indexing (with a
+    // stderr heads-up) until the answer appears — so the result is found.
+    let (dir, db) = scratch("escalate");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Widget", "--no-record"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_ANSWER_BUDGET_MS", "1") // bounded path would give up immediately
+        .env("RQ_ASSUME_INTERACTIVE", "1") // pretend a TTY so escalation engages
+        .output()
+        .expect("run rq");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "escalation should find the symbol; stdout={out:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(out.contains("widget.rb"), "found in the right file: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn symbols_outlines_a_file_in_line_order() {
     let (dir, db) = scratch("symbols");
     fs::write(

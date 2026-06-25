@@ -217,6 +217,17 @@ search only reads.
   (branch) files first and answers, then the deferred pass warms more per query
   until a full sweep marks coverage `complete` (reconciling deletions + capturing
   commit times). Explicit `rq --index` is the same path, unbounded.
+- **Cold-start escalation** — the time-boxed warm exists so a query never blocks,
+  but on a *large, cold* repo it can expire before the symbol is indexed, turning
+  a real hit into a false "no matches". So for an interactive run (a TTY, plain
+  text — never `--json`/`--ndjson` or a pipe, which keep the bounded path) on a
+  genuinely warming repo, the budget is lifted: `rq` keeps indexing past it,
+  shows a one-line "indexing…" progress heads-up on stderr after ~500 ms, and
+  waits until the answer appears or the sweep completes — so a "no matches" is
+  finally trustworthy. Ctrl-C (a `SIGINT` handler over `libc`, installed only on
+  this path) aborts promptly and prints the best partial results; committed
+  batches persist, so re-running continues. `index_budgeted_cancellable` carries
+  the abort flag down into the walk.
 - **Discovery vs tracking** — a *git work tree* is auto-discovered (a stray query
   may warm it); a *non-git* dir is only indexed when asked (`rq --index`), after
   which it's **tracked** (has coverage) and treated like any repo. Git-ness gates
