@@ -878,7 +878,7 @@ fn live_fallback_budget() -> Duration {
 /// query. `RQ_WAIT_BUDGET_MS=0` makes a programmatic caller non-blocking again —
 /// it answers immediately from whatever's already indexed.
 fn wait_budget() -> Duration {
-    env_budget("RQ_WAIT_BUDGET_MS", 600_000)
+    env_budget("RQ_WAIT_BUDGET_MS", 60_000)
 }
 
 /// Set by the SIGINT handler during an interactive cold-start escalation. The

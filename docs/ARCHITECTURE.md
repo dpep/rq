@@ -229,7 +229,7 @@ search only reads.
     over `libc`, installed only on this path) that aborts and prints the best
     partial results. Interactive waits are unbounded — Ctrl-C is the escape.
   - **Programs** (`--json`/`--ndjson` or any pipe) block silently, bounded by a
-    wait budget (`RQ_WAIT_BUDGET_MS`, default 10 min; `0` = non-blocking) since
+    wait budget (`RQ_WAIT_BUDGET_MS`, default 1 min; `0` = non-blocking) since
     there's no one to interrupt.
   - A miss distinguishes **definitive** (index `complete` → exit 1) from
     **indeterminate** (still `warming`, e.g. the wait budget was hit on a huge
