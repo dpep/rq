@@ -319,9 +319,41 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
 /// for highlighting *what* matched. Empty if `query` isn't a subsequence.
 pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
     if has_wildcard(query) {
+        // a wildcard's gaps are deliberate, so highlight every literal as-is
         return glob_positions(query, name).unwrap_or_default();
     }
-    align(query, name).map(|a| a.positions).unwrap_or_default()
+    let positions = align(query, name).map(|a| a.positions).unwrap_or_default();
+    contiguous_highlight(positions, name)
+}
+
+/// Trim a fuzzy match's highlight so it reads cleanly. We keep contiguous runs of
+/// two or more matched chars, and a lone matched char only when it sits on a word
+/// boundary (an acronym/abbreviation initial — the `U`/`C` of `UserController`).
+/// Isolated mid-word matches — single lit letters with dark gaps on both sides —
+/// are dropped even though they technically matched: they're visually noisy and
+/// carry no navigational signal. Separate clumps each survive, so a vowel-dropped
+/// abbreviation still lights both halves (`Paym`e`nt`s).
+fn contiguous_highlight(positions: Vec<usize>, name: &str) -> Vec<usize> {
+    if positions.is_empty() {
+        return positions;
+    }
+    let boundary = boundaries(&name.chars().collect::<Vec<_>>());
+    let mut out = Vec::with_capacity(positions.len());
+    let mut i = 0;
+    while i < positions.len() {
+        // positions are strictly increasing; extend a run of adjacent indices
+        let mut j = i;
+        while j + 1 < positions.len() && positions[j + 1] == positions[j] + 1 {
+            j += 1;
+        }
+        if j > i {
+            out.extend_from_slice(&positions[i..=j]); // a clump of >= 2
+        } else if boundary[positions[i]] {
+            out.push(positions[i]); // a lone match, but a word-boundary initial
+        }
+        i = j + 1;
+    }
+    out
 }
 
 /// Score `query` as a subsequence of `name` (the best alignment's score), or
@@ -660,25 +692,52 @@ mod tests {
         for (q, name) in cases {
             let nchars: Vec<char> = name.chars().collect();
             let qchars: Vec<char> = q.chars().filter(|c| c.is_alphanumeric()).collect();
+            let boundary = boundaries(&nchars);
             let pos = match_positions(q, name);
-            assert_eq!(
-                pos.len(),
-                qchars.len(),
-                "one highlight per query char: {q}/{name}"
-            );
             assert!(
                 pos.windows(2).all(|w| w[0] < w[1]),
                 "strictly increasing: {q}/{name} {pos:?}"
             );
-            for (qi, &p) in pos.iter().enumerate() {
+            // highlights are a subsequence of the query, each in bounds
+            let mut qi = 0;
+            for &p in &pos {
                 assert!(p < nchars.len(), "in bounds: {q}/{name}");
-                assert_eq!(
-                    nchars[p].to_ascii_lowercase(),
-                    qchars[qi].to_ascii_lowercase(),
-                    "highlighted char equals the query char: {q}/{name} at {p}"
+                while qi < qchars.len() && !qchars[qi].eq_ignore_ascii_case(&nchars[p]) {
+                    qi += 1;
+                }
+                assert!(
+                    qi < qchars.len(),
+                    "highlight maps to a query char: {q}/{name}"
+                );
+                qi += 1;
+            }
+            // every highlight is part of a clump (>= 2 adjacent) or a boundary initial
+            for (idx, &p) in pos.iter().enumerate() {
+                let clumped = (idx > 0 && pos[idx - 1] + 1 == p)
+                    || (idx + 1 < pos.len() && p + 1 == pos[idx + 1]);
+                assert!(
+                    clumped || boundary[p],
+                    "no isolated mid-word highlight: {q}/{name} at {p} {pos:?}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn highlights_avoid_isolated_single_chars() {
+        // a vowel-dropped abbreviation lights both clumps across the dark gap
+        assert_eq!(
+            match_positions("paymnt", "Payments"),
+            vec![0, 1, 2, 3, 5, 6]
+        );
+        // the straggling `r` of `usr` (mid-word, gap before it) is dropped, not lit
+        assert_eq!(match_positions("usr", "UserService"), vec![0, 1]);
+        // boundary initial `C` stays; the contiguous `tr` stays; the lone `l` drops
+        assert_eq!(match_positions("ctrl", "Controller"), vec![0, 3, 4]);
+        // two scattered mid-word singles leave nothing to highlight
+        assert!(match_positions("rp", "wrapper").is_empty());
+        // a pure boundary acronym is all single chars, but each is a real initial
+        assert_eq!(match_positions("uc", "UserController"), vec![0, 4]);
     }
 
     #[test]
