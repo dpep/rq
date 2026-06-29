@@ -217,17 +217,28 @@ search only reads.
   (branch) files first and answers, then the deferred pass warms more per query
   until a full sweep marks coverage `complete` (reconciling deletions + capturing
   commit times). Explicit `rq --index` is the same path, unbounded.
-- **Cold-start escalation** — the time-boxed warm exists so a query never blocks,
-  but on a *large, cold* repo it can expire before the symbol is indexed, turning
-  a real hit into a false "no matches". So for an interactive run (a TTY, plain
-  text — never `--json`/`--ndjson` or a pipe, which keep the bounded path) on a
-  genuinely warming repo, the budget is lifted: `rq` keeps indexing past it,
-  shows a one-line "indexing…" progress heads-up on stderr after ~500 ms, and
-  waits until the answer appears or the sweep completes — so a "no matches" is
-  finally trustworthy. Ctrl-C (a `SIGINT` handler over `libc`, installed only on
-  this path) aborts promptly and prints the best partial results; committed
-  batches persist, so re-running continues. `index_budgeted_cancellable` carries
-  the abort flag down into the walk.
+- **Block-until-answered (cold start)** — the time-boxed warm exists so a query
+  never hangs, but on a *huge, cold* repo it can expire before the symbol is
+  indexed, turning a real hit into a false "no matches". Correctness beats the
+  first query's latency (and once warm the repo answers fast), so a query against
+  a genuinely warming repo keeps indexing until the answer appears or the sweep
+  completes — for humans **and** programs alike. Small/medium repos finish inside
+  the normal budget and are unaffected; only a large cold repo waits, once.
+  - **Humans** (a TTY, plain text) also get a one-line "indexing…" progress
+    heads-up on stderr after ~500 ms and a graceful **Ctrl-C** (a `SIGINT` handler
+    over `libc`, installed only on this path) that aborts and prints the best
+    partial results. Interactive waits are unbounded — Ctrl-C is the escape.
+  - **Programs** (`--json`/`--ndjson` or any pipe) block silently, bounded by a
+    wait budget (`RQ_WAIT_BUDGET_MS`, default 1 min; `0` = non-blocking) since
+    there's no one to interrupt.
+  - A miss distinguishes **definitive** (index `complete` → exit 1) from
+    **indeterminate** (still `warming`, e.g. the wait budget was hit on a huge
+    repo → exit 2 + a one-line stderr note), so a caller isn't misled into
+    treating "not yet" as "absent". Both are non-zero, so `rq … && …` is
+    unchanged. Committed batches persist, so a re-run resumes.
+  - `index_budgeted_cancellable` carries the abort flag (Ctrl-C, a wait timeout,
+    or an early answer) down into the walk so the pass stops promptly without
+    losing committed work.
 - **Discovery vs tracking** — a *git work tree* is auto-discovered (a stray query
   may warm it); a *non-git* dir is only indexed when asked (`rq --index`), after
   which it's **tracked** (has coverage) and treated like any repo. Git-ness gates
