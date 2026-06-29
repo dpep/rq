@@ -8,22 +8,17 @@ on:
 
 jobs:
   test:
-    name: Rust ${{ matrix.toolchain }}
+    name: Rust
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        toolchain: [ stable ]
 
     steps:
       - name: clone ${{ github.repository }}
         uses: actions/checkout@v7
 
-      - name: setup Rust ${{ matrix.toolchain }}
+      - name: setup Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.toolchain }}
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: cache cargo
