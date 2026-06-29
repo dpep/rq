@@ -845,6 +845,94 @@ fn warming_a_committed_repo_indexes_tracked_source() {
 }
 
 #[test]
+fn a_cold_repo_blocks_to_an_answer_instead_of_a_false_miss() {
+    // The core fix: a query against an unindexed repo would otherwise hit the
+    // bounded budget and see a *false* "no matches" while the symbol sits
+    // unindexed. With a tiny answer budget the old bounded path gives up first;
+    // now the query blocks and keeps indexing until the answer appears. This is
+    // the *programmatic* (--json, non-TTY) path — correctness for agents/scripts,
+    // no progress UI.
+    let (dir, db) = scratch("block-json");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Widget", "--no-record", "--json"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_ANSWER_BUDGET_MS", "1") // bounded path would give up immediately
+        .output()
+        .expect("run rq");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "a programmatic query should block until it finds the symbol; \
+         stdout={out:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(out.contains("widget.rb"), "found in the right file: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_interactive_cold_repo_shows_progress_and_finds_the_answer() {
+    // The human path: forcing interactive turns on the stderr heads-up + Ctrl-C
+    // handling, but the blocking-until-answered behavior is the same as --json.
+    let (dir, db) = scratch("block-tty");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Widget", "--no-record"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_ANSWER_BUDGET_MS", "1")
+        .env("RQ_ASSUME_INTERACTIVE", "1") // pretend a TTY
+        .output()
+        .expect("run rq");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success(), "should find the symbol: {out:?}");
+    assert!(out.contains("widget.rb"), "found in the right file: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
+    // A miss while the index is still warming is "not yet", not "absent". Capping
+    // the pass below the repo size keeps coverage "warming", so a query for a
+    // symbol that isn't in the indexed slice must exit 2 (indeterminate) — letting
+    // an agent retry rather than conclude the symbol doesn't exist.
+    let (dir, db) = scratch("indeterminate");
+    for i in 0..20 {
+        fs::write(
+            dir.join(format!("m{i:02}.rb")),
+            format!("class Widget{i}\nend\n"),
+        )
+        .unwrap();
+    }
+    git_init_commit(&dir);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Nonexistent", "--no-record", "--json"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_COLLECT_CAP", "5") // one pass can't finish → stays "warming"
+        .output()
+        .expect("run rq");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(out.trim(), "[]", "empty JSON array on a miss: {out:?}");
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "an incomplete-index miss is indeterminate (exit 2), not definitive"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn symbols_outlines_a_file_in_line_order() {
     let (dir, db) = scratch("symbols");
     fs::write(

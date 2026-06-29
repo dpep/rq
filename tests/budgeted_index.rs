@@ -98,6 +98,40 @@ fn an_empty_source_tree_never_reports_complete() {
 }
 
 #[test]
+fn a_cancelled_pass_stops_early_and_stays_warming() {
+    // The interactive cold-start escalation runs a long warm the user can abort
+    // with Ctrl-C. A set cancel flag must halt the walk promptly — leaving
+    // coverage "warming" (not falsely "complete") while keeping whatever batches
+    // it already committed.
+    let dir = scratch_dir("cancel");
+    for i in 0..20 {
+        fs::write(
+            dir.join(format!("m{i:02}.rb")),
+            format!("class C{i}\nend\n"),
+        )
+        .unwrap();
+    }
+
+    let mut store = Store::open_in_memory().unwrap();
+    let cancel = std::sync::atomic::AtomicBool::new(true); // aborted before it starts
+    let ample = Duration::from_secs(5); // time isn't the bound here — the abort is
+    let stats =
+        index::index_budgeted_cancellable(&mut store, &dir, &[], ample, None, &cancel).unwrap();
+
+    assert!(
+        stats.files_indexed < 20,
+        "a cancelled pass didn't index the whole repo: {stats:?}"
+    );
+    assert_eq!(
+        store.coverage_overview().unwrap()[0].status,
+        "warming",
+        "an aborted sweep is never finalized as complete"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn a_content_scan_returns_only_matching_files_to_persist() {
     use std::collections::HashSet;
 

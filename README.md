@@ -73,8 +73,15 @@ small reference wrapper around `rq` + `rq --record`.
 surface for editors, scripts, and AI agents. Each result is an object with
 `name`, `kind`, `language`, `file`, `line`, `parent`, `repo`, `score`, the
 scoring `features`, and `signature` (the definition's source line, so you can
-judge a result without opening the file). Exit code is `0` when something
-matched, non-zero when nothing did.
+judge a result without opening the file). Exit codes: `0` matched, `1` no match,
+`2` no match *yet* — the index is still warming, so re-run (or `rq --index`)
+rather than concluding the symbol is absent. All non-zero, so `rq … && …` is
+unchanged.
+
+On a cold repo a query **blocks and indexes until it can answer**, rather than
+returning a premature empty result — correctness over the first query's latency,
+and once warm the repo answers fast. Set `RQ_WAIT_BUDGET_MS=0` for a strictly
+non-blocking query (answers from whatever's already indexed).
 
 `--json`/`--ndjson` work for every command, not just search: `rq --status --json`
 emits the coverage rows (`repo`, `status`, `files`, `symbols`), `rq --index --json`
@@ -147,10 +154,13 @@ Returning fewer, better, ranked results is the goal — not completeness.
 ## Staying current
 
 You rarely run `rq --index` by hand. The first query inside a git repository
-warms the index opportunistically — but *time-bounded*, so even a huge repo
-never blocks the first answer: it indexes the files you're changing on this
-branch first, answers, then keeps warming a little per query until coverage is
-complete. Results also self-heal: the files behind the top hits are revalidated
+warms the index opportunistically — *time-bounded*, so a warm repo answers in
+milliseconds: it indexes the files you're changing on this branch first, answers,
+then keeps warming a little per query until coverage is complete. The one
+exception is a **cold** repo, where there's nothing indexed to answer from yet —
+there the first query blocks and indexes until it can answer (showing progress,
+Ctrl-C to stop) rather than reporting a false miss; it's a one-time cost, since
+the index persists. Results also self-heal: the files behind the top hits are revalidated
 each search, so edited files are re-read and deleted ones drop out, and the warm
 pass picks up added/changed/removed files as it sweeps. Indexing parses files in
 parallel and writes them in one batched transaction, and a search of an already-

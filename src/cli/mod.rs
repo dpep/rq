@@ -1,7 +1,7 @@
 //! Command-line surface. Search is the default action: `rq <query>`.
 
 use std::collections::HashSet;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -45,7 +45,10 @@ rq --record --file <path> --line <n> <query>\n  \
 Tells rq which result you opened for a query, so ranking learns. Pass --no-record \
 to a search to skip this. Editors and the script/rq-open wrapper call --record for you.\n\n\
 The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms \
-automatically on the first search in a git repo."
+automatically on the first search in a git repo. On a large, cold repo a search \
+keeps indexing until it can answer rather than reporting a premature \"no \
+matches\" (an interactive run shows progress and stops on Ctrl-C). Exit codes: 0 \
+= matched, 1 = no match, 2 = no match yet (index still warming — try again)."
 )]
 struct Cli {
     /// Search query. With --drop, the repo path/identity to drop; with --record,
@@ -237,6 +240,16 @@ const PATH_HEADROOM: usize = 200;
 /// background thread — short enough to feel instant, long enough not to spin.
 const POLL_INTERVAL: Duration = Duration::from_millis(15);
 
+/// How long a cold-repo query may wait silently before we tell the user we're
+/// indexing — short enough to explain the pause, long enough that a repo which
+/// indexes quickly never flashes a message.
+const HEADS_UP_DELAY: Duration = Duration::from_millis(500);
+
+/// Minimum gap between progress-line redraws once the heads-up is showing — keeps
+/// the line from flickering (and the count query off the hot path) while still
+/// feeling live.
+const PROGRESS_REDRAW: Duration = Duration::from_millis(120);
+
 /// Default action: search the index and print ranked results. `want` is the
 /// number of results to show (`--limit`).
 #[allow(clippy::too_many_arguments)]
@@ -339,12 +352,32 @@ fn cmd_search(
             }
             None => false,
         };
+
+    // Block-until-answered on a cold/partial repo. A bounded warm exists so a
+    // query never hangs, but on a *huge, cold* repo it can expire before the
+    // symbol is indexed — turning a real hit into a false "no matches". Since
+    // correctness beats the first query's latency (and once warm the repo answers
+    // fast), we keep indexing until the answer appears or the repo is fully
+    // indexed — for humans *and* programs alike. Small/medium repos finish inside
+    // the normal budget and are unaffected; only a genuinely large cold repo
+    // waits, and only once.
+    let block = want_warm && was_warming;
+    // A human at a plain-text terminal also gets a live progress heads-up and a
+    // graceful Ctrl-C; piped/`--json` callers (agents, scripts) block silently and
+    // are bounded by a wait budget instead, since there's nothing to draw to and
+    // no one to interrupt.
+    let progress_ui = block && show_progress(out, stderr_interactive());
+    let indexer_budget = if block { wait_budget() } else { warm_budget };
+    if progress_ui {
+        install_interrupt_handler();
+    }
+
     // `warm_done` lets the poll stop the instant the indexer finishes — so a miss
     // on a small repo returns as soon as it's indexed, not at the deadline.
     let warm_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let indexer = (want_warm && root.is_some()).then(|| {
         crate::trace!(
-            "background warm ({warm_budget:?}, {} jobs)",
+            "background warm ({indexer_budget:?}, block={block}, progress_ui={progress_ui}, {} jobs)",
             crate::index::parse_jobs()
         );
         let root = root.clone().expect("checked");
@@ -354,24 +387,50 @@ fn cmd_search(
         std::thread::spawn(move || {
             if let Ok(mut idx) = open_store() {
                 // path-prioritize toward the query so the relevant file indexes first
-                let _ =
-                    crate::index::index_budgeted(&mut idx, &root, &active, warm_budget, Some(&q));
+                let _ = if block {
+                    // the abort flag (`INTERRUPTED`) lets a Ctrl-C, a wait timeout,
+                    // or an early answer stop the pass without losing committed work
+                    crate::index::index_budgeted_cancellable(
+                        &mut idx,
+                        &root,
+                        &active,
+                        indexer_budget,
+                        Some(&q),
+                        &INTERRUPTED,
+                    )
+                } else {
+                    crate::index::index_budgeted(&mut idx, &root, &active, indexer_budget, Some(&q))
+                };
             }
             warm_done.store(true, std::sync::atomic::Ordering::Relaxed);
         })
     });
 
-    // Poll while a cold/partial repo warms. Don't print the first hit off a
-    // sparse index — a fuzzy or path match can be wrong once more is indexed.
-    // Hold until a *high-confidence* (exact or prefix name) match appears, which
-    // means the index has built enough to rank it; otherwise keep building until
-    // warming finishes or the answer deadline passes, then rank the fuller index.
+    // Poll while a cold/partial repo warms. Don't print the first hit off a sparse
+    // index — a fuzzy or path match can be wrong once more is indexed. Hold until a
+    // *high-confidence* (exact or prefix name) match appears; otherwise keep
+    // building until the index is complete (a "no matches" is then trustworthy), a
+    // wait deadline passes, or — interactively — Ctrl-C. A human sees a progress
+    // line once the pause is noticeable.
     crate::trace!(
         "setup (open + repo detect + warm decision): {} ms",
         t_setup.elapsed().as_millis()
     );
-    let answer_deadline = std::time::Instant::now() + answer_warm_budget();
+    let poll_start = std::time::Instant::now();
+    // Deadline: an interactive block waits unbounded (Ctrl-C escapes); a
+    // programmatic block waits out the wait budget; a non-block (complete repo)
+    // keeps the original fast answer budget.
+    let deadline = if progress_ui {
+        None
+    } else if block {
+        Some(poll_start + wait_budget())
+    } else {
+        Some(poll_start + answer_warm_budget())
+    };
     let polling = indexer.is_some() && was_warming;
+    let label = repo_label(root.as_deref());
+    let mut drew_progress = false;
+    let mut last_draw = poll_start;
     let mut hits = loop {
         match crate::search::search(&store, query, current, &active, limit) {
             Ok(h) => {
@@ -380,12 +439,19 @@ fn cmd_search(
                         .iter()
                         .any(|f| matches!(f.name, "exact" | "prefix"))
                 });
-                if !polling
-                    || confident
-                    || warm_done.load(std::sync::atomic::Ordering::Relaxed)
-                    || std::time::Instant::now() >= answer_deadline
-                {
+                let warm_finished = warm_done.load(std::sync::atomic::Ordering::Relaxed);
+                let stopped = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
+                let timed_out = deadline.is_some_and(|d| std::time::Instant::now() >= d);
+                if !polling || confident || warm_finished || stopped || timed_out {
                     break h;
+                }
+                if progress_ui
+                    && poll_start.elapsed() >= HEADS_UP_DELAY
+                    && last_draw.elapsed() >= PROGRESS_REDRAW
+                {
+                    draw_progress(&store, identity.as_deref(), &label);
+                    drew_progress = true;
+                    last_draw = std::time::Instant::now();
                 }
             }
             Err(e) => {
@@ -397,6 +463,11 @@ fn cmd_search(
         }
         std::thread::sleep(POLL_INTERVAL);
     };
+    if drew_progress {
+        clear_progress();
+    }
+    // Captured before we self-cancel below, so it reflects only a *user's* Ctrl-C.
+    let interrupted = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
 
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
     if !hits.is_empty() && revalidate_top(&mut store, &hits) {
@@ -466,16 +537,41 @@ fn cmd_search(
     }
 
     if hits.is_empty() {
-        match out {
-            Output::Json => println!("[]"),
-            Output::Ndjson => {}
-            Output::Text => eprintln!("no matches for {query:?}"),
+        // Stop a still-running block so the join is prompt, then settle coverage.
+        if block {
+            INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        // a miss still warms for next time — block on the background pass
         if let Some(h) = indexer {
             let _ = h.join();
         }
-        return ExitCode::FAILURE;
+        // A miss against a *complete* index is definitive (the symbol isn't
+        // there); against a still-warming one it's only "not yet". Distinguish
+        // them so a caller — agent or script — isn't misled into thinking the
+        // symbol is absent when the index simply hasn't reached it.
+        let incomplete = block
+            && identity
+                .as_deref()
+                .and_then(|id| store.coverage_status(id).ok().flatten())
+                .as_deref()
+                != Some("complete");
+        match out {
+            Output::Json => println!("[]"),
+            Output::Ndjson => {}
+            Output::Text if interrupted => {
+                eprintln!("rq: indexing interrupted — run again to finish")
+            }
+            Output::Text if incomplete => eprintln!(
+                "rq: still indexing — no match for {query:?} yet (run again, or `rq --index` to finish)"
+            ),
+            Output::Text => eprintln!("no matches for {query:?}"),
+        }
+        // Exit 2 = indeterminate (index incomplete), 1 = a definitive miss. Both
+        // non-zero, so `rq … && …` still reads as "found something".
+        return if incomplete {
+            ExitCode::from(2)
+        } else {
+            ExitCode::FAILURE
+        };
     }
 
     // Attach each result's definition line (e.g. `def perform(refund)`) — shown
@@ -570,7 +666,12 @@ fn cmd_search(
     // persists as it goes (incremental commits), so even a pass cut short by the
     // budget keeps everything it parsed — building coverage across queries and,
     // on a changed repo, picking up edits and reconciling deletions on a full
-    // sweep, all without a daemon.
+    // sweep, all without a daemon. A blocking pass runs on a generous budget, so
+    // once we have the answer we stop it rather than wait on the rest (the next
+    // query resumes from the committed batches).
+    if block {
+        INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     if let Some(h) = indexer {
         let _ = h.join();
     }
@@ -766,6 +867,81 @@ fn deferred_warm_budget() -> Duration {
 /// to surface a result the warm hasn't reached, without an unbounded walk.
 fn live_fallback_budget() -> Duration {
     env_budget("RQ_FALLBACK_BUDGET_MS", 250)
+}
+
+/// How long a query may block indexing a cold repo before giving up with an
+/// honest "still indexing" rather than a false miss. A generous backstop, not the
+/// real cost: `index_budgeted` returns the moment the sweep completes, so any
+/// normal repo finishes well under it, and an interactive run isn't bounded by it
+/// at all (Ctrl-C escapes). It mainly bounds a programmatic caller on a
+/// pathologically huge repo — where the partial index still persists for the next
+/// query. `RQ_WAIT_BUDGET_MS=0` makes a programmatic caller non-blocking again —
+/// it answers immediately from whatever's already indexed.
+fn wait_budget() -> Duration {
+    env_budget("RQ_WAIT_BUDGET_MS", 60_000)
+}
+
+/// Set by the SIGINT handler during an interactive cold-start escalation. The
+/// poll loop and the running index pass watch it, so Ctrl-C stops the wait
+/// promptly and prints the best partial results instead of killing the process.
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_sigint(_: libc::c_int) {
+    // Async-signal-safe: a lone relaxed atomic store — no allocation, no locks.
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Install the SIGINT handler once. Scoped to the escalation path: a normal fast
+/// query keeps the default behavior (Ctrl-C kills it outright).
+fn install_interrupt_handler() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_sigint as *const () as usize;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
+    });
+}
+
+/// Is a human watching stderr? True for a real terminal; `RQ_ASSUME_INTERACTIVE`
+/// forces it on so the progress/Ctrl-C path is exercisable under test (where
+/// stderr is a pipe), mirroring the `RQ_*_BUDGET_MS` testing knobs.
+fn stderr_interactive() -> bool {
+    std::io::stderr().is_terminal() || std::env::var_os("RQ_ASSUME_INTERACTIVE").is_some()
+}
+
+/// Whether to show the live "indexing…" progress heads-up and handle Ctrl-C
+/// gracefully while a cold repo blocks — a human watching a plain-text terminal.
+/// Piped / `--json` / `--ndjson` callers block silently instead (no line to draw,
+/// no one to interrupt); the *decision to block* is the same for both.
+fn show_progress(out: Output, interactive: bool) -> bool {
+    interactive && matches!(out, Output::Text)
+}
+
+/// A short, friendly name for the repo being indexed — its directory name, for
+/// the progress line.
+fn repo_label(root: Option<&std::path::Path>) -> String {
+    root.and_then(|r| r.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into())
+}
+
+/// Redraw the in-place "indexing…" progress line on stderr (kept off stdout so
+/// piped/`--json` output stays clean). The file count comes from the index the
+/// background pass is filling, so it climbs as warming proceeds.
+fn draw_progress(store: &Store, identity: Option<&str>, label: &str) {
+    let files = identity
+        .and_then(|id| store.repository_id(id).ok().flatten())
+        .and_then(|rid| store.repo_totals(rid).ok())
+        .map_or(0, |(f, _)| f);
+    eprint!("\r\x1b[Krq: indexing {label}… {files} files");
+    let _ = std::io::stderr().flush();
+}
+
+/// Erase the progress line so results print to a clean terminal.
+fn clear_progress() {
+    eprint!("\r\x1b[K");
+    let _ = std::io::stderr().flush();
 }
 
 /// Read a budget (milliseconds) from an env var, else the default. The env knobs
@@ -1391,6 +1567,28 @@ mod tests {
         );
         // nothing matched → unchanged
         assert_eq!(highlight("FooThing", &[], "1;31"), "FooThing");
+    }
+
+    #[test]
+    fn progress_ui_only_for_an_interactive_text_terminal() {
+        // a person at a terminal, plain text → live progress + graceful Ctrl-C
+        assert!(show_progress(Output::Text, true));
+
+        // machine-readable output blocks silently (no progress line to corrupt it)
+        assert!(!show_progress(Output::Json, true));
+        assert!(!show_progress(Output::Ndjson, true));
+
+        // not a terminal (a script/agent/pipe) — block, but without the UI
+        assert!(!show_progress(Output::Text, false));
+    }
+
+    #[test]
+    fn repo_label_uses_the_directory_name() {
+        assert_eq!(
+            repo_label(Some(std::path::Path::new("/src/widgets"))),
+            "widgets"
+        );
+        assert_eq!(repo_label(None), "repo");
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None, None)
+    run_index(store, root, &[], subdirs, None, None, None)
 }
 
 /// Lowercase the alphanumeric chars of `s` — the normal form for loose,
@@ -111,7 +111,22 @@ pub fn index_budgeted(
     budget: Duration,
     query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget), query)
+    run_index(store, root, active, &[], Some(budget), query, None)
+}
+
+/// Like [`index_budgeted`], but the pass stops promptly when `cancel` is set —
+/// the interactive cold-start escalation (see the CLI's search path) runs a long,
+/// generous-budget warm and lets the user abort it with Ctrl-C without losing the
+/// batches already committed.
+pub fn index_budgeted_cancellable(
+    store: &mut Store,
+    root: &Path,
+    active: &[String],
+    budget: Duration,
+    query: Option<&str>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Stats, Box<dyn std::error::Error>> {
+    run_index(store, root, active, &[], Some(budget), query, Some(cancel))
 }
 
 /// Max files a single *bounded* (warming) pass walks before it stops. The walk
@@ -274,6 +289,7 @@ fn stream_walk(
     needle: Option<&[u8]>,
     seen: HashSet<String>,
     keep: impl Fn(&str, &Path) -> bool + Send,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
     mut sink: impl FnMut(crate::store::FileSymbols) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(HashSet<String>, bool), Box<dyn std::error::Error>> {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -294,7 +310,7 @@ fn stream_walk(
             let mut finished = true;
             let mut processed = 0usize;
             for path in candidates {
-                if past(deadline) {
+                if past(deadline) || cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
                     finished = false;
                     break;
                 }
@@ -339,7 +355,7 @@ fn stream_walk(
                 loop {
                     let got = { path_rx.lock().unwrap().recv() };
                     let Ok(path) = got else { break }; // channel closed
-                    if past(deadline) {
+                    if past(deadline) || cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
                         parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
                         break;
                     }
@@ -419,6 +435,7 @@ fn run_index(
     subdirs: &[String],
     budget: Option<Duration>,
     query: Option<&str>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -494,10 +511,17 @@ fn run_index(
     let stream_start = Instant::now();
     let (seen, completed, walk_files, walk_symbols, write_time) = {
         let mut writer = BatchWriter::new(&mut *store, repo_id);
-        let (seen, completed) =
-            stream_walk(root, candidates, deadline, cap, None, seen, keep, |fs| {
-                writer.push(fs)
-            })?;
+        let (seen, completed) = stream_walk(
+            root,
+            candidates,
+            deadline,
+            cap,
+            None,
+            seen,
+            keep,
+            cancel,
+            |fs| writer.push(fs),
+        )?;
         writer.flush()?;
         (
             seen,
@@ -821,6 +845,7 @@ pub fn scan(
         needle,
         HashSet::new(),
         keep,
+        None,
         |fs| {
             out.push(fs);
             Ok(())
