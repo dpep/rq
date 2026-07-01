@@ -271,6 +271,35 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
 }
 
 #[test]
+fn a_leading_kind_keyword_filters_like_dash_k() {
+    // `rq class Widget` and `rq method go` scope by kind without needing -k, and
+    // without quoting. A same-named symbol of another kind is filtered out.
+    let (dir, db) = scratch("kindkw");
+    fs::write(
+        dir.join("a.rb"),
+        "class Widget\n  def go; end\nend\nmodule Widget\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // unquoted keyword restricts to the class, dropping the module of the same name
+    let (ok, out) = rq(&db, &dir, &["class", "Widget", "--no-record", "--ndjson"]);
+    assert!(ok, "keyword search failed: {out}");
+    assert!(out.contains("\"kind\":\"class\""), "class kept: {out}");
+    assert!(
+        !out.contains("\"kind\":\"module\""),
+        "module filtered: {out}"
+    );
+
+    // the method keyword finds the def; equivalent to -k method
+    let (ok, out) = rq(&db, &dir, &["method", "go", "--no-record", "--ndjson"]);
+    assert!(ok, "method keyword failed: {out}");
+    assert!(out.contains("\"kind\":\"method\""), "method found: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_clean_complete_repo_does_not_re_warm_on_search() {
     // a fully-indexed, clean git repo is provably unchanged (HEAD matches, no
     // dirty files), so a search must skip the background warm entirely rather

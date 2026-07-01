@@ -32,6 +32,7 @@ rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing --no-record      search without recording it (speculative/agent queries)\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
 rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
+rq class Widget           a leading kind keyword is shorthand for -k\n  \
 rq --symbols FILE         outline a file's definitions, in line order\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python)\n  \
 rq -o thing               open the best match in your editor (and record it)\n  \
@@ -185,27 +186,41 @@ pub fn run() -> ExitCode {
         return cmd_record(&cli.event, cli.target.as_deref(), &file, cli.line);
     }
     let out = output_format(&cli);
-    // path filters: trailing positionals (rg-style) plus any --path flags
-    let mut paths = cli.path.clone();
-    paths.extend(cli.dirs.clone());
-    let kinds: Vec<String> = cli.kind.iter().map(|k| canonical_kind(k)).collect();
+    let mut kinds: Vec<String> = cli.kind.iter().map(|k| canonical_kind(k)).collect();
     // a language token can expand to several tags (`r` → ruby + rust)
     let langs: Vec<String> = cli.lang.iter().flat_map(|x| canonical_langs(x)).collect();
     if let Some(file) = &cli.symbols {
         return cmd_symbols(file, &kinds, &langs, out);
     }
+    // path filters: trailing positionals (rg-style) plus any --path flags
+    let mut paths = cli.path.clone();
     match cli.target {
-        Some(query) => cmd_search(
-            &query,
-            cli.explain,
-            out,
-            &paths,
-            &kinds,
-            &langs,
-            cli.limit,
-            cli.no_record,
-            cli.open,
-        ),
+        Some(target) => {
+            // A leading kind keyword (`rq class Foo`) is shorthand for `-k`; skip
+            // it when the user gave an explicit `-k`, so the two never conflict.
+            let query = if cli.kind.is_empty() {
+                let (kw, query, dirs) = split_kind_keyword(target, cli.dirs.clone());
+                if let Some(k) = kw {
+                    kinds.push(k.to_string());
+                }
+                paths.extend(dirs);
+                query
+            } else {
+                paths.extend(cli.dirs.clone());
+                target
+            };
+            cmd_search(
+                &query,
+                cli.explain,
+                out,
+                &paths,
+                &kinds,
+                &langs,
+                cli.limit,
+                cli.no_record,
+                cli.open,
+            )
+        }
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -1155,6 +1170,50 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
 
 /// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.
 /// Unknown values pass through lowercased (so they simply match nothing).
+/// A leading positional that names a symbol kind — the shorthand behind
+/// `rq class Foo` and `rq method zoom`. Only the full, unambiguous keyword forms
+/// count (never the single-letter `-k` shortcuts, which are far likelier to be a
+/// real query). Returns the canonical kind, so it filters exactly like `--kind`.
+fn keyword_kind(token: &str) -> Option<&'static str> {
+    match token.to_ascii_lowercase().as_str() {
+        "class" => Some("class"),
+        "module" => Some("module"),
+        "method" => Some("method"),
+        "function" | "fn" => Some("function"),
+        "struct" => Some("struct"),
+        "enum" => Some("enum"),
+        "trait" => Some("trait"),
+        _ => None,
+    }
+}
+
+/// Peel a leading kind keyword off the query, so `rq class Foo` (or the quoted
+/// `rq 'class Foo'`) means `-k class` + query `Foo`. The keyword must be followed
+/// by a real query token — a bare `rq class` stays a search for a symbol literally
+/// named `class`. Returns `(kind, query, trailing_path_dirs)`; the trailing dirs
+/// are the rg-style positionals left after the query is consumed.
+fn split_kind_keyword(
+    target: String,
+    dirs: Vec<String>,
+) -> (Option<&'static str>, String, Vec<String>) {
+    // Quoted form: the whole thing is one arg (`"class Foo"`), so peel the first
+    // whitespace-separated word and keep the remainder as the query.
+    if let Some((head, rest)) = target.split_once(char::is_whitespace) {
+        let rest = rest.trim();
+        if let Some(k) = keyword_kind(head)
+            && !rest.is_empty()
+        {
+            return (Some(k), rest.to_string(), dirs);
+        }
+    } else if let Some(k) = keyword_kind(&target)
+        && let Some((query, extra)) = dirs.split_first()
+    {
+        // Unquoted form: `rq class Foo` — the next positional is the query.
+        return (Some(k), query.clone(), extra.to_vec());
+    }
+    (None, target, dirs)
+}
+
 fn canonical_kind(s: &str) -> String {
     match s.to_ascii_lowercase().as_str() {
         "c" | "class" => "class",
@@ -1557,6 +1616,51 @@ mod tests {
         assert_eq!(parse_choice("6", 5), None);
         assert_eq!(parse_choice("0", 5), None);
         assert_eq!(parse_choice("q", 5), None);
+    }
+
+    #[test]
+    fn leading_kind_keyword_becomes_a_kind_filter() {
+        let d = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // unquoted: `rq class Widget` — keyword + next positional is the query
+        assert_eq!(
+            split_kind_keyword("class".into(), d(&["Widget"])),
+            (Some("class"), "Widget".into(), vec![])
+        );
+        // quoted: `rq 'method zoom'` — one arg, peel the first word
+        assert_eq!(
+            split_kind_keyword("method zoom".into(), vec![]),
+            (Some("method"), "zoom".into(), vec![])
+        );
+        // `fn` is an alias for function; composes with a qualifier tail
+        assert_eq!(
+            split_kind_keyword("fn".into(), d(&["Foo::run"])),
+            (Some("function"), "Foo::run".into(), vec![])
+        );
+        // extra positionals after the query stay as rg-style path dirs
+        assert_eq!(
+            split_kind_keyword("struct".into(), d(&["Gadget", "src"])),
+            (Some("struct"), "Gadget".into(), d(&["src"]))
+        );
+    }
+
+    #[test]
+    fn a_bare_or_non_keyword_query_is_left_alone() {
+        let d = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // a keyword with no following query token is a search for that literal name
+        assert_eq!(
+            split_kind_keyword("class".into(), vec![]),
+            (None, "class".into(), vec![])
+        );
+        // an ordinary query is untouched, trailing dirs preserved
+        assert_eq!(
+            split_kind_keyword("Widget".into(), d(&["app"])),
+            (None, "Widget".into(), d(&["app"]))
+        );
+        // single-letter `-k` shortcuts are NOT keywords here (too query-like)
+        assert_eq!(
+            split_kind_keyword("c".into(), d(&["Foo"])),
+            (None, "c".into(), d(&["Foo"]))
+        );
     }
 
     #[test]
