@@ -7,7 +7,7 @@
 
 mod score;
 
-pub use score::{Boosts, Feature, Scored, match_positions};
+pub use score::{Boosts, Feature, Scored, confidence, match_positions, match_quality};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -89,11 +89,36 @@ pub struct Hit {
     pub parent: Option<String>,
     #[serde(rename = "repo")]
     pub repo_identity: String,
+    /// Raw additive score — the ranking key and the `--explain` breakdown source.
+    /// Not serialized: JSON exposes the normalized `confidence` instead.
+    #[serde(skip)]
     pub score: f64,
+    /// Normalized match confidence in [0,1], filled before output (see
+    /// [`score::confidence`]). This is what JSON carries in place of the raw score.
+    pub confidence: f64,
+    /// The scoring features, serialized as their names in descending weight order
+    /// (the raw values are low-signal unnormalized; `--explain` shows them in text).
+    #[serde(serialize_with = "serialize_feature_names")]
     pub features: Vec<Feature>,
     /// The definition's source line (trimmed) — filled for displayed results in
     /// machine-readable output. `None` when unread or in text mode.
     pub signature: Option<String>,
+    /// The full definition source (`line..=end_line`), filled only by `--show`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+}
+
+/// Serialize a hit's features as a name list, strongest first — the values are
+/// unnormalized and low-signal, so the ordered names are the useful part.
+fn serialize_feature_names<S: serde::Serializer>(
+    features: &[Feature],
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    let mut sorted: Vec<&Feature> = features.iter().collect();
+    sorted.sort_by(|a, b| b.value.total_cmp(&a.value));
+    let names: Vec<&str> = sorted.iter().map(|f| f.name).collect();
+    names.serialize(s)
 }
 
 /// Search the index for `query`, returning up to `limit` ranked hits.
@@ -328,8 +353,10 @@ fn rank_one(
         parent: c.parent,
         repo_identity: c.repo_identity,
         score: scored.total,
+        confidence: 0.0, // filled from the final result set before output
         features: scored.features,
         signature: None,
+        body: None,
     })
 }
 
@@ -477,8 +504,10 @@ mod tests {
             parent: None,
             repo_identity: "r".into(),
             score,
+            confidence: 0.0,
             features: vec![],
             signature: None,
+            body: None,
         };
         let from_index = vec![mk("User", 100.0)];
         let from_live = vec![mk("User", 500.0), mk("Account", 200.0)];
@@ -571,6 +600,7 @@ mod tests {
             parent: None,
             repo_identity: "r".into(),
             score: 1.0,
+            confidence: 0.0,
             features: if in_scope {
                 vec![Feature {
                     name: "parent",
@@ -580,6 +610,7 @@ mod tests {
                 vec![]
             },
             signature: None,
+            body: None,
         }
     }
 

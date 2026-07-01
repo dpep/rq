@@ -20,6 +20,40 @@ pub struct Scored {
     pub features: Vec<Feature>,
 }
 
+/// Absolute match quality in [0,1] — how good the match *itself* is, independent
+/// of ranking boosts. The dominant term in [`confidence`]. Exact is certain; a
+/// prefix nearly so; a fuzzy/abbreviation match scales with its alignment; a
+/// path-only match (name didn't match) is weak.
+pub fn match_quality(features: &[Feature]) -> f64 {
+    for f in features {
+        match f.name {
+            "exact" => return 1.0,
+            "prefix" => return 0.9,
+            "wildcard" => return 0.7,
+            // the fuzzy feature value is the alignment score (capped ~600)
+            "fuzzy" => return (0.30 + 0.35 * (f.value / 600.0)).clamp(0.30, 0.65),
+            _ => {}
+        }
+    }
+    0.25 // path-only, or no name match at all
+}
+
+/// Presented confidence in [0,1]: match quality scaled by *dominance* — how much
+/// this result leads the strongest other one. A unique strong match → ~1.0;
+/// evenly-tied candidates → ~0.5 (rq isn't sure which you mean); a lone weak
+/// fuzzy match stays low. `best_other` is the top score among the other results
+/// (`None` when this is the only one). Rounded to two decimals.
+pub fn confidence(score: f64, quality: f64, best_other: Option<f64>) -> f64 {
+    let lead = match best_other {
+        None => 1.0,
+        Some(_) if score <= 0.0 => 0.5,
+        // a modest score lead already signals dominance, so ramp steeply: an
+        // even tie sits at 0.5, and pulling ~15%+ ahead saturates to 1.0.
+        Some(other) => (0.5 + 3.0 * (score - other) / score).clamp(0.0, 1.0),
+    };
+    ((quality * lead) * 100.0).round() / 100.0
+}
+
 /// Dynamic, context-dependent boosts computed by [`crate::search`] (which owns
 /// the time math and store lookups). Kept out of the pure match scoring so each
 /// signal can be added without threading more parameters.
@@ -878,6 +912,30 @@ mod tests {
     fn non_subsequence_does_not_match() {
         assert!(total("xyz", "RefundProcessor").is_none());
         assert!(total("zzz", "User").is_none());
+    }
+
+    #[test]
+    fn confidence_reflects_quality_and_dominance() {
+        let exact = vec![Feature {
+            name: "exact",
+            value: 1000.0,
+        }];
+        let fuzzy = vec![Feature {
+            name: "fuzzy",
+            value: 300.0,
+        }];
+        // a unique exact match is fully confident
+        assert_eq!(confidence(1000.0, match_quality(&exact), None), 1.0);
+        // a lone fuzzy match is mid/low even though it's the only result
+        let f = confidence(300.0, match_quality(&fuzzy), None);
+        assert!(f > 0.3 && f < 0.65, "fuzzy confidence {f}");
+        // three evenly-tied exacts: the leader isn't dominant → ~0.5, well below a
+        // unique exact
+        let tied = confidence(1000.0, match_quality(&exact), Some(1000.0));
+        assert!(tied < 0.6, "tied exact confidence {tied}");
+        // a clear leader (big gap to #2) stays near the top
+        let dominant = confidence(1000.0, match_quality(&exact), Some(300.0));
+        assert!(dominant > 0.9, "dominant confidence {dominant}");
     }
 
     #[test]

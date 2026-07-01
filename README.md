@@ -47,6 +47,7 @@ rq Scope::name              # scope-aware: prefer the name defined inside Scope 
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python (prefix-matched; r=ruby+rust)
 rq <query> -l/--limit N     # cap the number of results (default 10)
 rq <query> --all-repos      # search every indexed repo (default: just the current one)
+rq <query> --show           # print the definition's source (confident match only; pipe to less)
 rq <query> -o/--open        # open the best match in your editor + record the pick
 rq --symbols FILE           # outline a file's definitions, in line order
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
@@ -77,13 +78,19 @@ small reference wrapper around `rq` + `rq --record`.
 `-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
 surface for editors, scripts, and AI agents. Each result is an object with
 `name`, `kind`, `language`, `file`, `line`, `end_line` (the definition's last
-line — read `line..=end_line` for the whole span), `parent`, `repo`, `score`, the
-scoring `features`, and `signature` (the definition's source line, so you can
-judge a result without opening the file). On a miss, JSON returns a
-`{"status": …}` object instead of results — `no_match` (definitive), `warming`
-(index incomplete, retry), or `interrupted`. Exit codes mirror it: `0` matched,
-`1` no match, `2` no match *yet* (warming). All non-zero, so `rq … && …` is
-unchanged.
+line — read `line..=end_line` for the whole span), `parent`, `repo`,
+`confidence` (0–1: match quality × how much it leads the runner-up), `features`
+(the scoring signals, strongest first), and `signature` (the definition's source
+line, so you can judge a result without opening the file). On a miss, JSON
+returns a `{"status": …}` object instead of results — `no_match` (definitive),
+`warming` (index incomplete, retry), or `interrupted`. Exit codes mirror it: `0`
+matched, `1` no match, `2` no match *yet* (warming). All non-zero, so
+`rq … && …` is unchanged.
+
+`--show` fetches the definition's source in one step: when the top match is
+confident it prints the full `line..=end_line` span (a `body` field in JSON),
+else it falls back to the ranked list — so it never dumps a definition it isn't
+sure about.
 
 Set `RQ_WAIT_BUDGET_MS=0` for a strictly non-blocking query — it answers from
 whatever's already indexed instead of waiting on a warming repo.
@@ -121,10 +128,10 @@ Each result is a navigable `path:line`. `--explain` shows the additive score:
 $ rq Store --explain
 src/store/mod.rs:56  struct Store
     pub struct Store {
-    score 1290 = exact 1000 + kind 15 + current_repo 200 + recency 75
+    confidence 1.00 · score 1290 = exact 1000 + kind 15 + current_repo 200 + recency 75
 src/search/mod.rs:316  function store_with · tests
     fn store_with(symbols: &[Symbol]) -> Store {
-    score 954 = prefix 695 + current_repo 200 + recency 59
+    confidence 0.75 · score 954 = prefix 695 + current_repo 200 + recency 59
 ```
 
 ## Ranking

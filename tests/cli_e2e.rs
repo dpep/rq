@@ -291,6 +291,42 @@ fn json_results_carry_the_definition_span() {
 }
 
 #[test]
+fn show_prints_the_body_when_confident_and_lists_when_not() {
+    let (dir, db) = scratch("show");
+    fs::write(
+        dir.join("a.rb"),
+        "class Widget\n  def go\n    42\n  end\nend\n",
+    )
+    .unwrap();
+    // two same-named classes so a bare fuzzy query is ambiguous
+    fs::write(dir.join("b.rb"), "class Thing\nend\nclass Thang\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // confident (exact, dominant): --show prints the full source span as `body`
+    let (ok, out) = rq(&db, &dir, &["--show", "Widget", "-j", "--no-record"]);
+    assert!(ok, "show failed: {out}");
+    assert!(
+        out.contains("\"body\""),
+        "confident show carries body: {out}"
+    );
+    assert!(
+        out.contains("def go"),
+        "body has the definition source: {out}"
+    );
+    assert!(!out.contains("\"score\""), "score dropped from JSON: {out}");
+    assert!(out.contains("\"confidence\""), "confidence present: {out}");
+
+    // ambiguous (two fuzzy `Th*` matches): no body, falls back to the list
+    let (_ok, out) = rq(&db, &dir, &["--show", "Th", "-j", "--no-record"]);
+    assert!(
+        !out.contains("\"body\""),
+        "ambiguous show prints no body: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_leading_kind_keyword_filters_like_dash_k() {
     // `rq class Widget` and `rq method go` scope by kind without needing -k, and
     // without quoting. A same-named symbol of another kind is filtered out.

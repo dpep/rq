@@ -80,6 +80,12 @@ struct Cli {
     #[arg(short = 'o', long, conflicts_with_all = ["index", "status", "record", "json", "ndjson"])]
     open: bool,
 
+    /// Print the definition's source, not just its location — but only when the
+    /// top match is confident; otherwise falls back to the ranked list. Pipe to a
+    /// pager (`rq --show foo | less`). JSON adds a `body` field.
+    #[arg(long, conflicts_with_all = ["open", "index", "status", "record", "symbols", "drop"])]
+    show: bool,
+
     /// Emit results as a JSON array (for editors and scripts).
     #[arg(short = 'j', long)]
     json: bool,
@@ -225,6 +231,7 @@ pub fn run() -> ExitCode {
                 cli.no_record,
                 cli.open,
                 cli.all_repos,
+                cli.show,
             )
         }
         // bare `rq` (or just flags like --explain with no query): show help
@@ -285,6 +292,7 @@ fn cmd_search(
     no_record: bool,
     open: bool,
     all_repos: bool,
+    show: bool,
 ) -> ExitCode {
     // post-filters (--path, --kind, --lang) need headroom before the cutoff so a
     // filtered-in result isn't lost to the top-N truncation
@@ -634,6 +642,31 @@ fn cmd_search(
         );
     }
 
+    // Normalized confidence per hit: match quality scaled by dominance over the
+    // other results (needs the whole set, so compute it here, once ranked).
+    let scores: Vec<f64> = hits.iter().map(|h| h.score).collect();
+    for (i, hit) in hits.iter_mut().enumerate() {
+        let best_other = scores
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, s)| *s)
+            .fold(None, |acc: Option<f64>, s| {
+                Some(acc.map_or(s, |a| a.max(s)))
+            });
+        hit.confidence = crate::search::confidence(
+            hit.score,
+            crate::search::match_quality(&hit.features),
+            best_other,
+        );
+    }
+
+    // --show: print the top hit's full source when confident; otherwise fall
+    // through to the normal ranked list (rq won't dump a body it isn't sure of).
+    if show && let Some(code) = show_top_definition(&store, &mut hits, query, out, cwd.as_deref()) {
+        return code;
+    }
+
     // --open: pick the best match (prompting on a TTY with several), record the
     // pick so ranking learns, and hand off to the editor. Returns before the
     // normal print / warm-join — opening should be snappy, and a launcher `exec`s.
@@ -664,6 +697,13 @@ fn cmd_search(
         Output::Text => {
             let color = match_color();
             let c = color.as_deref();
+            if show {
+                // fell through from --show: no single confident match to print
+                eprintln!(
+                    "rq: no single confident match for {query:?} — {} candidates below; narrow the query to --show one",
+                    hits.len()
+                );
+            }
             for hit in &hits {
                 // highlight the chars the query matched — in the name, the
                 // filename, and the definition line (great for fuzzy matches)
@@ -688,7 +728,12 @@ fn cmd_search(
                         .iter()
                         .map(|f| format!("{} {:.0}", f.name, f.value))
                         .collect();
-                    println!("    score {:.0} = {}", hit.score, parts.join(" + "));
+                    println!(
+                        "    confidence {:.2} · score {:.0} = {}",
+                        hit.confidence,
+                        hit.score,
+                        parts.join(" + ")
+                    );
                 }
             }
         }
@@ -1045,6 +1090,22 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
     ExitCode::SUCCESS
 }
 
+/// The checkout root that holds a hit's file: from the store (or the cwd for
+/// live results). Used to resolve a repo-relative path to disk.
+fn hit_file_root(
+    store: &Store,
+    repo_identity: &str,
+    cwd: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    store
+        .repository_id(repo_identity)
+        .ok()
+        .flatten()
+        .and_then(|id| store.checkout_root(id).ok().flatten())
+        .map(PathBuf::from)
+        .or_else(|| cwd.map(std::path::Path::to_path_buf))
+}
+
 /// The definition's source line (trimmed) for a hit — read from disk, resolving
 /// the repo root from the store (or the cwd for live results). Best-effort.
 fn read_signature(
@@ -1054,15 +1115,90 @@ fn read_signature(
     line: i64,
     cwd: Option<&std::path::Path>,
 ) -> Option<String> {
-    let root = store
-        .repository_id(repo_identity)
-        .ok()
-        .flatten()
-        .and_then(|id| store.checkout_root(id).ok().flatten())
-        .map(PathBuf::from)
-        .or_else(|| cwd.map(std::path::Path::to_path_buf))?;
+    let root = hit_file_root(store, repo_identity, cwd)?;
     let content = std::fs::read_to_string(root.join(file)).ok()?;
     signature_in(&content, line)
+}
+
+/// Confidence at or above which `--show` prints a body instead of a list. Exact
+/// (1.0) and a unique prefix (0.9) clear it; a fuzzy or tied match does not — so
+/// `--show` never prints a definition it isn't sure about.
+const SHOW_CONFIDENCE: f64 = 0.85;
+
+/// `--show`: if the top hit is confident, read and print its full source span
+/// and return the exit code; otherwise return `None` to fall through to the
+/// ranked list. Emits a single object in JSON/NDJSON (with a `body` field).
+fn show_top_definition(
+    store: &Store,
+    hits: &mut [crate::search::Hit],
+    query: &str,
+    out: Output,
+    cwd: Option<&std::path::Path>,
+) -> Option<ExitCode> {
+    let top = hits.first()?;
+    if top.confidence < SHOW_CONFIDENCE {
+        return None; // ambiguous / weak — let the caller list candidates
+    }
+    let end = top.end_line.unwrap_or(top.line);
+    let body = read_span(store, &top.repo_identity, &top.file, top.line, end, cwd);
+    hits[0].body = body;
+    let top = &hits[0];
+    match out {
+        Output::Json => {
+            println!("{}", serde_json::to_string_pretty(top).unwrap_or_default())
+        }
+        Output::Ndjson => println!("{}", serde_json::to_string(top).unwrap_or_default()),
+        Output::Text => {
+            let color = match_color();
+            let c = color.as_deref();
+            let name = hl(&top.name, query, c);
+            let qualified = match &top.parent {
+                Some(p) => format!("{name} · {p}"),
+                None => name,
+            };
+            println!(
+                "{}:{}  {} {}",
+                hl_path(&top.file, query, c),
+                top.line,
+                top.kind,
+                qualified
+            );
+            match (&top.body, &top.signature) {
+                (Some(body), _) => println!("{body}"),
+                // end_line unknown (pre-v4 row) → at least the definition line
+                (None, Some(sig)) => println!("{sig}"),
+                (None, None) => {}
+            }
+        }
+    }
+    Some(ExitCode::SUCCESS)
+}
+
+/// The source span `start..=end` (1-based, inclusive) of a hit — the full
+/// definition body for `--show`. Best-effort, mirroring [`read_signature`].
+fn read_span(
+    store: &Store,
+    repo_identity: &str,
+    file: &str,
+    start: i64,
+    end: i64,
+    cwd: Option<&std::path::Path>,
+) -> Option<String> {
+    let root = hit_file_root(store, repo_identity, cwd)?;
+    let content = std::fs::read_to_string(root.join(file)).ok()?;
+    span_in(&content, start, end)
+}
+
+/// Lines `start..=end` (1-based, inclusive) of already-read `content`, joined —
+/// clamped to the file's bounds. `None` if `start` is past the end.
+fn span_in(content: &str, start: i64, end: i64) -> Option<String> {
+    let s = usize::try_from(start).ok()?.checked_sub(1)?;
+    let lines: Vec<&str> = content.lines().collect();
+    if s >= lines.len() {
+        return None;
+    }
+    let e = usize::try_from(end).ok()?.clamp(s + 1, lines.len());
+    Some(lines[s..e].join("\n"))
 }
 
 /// The trimmed source line `line` (1-based) of already-read `content`, if
