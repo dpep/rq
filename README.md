@@ -8,6 +8,8 @@ rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
 rq perform       # → the perform you actually meant, ranked first
 rq usr           # → User              app/models/user.rb:1  (fuzzy, abbreviation-aware)
 rq refund*proc   # → explicit gaps: `*` any run, `?`/`.` one char
+rq Account::save # → the save defined inside Account (scope-aware; also Account::Refund)
+rq class Widget  # → a leading kind keyword is shorthand for -k class
 ```
 
 Search is the default action — `rq <query>`, no subcommand. Every *operation* is a flag (`--index`, `--status`, `--symbols`), so no word is reserved: `rq index` searches for a symbol named "index" like any other query. The feel is `rg`/`fd`: type a name, get an answer.
@@ -40,6 +42,8 @@ rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
 rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait
+rq KIND <query>             # a leading kind keyword is shorthand for -k (rq class Widget)
+rq Scope::name              # scope-aware: prefer the name defined inside Scope (or Scope::Type#method)
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python (prefix-matched; r=ruby+rust)
 rq <query> -l/--limit N     # cap the number of results (default 10)
 rq <query> -o/--open        # open the best match in your editor + record the pick
@@ -142,6 +146,7 @@ language-agnostic). A
 query is matched and scored by an additive, explainable sum of signals:
 
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence
+- **qualifier** — a scoped query (`Foo::Bar`) prefers the definition inside that scope
 - **path** — the query also matches the file's name
 - **current repo** — the project you're in outranks others
 - **recency** — symbols in recently-edited or recently-committed files
@@ -153,25 +158,30 @@ Returning fewer, better, ranked results is the goal — not completeness.
 
 ## Staying current
 
-You rarely run `rq --index` by hand. The first query inside a git repository
-warms the index opportunistically — *time-bounded*, so a warm repo answers in
-milliseconds: it indexes the files you're changing on this branch first, answers,
-then keeps warming a little per query until coverage is complete. The one
-exception is a **cold** repo, where there's nothing indexed to answer from yet —
-there the first query blocks and indexes until it can answer (showing progress,
-Ctrl-C to stop) rather than reporting a false miss; it's a one-time cost, since
-the index persists. Results also self-heal: the files behind the top hits are revalidated
-each search, so edited files are re-read and deleted ones drop out, and the warm
-pass picks up added/changed/removed files as it sweeps. Indexing parses files in
-parallel and writes them in one batched transaction, and a search of an already-
-indexed repo does no `git` subprocess work for identity or staleness.
+You rarely run `rq --index` by hand. The first query inside a git repo warms the
+index opportunistically, and it's *time-bounded*: it indexes the files you're
+changing on this branch first, answers, then keeps warming a little more per
+query until coverage is complete. So a warm repo answers in milliseconds.
+
+The exception is a **cold** repo — nothing's indexed yet, so a "no match" would
+be a lie. There the first query blocks and indexes until it can actually answer
+(showing progress, Ctrl-C to stop). It's a one-time cost, since the index
+persists.
+
+Results self-heal as you search. The files behind the top hits are revalidated
+every query, so an edited file is re-read before it ranks; files added, moved,
+or deleted are reconciled by the warm sweep as it passes over the tree. Under the
+hood, indexing parses files across your cores and commits them in batches as it
+goes — a pass cut short by its budget still keeps everything it parsed. Repo
+identity is cached, so a known repo costs no `git` fork; a cheap `git`
+HEAD-and-dirty check each search is all rq needs to notice the repo changed.
 
 A git work tree is auto-discovered (the first query warms it). A non-git
 directory isn't walked on a stray query, but you can index one explicitly with
 `rq --index <dir>` — it's then tracked like any repo (current-repo boost,
 self-healing) under a `local:<path>` identity. Otherwise rq falls back to a live
-scan, so it still answers at zero coverage. The index is a SQLite file at
-`$RQ_DB` (default `~/.local/share/rq/rq.db`).
+in-memory scan, so it still answers at zero coverage. The index is a SQLite file
+at `$RQ_DB` (default `~/.local/share/rq/rq.db`).
 
 ## Learning from what you pick
 
@@ -208,8 +218,8 @@ Homebrew installs bash/zsh completions automatically.
 ## Performance
 
 The in-process search pipeline measures p50 ~160 µs, max < 0.25 ms on a mid-size
-library (a few hundred symbols) — ~200× under the 50 ms target. Benchmark your
-own tree: `make bench REPO=/path/to/repo`.
+library (a few hundred symbols) — microseconds against a 50 ms first-answer
+budget. Benchmark your own tree: `make bench REPO=/path/to/repo`.
 
 ## Scope
 
