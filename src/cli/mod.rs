@@ -512,6 +512,11 @@ fn cmd_search(
         hits.retain(strong);
     }
 
+    // Scope gate: a qualified query (`Foo::Bar#baz`) that lands inside the named
+    // scope keeps only the in-scope results; if none match, the others stay (the
+    // definition may live elsewhere).
+    crate::search::apply_scope_gate(query, &mut hits);
+
     // post-filters: keep only results under a --path dir, of a --kind, and/or in
     // a --lang, then trim to the requested count.
     if !paths.is_empty() {

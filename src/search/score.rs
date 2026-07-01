@@ -45,7 +45,10 @@ pub fn score(
     current_repo_id: Option<i64>,
     boosts: Boosts,
 ) -> Option<Scored> {
-    let q = query.to_ascii_lowercase();
+    // A qualified query (`Foo::Bar`, `Foo::Bar#baz`) names an enclosing scope:
+    // match the leaf against the name, and reward a matching `parent` below.
+    let (leaf, qualifier) = parse_qualified(query);
+    let q = leaf.to_ascii_lowercase();
     let name_lower = cand.name.to_ascii_lowercase();
 
     let mut features = Vec::new();
@@ -131,6 +134,17 @@ pub fn score(
         features.push(Feature {
             name: "kind",
             value: kind,
+        });
+    }
+
+    // Qualifier boost — the user named an enclosing scope (`Foo::Bar`); reward a
+    // candidate whose recorded parent ends with that scope chain.
+    if let Some(qual) = qualifier
+        && let Some(b) = parent_boost(qual, cand.parent.as_deref())
+    {
+        features.push(Feature {
+            name: "parent",
+            value: b,
         });
     }
 
@@ -318,12 +332,55 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
 /// The char indices in `name` that `query` matched, from the best alignment —
 /// for highlighting *what* matched. Empty if `query` isn't a subsequence.
 pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
-    if has_wildcard(query) {
+    // highlight what the *leaf* matched; a qualifier targets the parent, not the name
+    let (leaf, _) = parse_qualified(query);
+    if has_wildcard(leaf) {
         // a wildcard's gaps are deliberate, so highlight every literal as-is
-        return glob_positions(query, name).unwrap_or_default();
+        return glob_positions(leaf, name).unwrap_or_default();
     }
-    let positions = align(query, name).map(|a| a.positions).unwrap_or_default();
+    let positions = align(leaf, name).map(|a| a.positions).unwrap_or_default();
     contiguous_highlight(positions, name)
+}
+
+/// Split a query into its leaf name and the optional enclosing scope the user
+/// typed before it. The qualifier is everything before the last `::`/`#`
+/// separator: `Foo::Bar` → (`Bar`, `Some("Foo")`), `Foo::Bar#baz` → (`baz`,
+/// `Some("Foo::Bar")`), a plain `User` → (`User`, `None`). A leading or trailing
+/// separator (`::Bar`, `Foo::`) is treated as an ordinary unqualified query.
+pub fn parse_qualified(query: &str) -> (&str, Option<&str>) {
+    let sep = query
+        .rmatch_indices("::")
+        .map(|(i, _)| (i, 2usize))
+        .chain(query.rmatch_indices('#').map(|(i, _)| (i, 1usize)))
+        .max_by_key(|&(i, _)| i);
+    match sep {
+        Some((i, len)) if i > 0 && i + len < query.len() => (&query[i + len..], Some(&query[..i])),
+        _ => (query, None),
+    }
+}
+
+/// Lowercased scope segments of a (possibly qualified) name, split on `::`/`#`.
+fn segments(s: &str) -> Vec<String> {
+    s.split("::")
+        .flat_map(|p| p.split('#'))
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_ascii_lowercase())
+        .collect()
+}
+
+/// Boost a candidate whose enclosing scope matches a query's qualifier. The
+/// qualifier must match the *innermost* segments of the candidate's `parent`
+/// (a suffix): `Foo::Bar` (qualifier `Foo`) rewards a `Bar` whose parent is
+/// `Foo` or `App::Foo`, but not one nested under some other scope. More matched
+/// segments are stronger evidence of intent, so the boost grows with them.
+fn parent_boost(qualifier: &str, parent: Option<&str>) -> Option<f64> {
+    let p = segments(parent?);
+    let q = segments(qualifier);
+    if q.is_empty() || q.len() > p.len() {
+        return None;
+    }
+    let off = p.len() - q.len();
+    (p[off..] == q[..]).then(|| (120.0 + 60.0 * q.len() as f64).min(300.0))
 }
 
 /// Trim a fuzzy match's highlight so it reads cleanly. We keep contiguous runs of
@@ -820,6 +877,58 @@ mod tests {
     fn non_subsequence_does_not_match() {
         assert!(total("xyz", "RefundProcessor").is_none());
         assert!(total("zzz", "User").is_none());
+    }
+
+    #[test]
+    fn parse_qualified_splits_on_scope_separators() {
+        assert_eq!(parse_qualified("User"), ("User", None));
+        assert_eq!(parse_qualified("Foo::Bar"), ("Bar", Some("Foo")));
+        assert_eq!(parse_qualified("App::Foo::Bar"), ("Bar", Some("App::Foo")));
+        // a `#` is the innermost separator (Ruby instance method)
+        assert_eq!(parse_qualified("Foo::Bar#baz"), ("baz", Some("Foo::Bar")));
+        // a leading or trailing separator is not a qualifier
+        assert_eq!(parse_qualified("::Bar"), ("::Bar", None));
+        assert_eq!(parse_qualified("Foo::"), ("Foo::", None));
+    }
+
+    #[test]
+    fn parent_boost_matches_the_innermost_scopes() {
+        // exact parent, and a qualifier naming only the immediate scope
+        assert!(parent_boost("Foo", Some("Foo")).is_some());
+        assert!(parent_boost("Foo", Some("App::Foo")).is_some());
+        assert!(parent_boost("App::Foo", Some("App::Foo")).is_some());
+        // more matched segments → a stronger boost
+        let one = parent_boost("Foo", Some("App::Foo")).unwrap();
+        let two = parent_boost("App::Foo", Some("App::Foo")).unwrap();
+        assert!(two > one, "{two} > {one}");
+        // the qualifier must be a suffix, not just any ancestor or sibling
+        assert!(parent_boost("App", Some("App::Foo")).is_none());
+        assert!(parent_boost("Foo", Some("Foo::Inner")).is_none());
+        assert!(parent_boost("Foo", None).is_none());
+    }
+
+    #[test]
+    fn qualifier_ranks_the_symbol_in_the_named_scope_first() {
+        // two classes both named `Bar`; the qualifier picks the one inside `Foo`
+        let in_foo = SymbolRow {
+            parent: Some("Foo".into()),
+            ..row("Bar", "class", 1)
+        };
+        let in_baz = SymbolRow {
+            parent: Some("Baz".into()),
+            ..row("Bar", "class", 1)
+        };
+        let foo = score("Foo::Bar", &in_foo, None, Boosts::default())
+            .unwrap()
+            .total;
+        let baz = score("Foo::Bar", &in_baz, None, Boosts::default())
+            .unwrap()
+            .total;
+        assert!(foo > baz, "{foo} > {baz}");
+        // the unqualified `Bar` still matches both (qualifier only reorders)
+        assert!(score("Bar", &in_baz, None, Boosts::default()).is_some());
+        // a wrong leaf still doesn't match, qualifier or not
+        assert!(score("Foo::Zzz", &in_foo, None, Boosts::default()).is_none());
     }
 
     #[test]

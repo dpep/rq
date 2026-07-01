@@ -102,19 +102,21 @@ pub fn search(
     active: &ActiveFiles,
     limit: usize,
 ) -> crate::store::Result<Vec<Hit>> {
-    // A wildcard query keys candidate recall off its literal chars (the store
-    // indexes literal trigrams); the glob then matches precisely during scoring.
+    // Recall keys off the leaf name only — a `Foo::Bar` qualifier targets the
+    // parent during scoring, and the store indexes `name`, not `parent`. A
+    // wildcard query then keys off its literal chars (the store indexes literal
+    // trigrams); the glob matches precisely during scoring.
+    let (leaf, _) = score::parse_qualified(query);
     let stripped;
-    let recall = if score::has_wildcard(query) {
-        stripped = score::strip_wildcards(query);
+    let recall = if score::has_wildcard(leaf) {
+        stripped = score::strip_wildcards(leaf);
         stripped.as_str()
     } else {
-        query
+        leaf
     };
     let trace_on = crate::trace::enabled();
     let t = std::time::Instant::now();
-    let candidates =
-        store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(query))?;
+    let candidates = store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(leaf))?;
     let n_candidates = candidates.len();
     let t_recall = t.elapsed();
     let t = std::time::Instant::now();
@@ -264,6 +266,26 @@ pub fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize) -> Vec<Hit> {
     hits
 }
 
+/// Scope gate for a qualified query (`Foo::Bar#baz`). When the user names an
+/// enclosing scope and at least one result actually sits in it, drop the rest —
+/// a `baz` outside `Foo::Bar` is noise next to the one inside it, the same way
+/// the relevance gate drops fuzzy near-matches beside an exact hit. When
+/// *nothing* matches the scope, the list is left untouched: the scope was a
+/// hint, and the definition may simply live somewhere we didn't expect, so a
+/// `baz` elsewhere still surfaces rather than returning empty.
+///
+/// An in-scope result is one the scorer gave the `parent` feature — i.e. its
+/// recorded parent ends with the qualifier's scope chain.
+pub fn apply_scope_gate(query: &str, hits: &mut Vec<Hit>) {
+    if score::parse_qualified(query).1.is_none() {
+        return; // unqualified query — nothing to gate on
+    }
+    let in_scope = |h: &Hit| h.features.iter().any(|f| f.name == "parent");
+    if hits.iter().any(in_scope) {
+        hits.retain(in_scope);
+    }
+}
+
 /// Highest score first; ties broken toward shorter (more specific) names.
 fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) {
     hits.sort_by(|a, b| {
@@ -396,6 +418,95 @@ mod tests {
         assert_eq!(active.boost("app/services/charge.rb"), BRANCH_DIR_BOOST);
         // unrelated directory: nothing
         assert_eq!(active.boost("app/models/user.rb"), 0.0);
+    }
+
+    fn nested(name: &str, kind: Kind, parent: &str) -> Symbol {
+        Symbol {
+            parent: Some(parent.into()),
+            ..sym(name, kind)
+        }
+    }
+
+    #[test]
+    fn qualified_query_ranks_the_definition_in_the_named_scope() {
+        let store = store_with(&[
+            nested("Config", Kind::Class, "Baz"),
+            nested("Config", Kind::Class, "Foo"),
+            nested("Config", Kind::Class, "Qux"),
+        ]);
+        // `Foo::Config` should surface the Config nested under Foo first
+        let hits = search(&store, "Foo::Config", None, &ActiveFiles::default(), 10).unwrap();
+        assert_eq!(hits[0].parent.as_deref(), Some("Foo"));
+        assert!(hits[0].features.iter().any(|f| f.name == "parent"));
+    }
+
+    #[test]
+    fn qualifier_resolves_modules_and_methods_too() {
+        let store = store_with(&[
+            nested("perform", Kind::Method, "Bar::Worker"),
+            nested("perform", Kind::Method, "Other::Worker"),
+            nested("Worker", Kind::Module, "Bar"),
+        ]);
+        // a method qualified by its full scope chain
+        let m = search(
+            &store,
+            "Bar::Worker#perform",
+            None,
+            &ActiveFiles::default(),
+            10,
+        )
+        .unwrap();
+        assert_eq!(m[0].kind, "method");
+        assert_eq!(m[0].parent.as_deref(), Some("Bar::Worker"));
+        // a module qualified by its enclosing scope
+        let w = search(&store, "Bar::Worker", None, &ActiveFiles::default(), 10).unwrap();
+        assert_eq!(w[0].name, "Worker");
+        assert_eq!(w[0].parent.as_deref(), Some("Bar"));
+    }
+
+    fn hit(name: &str, in_scope: bool) -> Hit {
+        Hit {
+            name: name.into(),
+            kind: "method".into(),
+            language: "ruby".into(),
+            file: "a.rb".into(),
+            line: 1,
+            parent: None,
+            repo_identity: "r".into(),
+            score: 1.0,
+            features: if in_scope {
+                vec![Feature {
+                    name: "parent",
+                    value: 180.0,
+                }]
+            } else {
+                vec![]
+            },
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn scope_gate_keeps_only_in_scope_results_when_some_match() {
+        let mut hits = vec![hit("baz", true), hit("baz", false), hit("baz", false)];
+        apply_scope_gate("Foo::Bar#baz", &mut hits);
+        assert_eq!(hits.len(), 1, "out-of-scope baz methods are dropped");
+        assert!(hits[0].features.iter().any(|f| f.name == "parent"));
+    }
+
+    #[test]
+    fn scope_gate_falls_back_when_nothing_matches_the_scope() {
+        // no result is in `Foo::Bar`, so a `baz` defined elsewhere still surfaces
+        let mut hits = vec![hit("baz", false), hit("baz", false)];
+        apply_scope_gate("Foo::Bar#baz", &mut hits);
+        assert_eq!(hits.len(), 2, "fall back rather than return empty");
+    }
+
+    #[test]
+    fn scope_gate_is_a_noop_for_an_unqualified_query() {
+        let mut hits = vec![hit("baz", true), hit("baz", false)];
+        apply_scope_gate("baz", &mut hits);
+        assert_eq!(hits.len(), 2, "no qualifier — nothing to gate on");
     }
 
     #[test]

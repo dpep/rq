@@ -284,6 +284,10 @@ why a result ranked where it did:
 
 - **match quality** — exact > prefix > camel-hump abbreviation > subsequence
 - **kind weight** — tunable (e.g. class/module slightly above method)
+- **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`) matches its leaf
+  against the name and rewards a candidate whose `parent` ends with the named
+  scope chain (`Bar` inside `Foo`). The qualifier reorders, it doesn't filter —
+  an unscoped match still surfaces, just lower
 - **path** — query also matches the file's name (Layer 3)
 - **current-repo boost** — the repo you're in dominates other repos
 - **learned boost** — behavioral signal from `selection_stats` (see below)

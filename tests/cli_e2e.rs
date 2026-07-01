@@ -234,6 +234,43 @@ fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
 }
 
 #[test]
+fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
+    // `Foo::Bar#baz` must find the `baz` defined inside `Foo::Bar` and, since a
+    // scope match exists, suppress the same-named `baz` in another scope.
+    let (dir, db) = scratch("qualified");
+    fs::write(
+        dir.join("a.rb"),
+        "module Foo\n  class Bar\n    def baz; end\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.rb"),
+        "module Other\n  class Bar\n    def baz; end\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["Foo::Bar#baz", "--no-record", "--ndjson"]);
+    assert!(ok, "search failed: {out}");
+    assert!(out.contains("a.rb"), "in-scope baz surfaces: {out}");
+    assert!(
+        !out.contains("b.rb"),
+        "out-of-scope baz is gated out: {out}"
+    );
+
+    // fallback: no `baz` lives in `Nope::Bar`, so both still surface rather than
+    // returning nothing — the scope was a hint, not a hard filter
+    let (ok, out) = rq(&db, &dir, &["Nope::Bar#baz", "--no-record", "--ndjson"]);
+    assert!(ok, "fallback search failed: {out}");
+    assert!(
+        out.contains("a.rb") && out.contains("b.rb"),
+        "no scope match falls back to all candidates: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_clean_complete_repo_does_not_re_warm_on_search() {
     // a fully-indexed, clean git repo is provably unchanged (HEAD matches, no
     // dirty files), so a search must skip the background warm entirely rather
