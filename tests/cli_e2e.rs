@@ -320,6 +320,41 @@ fn a_leading_kind_keyword_filters_like_dash_k() {
 }
 
 #[test]
+fn a_search_does_not_leak_another_indexed_repo() {
+    // two repos in one index; a query from inside repo A must never surface repo
+    // B's definitions — the reported leak. `--all-repos` opts back into both.
+    let (dir_a, db) = scratch("repo-a");
+    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-repo-b", std::process::id()));
+    let _ = fs::remove_dir_all(&dir_b);
+    fs::create_dir_all(&dir_b).unwrap();
+    fs::write(dir_a.join("a.rb"), "class Alpha\nend\n").unwrap();
+    fs::write(dir_b.join("b.rb"), "class Gadget\nend\n").unwrap();
+    rq(&db, &dir_a, &["--index"]);
+    rq(&db, &dir_b, &["--index"]);
+
+    // Gadget lives only in repo B; from repo A it's a definitive miss, not B's hit
+    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--no-record", "--ndjson"]);
+    assert!(!ok, "no Gadget in repo A — should miss");
+    assert!(!out.contains("b.rb"), "must not leak repo B: {out}");
+    assert!(
+        out.contains("\"status\":\"no_match\""),
+        "reports no_match: {out}"
+    );
+
+    // --all-repos opts into the cross-repo search and finds it
+    let (ok, out) = rq(
+        &db,
+        &dir_a,
+        &["Gadget", "--all-repos", "--no-record", "--ndjson"],
+    );
+    assert!(ok, "--all-repos should find Gadget in repo B: {out}");
+    assert!(out.contains("b.rb"), "cross-repo hit surfaces: {out}");
+
+    let _ = fs::remove_dir_all(&dir_a);
+    let _ = fs::remove_dir_all(&dir_b);
+}
+
+#[test]
 fn a_clean_complete_repo_does_not_re_warm_on_search() {
     // a fully-indexed, clean git repo is provably unchanged (HEAD matches, no
     // dirty files), so a search must skip the background warm entirely rather

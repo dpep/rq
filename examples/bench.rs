@@ -40,14 +40,14 @@ fn main() {
 
     // warm up
     for q in QUERIES {
-        let _ = search::search(&store, q, None, &search::ActiveFiles::default(), 10);
+        let _ = search::search(&store, q, None, None, &search::ActiveFiles::default(), 10);
     }
 
     let mut times_us: Vec<u128> = Vec::new();
     for _ in 0..200 {
         for q in QUERIES {
             let start = Instant::now();
-            let _ = search::search(&store, q, None, &search::ActiveFiles::default(), 10)
+            let _ = search::search(&store, q, None, None, &search::ActiveFiles::default(), 10)
                 .expect("search");
             times_us.push(start.elapsed().as_micros());
         }

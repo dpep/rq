@@ -98,11 +98,14 @@ pub struct Hit {
 
 /// Search the index for `query`, returning up to `limit` ranked hits.
 /// `current_repo_id` (if any) boosts results from the repository you're in;
+/// `only_repo` (if any) restricts results to that repository, so a search inside
+/// a repo answers about *that* repo rather than leaking others you've indexed;
 /// `active` boosts files you're changing on the current branch.
 pub fn search(
     store: &Store,
     query: &str,
     current_repo_id: Option<i64>,
+    only_repo: Option<i64>,
     active: &ActiveFiles,
     limit: usize,
 ) -> crate::store::Result<Vec<Hit>> {
@@ -130,6 +133,11 @@ pub fn search(
     let mut hits: Vec<Hit> = candidates
         .into_iter()
         .filter_map(|c| {
+            // Repo scope: outside `--all-repos`, a search inside a repo returns
+            // only that repo's definitions — never another indexed repo's.
+            if only_repo.is_some_and(|r| r != c.repository_id) {
+                return None;
+            }
             let key = (c.repository_id, c.file.clone(), c.name.clone());
             let boosts = Boosts {
                 learned: learned.get(&key).copied().unwrap_or(0.0),
@@ -357,6 +365,61 @@ mod tests {
         hits.iter().map(|h| h.name.as_str()).collect()
     }
 
+    /// Two repos, each with its own symbol, so scoping can be exercised.
+    fn store_two_repos() -> (Store, i64, i64) {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = store
+            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/a"), None)
+            .unwrap();
+        let b = store
+            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/b"), None)
+            .unwrap();
+        store
+            .replace_file_symbols(a, "a.rb", "ruby", None, "h", &[sym("Widget", Kind::Class)])
+            .unwrap();
+        store
+            .replace_file_symbols(b, "b.rb", "ruby", None, "h", &[sym("Widget", Kind::Class)])
+            .unwrap();
+        (store, a, b)
+    }
+
+    #[test]
+    fn only_repo_scopes_results_to_that_repo() {
+        let (store, a, b) = store_two_repos();
+        // scoped to repo A: only A's Widget, never B's
+        let hits = search(
+            &store,
+            "Widget",
+            Some(a),
+            Some(a),
+            &ActiveFiles::default(),
+            10,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].repo_identity, "local:/tmp/a");
+        // no scope (--all-repos): both repos' Widgets surface
+        let all = search(&store, "Widget", Some(a), None, &ActiveFiles::default(), 10).unwrap();
+        assert_eq!(all.len(), 2);
+        let _ = b;
+    }
+
+    #[test]
+    fn scoped_search_reports_no_match_rather_than_leaking_another_repo() {
+        let (store, a, _b) = store_two_repos();
+        // "Gadget" exists in neither; scoped to A it's simply absent (not B's)
+        let hits = search(
+            &store,
+            "Gadget",
+            Some(a),
+            Some(a),
+            &ActiveFiles::default(),
+            10,
+        )
+        .unwrap();
+        assert!(hits.is_empty());
+    }
+
     #[test]
     fn ranks_exact_match_first() {
         let store = store_with(&[
@@ -364,7 +427,7 @@ mod tests {
             sym("User", Kind::Class),
             sym("UserMailer", Kind::Class),
         ]);
-        let hits = search(&store, "user", None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(&store, "user", None, None, &ActiveFiles::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
     }
 
@@ -375,7 +438,15 @@ mod tests {
             sym("Refund", Kind::Class),
             sym("Payment", Kind::Class),
         ]);
-        let hits = search(&store, "refundproc", None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(
+            &store,
+            "refundproc",
+            None,
+            None,
+            &ActiveFiles::default(),
+            10,
+        )
+        .unwrap();
         assert_eq!(hits[0].name, "RefundProcessor");
         assert!(!names(&hits).contains(&"Payment"));
     }
@@ -383,14 +454,14 @@ mod tests {
     #[test]
     fn short_fuzzy_query_still_resolves() {
         let store = store_with(&[sym("User", Kind::Class), sym("Account", Kind::Class)]);
-        let hits = search(&store, "usr", None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(&store, "usr", None, None, &ActiveFiles::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
     }
 
     #[test]
     fn no_match_returns_empty() {
         let store = store_with(&[sym("User", Kind::Class)]);
-        let hits = search(&store, "zzzzz", None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(&store, "zzzzz", None, None, &ActiveFiles::default(), 10).unwrap();
         assert!(hits.is_empty());
     }
 
@@ -443,7 +514,15 @@ mod tests {
             nested("Config", Kind::Class, "Qux"),
         ]);
         // `Foo::Config` should surface the Config nested under Foo first
-        let hits = search(&store, "Foo::Config", None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(
+            &store,
+            "Foo::Config",
+            None,
+            None,
+            &ActiveFiles::default(),
+            10,
+        )
+        .unwrap();
         assert_eq!(hits[0].parent.as_deref(), Some("Foo"));
         assert!(hits[0].features.iter().any(|f| f.name == "parent"));
     }
@@ -460,6 +539,7 @@ mod tests {
             &store,
             "Bar::Worker#perform",
             None,
+            None,
             &ActiveFiles::default(),
             10,
         )
@@ -467,7 +547,15 @@ mod tests {
         assert_eq!(m[0].kind, "method");
         assert_eq!(m[0].parent.as_deref(), Some("Bar::Worker"));
         // a module qualified by its enclosing scope
-        let w = search(&store, "Bar::Worker", None, &ActiveFiles::default(), 10).unwrap();
+        let w = search(
+            &store,
+            "Bar::Worker",
+            None,
+            None,
+            &ActiveFiles::default(),
+            10,
+        )
+        .unwrap();
         assert_eq!(w[0].name, "Worker");
         assert_eq!(w[0].parent.as_deref(), Some("Bar"));
     }
@@ -522,7 +610,7 @@ mod tests {
     fn branch_boost_lifts_an_active_file() {
         let store = store_with(&[sym("User", Kind::Class)]); // lives in app/x.rb
         let active = ActiveFiles::new(["app/x.rb".to_string()]);
-        let hits = search(&store, "user", None, &active, 10).unwrap();
+        let hits = search(&store, "user", None, None, &active, 10).unwrap();
         assert!(hits[0].features.iter().any(|f| f.name == "branch"));
     }
 }

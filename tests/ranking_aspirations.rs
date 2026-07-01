@@ -44,7 +44,7 @@ fn copy_with_uniform_mtime(src: &Path, dst: &Path) {
 }
 
 fn top(store: &Store, query: &str) -> (String, String) {
-    search::search(store, query, None, &ActiveFiles::default(), 10)
+    search::search(store, query, None, None, &ActiveFiles::default(), 10)
         .unwrap()
         .first()
         .map(|h| (h.name.clone(), h.kind.clone()))

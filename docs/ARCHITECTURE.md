@@ -291,7 +291,10 @@ why a result ranked where it did:
   scope chain (`Bar` inside `Foo`). The qualifier reorders, it doesn't filter —
   an unscoped match still surfaces, just lower
 - **path** — query also matches the file's name (Layer 3)
-- **current-repo boost** — the repo you're in dominates other repos
+- **current-repo scope + boost** — results are restricted to the repo you're in
+  by default (a search there answers about *that* repo, never leaking another
+  indexed one; `--all-repos` opts into cross-repo), and within it the current
+  repo's rows still carry the boost
 - **learned boost** — behavioral signal from `selection_stats` (see below)
 - **recency** — symbols in recently-active files (~14-day half-life), sourced
   from the more recent of file mtime and last git commit time (captured once per
@@ -404,8 +407,9 @@ editor can jump to them.
 
 1. **Fuzzy-over-millions latency** — mitigated by trigram candidate narrowing;
    needs measurement against the 50 ms budget at scale.
-2. **Cross-repo ranking** — repo-level priors (current-repo boost, recency)
-   must keep distant repos from drowning the wanted result.
+2. **Cross-repo ranking** — resolved for the common case by scoping to the
+   current repo by default (`--all-repos` opts out); cross-repo ranking priors
+   (recency) still matter under `--all-repos`.
 3. **Learning overfit** — decay + exploration are the guardrails; needs tuning.
 4. **Ranking explainability** — `--explain` from day one is the mitigation.
 5. **Scope creep** — Layers 4–5 are a streamed tail, not a second search engine;

@@ -28,7 +28,16 @@ fn refresh_picks_up_edits_and_deletes() {
         .unwrap();
 
     assert_eq!(
-        search::search(&store, "Foo", None, &search::ActiveFiles::default(), 5).unwrap()[0].name,
+        search::search(
+            &store,
+            "Foo",
+            None,
+            None,
+            &search::ActiveFiles::default(),
+            5
+        )
+        .unwrap()[0]
+            .name,
         "Foo"
     );
 
@@ -39,12 +48,28 @@ fn refresh_picks_up_edits_and_deletes() {
         Refresh::Updated
     );
     assert!(
-        search::search(&store, "Foo", None, &search::ActiveFiles::default(), 5)
-            .unwrap()
-            .is_empty()
+        search::search(
+            &store,
+            "Foo",
+            None,
+            None,
+            &search::ActiveFiles::default(),
+            5
+        )
+        .unwrap()
+        .is_empty()
     );
     assert_eq!(
-        search::search(&store, "Bar", None, &search::ActiveFiles::default(), 5).unwrap()[0].name,
+        search::search(
+            &store,
+            "Bar",
+            None,
+            None,
+            &search::ActiveFiles::default(),
+            5
+        )
+        .unwrap()[0]
+            .name,
         "Bar"
     );
 
@@ -57,18 +82,32 @@ fn refresh_picks_up_edits_and_deletes() {
         Refresh::Unchanged
     );
     assert!(
-        !search::search(&store, "Bar", None, &search::ActiveFiles::default(), 5)
-            .unwrap()
-            .is_empty(),
+        !search::search(
+            &store,
+            "Bar",
+            None,
+            None,
+            &search::ActiveFiles::default(),
+            5
+        )
+        .unwrap()
+        .is_empty(),
         "a search never forgets — the entry survives until a reindex reconciles it"
     );
 
     // An indexing pass sees the whole tree and reconciles the deletion away.
     index::index_path(&mut store, &dir).unwrap();
     assert!(
-        search::search(&store, "Bar", None, &search::ActiveFiles::default(), 5)
-            .unwrap()
-            .is_empty(),
+        search::search(
+            &store,
+            "Bar",
+            None,
+            None,
+            &search::ActiveFiles::default(),
+            5
+        )
+        .unwrap()
+        .is_empty(),
         "reconciled away by indexing"
     );
 

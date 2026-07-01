@@ -107,6 +107,11 @@ struct Cli {
     #[arg(short = 'x', long = "lang", value_name = "LANG", value_delimiter = ',')]
     lang: Vec<String>,
 
+    /// Search every indexed repository, not just the current one. By default a
+    /// search inside a repo returns only that repo's definitions.
+    #[arg(long = "all-repos")]
+    all_repos: bool,
+
     /// Index a repository (PATH, or the current directory).
     #[arg(long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["status", "record"])]
     index: Option<Option<String>>,
@@ -219,6 +224,7 @@ pub fn run() -> ExitCode {
                 cli.limit,
                 cli.no_record,
                 cli.open,
+                cli.all_repos,
             )
         }
         // bare `rq` (or just flags like --explain with no query): show help
@@ -278,6 +284,7 @@ fn cmd_search(
     want: usize,
     no_record: bool,
     open: bool,
+    all_repos: bool,
 ) -> ExitCode {
     // post-filters (--path, --kind, --lang) need headroom before the cutoff so a
     // filtered-in result isn't lost to the top-N truncation
@@ -341,6 +348,9 @@ fn cmd_search(
     let current = identity
         .as_deref()
         .and_then(|id| store.repository_id(id).ok().flatten());
+    // Default: scope results to the current repo (when it's indexed) so a search
+    // never leaks another repo's definitions. `--all-repos` searches everything.
+    let only_repo = if all_repos { None } else { current };
     let active = crate::search::ActiveFiles::new(active_paths.clone());
 
     // A repeated search (same query, nothing opened since) means last time missed
@@ -447,7 +457,7 @@ fn cmd_search(
     let mut drew_progress = false;
     let mut last_draw = poll_start;
     let mut hits = loop {
-        match crate::search::search(&store, query, current, &active, limit) {
+        match crate::search::search(&store, query, current, only_repo, &active, limit) {
             Ok(h) => {
                 let confident = h.first().is_some_and(|hit| {
                     hit.features
@@ -486,7 +496,8 @@ fn cmd_search(
 
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
     if !hits.is_empty() && revalidate_top(&mut store, &hits) {
-        hits = crate::search::search(&store, query, current, &active, limit).unwrap_or_default();
+        hits = crate::search::search(&store, query, current, only_repo, &active, limit)
+            .unwrap_or_default();
     }
 
     // Untracked non-git dir — nothing persisted, no warmer running — so scan it

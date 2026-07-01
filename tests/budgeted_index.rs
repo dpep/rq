@@ -19,7 +19,7 @@ fn scratch_dir(tag: &str) -> PathBuf {
 }
 
 fn finds(store: &Store, query: &str) -> bool {
-    !search::search(store, query, None, &ActiveFiles::default(), 5)
+    !search::search(store, query, None, None, &ActiveFiles::default(), 5)
         .unwrap()
         .is_empty()
 }

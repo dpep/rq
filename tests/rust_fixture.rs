@@ -25,7 +25,7 @@ fn indexed_fixture() -> (Store, PathBuf) {
 }
 
 fn top(store: &Store, query: &str) -> search::Hit {
-    let hits = search::search(store, query, None, &ActiveFiles::default(), 10).unwrap();
+    let hits = search::search(store, query, None, None, &ActiveFiles::default(), 10).unwrap();
     assert!(!hits.is_empty(), "no hits for {query:?}");
     hits.into_iter().next().unwrap()
 }
@@ -58,7 +58,7 @@ fn ranks_the_named_type_first_and_classifies_kinds() {
 fn kind_filter_narrows_to_struct() {
     let (store, dir) = indexed_fixture();
 
-    let structs: Vec<_> = search::search(&store, "widget", None, &ActiveFiles::default(), 10)
+    let structs: Vec<_> = search::search(&store, "widget", None, None, &ActiveFiles::default(), 10)
         .unwrap()
         .into_iter()
         .filter(|h| h.kind == "struct")

@@ -22,7 +22,7 @@ fn indexed(tag: &str, name: &str, source: &str) -> (Store, PathBuf) {
 }
 
 fn top(store: &Store, query: &str) -> search::Hit {
-    let hits = search::search(store, query, None, &ActiveFiles::default(), 10).unwrap();
+    let hits = search::search(store, query, None, None, &ActiveFiles::default(), 10).unwrap();
     assert!(!hits.is_empty(), "no hits for {query:?}");
     hits.into_iter().next().unwrap()
 }

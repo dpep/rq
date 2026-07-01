@@ -29,8 +29,15 @@ fn a_selection_changes_future_ranking() {
         .unwrap();
 
     // Baseline: the tie breaks alphabetically, so HandlerA leads.
-    let before =
-        search::search(&store, "handler", None, &search::ActiveFiles::default(), 10).unwrap();
+    let before = search::search(
+        &store,
+        "handler",
+        None,
+        None,
+        &search::ActiveFiles::default(),
+        10,
+    )
+    .unwrap();
     assert_eq!(before[0].name, "HandlerA");
 
     // The user picks HandlerB for "handler". Record it, then roll it up.
@@ -47,8 +54,15 @@ fn a_selection_changes_future_ranking() {
     assert_eq!(store.aggregate_events(100).unwrap(), 1);
 
     // Now HandlerB wins, carrying a learned feature.
-    let after =
-        search::search(&store, "handler", None, &search::ActiveFiles::default(), 10).unwrap();
+    let after = search::search(
+        &store,
+        "handler",
+        None,
+        None,
+        &search::ActiveFiles::default(),
+        10,
+    )
+    .unwrap();
     assert_eq!(after[0].name, "HandlerB");
     assert!(after[0].features.iter().any(|f| f.name == "learned"));
 
@@ -82,8 +96,15 @@ fn a_shorter_query_selection_informs_a_longer_one() {
     store.aggregate_events(100).unwrap();
 
     // Typing the longer "handler" still benefits.
-    let hits =
-        search::search(&store, "handler", None, &search::ActiveFiles::default(), 10).unwrap();
+    let hits = search::search(
+        &store,
+        "handler",
+        None,
+        None,
+        &search::ActiveFiles::default(),
+        10,
+    )
+    .unwrap();
     assert_eq!(hits[0].name, "HandlerB");
     assert!(hits[0].features.iter().any(|f| f.name == "learned"));
 
