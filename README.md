@@ -82,10 +82,8 @@ judge a result without opening the file). Exit codes: `0` matched, `1` no match,
 rather than concluding the symbol is absent. All non-zero, so `rq … && …` is
 unchanged.
 
-On a cold repo a query **blocks and indexes until it can answer**, rather than
-returning a premature empty result — correctness over the first query's latency,
-and once warm the repo answers fast. Set `RQ_WAIT_BUDGET_MS=0` for a strictly
-non-blocking query (answers from whatever's already indexed).
+Set `RQ_WAIT_BUDGET_MS=0` for a strictly non-blocking query — it answers from
+whatever's already indexed instead of waiting on a warming repo.
 
 `--json`/`--ndjson` work for every command, not just search: `rq --status --json`
 emits the coverage rows (`repo`, `status`, `files`, `symbols`), `rq --index --json`
@@ -93,8 +91,6 @@ emits this run's counts plus the index totals, and `rq --drop --json` reports wh
 it removed (`repo`, `files`, `symbols`, `dropped`). Single-result commands emit
 one object; `--ndjson` is the compact one-line form.
 
-Reach for `rq` over `grep`/`rg` when you want **where a symbol is defined** —
-it returns the most likely definition first instead of every textual mention.
 Narrow with `--path` when you know the area:
 
 ```sh
@@ -104,17 +100,6 @@ rq perform app/services --json            # ...scoped to a subtree (rg-style)
 
 Pass `--no-record` for speculative/agent searches so they don't perturb the
 learned ranking (which is meant to reflect deliberate, human picks).
-
-Text results show each definition's source line and highlight the characters
-your query matched — in the name, the filename, and that line (handy for fuzzy
-queries, where it shows exactly what `rq` latched onto). Color is on only when
-output is a terminal, honors `NO_COLOR`, and takes its style from `GREP_COLORS`
-(`mt`/`ms`) if set.
-
-Run `rq` with no arguments for help. Operations are flags, not subcommands, so
-no word is reserved — `rq index`, `rq status`, and `rq record` search for those
-symbols like any other query. rq works on the current repository; to target
-another, run it from there.
 
 ## File outline
 
@@ -181,16 +166,9 @@ result you opened, so a `learned` boost lifts it next time:
 rq --record --file app/services/refund_processor.rb --line 7 refund
 ```
 
-The `--event` kind is `select` (chosen from results) or `open` (jumped to in an
-editor) — both feed the `learned` boost; `select` is the default.
-
 A pick for a shorter query (`ref`) also informs longer ones (`refund`), and
 repeating a search without opening anything is read as a miss — that query's
 learned boost decays so a stale favorite stops dominating.
-
-This isn't a daemon: each invocation does a small, bounded chunk of deferred
-work (rolling up events, warming the index) *after* printing results, so the
-cost amortizes across normal use.
 
 The wrapper [`script/rq-open`](script/rq-open) does search → pick → open →
 record in one step. See [docs/EDITORS.md](docs/EDITORS.md) for VS Code and
