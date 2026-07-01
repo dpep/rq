@@ -161,13 +161,19 @@ binary** (behavior, a flag, ranking, even `--help`/output wording). Stay below
 Repo-only docs (README, CLAUDE.md, `docs/`) **don't** bump — they don't change
 what `brew` builds, so a bump would only force an identical rebuild.
 
-A bump is three edits, landed together:
+A release is a tagged tarball the Homebrew formula pins by URL + `sha256`, so
+`brew upgrade` rebuilds from that exact commit. The steps, in order:
 
-1. `Cargo.toml` `version`
-2. `Cargo.lock` — run `cargo build` so the `rq` entry updates
-3. the Homebrew formula `version` in
-   `~/code/lib/homebrew-tools/Formula/rq.rb` (push the tap too)
+1. `Cargo.toml` `version`.
+2. `Cargo.lock` — run `cargo build` so the `rq` entry updates.
+3. Commit both (with the change) and push `main`. Green CI first.
+4. Tag the release commit and push the tag:
+   `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z`.
+5. Compute the tarball hash — GitHub's tag archive is stable:
+   `curl -sL https://github.com/dpep/rq/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`.
+6. In `~/code/lib/homebrew-tools/Formula/rq.rb`, update the `url` tag and the
+   `sha256` to the new values, then commit and push the tap.
 
-The formula tracks `branch: "main"` with a pinned `version`, so bumping it is
-what makes `brew upgrade` rebuild from the latest `main` — skip it and installs
-serve a stale cached build.
+The tag must exist before you can hash its tarball, so the tag push (4) always
+precedes the formula edit (6). Skip the formula bump and installs serve a stale
+cached build.
