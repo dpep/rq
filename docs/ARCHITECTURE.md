@@ -138,6 +138,8 @@ symbols (
   kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
+  end_line INTEGER,                  -- 1-based last line of the definition body
+                                     -- (NULL for rows indexed before v4)
   parent TEXT                        -- enclosing symbol's qualified NAME
                                      -- (lexical nesting only), e.g. Foo::Bar
 );

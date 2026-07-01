@@ -82,6 +82,10 @@ pub struct Hit {
     pub language: String,
     pub file: String,
     pub line: i64,
+    /// 1-based last line of the definition — read `line..=end_line` for the whole
+    /// span. Omitted in JSON when unknown (a row indexed before end-line tracking).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<i64>,
     pub parent: Option<String>,
     #[serde(rename = "repo")]
     pub repo_identity: String,
@@ -233,6 +237,7 @@ pub fn live_search(
                 language: s.language,
                 file: s.file,
                 line: s.line as i64,
+                end_line: Some(s.end_line as i64),
                 parent: s.parent,
                 repository_id: LIVE_REPO_ID,
                 repo_identity: identity.clone(),
@@ -311,6 +316,7 @@ fn rank_one(
         language: c.language,
         file: c.file,
         line: c.line,
+        end_line: c.end_line,
         parent: c.parent,
         repo_identity: c.repo_identity,
         score: scored.total,
@@ -331,6 +337,7 @@ mod tests {
             language: "ruby".into(),
             file: "app/x.rb".into(),
             line: 1,
+            end_line: 1,
             parent: None,
         }
     }
@@ -395,6 +402,7 @@ mod tests {
             language: "ruby".into(),
             file: "a.rb".into(),
             line: 1,
+            end_line: Some(1),
             parent: None,
             repo_identity: "r".into(),
             score,
@@ -471,6 +479,7 @@ mod tests {
             language: "ruby".into(),
             file: "a.rb".into(),
             line: 1,
+            end_line: Some(1),
             parent: None,
             repo_identity: "r".into(),
             score: 1.0,

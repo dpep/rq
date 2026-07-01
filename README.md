@@ -75,11 +75,13 @@ small reference wrapper around `rq` + `rq --record`.
 
 `-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
 surface for editors, scripts, and AI agents. Each result is an object with
-`name`, `kind`, `language`, `file`, `line`, `parent`, `repo`, `score`, the
+`name`, `kind`, `language`, `file`, `line`, `end_line` (the definition's last
+line — read `line..=end_line` for the whole span), `parent`, `repo`, `score`, the
 scoring `features`, and `signature` (the definition's source line, so you can
-judge a result without opening the file). Exit codes: `0` matched, `1` no match,
-`2` no match *yet* — the index is still warming, so re-run (or `rq --index`)
-rather than concluding the symbol is absent. All non-zero, so `rq … && …` is
+judge a result without opening the file). On a miss, JSON returns a
+`{"status": …}` object instead of results — `no_match` (definitive), `warming`
+(index incomplete, retry), or `interrupted`. Exit codes mirror it: `0` matched,
+`1` no match, `2` no match *yet* (warming). All non-zero, so `rq … && …` is
 unchanged.
 
 Set `RQ_WAIT_BUDGET_MS=0` for a strictly non-blocking query — it answers from

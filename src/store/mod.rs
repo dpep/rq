@@ -24,6 +24,9 @@ pub struct SymbolRow {
     pub language: String,
     pub file: String,
     pub line: i64,
+    /// 1-based last line of the definition body; `None` for rows indexed before
+    /// end-line tracking (they backfill on the next re-extract).
+    pub end_line: Option<i64>,
     pub parent: Option<String>,
     pub repository_id: i64,
     pub repo_identity: String,
@@ -47,7 +50,7 @@ pub struct SelectionStat {
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
-    s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts";
+    s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts";
 const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
@@ -114,6 +117,9 @@ impl Store {
         }
         if version != 0 && version < 3 {
             conn.execute_batch(schema::MIGRATION_V3)?;
+        }
+        if version != 0 && version < 4 {
+            conn.execute_batch(schema::MIGRATION_V4)?;
         }
         if version != schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
@@ -223,8 +229,8 @@ impl Store {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO symbols
-                   (repository_id, file_id, name, name_lower, kind, language, line, parent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                   (repository_id, file_id, name, name_lower, kind, language, line, end_line, parent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for s in symbols {
                 stmt.execute(params![
@@ -235,6 +241,7 @@ impl Store {
                     s.kind.as_str(),
                     s.language,
                     s.line,
+                    s.end_line,
                     s.parent,
                 ])?;
             }
@@ -277,8 +284,8 @@ impl Store {
                 let mut clear = tx.prepare("DELETE FROM symbols WHERE file_id = ?1")?;
                 let mut insert = tx.prepare(
                     "INSERT INTO symbols
-                       (repository_id, file_id, name, name_lower, kind, language, line, parent)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                       (repository_id, file_id, name, name_lower, kind, language, line, end_line, parent)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 )?;
                 for f in chunk {
                     // content unchanged (e.g. mtime moved but bytes didn't): skip
@@ -309,6 +316,7 @@ impl Store {
                             s.kind.as_str(),
                             s.language,
                             s.line,
+                            s.end_line,
                             s.parent,
                         ])?;
                     }
@@ -904,11 +912,12 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             language: r.get(3)?,
             file: r.get(4)?,
             line: r.get(5)?,
-            parent: r.get(6)?,
-            repository_id: r.get(7)?,
-            repo_identity: r.get(8)?,
-            mtime: r.get(9)?,
-            git_ts: r.get(10)?,
+            end_line: r.get(6)?,
+            parent: r.get(7)?,
+            repository_id: r.get(8)?,
+            repo_identity: r.get(9)?,
+            mtime: r.get(10)?,
+            git_ts: r.get(11)?,
         },
     ))
 }
@@ -961,6 +970,7 @@ mod tests {
             language: "ruby".into(),
             file: "app/models/user.rb".into(),
             line,
+            end_line: line,
             parent: parent.map(String::from),
         }
     }

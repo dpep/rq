@@ -102,6 +102,7 @@ impl Ctx<'_> {
             language: LANGUAGE.to_string(),
             file: self.file.to_string(),
             line: node.start_position().row as u32 + 1,
+            end_line: node.end_position().row as u32 + 1,
             parent: parent.map(str::to_string),
         }
     }
@@ -160,6 +161,8 @@ end
         assert_eq!(module.kind, Kind::Module);
         assert_eq!(module.parent, None);
         assert_eq!(module.line, 2);
+        // end_line spans the whole body to the matching `end`
+        assert_eq!(module.end_line, 10);
 
         let class = find(&syms, "RefundProcessor");
         assert_eq!(class.kind, Kind::Class);
@@ -168,6 +171,8 @@ end
         let perform = find(&syms, "perform");
         assert_eq!(perform.kind, Kind::Method);
         assert_eq!(perform.parent.as_deref(), Some("Billing::RefundProcessor"));
+        // the method body is lines 4..=5 (`def perform` through its `end`)
+        assert_eq!((perform.line, perform.end_line), (4, 5));
 
         // singleton method (def self.build) is captured too
         let build = find(&syms, "build");

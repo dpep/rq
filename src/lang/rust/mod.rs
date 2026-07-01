@@ -134,6 +134,7 @@ impl Ctx<'_> {
             language: LANGUAGE.to_string(),
             file: self.file.to_string(),
             line: node.start_position().row as u32 + 1,
+            end_line: node.end_position().row as u32 + 1,
             parent: parent.map(str::to_string),
         }
     }

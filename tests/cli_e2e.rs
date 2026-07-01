@@ -271,6 +271,26 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
 }
 
 #[test]
+fn json_results_carry_the_definition_span() {
+    // a result reports line..=end_line so a caller can read the exact span
+    let (dir, db) = scratch("endline");
+    fs::write(
+        dir.join("a.rb"),
+        "class Widget\n  def go\n    1\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["Widget", "-l", "1", "--ndjson"]);
+    assert!(ok, "search failed: {out}");
+    // class Widget spans line 1 through its `end` on line 5
+    assert!(out.contains("\"line\":1"), "start line present: {out}");
+    assert!(out.contains("\"end_line\":5"), "end line present: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_leading_kind_keyword_filters_like_dash_k() {
     // `rq class Widget` and `rq method go` scope by kind without needing -k, and
     // without quoting. A same-named symbol of another kind is filtered out.
@@ -650,7 +670,10 @@ fn path_filter_accepts_absolute_and_relative_paths() {
         &dir,
         &["widget", "--path", "/nonexistent/elsewhere", "--ndjson"],
     );
-    assert!(out.trim().is_empty(), "outside path yields no hits: {out}");
+    assert!(
+        !out.contains("\"file\":"),
+        "outside path yields no hits: {out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -845,7 +868,10 @@ fn lang_filter_scopes_by_language() {
     // -x py matches neither → no results
     let (ok, out) = rq(&db, &dir, &["widget", "-x", "py", "--ndjson"]);
     assert!(!ok, "no python here, should exit non-zero");
-    assert!(out.is_empty(), "expected no results: {out}");
+    assert!(
+        out.contains("\"status\":\"no_match\""),
+        "a definitive miss reports no_match: {out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -988,7 +1014,10 @@ fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
         .output()
         .expect("run rq");
     let out = String::from_utf8_lossy(&run.stdout);
-    assert_eq!(out.trim(), "[]", "empty JSON array on a miss: {out:?}");
+    assert!(
+        out.contains("\"status\": \"warming\""),
+        "an incomplete-index miss reports warming in JSON: {out:?}"
+    );
     assert_eq!(
         run.status.code(),
         Some(2),

@@ -583,6 +583,7 @@ mod tests {
             language: "ruby".into(),
             file: "f.rb".into(),
             line: 1,
+            end_line: Some(1),
             parent: None,
             repository_id: repo,
             repo_identity: "r".into(),

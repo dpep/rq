@@ -11,6 +11,7 @@ fn sym(name: &str) -> Symbol {
         language: "rust".into(),
         file: "a.rs".into(),
         line: 1,
+        end_line: 1,
         parent: None,
     }
 }

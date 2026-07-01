@@ -58,6 +58,9 @@ pub struct Symbol {
     pub file: String,
     /// 1-based line of the definition.
     pub line: u32,
+    /// 1-based last line of the definition's body — with `line`, the span to
+    /// read to see the whole definition. Equals `line` for a one-line symbol.
+    pub end_line: u32,
     /// Enclosing symbol name, if any (lexical nesting only).
     pub parent: Option<String>,
 }

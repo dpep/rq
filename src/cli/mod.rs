@@ -574,9 +574,26 @@ fn cmd_search(
                 .and_then(|id| store.coverage_status(id).ok().flatten())
                 .as_deref()
                 != Some("complete");
+        // Structured callers get a reason, not a bare `[]`/empty: `warming`
+        // (retry — index incomplete), `interrupted` (a stopped block), or
+        // `no_match` (definitive). Text keeps its human message.
+        let status = if interrupted {
+            "interrupted"
+        } else if incomplete {
+            "warming"
+        } else {
+            "no_match"
+        };
         match out {
-            Output::Json => println!("[]"),
-            Output::Ndjson => {}
+            Output::Json | Output::Ndjson => {
+                let obj = serde_json::json!({ "status": status, "query": query });
+                match out {
+                    Output::Json => {
+                        println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default())
+                    }
+                    _ => println!("{obj}"),
+                }
+            }
             Output::Text if interrupted => {
                 eprintln!("rq: indexing interrupted — run again to finish")
             }
@@ -1057,6 +1074,8 @@ struct SymbolOut {
     file: String,
     line: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    end_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     parent: Option<String>,
     repo: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1121,6 +1140,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
             language: r.language,
             file: r.file,
             line: r.line,
+            end_line: r.end_line,
             parent: r.parent,
             repo: r.repo_identity,
         })
@@ -1133,8 +1153,15 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
 fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
     if syms.is_empty() {
         match out {
-            Output::Json => println!("[]"),
-            Output::Ndjson => {}
+            Output::Json | Output::Ndjson => {
+                let obj = serde_json::json!({ "status": "no_match" });
+                match out {
+                    Output::Json => {
+                        println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default())
+                    }
+                    _ => println!("{obj}"),
+                }
+            }
             Output::Text => eprintln!("no symbols"),
         }
         return ExitCode::FAILURE;

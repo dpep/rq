@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub const SCHEMA: &str = r#"
@@ -47,6 +47,7 @@ CREATE TABLE symbols (
   kind TEXT NOT NULL,
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
+  end_line INTEGER,                  -- 1-based last line of the definition body
   parent TEXT
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
@@ -155,6 +156,14 @@ CREATE TABLE IF NOT EXISTS meta (
 /// ranking signal.
 pub const MIGRATION_V3: &str = r#"
 ALTER TABLE files ADD COLUMN git_ts INTEGER;
+"#;
+
+/// Migration v3 → v4: add the definition's end line, so a result carries the
+/// full `line..=end_line` span. Existing rows read `NULL` and backfill lazily as
+/// files change (or on an explicit `rq --drop` + `rq --index`) — the same
+/// lazy-fill the v3 `git_ts` column uses. New/edited files get it immediately.
+pub const MIGRATION_V4: &str = r#"
+ALTER TABLE symbols ADD COLUMN end_line INTEGER;
 "#;
 
 /// The `AFTER INSERT` FTS-sync trigger, kept identical to the copy in [`SCHEMA`].
