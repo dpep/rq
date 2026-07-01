@@ -81,6 +81,41 @@ fn a_full_sweep_completes_and_tracks_added_and_deleted_files() {
 }
 
 #[test]
+fn indexing_prunes_a_stale_checkout_but_keeps_the_live_one() {
+    // a moved repo leaves a dead checkout row; the next index re-registers the
+    // live root and prunes the vanished one — self-healing without touching symbols
+    let dir = scratch_dir("prune-checkout");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    index::index_budgeted(&mut store, &dir, &[], Duration::from_secs(5), None).unwrap();
+
+    let identity = index::detect_identity(&dir).to_string();
+    let repo = store.repository_id(&identity).unwrap().unwrap();
+    // simulate a prior checkout at a path that no longer exists (repo moved)
+    store.upsert_checkout(repo, "/gone/old/path", None).unwrap();
+    assert!(
+        store
+            .checkout_roots(repo)
+            .unwrap()
+            .iter()
+            .any(|p| p == "/gone/old/path")
+    );
+
+    // re-index: the live root stays, the vanished one is pruned
+    index::index_budgeted(&mut store, &dir, &[], Duration::from_secs(5), None).unwrap();
+    let roots = store.checkout_roots(repo).unwrap();
+    assert!(
+        !roots.iter().any(|p| p == "/gone/old/path"),
+        "stale checkout pruned: {roots:?}"
+    );
+    assert!(!roots.is_empty(), "the live checkout remains");
+    assert!(finds(&store, "Widget"), "symbols are untouched by pruning");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn an_empty_source_tree_never_reports_complete() {
     // a tree with no indexable source must not settle as "complete" with zero
     // files — that's almost always a failed enumeration, and (with warm-skip) it

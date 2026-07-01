@@ -754,9 +754,6 @@ fn cmd_search(
         );
     }
     deferred_maintenance(&mut store);
-    if let Some(repo_id) = current {
-        prune_stale_checkouts(&mut store, repo_id);
-    }
 
     // Results are out; block until the background warm finishes its budget. It
     // persists as it goes (incremental commits), so even a pass cut short by the
@@ -1064,23 +1061,6 @@ const KEEP_RECENT_EVENTS: i64 = 200;
 fn deferred_maintenance(store: &mut Store) {
     let _ = store.aggregate_events(AGGREGATE_BATCH);
     let _ = store.prune_events(KEEP_RECENT_EVENTS);
-}
-
-/// Drop checkout rows for `repo_id` whose path no longer exists — a repo moved,
-/// leaving a stale binding. Symbols/coverage/learning are keyed by identity, so
-/// this only forgets a dead *location*. Guarded: prune only when a live root
-/// remains, so a temporarily-unmounted volume (every path missing) isn't wiped.
-fn prune_stale_checkouts(store: &mut Store, repo_id: i64) {
-    let roots = store.checkout_roots(repo_id).unwrap_or_default();
-    let (alive, dead): (Vec<String>, Vec<String>) = roots
-        .into_iter()
-        .partition(|p| std::path::Path::new(p).exists());
-    if alive.is_empty() {
-        return; // nothing verified live — don't prune blindly
-    }
-    for path in dead {
-        let _ = store.forget_checkout(&path);
-    }
 }
 
 /// Hook entry point: record that `file` was opened/selected for `query`, then

@@ -443,6 +443,17 @@ fn run_index(
     let root_display = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
 
+    // Registering the current root guarantees a live checkout, so prune any
+    // sibling rows whose path has since vanished (the repo moved) — keeps the
+    // identity→location map from accumulating dead bindings. Runs here, on index/
+    // warm, not on every search: stale rows are cheap (reads route around them),
+    // so occasional cleanup when we're already writing checkouts is enough.
+    for stale in store.checkout_roots(repo_id).unwrap_or_default() {
+        if !Path::new(&stale).exists() {
+            let _ = store.forget_checkout(&stale);
+        }
+    }
+
     let stored = store.file_mtimes(repo_id)?;
     let mut seen: HashSet<String> = HashSet::new();
 
