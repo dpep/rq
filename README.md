@@ -158,30 +158,19 @@ Returning fewer, better, ranked results is the goal — not completeness.
 
 ## Staying current
 
-You rarely run `rq --index` by hand. The first query inside a git repo warms the
-index opportunistically, and it's *time-bounded*: it indexes the files you're
-changing on this branch first, answers, then keeps warming a little more per
-query until coverage is complete. So a warm repo answers in milliseconds.
+You rarely run `rq --index` by hand. The first query in a git repo warms the
+index opportunistically — files you're changing on this branch first — then tops
+up a little per query until coverage is complete, so a warm repo answers in
+milliseconds. A **cold** repo is the exception: the first query blocks and
+indexes until it can answer (progress shown, Ctrl-C to stop) rather than lie with
+a false miss. It's a one-time cost — the index persists and self-heals as you
+search, re-reading edited files and reconciling added/removed ones on the warm
+sweep.
 
-The exception is a **cold** repo — nothing's indexed yet, so a "no match" would
-be a lie. There the first query blocks and indexes until it can actually answer
-(showing progress, Ctrl-C to stop). It's a one-time cost, since the index
-persists.
-
-Results self-heal as you search. The files behind the top hits are revalidated
-every query, so an edited file is re-read before it ranks; files added, moved,
-or deleted are reconciled by the warm sweep as it passes over the tree. Under the
-hood, indexing parses files across your cores and commits them in batches as it
-goes — a pass cut short by its budget still keeps everything it parsed. Repo
-identity is cached, so a known repo costs no `git` fork; a cheap `git`
-HEAD-and-dirty check each search is all rq needs to notice the repo changed.
-
-A git work tree is auto-discovered (the first query warms it). A non-git
-directory isn't walked on a stray query, but you can index one explicitly with
-`rq --index <dir>` — it's then tracked like any repo (current-repo boost,
-self-healing) under a `local:<path>` identity. Otherwise rq falls back to a live
-in-memory scan, so it still answers at zero coverage. The index is a SQLite file
-at `$RQ_DB` (default `~/.local/share/rq/rq.db`).
+A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
+it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
+it still answers at zero coverage. The index is a SQLite file at `$RQ_DB`
+(default `~/.local/share/rq/rq.db`).
 
 ## Learning from what you pick
 
