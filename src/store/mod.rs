@@ -518,6 +518,17 @@ impl Store {
         Ok(out)
     }
 
+    /// Drop a checkout row — used to prune a stale binding (a repo moved away
+    /// from `root_path`). Symbols/coverage are keyed by repo identity, not this
+    /// row, so forgetting a checkout only forgets *where* the repo was on disk.
+    pub fn forget_checkout(&mut self, root_path: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM checkouts WHERE root_path = ?1",
+            params![root_path],
+        )?;
+        Ok(())
+    }
+
     /// Drop a file and its symbols — used when a file has been deleted on disk.
     pub fn forget_file(&mut self, repository_id: i64, path: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -1004,6 +1015,20 @@ mod tests {
         // both are returned, newest (most-recently inserted) first so a reader
         // tries the current checkout before a stale one
         assert_eq!(roots, vec!["/new/path", "/old/path"]);
+    }
+
+    #[test]
+    fn forget_checkout_prunes_a_stale_binding() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/x"), None)
+            .unwrap();
+        store.upsert_checkout(repo, "/old/path", None).unwrap();
+        store.upsert_checkout(repo, "/new/path", None).unwrap();
+        store.forget_checkout("/old/path").unwrap();
+        // only the live binding remains; the repo (and its symbols) is untouched
+        assert_eq!(store.checkout_roots(repo).unwrap(), vec!["/new/path"]);
+        assert_eq!(store.repository_id("local:/x").unwrap(), Some(repo));
     }
 
     #[test]

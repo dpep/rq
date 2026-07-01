@@ -57,7 +57,10 @@ Identity answers two different questions, so it is modeled at two levels:
   aggregate behavioral learning across checkouts. Robust to forks/clones being
   the "same" project.
 - **Local checkout** — a root path plus current branch. Used for indexing
-  coverage state and git-aware ranking. One project may have several checkouts.
+  coverage state and git-aware ranking. One project may have several checkouts
+  (multiple clones, all valid). A checkout whose path no longer exists is pruned
+  opportunistically after a search, so a moved repo self-heals; symbols and
+  learning are keyed by identity, so pruning a checkout only forgets a *location*.
 
 The system is designed for **many** repositories and millions of symbols from
 day one. It never assumes a single repository.
