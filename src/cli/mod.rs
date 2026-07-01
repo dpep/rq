@@ -1090,24 +1090,36 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
     ExitCode::SUCCESS
 }
 
-/// The checkout root that holds a hit's file: from the store (or the cwd for
-/// live results). Used to resolve a repo-relative path to disk.
-fn hit_file_root(
+/// Candidate on-disk roots that may hold a hit's file, most-current first: every
+/// checkout root recorded for the repo (newest first), then the cwd (for live
+/// results, and as a fallback when the stored root is stale — a moved repo keeps
+/// its old checkout row, and reading from that path fails). Callers read from the
+/// first candidate that actually has the file.
+fn hit_file_roots(
     store: &Store,
     repo_identity: &str,
     cwd: Option<&std::path::Path>,
-) -> Option<PathBuf> {
-    store
+) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = store
         .repository_id(repo_identity)
         .ok()
         .flatten()
-        .and_then(|id| store.checkout_root(id).ok().flatten())
+        .map(|id| store.checkout_roots(id).unwrap_or_default())
+        .unwrap_or_default()
+        .into_iter()
         .map(PathBuf::from)
-        .or_else(|| cwd.map(std::path::Path::to_path_buf))
+        .collect();
+    if let Some(c) = cwd {
+        let c = c.to_path_buf();
+        if !roots.contains(&c) {
+            roots.push(c);
+        }
+    }
+    roots
 }
 
-/// The definition's source line (trimmed) for a hit — read from disk, resolving
-/// the repo root from the store (or the cwd for live results). Best-effort.
+/// The definition's source line (trimmed) for a hit — read from the first
+/// candidate root that has the file (see [`hit_file_roots`]). Best-effort.
 fn read_signature(
     store: &Store,
     repo_identity: &str,
@@ -1115,9 +1127,9 @@ fn read_signature(
     line: i64,
     cwd: Option<&std::path::Path>,
 ) -> Option<String> {
-    let root = hit_file_root(store, repo_identity, cwd)?;
-    let content = std::fs::read_to_string(root.join(file)).ok()?;
-    signature_in(&content, line)
+    hit_file_roots(store, repo_identity, cwd)
+        .into_iter()
+        .find_map(|root| signature_in(&std::fs::read_to_string(root.join(file)).ok()?, line))
 }
 
 /// Confidence at or above which `--show` prints a body instead of a list. Exact
@@ -1184,9 +1196,9 @@ fn read_span(
     end: i64,
     cwd: Option<&std::path::Path>,
 ) -> Option<String> {
-    let root = hit_file_root(store, repo_identity, cwd)?;
-    let content = std::fs::read_to_string(root.join(file)).ok()?;
-    span_in(&content, start, end)
+    hit_file_roots(store, repo_identity, cwd)
+        .into_iter()
+        .find_map(|root| span_in(&std::fs::read_to_string(root.join(file)).ok()?, start, end))
 }
 
 /// Lines `start..=end` (1-based, inclusive) of already-read `content`, joined —
@@ -1271,13 +1283,21 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     }
 
     // Read the source once for signatures (every row is the same file).
-    let file_root = store
-        .checkout_root(repo_id)
-        .ok()
-        .flatten()
+    // Read the source from the first recorded checkout root that has the file,
+    // falling back to the cwd-derived root — a moved repo keeps a stale checkout
+    // row, so the first-recorded root may no longer hold the file.
+    let mut roots: Vec<PathBuf> = store
+        .checkout_roots(repo_id)
+        .unwrap_or_default()
+        .into_iter()
         .map(PathBuf::from)
-        .unwrap_or_else(|| root.clone());
-    let content = std::fs::read_to_string(file_root.join(&rel)).ok();
+        .collect();
+    if !roots.contains(&root) {
+        roots.push(root.clone());
+    }
+    let content = roots
+        .iter()
+        .find_map(|r| std::fs::read_to_string(r.join(&rel)).ok());
     let syms: Vec<SymbolOut> = rows
         .into_iter()
         .map(|r| SymbolOut {

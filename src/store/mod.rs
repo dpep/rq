@@ -502,6 +502,22 @@ impl Store {
             .optional()
     }
 
+    /// Every checkout root recorded for a repository, newest first. A repo can
+    /// have more than one (it was moved or cloned twice, both under the same
+    /// remote identity), and an old row may be stale — so callers that read files
+    /// try these in order (current checkout before a stale one).
+    pub fn checkout_roots(&self, repository_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT root_path FROM checkouts WHERE repository_id = ?1 ORDER BY id DESC")?;
+        let rows = stmt.query_map(params![repository_id], |r| r.get(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Drop a file and its symbols — used when a file has been deleted on disk.
     pub fn forget_file(&mut self, repository_id: i64, path: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -973,6 +989,21 @@ mod tests {
             end_line: line,
             parent: parent.map(String::from),
         }
+    }
+
+    #[test]
+    fn checkout_roots_returns_all_paths_newest_first() {
+        let store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/x"), None)
+            .unwrap();
+        // a repo indexed at an old path, then moved to a new one (same identity)
+        store.upsert_checkout(repo, "/old/path", None).unwrap();
+        store.upsert_checkout(repo, "/new/path", None).unwrap();
+        let roots = store.checkout_roots(repo).unwrap();
+        // both are returned, newest (most-recently inserted) first so a reader
+        // tries the current checkout before a stale one
+        assert_eq!(roots, vec!["/new/path", "/old/path"]);
     }
 
     #[test]
