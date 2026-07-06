@@ -148,6 +148,7 @@ symbols (
                                      -- (lexical nesting only), e.g. Foo::Bar
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
+CREATE INDEX idx_symbols_repo ON symbols(repository_id);
 
 -- fuzzy candidate narrowing: trigram FTS over symbol names
 CREATE VIRTUAL TABLE symbols_fts USING fts5(
@@ -174,6 +175,7 @@ events (
   path TEXT, line INTEGER,          -- the file/line for open/select
   branch TEXT, ts INTEGER NOT NULL
 );
+CREATE INDEX idx_events_repo ON events(repository_id, id);
 
 -- rollup the hot path reads; never scan raw events at query time.
 -- Keyed by (file, name), NOT symbol_id: symbol ids are recreated whenever a

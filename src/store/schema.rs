@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub const SCHEMA: &str = r#"
@@ -52,6 +52,7 @@ CREATE TABLE symbols (
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 CREATE INDEX idx_symbols_file ON symbols(file_id);
+CREATE INDEX idx_symbols_repo ON symbols(repository_id);
 
 -- fuzzy candidate narrowing: trigram FTS over symbol names
 CREATE VIRTUAL TABLE symbols_fts USING fts5(
@@ -97,6 +98,7 @@ CREATE TABLE events (
   branch TEXT,
   ts INTEGER NOT NULL
 );
+CREATE INDEX idx_events_repo ON events(repository_id, id);
 
 -- rollup the ranking hot path reads. Keyed by (file, name) rather than
 -- symbol_id so learning survives reindexing (symbol ids are recreated on every
@@ -164,6 +166,14 @@ ALTER TABLE files ADD COLUMN git_ts INTEGER;
 /// lazy-fill the v3 `git_ts` column uses. New/edited files get it immediately.
 pub const MIGRATION_V4: &str = r#"
 ALTER TABLE symbols ADD COLUMN end_line INTEGER;
+"#;
+
+/// Migration v4 → v5: indexes for repo-scoped scans. `symbols(repository_id)`
+/// backs the per-repo totals/drop/coverage counts; `events(repository_id, id)`
+/// backs the newest-event probe (`is_repeat_search`) that runs on every search.
+pub const MIGRATION_V5: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repository_id);
+CREATE INDEX IF NOT EXISTS idx_events_repo ON events(repository_id, id);
 "#;
 
 /// The `AFTER INSERT` FTS-sync trigger, kept identical to the copy in [`SCHEMA`].

@@ -60,6 +60,14 @@ pub struct Store {
     conn: Connection,
 }
 
+impl Drop for Store {
+    fn drop(&mut self) {
+        // SQLite's recommended pre-close hygiene: refreshes planner statistics
+        // for the query shapes this connection actually ran. Cheap, best-effort.
+        let _ = self.conn.execute_batch("PRAGMA optimize;");
+    }
+}
+
 /// A parsed file ready to persist — the unit the indexer produces (in parallel)
 /// and [`Store::replace_files`] writes in one batched transaction.
 #[derive(Debug, Clone)]
@@ -120,6 +128,9 @@ impl Store {
         }
         if version != 0 && version < 4 {
             conn.execute_batch(schema::MIGRATION_V4)?;
+        }
+        if version != 0 && version < 5 {
+            conn.execute_batch(schema::MIGRATION_V5)?;
         }
         if version != schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
@@ -1000,6 +1011,36 @@ mod tests {
             end_line: line,
             parent: parent.map(String::from),
         }
+    }
+
+    #[test]
+    fn migration_adds_repo_indexes_to_an_existing_db() {
+        let path = std::env::temp_dir().join(format!("rq-migrate-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            // simulate a pre-v5 database: the repo-scoped indexes don't exist
+            let store = Store::open(&path).unwrap();
+            store
+                .conn
+                .execute_batch(
+                    "DROP INDEX idx_symbols_repo; DROP INDEX idx_events_repo; \
+                     PRAGMA user_version=4;",
+                )
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let n: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name IN ('idx_symbols_repo','idx_events_repo')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
