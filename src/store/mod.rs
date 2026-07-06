@@ -791,6 +791,18 @@ impl Store {
         self.meta_set(&format!("head:{repository_id}"), head)
     }
 
+    /// The git HEAD sha at the last commit-times capture (recency signal), if
+    /// any — lets the next capture read only the commits since, or skip the
+    /// `git log` entirely when HEAD hasn't moved.
+    pub fn git_ts_head(&self, repository_id: i64) -> Result<Option<String>> {
+        self.meta_get(&format!("git_ts_head:{repository_id}"))
+    }
+
+    /// Record the git HEAD sha a commit-times capture ran at.
+    pub fn set_git_ts_head(&self, repository_id: i64, head: &str) -> Result<()> {
+        self.meta_set(&format!("git_ts_head:{repository_id}"), head)
+    }
+
     fn meta_get(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {

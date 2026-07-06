@@ -604,10 +604,7 @@ fn run_index(
     // repo's history yet emits repo-relative paths that wouldn't match our
     // subdir-relative ones — pure waste. (A subdir index leans on mtime recency.)
     if stats.files_indexed > 0 && repo_root(root).is_some_and(|r| r == root_display) {
-        let times = git_commit_times(root, 1000);
-        if !times.is_empty() {
-            let _ = store.set_file_git_ts(repo_id, &times);
-        }
+        capture_commit_times(store, repo_id, root);
     }
 
     // Never persist "complete" for an empty index: a zero-file complete is almost
@@ -774,6 +771,33 @@ fn parse_files(
     (out, !bailed.load(Ordering::Relaxed))
 }
 
+/// Capture per-file last-commit times for the recency signal — incrementally.
+/// The full history walk is priced only once: after a capture, the HEAD it ran
+/// at is recorded, so the next capture reads just the commits since
+/// (`old..HEAD`) — and skips the `git log` entirely when HEAD hasn't moved
+/// (the common case for a warm of uncommitted edits, which mtime already
+/// covers). A vanished old sha (rebase, gc) fails the range and falls back to
+/// the full bounded walk.
+fn capture_commit_times(store: &mut Store, repo_id: i64, root: &Path) {
+    let Some(head) = git_head(root) else { return };
+    let last = store.git_ts_head(repo_id).ok().flatten();
+    if last.as_deref() == Some(head.as_str()) {
+        return; // HEAD unmoved — nothing new to capture
+    }
+    let first = last.is_none();
+    let times = last
+        .and_then(|old| git_commit_times_range(root, &old, 1000))
+        .unwrap_or_else(|| git_commit_times(root, 1000));
+    if !times.is_empty() {
+        if store.set_file_git_ts(repo_id, &times).is_err() {
+            return; // don't advance the marker past an unpersisted capture
+        }
+    } else if first {
+        return; // full walk yielded nothing — leave the marker unset to retry
+    }
+    let _ = store.set_git_ts_head(repo_id, &head);
+}
+
 /// Map of repo-relative path → most-recent commit time (unix seconds), from the
 /// last `limit` commits. Paths are repo-root-relative, matching the indexed
 /// paths when `root` is the repository root.
@@ -790,6 +814,24 @@ fn git_commit_times(root: &Path, limit: usize) -> HashMap<String, i64> {
         Some(text) => parse_git_log(&text),
         None => HashMap::new(),
     }
+}
+
+/// Like [`git_commit_times`], limited to the commits in `old..HEAD`. `None`
+/// when the range can't be resolved (`old` no longer exists) *or* is empty —
+/// an empty range only arises from a backwards HEAD move (reset/checkout), and
+/// the full-walk fallback re-captures correct times for it.
+fn git_commit_times_range(root: &Path, old: &str, limit: usize) -> Option<HashMap<String, i64>> {
+    git_output(
+        root,
+        &[
+            "log",
+            &format!("-n{limit}"),
+            "--name-only",
+            "--pretty=format:%ct",
+            &format!("{old}..HEAD"),
+        ],
+    )
+    .map(|text| parse_git_log(&text))
 }
 
 /// Parse `git log --name-only --pretty=format:%ct` output into path → latest
