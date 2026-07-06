@@ -192,6 +192,13 @@ pub fn run() -> ExitCode {
         return cmd_drop(cli.target, out);
     }
     if cli.record {
+        // a typo'd --event would otherwise record silently and never roll up
+        if !matches!(cli.event.as_str(), "select" | "open") {
+            return fail(format_args!(
+                "rq --record: unknown --event {:?} (expected select or open)",
+                cli.event
+            ));
+        }
         // clap guarantees --file is present via `requires`
         let file = cli.file.expect("--record requires --file");
         return cmd_record(&cli.event, cli.target.as_deref(), &file, cli.line);
@@ -1183,10 +1190,10 @@ fn show_top_definition(
     hits[0].body = body;
     let top = &hits[0];
     match out {
-        Output::Json => {
-            println!("{}", serde_json::to_string_pretty(top).unwrap_or_default())
+        Output::Json | Output::Ndjson => {
+            // fail loudly on a serialize error, like every other JSON path
+            return Some(emit_json(out, top));
         }
-        Output::Ndjson => println!("{}", serde_json::to_string(top).unwrap_or_default()),
         Output::Text => {
             let color = match_color();
             let c = color.as_deref();

@@ -86,6 +86,7 @@ pub struct Hit {
     /// span. Omitted in JSON when unknown (a row indexed before end-line tracking).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     #[serde(rename = "repo")]
     pub repo_identity: String,
@@ -101,7 +102,8 @@ pub struct Hit {
     #[serde(serialize_with = "serialize_feature_names")]
     pub features: Vec<Feature>,
     /// The definition's source line (trimmed) — filled for displayed results in
-    /// machine-readable output. `None` when unread or in text mode.
+    /// machine-readable output. Omitted when unread (matching `--symbols`).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// The full definition source (`line..=end_line`), filled only by `--show`.
     #[serde(skip_serializing_if = "Option::is_none")]

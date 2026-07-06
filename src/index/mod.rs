@@ -465,6 +465,13 @@ fn run_index(
     let bulk_fts = budget.is_none() && stored.is_empty();
     if bulk_fts {
         store.defer_fts_insert()?;
+    } else if store.fts_trigger_missing().unwrap_or(false) {
+        // A cold bulk index elsewhere dropped the trigger — either it crashed
+        // before its rebuild, or it's still running. Heal before writing more
+        // rows: the rebuild re-syncs FTS from the symbols table and restores
+        // the trigger (a live bulk then pays per-row cost for its remainder —
+        // rare overlap, and its own rebuild at the end is a harmless no-op).
+        let _ = store.rebuild_fts();
     }
 
     // Active (branch) files first: always parsed and written, so the working set

@@ -331,14 +331,29 @@ impl Store {
     /// Rebuild the trigram FTS index from the symbols table in one bulk pass —
     /// far cheaper than the per-row trigger on a cold index — then recreate the
     /// `AFTER INSERT` trigger so later incremental writes stay in sync. The
-    /// inverse of [`defer_fts_insert`](Self::defer_fts_insert).
+    /// inverse of [`defer_fts_insert`](Self::defer_fts_insert). One transaction:
+    /// a concurrent writer either lands before the rebuild (and is captured by
+    /// it — the rebuild scans the whole symbols table) or after the trigger is
+    /// back, never in between.
     pub fn rebuild_fts(&self) -> Result<()> {
         let sql = format!(
-            "INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild');\n{}",
+            "BEGIN IMMEDIATE;\nINSERT INTO symbols_fts(symbols_fts) VALUES('rebuild');\n{}\nCOMMIT;",
             schema::FTS_INSERT_TRIGGER
         );
         self.conn.execute_batch(&sql)?;
         Ok(())
+    }
+
+    /// Whether the `AFTER INSERT` FTS-sync trigger is currently absent — true
+    /// only mid-bulk-index (see [`defer_fts_insert`](Self::defer_fts_insert))
+    /// or after one crashed before its [`rebuild_fts`](Self::rebuild_fts).
+    pub fn fts_trigger_missing(&self) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='symbols_ai'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n == 0)
     }
 
     /// Record indexing coverage for a repository (scope `full`).

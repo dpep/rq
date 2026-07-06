@@ -286,6 +286,11 @@ fn json_results_carry_the_definition_span() {
     // class Widget spans line 1 through its `end` on line 5
     assert!(out.contains("\"line\":1"), "start line present: {out}");
     assert!(out.contains("\"end_line\":5"), "end line present: {out}");
+    // absent optionals are omitted, not null — same shape as --symbols
+    assert!(
+        !out.contains("\"parent\":null"),
+        "no null fields in hit JSON: {out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

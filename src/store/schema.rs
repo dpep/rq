@@ -206,7 +206,7 @@ pub const MIGRATIONS: [(i64, &str); 6] = [
 /// without per-row FTS maintenance, rebuilds the FTS index in one pass, then
 /// recreates it from here.
 pub const FTS_INSERT_TRIGGER: &str = r#"
-CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
 END;
 "#;
