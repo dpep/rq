@@ -263,11 +263,19 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     if q.is_empty() {
         return None;
     }
-    let chars: Vec<char> = name.chars().collect();
-    let n = chars.len();
-    if q.len() > n {
+    // cheap gate: most candidates aren't even a subsequence of the query, so
+    // reject them with one linear scan before any of the DP allocations below
+    let mut qi = 0;
+    for c in name.chars() {
+        if qi < q.len() && c.to_ascii_lowercase() == q[qi] {
+            qi += 1;
+        }
+    }
+    if qi < q.len() {
         return None;
     }
+    let chars: Vec<char> = name.chars().collect();
+    let n = chars.len();
     let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
     let boundary = boundaries(&chars);
     // prefix count of word boundaries, so we can ask "is a whole word skipped

@@ -644,16 +644,18 @@ fn cmd_search(
 
     // Normalized confidence per hit: match quality scaled by dominance over the
     // other results (needs the whole set, so compute it here, once ranked).
-    let scores: Vec<f64> = hits.iter().map(|h| h.score).collect();
-    for (i, hit) in hits.iter_mut().enumerate() {
-        let best_other = scores
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != i)
-            .map(|(_, s)| *s)
-            .fold(None, |acc: Option<f64>, s| {
-                Some(acc.map_or(s, |a| a.max(s)))
-            });
+    // "Best other" is the top score — or the runner-up, for the top hit itself.
+    let (top, second) = hits.iter().fold((None::<f64>, None::<f64>), |(t, s), h| {
+        if t.is_none_or(|t| h.score > t) {
+            (Some(h.score), t)
+        } else if s.is_none_or(|s| h.score > s) {
+            (t, Some(h.score))
+        } else {
+            (t, s)
+        }
+    });
+    for hit in hits.iter_mut() {
+        let best_other = if Some(hit.score) == top { second } else { top };
         hit.confidence = crate::search::confidence(
             hit.score,
             crate::search::match_quality(&hit.features),

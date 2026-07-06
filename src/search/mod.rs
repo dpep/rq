@@ -152,8 +152,8 @@ pub fn search(
     let n_candidates = candidates.len();
     let t_recall = t.elapsed();
     let t = std::time::Instant::now();
-    let learned = learned_boosts(store, query)?;
     let now = now_unix();
+    let learned = learned_boosts(store, query, now)?;
 
     let mut hits: Vec<Hit> = candidates
         .into_iter()
@@ -163,9 +163,16 @@ pub fn search(
             if only_repo.is_some_and(|r| r != c.repository_id) {
                 return None;
             }
-            let key = (c.repository_id, c.file.clone(), c.name.clone());
+            // learned is empty for most queries — skip the per-candidate
+            // String clones the key would cost
+            let learned_boost = if learned.is_empty() {
+                0.0
+            } else {
+                let key = (c.repository_id, c.file.clone(), c.name.clone());
+                learned.get(&key).copied().unwrap_or(0.0)
+            };
             let boosts = Boosts {
-                learned: learned.get(&key).copied().unwrap_or(0.0),
+                learned: learned_boost,
                 // prefer whichever recency signal is more recent: a recent edit
                 // (mtime, stored in nanoseconds — convert to seconds) or a
                 // recent commit (git_ts, seconds)
@@ -210,8 +217,8 @@ fn recency_boost(mtime: Option<i64>, now: i64) -> f64 {
 fn learned_boosts(
     store: &Store,
     query: &str,
+    now: i64,
 ) -> crate::store::Result<HashMap<(i64, String, String), f64>> {
-    let now = now_unix();
     let q = query.to_ascii_lowercase();
     let mut map: HashMap<(i64, String, String), f64> = HashMap::new();
     for s in store.selections_for(&q)? {
