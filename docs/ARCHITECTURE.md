@@ -383,19 +383,24 @@ The long-term differentiator: ranking learns from what users actually choose.
   before ranking, so a stale favorite stops dominating and alternatives
   resurface. Opening a result reinforces it again.
 
-### No daemon — amortized post-interaction work
+### No daemon — amortized and detached post-interaction work
 
 Aggregation (and other proactive work like warming the index) is **not** a
 resident daemon. Each `rq` invocation prints results first, then does a small,
 bounded chunk of deferred work before exiting — rolling a batch of events into
-`selection_stats`, warming the index opportunistically. Cost amortizes across
-interactions, with no process to manage. A high-water mark in `meta` tracks
-which events have been rolled up so each pass only touches new ones, and the
-same pass prunes already-rolled-up events (keeping a small recent window for
-repeat detection) so the raw log stays bounded. The same pass also warms the
-index a little (`index_budgeted`) — bounded, so the process still exits
-promptly. Making that warm a *detached* child (so it can run longer without
-delaying the foreground) is a future addition; see the roadmap.
+`selection_stats` (a high-water mark in `meta` tracks what's been rolled up;
+the same pass prunes rolled-up events, keeping a small recent window for
+repeat detection, so the raw log stays bounded).
+
+Leftover index warming is handed to a **detached child** instead: after
+results print, the search re-execs `rq --warm <root>` with null stdio in its
+own process group and exits — the shell only ever waits on the answer. The
+child runs niced (and with throttled disk I/O on macOS) on a seconds-scale
+budget (`RQ_WARM_BUDGET_MS`), sweeping until coverage completes, and is
+single-flighted per repo via a pid-stamped lock in `meta`, so a burst of
+queries runs at most one warmer. Still no daemon: the child does one job and
+exits. `RQ_WARM_DETACH=0` reverts to finishing the (small) warm in-process —
+the hermetic mode tests and debugging use.
 
 Git-awareness (current branch, recent commits, ownership, recently-modified
 areas) enters later as additional **ranking hints — never hard filters**.

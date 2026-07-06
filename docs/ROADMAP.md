@@ -58,11 +58,12 @@ exiting. See "No daemon — amortized post-interaction work" in ARCHITECTURE.
 Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
 
 - [ ] streamed result tail (results arrive incrementally)
-- [ ] detached background warming — the deferred warm is currently synchronous
-      (it runs before the process exits, so its budget must stay small, ~250 ms).
-      Re-exec a detached `rq --warm` child (null streams) so the foreground
-      returns instantly and warming can run for seconds; needs `busy_timeout` +
-      a `last_indexed_at` single-flight gate. Bigger budget, periodic freshness
+- [x] detached background warming — after results print, a search re-execs a
+      detached `rq --warm` child (null stdio, own process group, niced +
+      throttled I/O) that sweeps until coverage completes on a seconds-scale
+      budget (`RQ_WARM_BUDGET_MS`), single-flighted per repo via a pid-stamped
+      lock in `meta`. The foreground only ever waits on the answer;
+      `RQ_WARM_DETACH=0` keeps the warm in-process (tests, debugging)
 - [x] fused walk→parse→write pipeline — `run_index` streams: one walk thread
       feeds parse workers, which feed a writer committing in batches *as results
       arrive*. Walk and parse overlap (indexing starts on the first file found),

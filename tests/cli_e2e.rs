@@ -22,11 +22,14 @@ fn scratch(label: &str) -> (PathBuf, PathBuf) {
 }
 
 /// Run the built binary with an isolated db and a set working directory.
+/// Detached warming is off so each invocation is hermetic (no child process
+/// racing the test's asserts/cleanup); the detach path has its own test.
 fn rq(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
         .args(args)
         .current_dir(cwd)
         .env("RQ_DB", db)
+        .env("RQ_WARM_DETACH", "0")
         .output()
         .expect("run rq");
     (
@@ -1179,6 +1182,53 @@ fn bare_invocation_prints_help() {
         "help banner: {out}"
     );
     assert!(out.contains("Usage:"), "usage in help: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detached_warm_finishes_coverage_in_the_background() {
+    let (dir, db) = scratch("detach");
+    for i in 0..30 {
+        fs::write(
+            dir.join(format!("f{i:02}.rb")),
+            format!("class K{i:02}\nend\n"),
+        )
+        .unwrap();
+    }
+    git_init_commit(&dir);
+
+    // Cap each in-process pass tiny so the answering query can't finish the
+    // sweep itself; detached warming (on) must pick up the remainder. The
+    // child inherits the cap, so it needs several passes — exercising its
+    // sweep-until-complete loop too.
+    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["K00", "--no-record"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "1")
+        .env("RQ_COLLECT_CAP", "5")
+        .output()
+        .expect("run rq");
+    assert!(
+        out.status.success(),
+        "search failed: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // the detached child completes the sweep with no further queries
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
+        if status.contains("\"status\":\"complete\"") && status.contains("\"files\":30") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached warm never completed: {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

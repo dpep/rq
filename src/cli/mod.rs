@@ -154,6 +154,12 @@ struct Cli {
     #[arg(long, default_value = "select")]
     event: String,
 
+    /// Finish warming a repository's index in the background — the target a
+    /// search re-execs after printing results, detached, so the shell never
+    /// waits on it. Single-flighted per repo; safe to run by hand.
+    #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "record", "drop", "symbols", "open", "show"])]
+    warm: Option<Option<String>>,
+
     /// Print a shell completion script (bash, zsh, fish, elvish, powershell).
     #[arg(long, value_name = "SHELL")]
     completions: Option<Shell>,
@@ -183,6 +189,9 @@ pub fn run() -> ExitCode {
         // index PATH (else cwd); with --path, seed only those subtrees
         let out = output_format(&cli);
         return cmd_index(path.as_deref().map(PathBuf::from), &cli.path, out);
+    }
+    if let Some(path) = &cli.warm {
+        return cmd_warm(path.as_deref());
     }
     if cli.status {
         return cmd_status(output_format(&cli));
@@ -392,11 +401,16 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     }
 
     // Warm the index on a background thread (its own connection — WAL lets it
-    // write while we read), for the whole budget, whenever there's work: a
-    // not-yet-complete repo, or a complete one changed since it was indexed. The
-    // search below reads whatever it has committed so far, and we block on it
-    // before exiting so the shell waits the same total time.
-    let warm_budget = answer_warm_budget() + deferred_warm_budget();
+    // write while we read) whenever there's work: a not-yet-complete repo, or a
+    // complete one changed since it was indexed. The search below reads whatever
+    // it has committed so far. With detach on (the default), this in-process
+    // warm only serves *this* answer — leftover work goes to a detached child
+    // after results print, so the shell never waits on it.
+    let warm_budget = if warm_detach_enabled() {
+        answer_warm_budget()
+    } else {
+        answer_warm_budget() + deferred_warm_budget()
+    };
     let was_warming = coverage.as_deref() != Some("complete");
     let want_warm = warming_ok
         && match &root {
@@ -561,6 +575,9 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
                 .and_then(|id| store.coverage_status(id).ok().flatten())
                 .as_deref()
                 != Some("complete");
+        // a "not yet" miss leaves work behind — let a detached child keep
+        // warming so a retry lands on a more complete index
+        maybe_detach_warm(&store, want_warm, root.as_deref(), identity.as_deref());
         return no_match_code(out, query, interrupted, incomplete);
     }
 
@@ -617,21 +634,143 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     }
     deferred_maintenance(&mut store);
 
-    // Results are out; block until the background warm finishes its budget. It
-    // persists as it goes (incremental commits), so even a pass cut short by the
-    // budget keeps everything it parsed — building coverage across queries and,
-    // on a changed repo, picking up edits and reconciling deletions on a full
-    // sweep, all without a daemon. A blocking pass runs on a generous budget, so
-    // once we have the answer we stop it rather than wait on the rest (the next
-    // query resumes from the committed batches).
+    // Results are out; stop the in-process warm (it persists as it goes, so a
+    // cut pass keeps everything parsed) and join it — then hand whatever's left
+    // to a detached child, which finishes coverage with a budget no foreground
+    // query could afford. The shell only ever waits on the answer.
     if block {
         INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     if let Some(h) = indexer {
         let _ = h.join();
     }
+    maybe_detach_warm(&store, want_warm, root.as_deref(), identity.as_deref());
 
     ExitCode::SUCCESS
+}
+
+/// Re-exec a detached warm child when this query's warming didn't finish the
+/// job. No-op when detach is off, nothing was warming, or coverage completed.
+fn maybe_detach_warm(
+    store: &Store,
+    want_warm: bool,
+    root: Option<&std::path::Path>,
+    identity: Option<&str>,
+) {
+    if !warm_detach_enabled() || !want_warm {
+        return;
+    }
+    let (Some(root), Some(id)) = (root, identity) else {
+        return;
+    };
+    if store.coverage_status(id).ok().flatten().as_deref() == Some("complete") {
+        return; // the in-process pass finished the job
+    }
+    spawn_detached_warm(root);
+}
+
+/// Spawn `rq --warm <root>` fully detached: null stdio and its own process
+/// group, so it survives this process and a later Ctrl-C in the terminal
+/// can't reach it. The child nices itself and is single-flighted per repo.
+fn spawn_detached_warm(root: &std::path::Path) {
+    use std::os::unix::process::CommandExt;
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--warm")
+        .arg(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    match cmd.spawn() {
+        Ok(child) => crate::trace!(
+            "detached warm: pid {} for {}",
+            child.id(),
+            crate::trace::abbrev(root)
+        ),
+        Err(e) => crate::trace!("detached warm failed to spawn: {e}"),
+    }
+}
+
+/// How long a warm lock is trusted without a liveness hit — past this, a
+/// stamp is a crashed warmer's leftover and a new child takes over.
+const WARM_LOCK_TTL_SECS: i64 = 600;
+
+/// `rq --warm [PATH]`: the detached child a search re-execs after printing —
+/// finishes warming the repo's index in the background. Niced so it stays out
+/// of the foreground's way; single-flighted per repo so a burst of queries
+/// runs at most one warmer. Safe (and boring) to run by hand.
+fn cmd_warm(path: Option<&str>) -> ExitCode {
+    // Stay out of the way: drop scheduling priority, and throttle disk I/O on
+    // macOS. Best-effort — a failure just means a less-polite warm.
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        // <sys/resource.h>; not in the libc crate. Args below:
+        // IOPOL_TYPE_DISK=0, IOPOL_SCOPE_PROCESS=0, IOPOL_THROTTLE=3.
+        fn setiopolicy_np(
+            iotype: libc::c_int,
+            scope: libc::c_int,
+            policy: libc::c_int,
+        ) -> libc::c_int;
+    }
+    unsafe {
+        libc::nice(10);
+        #[cfg(target_os = "macos")]
+        setiopolicy_np(0, 0, 3);
+    }
+    let mut store = match open_store() {
+        Ok(s) => s,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    let start = path
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let root = crate::index::repo_root(&start).unwrap_or(start);
+    let identity = resolve_identity(&store, &root);
+
+    // Single-flight: if another live rq is already warming this repo, bow out.
+    // A dead pid or a stale stamp is a crashed warmer — take over.
+    if let Ok(Some((pid, ts))) = store.warm_lock(&identity)
+        && pid != std::process::id()
+        && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+        && now_secs() - ts < WARM_LOCK_TTL_SECS
+    {
+        return ExitCode::SUCCESS;
+    }
+    let _ = store.set_warm_lock(&identity, std::process::id());
+
+    // Sweep until coverage completes, the budget runs out, or a pass stops
+    // making progress (each pass converges — mtime-skips what's done).
+    let deadline = std::time::Instant::now() + warm_bg_budget();
+    let active = crate::index::branch_changed_files(&root);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let stats = match crate::index::index_budgeted(&mut store, &root, &active, remaining, None)
+        {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        if store.coverage_status(&identity).ok().flatten().as_deref() == Some("complete")
+            || stats.files_indexed == 0
+        {
+            break;
+        }
+    }
+    let _ = store.clear_warm_lock(&identity);
+    ExitCode::SUCCESS
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Live in-memory scan of an untracked (non-git, never-indexed) dir: substring
@@ -998,6 +1137,19 @@ fn deferred_warm_budget() -> Duration {
 /// to surface a result the warm hasn't reached, without an unbounded walk.
 fn live_fallback_budget() -> Duration {
     env_budget("RQ_FALLBACK_BUDGET_MS", 250)
+}
+
+/// Budget for the *detached* warm child — generous, because nothing waits on
+/// it: the shell got its results and the child runs niced in the background.
+fn warm_bg_budget() -> Duration {
+    env_budget("RQ_WARM_BUDGET_MS", 20_000)
+}
+
+/// Whether a search hands leftover warming to a detached child (default) or
+/// finishes it in-process before exiting (`RQ_WARM_DETACH=0` — used by the
+/// test harness for hermetic runs, and handy for debugging).
+fn warm_detach_enabled() -> bool {
+    std::env::var("RQ_WARM_DETACH").map_or(true, |v| v != "0")
 }
 
 /// How long a query may block indexing a cold repo before giving up with an

@@ -790,6 +790,35 @@ impl Store {
         self.meta_set(&format!("git_ts_head:{repository_id}"), head)
     }
 
+    /// The detached-warm single-flight lock for a repo: `(pid, stamped_at)` of
+    /// the process that claimed it, if any. Liveness/staleness policy is the
+    /// caller's (the store just holds the record).
+    pub fn warm_lock(&self, identity: &str) -> Result<Option<(u32, i64)>> {
+        Ok(self
+            .meta_get(&format!("warm_lock:{identity}"))?
+            .and_then(|v| {
+                let (pid, ts) = v.split_once(':')?;
+                Some((pid.parse().ok()?, ts.parse().ok()?))
+            }))
+    }
+
+    /// Claim the detached-warm lock for this process.
+    pub fn set_warm_lock(&self, identity: &str, pid: u32) -> Result<()> {
+        self.meta_set(
+            &format!("warm_lock:{identity}"),
+            &format!("{pid}:{}", now_unix()),
+        )
+    }
+
+    /// Release the detached-warm lock.
+    pub fn clear_warm_lock(&self, identity: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            params![format!("warm_lock:{identity}")],
+        )?;
+        Ok(())
+    }
+
     fn meta_get(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {

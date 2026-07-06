@@ -155,13 +155,13 @@ Returning fewer, better, ranked results is the goal — not completeness.
 ## Staying current
 
 You rarely run `rq --index` by hand. The first query in a git repo warms the
-index opportunistically — files you're changing on this branch first — then tops
-up a little per query until coverage is complete, so a warm repo answers in
-milliseconds. A **cold** repo is the exception: the first query blocks and
-indexes until it can answer (progress shown, Ctrl-C to stop) rather than lie with
-a false miss. It's a one-time cost — the index persists and self-heals as you
-search, re-reading edited files and reconciling added/removed ones on the warm
-sweep.
+index opportunistically — files you're changing on this branch first — and once
+your answer prints, a detached, low-priority child finishes the sweep in the
+background, so coverage completes without delaying your shell. A **cold** repo
+is the exception: the first query blocks and indexes until it can answer
+(progress shown, Ctrl-C to stop) rather than lie with a false miss. It's a
+one-time cost — the index persists and self-heals as you search, re-reading
+edited files and reconciling added/removed ones on the warm sweep.
 
 A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
