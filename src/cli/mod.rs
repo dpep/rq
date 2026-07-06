@@ -220,19 +220,19 @@ pub fn run() -> ExitCode {
                 paths.extend(cli.dirs.clone());
                 target
             };
-            cmd_search(
-                &query,
-                cli.explain,
+            cmd_search(&SearchArgs {
+                query: &query,
+                explain: cli.explain,
                 out,
-                &paths,
-                &kinds,
-                &langs,
-                cli.limit,
-                cli.no_record,
-                cli.open,
-                cli.all_repos,
-                cli.show,
-            )
+                paths: &paths,
+                kinds: &kinds,
+                langs: &langs,
+                want: cli.limit,
+                no_record: cli.no_record,
+                open: cli.open,
+                all_repos: cli.all_repos,
+                show: cli.show,
+            })
         }
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
@@ -278,25 +278,37 @@ const HEADS_UP_DELAY: Duration = Duration::from_millis(500);
 /// feeling live.
 const PROGRESS_REDRAW: Duration = Duration::from_millis(120);
 
-/// Default action: search the index and print ranked results. `want` is the
-/// number of results to show (`--limit`).
-#[allow(clippy::too_many_arguments)]
-fn cmd_search(
-    query: &str,
+/// Everything `rq <query>` needs, bundled from the parsed CLI flags.
+struct SearchArgs<'a> {
+    query: &'a str,
     explain: bool,
     out: Output,
-    paths: &[String],
-    kinds: &[String],
-    langs: &[String],
+    paths: &'a [String],
+    kinds: &'a [String],
+    langs: &'a [String],
+    /// Number of results to show (`--limit`).
     want: usize,
     no_record: bool,
     open: bool,
     all_repos: bool,
     show: bool,
-) -> ExitCode {
+}
+
+/// Default action: search the index and print ranked results.
+fn cmd_search(args: &SearchArgs) -> ExitCode {
+    let &SearchArgs {
+        query,
+        out,
+        want,
+        no_record,
+        open,
+        all_repos,
+        show,
+        ..
+    } = args;
     // post-filters (--path, --kind, --lang) need headroom before the cutoff so a
     // filtered-in result isn't lost to the top-N truncation
-    let limit = if paths.is_empty() && kinds.is_empty() && langs.is_empty() {
+    let limit = if args.paths.is_empty() && args.kinds.is_empty() && args.langs.is_empty() {
         want
     } else {
         (want * 20).max(PATH_HEADROOM)
@@ -516,64 +528,11 @@ fn cmd_search(
         && coverage.is_none()
         && let Some(root) = &root
     {
-        crate::trace!("empty → live (in-memory) scan of an untracked dir");
-        let deadline = std::time::Instant::now() + live_fallback_budget();
-        let mut h =
-            crate::search::live_search(root, query, limit, &HashSet::new(), Some(deadline), true);
-        if h.is_empty() {
-            h = crate::search::live_search(
-                root,
-                query,
-                limit,
-                &HashSet::new(),
-                Some(deadline),
-                false,
-            );
-        }
-        hits = h;
+        hits = live_fallback(root, query, limit);
     }
 
-    // Relevance gate: when the query lands a real name match (exact or prefix),
-    // drop the scattered fuzzy / path-only near-matches — they're noise next to a
-    // solid hit, and rq favors fewer, better results. A purely-fuzzy query (no
-    // exact/prefix anywhere) keeps its matches.
-    let strong = |h: &crate::search::Hit| {
-        h.features
-            .iter()
-            .any(|f| matches!(f.name, "exact" | "prefix"))
-    };
-    if hits.iter().any(strong) {
-        hits.retain(strong);
-    }
-
-    // Scope gate: a qualified query (`Foo::Bar#baz`) that lands inside the named
-    // scope keeps only the in-scope results; if none match, the others stay (the
-    // definition may live elsewhere).
-    crate::search::apply_scope_gate(query, &mut hits);
-
-    // post-filters: keep only results under a --path dir, of a --kind, and/or in
-    // a --lang, then trim to the requested count.
-    if !paths.is_empty() {
-        // --path values may be absolute or cwd-relative; stored files are
-        // repo-root-relative, so normalize before prefix-matching or an
-        // absolute path would silently filter everything out.
-        let here = cwd.clone().unwrap_or_else(|| PathBuf::from("."));
-        let base = root.clone().unwrap_or_else(|| here.clone());
-        let norm: Vec<String> = paths
-            .iter()
-            .map(|p| repo_relative(&base, &here, p))
-            .collect();
-        hits.retain(|h| under_any(&h.file, &norm));
-    }
-    if !kinds.is_empty() {
-        hits.retain(|h| kinds.iter().any(|k| k == &h.kind));
-    }
-    if !langs.is_empty() {
-        hits.retain(|h| langs.iter().any(|l| l == &h.language));
-    }
-    if !paths.is_empty() || !kinds.is_empty() || !langs.is_empty() {
-        hits.truncate(want);
-    }
+    apply_gates(query, &mut hits);
+    apply_post_filters(args, cwd.as_deref(), root.as_deref(), &mut hits);
 
     if hits.is_empty() {
         // Stop a still-running block so the join is prompt, then settle coverage.
@@ -593,36 +552,7 @@ fn cmd_search(
                 .and_then(|id| store.coverage_status(id).ok().flatten())
                 .as_deref()
                 != Some("complete");
-        // Structured callers get a reason, not a bare `[]`/empty: `warming`
-        // (retry — index incomplete), `interrupted` (a stopped block), or
-        // `no_match` (definitive). Text keeps its human message.
-        let status = if interrupted {
-            "interrupted"
-        } else if incomplete {
-            "warming"
-        } else {
-            "no_match"
-        };
-        match out {
-            Output::Json | Output::Ndjson => {
-                let obj = serde_json::json!({ "status": status, "query": query });
-                let _ = emit_json(out, &obj); // exit code below carries the miss
-            }
-            Output::Text if interrupted => {
-                eprintln!("rq: indexing interrupted — run again to finish")
-            }
-            Output::Text if incomplete => eprintln!(
-                "rq: still indexing — no match for {query:?} yet (run again, or `rq --index` to finish)"
-            ),
-            Output::Text => eprintln!("no matches for {query:?}"),
-        }
-        // Exit 2 = indeterminate (index incomplete), 1 = a definitive miss. Both
-        // non-zero, so `rq … && …` still reads as "found something".
-        return if incomplete {
-            ExitCode::from(2)
-        } else {
-            ExitCode::FAILURE
-        };
+        return no_match_code(out, query, interrupted, incomplete);
     }
 
     // Attach each result's definition line (e.g. `def perform(refund)`) — shown
@@ -636,27 +566,7 @@ fn cmd_search(
             cwd.as_deref(),
         );
     }
-
-    // Normalized confidence per hit: match quality scaled by dominance over the
-    // other results (needs the whole set, so compute it here, once ranked).
-    // "Best other" is the top score — or the runner-up, for the top hit itself.
-    let (top, second) = hits.iter().fold((None::<f64>, None::<f64>), |(t, s), h| {
-        if t.is_none_or(|t| h.score > t) {
-            (Some(h.score), t)
-        } else if s.is_none_or(|s| h.score > s) {
-            (t, Some(h.score))
-        } else {
-            (t, s)
-        }
-    });
-    for hit in hits.iter_mut() {
-        let best_other = if Some(hit.score) == top { second } else { top };
-        hit.confidence = crate::search::confidence(
-            hit.score,
-            crate::search::match_quality(&hit.features),
-            best_other,
-        );
-    }
+    attach_confidence(&mut hits);
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
@@ -678,54 +588,8 @@ fn cmd_search(
         );
     }
 
-    if let Some(code) = emit_rows(out, &hits) {
+    if let Some(code) = render_hits(args, &hits) {
         return code;
-    }
-    match out {
-        Output::Json | Output::Ndjson => {}
-        Output::Text => {
-            let color = match_color();
-            let c = color.as_deref();
-            if show {
-                // fell through from --show: no single confident match to print
-                eprintln!(
-                    "rq: no single confident match for {query:?} — {} candidates below; narrow the query to --show one",
-                    hits.len()
-                );
-            }
-            for hit in &hits {
-                // highlight the chars the query matched — in the name, the
-                // filename, and the definition line (great for fuzzy matches)
-                let name = hl(&hit.name, query, c);
-                let qualified = match &hit.parent {
-                    Some(p) => format!("{name} · {p}"),
-                    None => name,
-                };
-                println!(
-                    "{}:{}  {} {}",
-                    hl_path(&hit.file, query, c),
-                    hit.line,
-                    hit.kind,
-                    qualified
-                );
-                if let Some(sig) = &hit.signature {
-                    println!("    {}", hl(sig, query, c));
-                }
-                if explain {
-                    let parts: Vec<String> = hit
-                        .features
-                        .iter()
-                        .map(|f| format!("{} {:.0}", f.name, f.value))
-                        .collect();
-                    println!(
-                        "    confidence {:.2} · score {:.0} = {}",
-                        hit.confidence,
-                        hit.score,
-                        parts.join(" + ")
-                    );
-                }
-            }
-        }
     }
 
     // Results are out — now do the cheap deferred work, amortized across
@@ -759,6 +623,180 @@ fn cmd_search(
     }
 
     ExitCode::SUCCESS
+}
+
+/// Live in-memory scan of an untracked (non-git, never-indexed) dir: substring
+/// pre-filtered first, then the unfiltered fuzzy retry. Persists nothing.
+fn live_fallback(root: &std::path::Path, query: &str, limit: usize) -> Vec<crate::search::Hit> {
+    crate::trace!("empty → live (in-memory) scan of an untracked dir");
+    let deadline = std::time::Instant::now() + live_fallback_budget();
+    let h = crate::search::live_search(root, query, limit, &HashSet::new(), Some(deadline), true);
+    if !h.is_empty() {
+        return h;
+    }
+    crate::search::live_search(root, query, limit, &HashSet::new(), Some(deadline), false)
+}
+
+/// The result-quality gates, in order:
+/// - relevance: when the query lands a real name match (exact or prefix), drop
+///   the scattered fuzzy / path-only near-matches — they're noise next to a
+///   solid hit, and rq favors fewer, better results. A purely-fuzzy query (no
+///   exact/prefix anywhere) keeps its matches.
+/// - scope: a qualified query (`Foo::Bar#baz`) that lands inside the named
+///   scope keeps only the in-scope results; if none match, the others stay
+///   (the definition may live elsewhere).
+fn apply_gates(query: &str, hits: &mut Vec<crate::search::Hit>) {
+    let strong = |h: &crate::search::Hit| {
+        h.features
+            .iter()
+            .any(|f| matches!(f.name, "exact" | "prefix"))
+    };
+    if hits.iter().any(strong) {
+        hits.retain(strong);
+    }
+    crate::search::apply_scope_gate(query, hits);
+}
+
+/// Post-filters: keep only results under a `--path` dir, of a `--kind`, and/or
+/// in a `--lang`, then trim to the requested count.
+fn apply_post_filters(
+    args: &SearchArgs,
+    cwd: Option<&std::path::Path>,
+    root: Option<&std::path::Path>,
+    hits: &mut Vec<crate::search::Hit>,
+) {
+    if !args.paths.is_empty() {
+        // --path values may be absolute or cwd-relative; stored files are
+        // repo-root-relative, so normalize before prefix-matching or an
+        // absolute path would silently filter everything out.
+        let here = cwd.map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let base = root.map_or_else(|| here.clone(), PathBuf::from);
+        let norm: Vec<String> = args
+            .paths
+            .iter()
+            .map(|p| repo_relative(&base, &here, p))
+            .collect();
+        hits.retain(|h| under_any(&h.file, &norm));
+    }
+    if !args.kinds.is_empty() {
+        hits.retain(|h| args.kinds.iter().any(|k| k == &h.kind));
+    }
+    if !args.langs.is_empty() {
+        hits.retain(|h| args.langs.iter().any(|l| l == &h.language));
+    }
+    if !args.paths.is_empty() || !args.kinds.is_empty() || !args.langs.is_empty() {
+        hits.truncate(args.want);
+    }
+}
+
+/// Report a miss and pick its exit code. Structured callers get a reason, not
+/// a bare `[]`/empty: `warming` (retry — index incomplete), `interrupted` (a
+/// stopped block), or `no_match` (definitive). Text keeps its human message.
+/// Exit 2 = indeterminate (index incomplete), 1 = a definitive miss — both
+/// non-zero, so `rq … && …` still reads as "found something".
+fn no_match_code(out: Output, query: &str, interrupted: bool, incomplete: bool) -> ExitCode {
+    let status = if interrupted {
+        "interrupted"
+    } else if incomplete {
+        "warming"
+    } else {
+        "no_match"
+    };
+    match out {
+        Output::Json | Output::Ndjson => {
+            let obj = serde_json::json!({ "status": status, "query": query });
+            let _ = emit_json(out, &obj); // the exit code below carries the miss
+        }
+        Output::Text if interrupted => {
+            eprintln!("rq: indexing interrupted — run again to finish")
+        }
+        Output::Text if incomplete => eprintln!(
+            "rq: still indexing — no match for {query:?} yet (run again, or `rq --index` to finish)"
+        ),
+        Output::Text => eprintln!("no matches for {query:?}"),
+    }
+    if incomplete {
+        ExitCode::from(2)
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Normalized confidence per hit: match quality scaled by dominance over the
+/// other results (needs the whole ranked set). "Best other" is the top score —
+/// or the runner-up, for the top hit itself.
+fn attach_confidence(hits: &mut [crate::search::Hit]) {
+    let (top, second) = hits.iter().fold((None::<f64>, None::<f64>), |(t, s), h| {
+        if t.is_none_or(|t| h.score > t) {
+            (Some(h.score), t)
+        } else if s.is_none_or(|s| h.score > s) {
+            (t, Some(h.score))
+        } else {
+            (t, s)
+        }
+    });
+    for hit in hits.iter_mut() {
+        let best_other = if Some(hit.score) == top { second } else { top };
+        hit.confidence = crate::search::confidence(
+            hit.score,
+            crate::search::match_quality(&hit.features),
+            best_other,
+        );
+    }
+}
+
+/// Print the ranked results (JSON array, NDJSON lines, or highlighted text).
+/// `Some(exit)` on a serialization failure, `None` on success.
+fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCode> {
+    if let Some(code) = emit_rows(args.out, hits) {
+        return Some(code);
+    }
+    if args.out != Output::Text {
+        return None;
+    }
+    let color = match_color();
+    let c = color.as_deref();
+    let query = args.query;
+    if args.show {
+        // fell through from --show: no single confident match to print
+        eprintln!(
+            "rq: no single confident match for {query:?} — {} candidates below; narrow the query to --show one",
+            hits.len()
+        );
+    }
+    for hit in hits {
+        // highlight the chars the query matched — in the name, the
+        // filename, and the definition line (great for fuzzy matches)
+        let name = hl(&hit.name, query, c);
+        let qualified = match &hit.parent {
+            Some(p) => format!("{name} · {p}"),
+            None => name,
+        };
+        println!(
+            "{}:{}  {} {}",
+            hl_path(&hit.file, query, c),
+            hit.line,
+            hit.kind,
+            qualified
+        );
+        if let Some(sig) = &hit.signature {
+            println!("    {}", hl(sig, query, c));
+        }
+        if args.explain {
+            let parts: Vec<String> = hit
+                .features
+                .iter()
+                .map(|f| format!("{} {:.0}", f.name, f.value))
+                .collect();
+            println!(
+                "    confidence {:.2} · score {:.0} = {}",
+                hit.confidence,
+                hit.score,
+                parts.join(" + ")
+            );
+        }
+    }
+    None
 }
 
 /// Pick a hit for `--open`: the top match, unless we're on an interactive
