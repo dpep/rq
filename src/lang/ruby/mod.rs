@@ -28,13 +28,17 @@ impl LanguagePlugin for Ruby {
             tree_sitter_ruby::LANGUAGE.into(),
             file,
             source,
-            |ctx, root, out| walk(ctx, root, None, out),
+            |ctx, root, out| walk(ctx, root, None, "public", out),
         )
     }
 }
 
-/// Recursively collect definitions. `parent` is the enclosing qualified name.
-fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+/// Recursively collect definitions. `parent` is the enclosing qualified name;
+/// `vis` is the access section in effect (a bare `private`/`protected`/`public`
+/// marker flips it for everything after, including through wrapping nodes like
+/// `private def foo`).
+fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mut Vec<Symbol>) {
+    let mut vis = vis;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -54,29 +58,47 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                         Some(p) => Some(qualify(parent, p, "::")),
                         None => parent.map(str::to_string),
                     };
-                    out.push(ctx.symbol(leaf, kind, child, effective_parent.as_deref()));
+                    let mut s = ctx.symbol(leaf, kind, child, effective_parent.as_deref());
+                    s.visibility = Some("public");
+                    out.push(s);
                     let qualified = qualify(effective_parent.as_deref(), leaf, "::");
-                    walk(ctx, child, Some(&qualified), out);
+                    // a fresh body starts a fresh (public) access section
+                    walk(ctx, child, Some(&qualified), "public", out);
                 } else {
-                    walk(ctx, child, parent, out);
+                    walk(ctx, child, parent, vis, out);
                 }
             }
             "method" | "singleton_method" => {
                 if let Some(name) = ctx.field_text(child, "name") {
-                    out.push(ctx.symbol(&name, Kind::Method, child, parent));
+                    let mut s = ctx.symbol(&name, Kind::Method, child, parent);
+                    // `private` sections don't apply to `def self.x`
+                    s.visibility = Some(if child.kind() == "singleton_method" {
+                        "public"
+                    } else {
+                        vis
+                    });
+                    out.push(s);
                 }
                 // method bodies rarely hold further definitions; don't recurse.
             }
+            // a bare access marker flips the section for what follows
+            "identifier" => match ctx.node_text(child).as_deref() {
+                Some("private") => vis = "private",
+                Some("protected") => vis = "protected",
+                Some("public") => vis = "public",
+                _ => {}
+            },
             "call" => {
                 // metaprogramming: `attr_accessor :x`, `has_many :users`, … are
                 // calls that *define* methods Tree-sitter can't see as defs.
                 // Emit the literal names, pointing at the macro's line.
-                dsl_symbols(ctx, child, parent, out);
+                dsl_symbols(ctx, child, parent, vis, out);
                 // still recurse: a call can wrap real definitions
-                // (`private def foo`, `Class.new do … end`)
-                walk(ctx, child, parent, out);
+                // (`private def foo` — its `private` identifier flips `vis`
+                // on the way down — or `Class.new do … end`)
+                walk(ctx, child, parent, vis, out);
             }
-            _ => walk(ctx, child, parent, out),
+            _ => walk(ctx, child, parent, vis, out),
         }
     }
 }
@@ -106,7 +128,13 @@ fn dsl_args(method: &str) -> Option<DslArgs> {
 /// arguments count — a computed name (`define_method(name)`) is unresolvable
 /// statically, so it's skipped rather than guessed. Keyword arguments
 /// (`delegate …, to: :owner`) are `pair` nodes and naturally excluded.
-fn dsl_symbols(ctx: &Ctx, call: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+fn dsl_symbols(
+    ctx: &Ctx,
+    call: Node,
+    parent: Option<&str>,
+    vis: &'static str,
+    out: &mut Vec<Symbol>,
+) {
     if call.child_by_field_name("receiver").is_some() {
         return; // `Foo.attr_accessor` isn't the macro form we index
     }
@@ -127,7 +155,9 @@ fn dsl_symbols(ctx: &Ctx, call: Node, parent: Option<&str>, out: &mut Vec<Symbol
         if let Some(name) = literal_name(ctx, arg)
             && !name.is_empty()
         {
-            out.push(ctx.symbol(&name, Kind::Method, call, parent));
+            let mut s = ctx.symbol(&name, Kind::Method, call, parent);
+            s.visibility = Some(vis);
+            out.push(s);
         }
         if matches!(args, DslArgs::First) {
             break; // later args are options (`scope :active, -> {…}`), not names
@@ -293,6 +323,34 @@ end
         let hidden = find(&syms, "hidden");
         assert_eq!(hidden.kind, Kind::Method);
         assert_eq!(hidden.parent.as_deref(), Some("Widget"));
+        assert_eq!(hidden.visibility, Some("private"));
+    }
+
+    #[test]
+    fn access_sections_set_visibility() {
+        let src = r#"
+class Widget
+  def open_api
+  end
+
+  private
+
+  def internal
+  end
+  attr_reader :secret
+
+  public
+
+  def reopened
+  end
+end
+"#;
+        let syms = extract(src);
+        assert_eq!(find(&syms, "open_api").visibility, Some("public"));
+        assert_eq!(find(&syms, "internal").visibility, Some("private"));
+        // a macro under `private` defines private methods too
+        assert_eq!(find(&syms, "secret").visibility, Some("private"));
+        assert_eq!(find(&syms, "reopened").visibility, Some("public"));
     }
 
     #[test]

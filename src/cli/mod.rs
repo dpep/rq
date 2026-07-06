@@ -1426,6 +1426,8 @@ struct SymbolOut {
     end_line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visibility: Option<String>,
     repo: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
@@ -1488,6 +1490,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
             line: r.line,
             end_line: r.end_line,
             parent: r.parent,
+            visibility: r.visibility,
             repo: r.repo_identity,
         })
         .collect();

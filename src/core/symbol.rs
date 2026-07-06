@@ -63,6 +63,10 @@ pub struct Symbol {
     pub end_line: u32,
     /// Enclosing symbol name, if any (lexical nesting only).
     pub parent: Option<String>,
+    /// Access level when the language expresses one: `public`, `crate`,
+    /// `private`, or `protected`. `None` when unknown. A ranking hint (private
+    /// helpers sit below public API), never a filter.
+    pub visibility: Option<&'static str>,
 }
 
 #[cfg(test)]

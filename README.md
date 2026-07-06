@@ -141,6 +141,8 @@ language-agnostic). A
 query is matched and scored by an additive, explainable sum of signals:
 
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence
+- **visibility** — public API edges out private/protected helpers (Rust `pub`,
+  Ruby `private` sections, Python `_underscore`, Go capitalization)
 - **qualifier** — a scoped query (`Foo::Bar`) prefers the definition inside that scope
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the repo you're in by default

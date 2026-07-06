@@ -157,6 +157,21 @@ pub fn score(
         }
     }
 
+    // Visibility — a definition the language marks private/protected is less
+    // likely the navigation target than public API. A small penalty (never a
+    // filter): it breaks ties among comparable matches without overriding
+    // match quality, and unknown visibility (pre-v9 rows, or languages that
+    // don't express one) carries no signal at all.
+    if matches!(
+        cand.visibility.as_deref(),
+        Some("private") | Some("protected")
+    ) {
+        features.push(Feature {
+            name: "private",
+            value: -15.0,
+        });
+    }
+
     // Kind weight — definitions you navigate to most sit slightly higher.
     // Top-level types rank alongside classes; methods/functions stay neutral.
     let kind = match cand.kind.as_str() {
@@ -631,11 +646,32 @@ mod tests {
             repo_identity: "r".into(),
             mtime: None,
             git_ts: None,
+            visibility: None,
         }
     }
 
     fn total(query: &str, name: &str) -> Option<f64> {
         score(query, &row(name, "class", 1), None, Boosts::default()).map(|s| s.total)
+    }
+
+    #[test]
+    fn private_ranks_below_public_on_an_equal_match() {
+        let mut public = row("save", "method", 1);
+        public.visibility = Some("public".into());
+        let mut private = row("save", "method", 1);
+        private.visibility = Some("private".into());
+        let unknown = row("save", "method", 1); // pre-v9 row: no signal
+
+        let pub_score = score("save", &public, None, Boosts::default()).unwrap();
+        let priv_score = score("save", &private, None, Boosts::default()).unwrap();
+        let unk_score = score("save", &unknown, None, Boosts::default()).unwrap();
+        assert!(pub_score.total > priv_score.total);
+        assert_eq!(
+            pub_score.total, unk_score.total,
+            "unknown carries no penalty"
+        );
+        // the penalty is a tiebreaker, never bigger than a match-quality step
+        assert!(priv_score.total > 700.0, "still comfortably above a prefix");
     }
 
     #[test]

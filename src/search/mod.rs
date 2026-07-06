@@ -88,6 +88,10 @@ pub struct Hit {
     pub end_line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// Access level (`public`/`crate`/`private`/`protected`) when the language
+    /// expresses one. Omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
     #[serde(rename = "repo")]
     pub repo_identity: String,
     /// Raw additive score — the ranking key and the `--explain` breakdown source.
@@ -286,6 +290,7 @@ pub fn live_search(
                 repo_identity: identity.clone(),
                 mtime: None,
                 git_ts: None,
+                visibility: s.visibility.map(str::to_string),
             };
             rank_one(query, row, Some(LIVE_REPO_ID), Boosts::default())
         })
@@ -361,6 +366,7 @@ fn rank_one(
         line: c.line,
         end_line: c.end_line,
         parent: c.parent,
+        visibility: c.visibility,
         repo_identity: c.repo_identity,
         score: scored.total,
         confidence: 0.0, // filled from the final result set before output
@@ -384,6 +390,7 @@ mod tests {
             line: 1,
             end_line: 1,
             parent: None,
+            visibility: None,
         }
     }
 
@@ -512,6 +519,7 @@ mod tests {
             line: 1,
             end_line: Some(1),
             parent: None,
+            visibility: None,
             repo_identity: "r".into(),
             score,
             confidence: 0.0,
@@ -608,6 +616,7 @@ mod tests {
             line: 1,
             end_line: Some(1),
             parent: None,
+            visibility: None,
             repo_identity: "r".into(),
             score: 1.0,
             confidence: 0.0,

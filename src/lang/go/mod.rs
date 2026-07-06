@@ -38,7 +38,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
         match child.kind() {
             "function_declaration" => {
                 if let Some(name) = ctx.field_text(child, "name") {
-                    out.push(ctx.symbol(&name, Kind::Function, child, parent));
+                    push(ctx, out, &name, Kind::Function, child, parent);
                 }
             }
             "method_declaration" => {
@@ -47,17 +47,17 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                     let recv = child
                         .child_by_field_name("receiver")
                         .and_then(|r| type_identifier(ctx, r));
-                    out.push(ctx.symbol(&name, Kind::Method, child, recv.as_deref()));
+                    push(ctx, out, &name, Kind::Method, child, recv.as_deref());
                 }
             }
             "type_spec" => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     match child.child_by_field_name("type").map(|t| t.kind()) {
                         Some("struct_type") => {
-                            out.push(ctx.symbol(&name, Kind::Struct, child, parent));
+                            push(ctx, out, &name, Kind::Struct, child, parent);
                         }
                         Some("interface_type") => {
-                            out.push(ctx.symbol(&name, Kind::Trait, child, parent));
+                            push(ctx, out, &name, Kind::Trait, child, parent);
                             // interface method signatures are methods of it
                             walk(ctx, child, Some(&name), out);
                         }
@@ -68,12 +68,24 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
             // interface method signatures (node name varies by grammar version)
             "method_spec" | "method_elem" => {
                 if let Some(name) = ctx.field_text(child, "name") {
-                    out.push(ctx.symbol(&name, Kind::Method, child, parent));
+                    push(ctx, out, &name, Kind::Method, child, parent);
                 }
             }
             _ => walk(ctx, child, parent, out),
         }
     }
+}
+
+/// Emit a symbol carrying Go's capitalization-is-visibility convention:
+/// an exported (uppercase) name is public, an unexported one private.
+fn push(ctx: &Ctx, out: &mut Vec<Symbol>, name: &str, kind: Kind, node: Node, p: Option<&str>) {
+    let mut s = ctx.symbol(name, kind, node, p);
+    s.visibility = Some(if name.chars().next().is_some_and(char::is_uppercase) {
+        "public"
+    } else {
+        "private"
+    });
+    out.push(s);
 }
 
 /// The first `type_identifier` within `node` — used to pull the bare type
@@ -152,5 +164,13 @@ func Build() *Widget {
     fn empty_and_unparseable_yield_no_symbols() {
         assert!(extract("").is_empty());
         assert!(extract("package x\n").is_empty());
+    }
+
+    #[test]
+    fn capitalization_is_visibility() {
+        let src = "package x\n\nfunc Exported() {}\nfunc internal() {}\n";
+        let syms = extract(src);
+        assert_eq!(find(&syms, "Exported").visibility, Some("public"));
+        assert_eq!(find(&syms, "internal").visibility, Some("private"));
     }
 }

@@ -39,7 +39,9 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, in_class: bool, out: &mut V
         match child.kind() {
             "class_definition" => {
                 if let Some(name) = ctx.field_text(child, "name") {
-                    out.push(ctx.symbol(&name, Kind::Class, child, parent));
+                    let mut s = ctx.symbol(&name, Kind::Class, child, parent);
+                    s.visibility = Some(name_visibility(&name));
+                    out.push(s);
                     let qualified = qualify(parent, &name, ".");
                     walk(ctx, child, Some(&qualified), true, out);
                 }
@@ -51,7 +53,9 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, in_class: bool, out: &mut V
                     } else {
                         Kind::Function
                     };
-                    out.push(ctx.symbol(&name, kind, child, parent));
+                    let mut s = ctx.symbol(&name, kind, child, parent);
+                    s.visibility = Some(name_visibility(&name));
+                    out.push(s);
                 }
                 // don't descend into a def body (nested defs rarely navigated)
             }
@@ -59,6 +63,17 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, in_class: bool, out: &mut V
             // in the same context
             _ => walk(ctx, child, parent, in_class, out),
         }
+    }
+}
+
+/// Python's naming convention: a leading underscore marks internal —
+/// except dunders (`__init__`), which are the public protocol surface.
+fn name_visibility(name: &str) -> &'static str {
+    let dunder = name.starts_with("__") && name.ends_with("__");
+    if name.starts_with('_') && !dunder {
+        "private"
+    } else {
+        "public"
     }
 }
 
@@ -115,5 +130,14 @@ def build():
     fn empty_and_unparseable_yield_no_symbols() {
         assert!(extract("").is_empty());
         assert!(extract("# just a comment\n").is_empty());
+    }
+
+    #[test]
+    fn underscore_names_read_as_private_except_dunders() {
+        let src = "class Account:\n    def _internal(self):\n        pass\n    def __init__(self):\n        pass\n\ndef fetch():\n    pass\n";
+        let syms = extract(src);
+        assert_eq!(find(&syms, "_internal").visibility, Some("private"));
+        assert_eq!(find(&syms, "__init__").visibility, Some("public"));
+        assert_eq!(find(&syms, "fetch").visibility, Some("public"));
     }
 }

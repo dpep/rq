@@ -145,8 +145,10 @@ symbols (
   line INTEGER NOT NULL,
   end_line INTEGER,                  -- 1-based last line of the definition body
                                      -- (NULL for rows indexed before v4)
-  parent TEXT                        -- enclosing symbol's qualified NAME
+  parent TEXT,                       -- enclosing symbol's qualified NAME
                                      -- (lexical nesting only), e.g. Foo::Bar
+  visibility TEXT                    -- public|crate|private|protected; NULL when
+                                     -- unknown (pre-v9 rows backfill lazily)
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 CREATE INDEX idx_symbols_repo ON symbols(repository_id);
@@ -294,6 +296,11 @@ why a result ranked where it did:
 
 - **match quality** — exact > prefix > camel-hump abbreviation > subsequence
 - **kind weight** — tunable (e.g. class/module slightly above method)
+- **visibility** — a definition its language marks private/protected takes a
+  small penalty (public API over internal helpers; a tiebreaker, never a
+  filter — and unknown visibility carries no signal). Sourced per language:
+  Rust `pub`, Ruby access sections, Python underscore convention, Go
+  capitalization
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`) matches its leaf
   against the name and rewards a candidate whose `parent` ends with the named
   scope chain (`Bar` inside `Foo`). The qualifier reorders, it doesn't filter —

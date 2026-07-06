@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 8;
+pub const VERSION: i64 = 9;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -51,7 +51,9 @@ CREATE TABLE symbols (
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
   end_line INTEGER,                  -- 1-based last line of the definition body
-  parent TEXT
+  parent TEXT,
+  visibility TEXT                    -- public|crate|private|protected; NULL when
+                                     -- unknown (pre-v9 rows backfill lazily)
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 CREATE INDEX idx_symbols_file ON symbols(file_id);
@@ -197,9 +199,16 @@ pub const MIGRATION_V8: &str = r#"
 UPDATE coverage SET status = 'warming' WHERE status = 'partial';
 "#;
 
+/// Migration v8 → v9: record each definition's visibility, a ranking hint
+/// (private helpers below public API). Existing rows read `NULL` (no penalty)
+/// and backfill lazily as files re-extract.
+pub const MIGRATION_V9: &str = r#"
+ALTER TABLE symbols ADD COLUMN visibility TEXT;
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub const MIGRATIONS: [(i64, &str); 7] = [
+pub const MIGRATIONS: [(i64, &str); 8] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -207,6 +216,7 @@ pub const MIGRATIONS: [(i64, &str); 7] = [
     (6, MIGRATION_V6),
     (7, MIGRATION_V7),
     (8, MIGRATION_V8),
+    (9, MIGRATION_V9),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]

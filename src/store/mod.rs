@@ -34,6 +34,9 @@ pub struct SymbolRow {
     pub mtime: Option<i64>,
     /// Last git commit time touching the file — the stronger recency signal.
     pub git_ts: Option<i64>,
+    /// Access level (`public`/`crate`/`private`/`protected`) when the language
+    /// expresses one; `None` for unknown (or pre-v9 rows). A ranking hint.
+    pub visibility: Option<String>,
 }
 
 /// A learned selection signal for ranking: how often a `(file, name)` was
@@ -50,7 +53,7 @@ pub struct SelectionStat {
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
-    s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts";
+    s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts, s.visibility";
 const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
@@ -269,8 +272,9 @@ impl Store {
                 let mut clear = tx.prepare("DELETE FROM symbols WHERE file_id = ?1")?;
                 let mut insert = tx.prepare(
                     "INSERT INTO symbols
-                       (repository_id, file_id, name, name_lower, kind, language, line, end_line, parent)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                       (repository_id, file_id, name, name_lower, kind, language, line, end_line,
+                        parent, visibility)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 )?;
                 for f in chunk {
                     // content unchanged (e.g. mtime moved but bytes didn't): skip
@@ -306,6 +310,7 @@ impl Store {
                             s.line,
                             s.end_line,
                             s.parent,
+                            s.visibility,
                         ])?;
                     }
                     files_written += 1;
@@ -973,6 +978,7 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             repo_identity: r.get(9)?,
             mtime: r.get(10)?,
             git_ts: r.get(11)?,
+            visibility: r.get(12)?,
         },
     ))
 }
@@ -1027,6 +1033,7 @@ mod tests {
             line,
             end_line: line,
             parent: parent.map(String::from),
+            visibility: None,
         }
     }
 
@@ -1043,6 +1050,7 @@ mod tests {
                 .execute_batch(
                     "DROP INDEX idx_symbols_repo; DROP INDEX idx_events_repo; \
                      ALTER TABLE repositories ADD COLUMN display_name TEXT; \
+                     ALTER TABLE symbols DROP COLUMN visibility; \
                      PRAGMA user_version=4;",
                 )
                 .unwrap();
