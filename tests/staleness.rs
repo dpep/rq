@@ -113,3 +113,48 @@ fn refresh_picks_up_edits_and_deletes() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+/// A same-second edit is still picked up: mtimes are stored at nanosecond
+/// resolution (git's racy-mtime fix), so two writes within one second differ
+/// and the incremental skip can't mistake the later one for "unchanged".
+#[test]
+fn racy_mtime_edit_is_reindexed() {
+    let dir = std::env::temp_dir().join(format!("rq-racy-{}", std::process::id()));
+    fs::remove_dir_all(&dir).ok();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.rb");
+
+    // pin both writes into the *same second*, 1 ms apart — under second
+    // resolution the second edit is invisible to a stat
+    let base = std::time::SystemTime::now() + std::time::Duration::from_secs(300);
+    let pin = |p: &PathBuf, at: std::time::SystemTime| {
+        fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    };
+
+    fs::write(&path, "class Alpha\nend\n").unwrap();
+    pin(&path, base);
+    let mut store = Store::open_in_memory().unwrap();
+    index::index_path(&mut store, &dir).unwrap();
+
+    fs::write(&path, "class Beta\nend\n").unwrap();
+    pin(&path, base + std::time::Duration::from_millis(1));
+    index::index_path(&mut store, &dir).unwrap();
+
+    let hits = search::search(
+        &store,
+        "Beta",
+        None,
+        None,
+        &search::ActiveFiles::default(),
+        5,
+    )
+    .unwrap();
+    assert_eq!(hits.first().map(|h| h.name.as_str()), Some("Beta"));
+
+    fs::remove_dir_all(&dir).ok();
+}

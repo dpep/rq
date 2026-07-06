@@ -167,8 +167,9 @@ pub fn search(
             let boosts = Boosts {
                 learned: learned.get(&key).copied().unwrap_or(0.0),
                 // prefer whichever recency signal is more recent: a recent edit
-                // (mtime) or a recent commit (git_ts)
-                recency: recency_boost(c.git_ts.max(c.mtime), now),
+                // (mtime, stored in nanoseconds — convert to seconds) or a
+                // recent commit (git_ts, seconds)
+                recency: recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now),
                 branch: if active.is_empty() {
                     0.0
                 } else {

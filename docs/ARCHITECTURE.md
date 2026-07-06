@@ -127,7 +127,7 @@ files (
   repository_id INTEGER NOT NULL REFERENCES repositories(id),
   path TEXT NOT NULL,                -- repo-relative
   language TEXT,
-  mtime INTEGER,
+  mtime INTEGER,                     -- unix *nanoseconds* (racy-edit protection)
   content_hash TEXT,                 -- staleness detection
   indexed_at INTEGER,
   UNIQUE(repository_id, path)

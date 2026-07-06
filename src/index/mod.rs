@@ -1092,8 +1092,11 @@ fn content_hash(source: &str) -> String {
 
 fn file_mtime(path: &Path) -> Option<i64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let secs = modified.duration_since(UNIX_EPOCH).ok()?.as_secs();
-    Some(secs as i64)
+    // nanosecond resolution (like git's racy-mtime handling): two edits within
+    // the same second still get distinct mtimes, so an index taken between them
+    // can't mistake the second edit for "unchanged". Fits i64 until 2262.
+    let nanos = modified.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    Some(nanos as i64)
 }
 
 #[cfg(test)]

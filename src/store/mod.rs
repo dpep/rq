@@ -132,6 +132,9 @@ impl Store {
         if version != 0 && version < 5 {
             conn.execute_batch(schema::MIGRATION_V5)?;
         }
+        if version != 0 && version < 6 {
+            conn.execute_batch(schema::MIGRATION_V6)?;
+        }
         if version != schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
         }
@@ -292,6 +295,10 @@ impl Store {
                 let mut current = tx.prepare(
                     "SELECT content_hash FROM files WHERE repository_id = ?1 AND path = ?2",
                 )?;
+                let mut touch = tx.prepare(
+                    "UPDATE files SET mtime = ?3, indexed_at = ?4
+                     WHERE repository_id = ?1 AND path = ?2",
+                )?;
                 let mut clear = tx.prepare("DELETE FROM symbols WHERE file_id = ?1")?;
                 let mut insert = tx.prepare(
                     "INSERT INTO symbols
@@ -300,10 +307,13 @@ impl Store {
                 )?;
                 for f in chunk {
                     // content unchanged (e.g. mtime moved but bytes didn't): skip
+                    // the rewrite, but refresh the stat columns — otherwise a
+                    // touched (or racily-indexed) file re-parses on every warm
                     let stored: Option<String> = current
                         .query_row(params![repository_id, f.path], |r| r.get(0))
                         .optional()?;
                     if stored.as_deref() == Some(f.content_hash.as_str()) {
+                        touch.execute(params![repository_id, f.path, f.mtime, now])?;
                         continue;
                     }
                     let file_id: i64 = upsert.query_row(

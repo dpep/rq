@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 5;
+pub const VERSION: i64 = 6;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub const SCHEMA: &str = r#"
@@ -31,7 +31,8 @@ CREATE TABLE files (
   repository_id INTEGER NOT NULL REFERENCES repositories(id),
   path TEXT NOT NULL,
   language TEXT,
-  mtime INTEGER,
+  mtime INTEGER,                     -- last-modified time, unix *nanoseconds*
+                                     -- (git-style racy-edit protection)
   git_ts INTEGER,                    -- last git commit time touching this file
   content_hash TEXT,
   indexed_at INTEGER,
@@ -174,6 +175,16 @@ ALTER TABLE symbols ADD COLUMN end_line INTEGER;
 pub const MIGRATION_V5: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repository_id);
 CREATE INDEX IF NOT EXISTS idx_events_repo ON events(repository_id, id);
+"#;
+
+/// Migration v5 → v6: `files.mtime` moves from unix seconds to nanoseconds, so
+/// two edits within the same second get distinct mtimes and the incremental
+/// skip can't mistake the later one for "unchanged" (git's racy-mtime fix).
+/// Existing second-resolution rows are scaled in place; the magnitude guard
+/// keeps a re-run (or an already-converted row) from double-scaling.
+pub const MIGRATION_V6: &str = r#"
+UPDATE files SET mtime = mtime * 1000000000
+  WHERE mtime IS NOT NULL AND mtime < 100000000000;
 "#;
 
 /// The `AFTER INSERT` FTS-sync trigger, kept identical to the copy in [`SCHEMA`].
