@@ -466,9 +466,16 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
         "path is root-relative, not subdir-relative: {out}"
     );
 
-    // the out-of-scope class was never walked
-    let (found, _) = rq(&db, &dir, &["outofscope", "--no-record"]);
-    assert!(!found, "out-of-scope subtree not indexed");
+    // the out-of-scope class still surfaces (live-scan tail over the unindexed
+    // remainder) — but was never *persisted*: the index keeps exactly one file
+    let (found, out) = rq(&db, &dir, &["outofscope", "--no-record", "--ndjson"]);
+    assert!(found, "tail finds the out-of-scope class: {out}");
+    assert!(out.contains("\"file\":\"other/b.rb\""), "tail hit: {out}");
+    let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
+    assert!(
+        status.contains("\"files\":1"),
+        "out-of-scope subtree not persisted: {status}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -791,14 +798,25 @@ fn index_a_subset_of_a_repo() {
         "subset hit: {out}"
     );
 
-    // a symbol outside the subset isn't found — and a search does NOT silently
-    // full-index over the deliberate partial index
-    let (ok, _) = rq(&db, &dir, &["account"]);
-    assert!(!ok, "account is outside the indexed subset, should miss");
-    let (_, status) = rq(&db, &dir, &["--status"]);
+    // a symbol outside the subset is still found — the live-scan tail covers
+    // the unindexed remainder when the index has no confident hit
+    let (ok, out) = rq(&db, &dir, &["account", "--ndjson"]);
+    assert!(ok, "tail finds the unindexed symbol: {out}");
     assert!(
-        status.contains("partial"),
+        out.contains("\"file\":\"app/models/account.rb\""),
+        "tail hit: {out}"
+    );
+
+    // ...without persisting: a search does NOT silently index over the
+    // deliberate partial subset (still 1 file, still partial)
+    let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
+    assert!(
+        status.contains("\"status\":\"partial\""),
         "coverage stays partial: {status}"
+    );
+    assert!(
+        status.contains("\"files\":1"),
+        "tail did not persist: {status}"
     );
 
     let _ = fs::remove_dir_all(&dir);

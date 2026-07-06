@@ -340,8 +340,11 @@ The index is **never assumed complete**.
 - `coverage.status` tells search its own confidence (`never | warming | partial
   | complete`). `warming` is opportunistic indexing in progress; `partial` is a
   deliberate `--index --path` subset that auto-warming won't clobber.
-- When coverage is below threshold, search appends a **streamed live-scan tail**
-  so missing symbols still surface — slower, but visible.
+- A `warming` repo **blocks until answered** (see the indexing model); a
+  `partial` one instead gets a **bounded live-scan tail** when the index lacks
+  a confident hit — scanned over the unindexed remainder, merged and re-ranked
+  with the index results, and never persisted (the deliberate subset stays
+  deliberate). Slower, but accurate.
 - **Opportunistic extraction** grows coverage through normal use.
 - **Staleness:** a `content_hash` mismatch marks a file's symbols stale; search
   lazily validates only the **top-N** results (stat, re-parse if changed) before
@@ -351,7 +354,7 @@ Degradation ladder:
 
 ```text
 zero index      → pure live scan (works, slower)
-partial index   → index results + streamed scan tail
+partial index   → index results + merged live-scan tail
 complete + fresh → index only, sub-50 ms
 ```
 

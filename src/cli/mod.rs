@@ -527,15 +527,38 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             .unwrap_or_default();
     }
 
+    // Deliberate partial subset (`--index --path …`): auto-warm never runs over
+    // it (by design), so a query without a confident hit gets a bounded live
+    // scan of the *unindexed* remainder, merged into the index results —
+    // accuracy over speed (ARCHITECTURE's "index results + scan tail" rung).
+    // The scan doesn't persist, so the deliberate subset stays deliberate.
+    if coverage.as_deref() == Some("partial")
+        && !hits.iter().any(strong)
+        && let (Some(root), Some(repo)) = (&root, current)
+    {
+        crate::trace!("no confident hit on a partial index → live-scan tail");
+        let skip: HashSet<String> = store
+            .file_mtimes(repo)
+            .map(|m| m.into_keys().collect())
+            .unwrap_or_default();
+        let deadline = std::time::Instant::now() + live_fallback_budget();
+        let mut tail = crate::search::live_search(root, query, limit, &skip, Some(deadline), true);
+        if tail.is_empty() {
+            tail = crate::search::live_search(root, query, limit, &skip, Some(deadline), false);
+        }
+        hits = crate::search::merge(hits, tail, limit);
+    }
+
     // Untracked non-git dir — nothing persisted, no warmer running — so scan it
-    // live in-memory to answer at all (substring, then fuzzy). The only
-    // non-persisting scan left.
-    if hits.is_empty()
+    // live in-memory (substring, then fuzzy) and blend with whatever the index
+    // gave. The only non-persisting scan left besides the partial tail above.
+    if !hits.iter().any(strong)
         && indexer.is_none()
         && coverage.is_none()
         && let Some(root) = &root
     {
-        hits = live_fallback(root, query, limit);
+        let tail = live_fallback(root, query, limit);
+        hits = crate::search::merge(hits, tail, limit);
     }
 
     apply_gates(query, &mut hits);
@@ -644,6 +667,13 @@ fn live_fallback(root: &std::path::Path, query: &str, limit: usize) -> Vec<crate
     crate::search::live_search(root, query, limit, &HashSet::new(), Some(deadline), false)
 }
 
+/// A high-confidence name match: exact or prefix (not fuzzy/path-only).
+fn strong(h: &crate::search::Hit) -> bool {
+    h.features
+        .iter()
+        .any(|f| matches!(f.name, "exact" | "prefix"))
+}
+
 /// The result-quality gates, in order:
 /// - relevance: when the query lands a real name match (exact or prefix), drop
 ///   the scattered fuzzy / path-only near-matches — they're noise next to a
@@ -653,11 +683,6 @@ fn live_fallback(root: &std::path::Path, query: &str, limit: usize) -> Vec<crate
 ///   scope keeps only the in-scope results; if none match, the others stay
 ///   (the definition may live elsewhere).
 fn apply_gates(query: &str, hits: &mut Vec<crate::search::Hit>) {
-    let strong = |h: &crate::search::Hit| {
-        h.features
-            .iter()
-            .any(|f| matches!(f.name, "exact" | "prefix"))
-    };
     if hits.iter().any(strong) {
         hits.retain(strong);
     }

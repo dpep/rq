@@ -75,6 +75,10 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       (and on an empty result), *persists* the matches (`index::scan_for_query` →
       `replace_files`), and searches; coverage grows toward what's actually
       searched, not just walk order
+- [x] partial-coverage scan tail — a deliberate `--index --path` subset merges a
+      bounded live scan of the unindexed remainder whenever the index lacks a
+      confident hit (accuracy over speed); nothing persists, so the subset stays
+      deliberate
 - [ ] best-first indexing scheduler — extend the fused pipeline with content/
       git-recency signals and a priority heap between walk and parse (so warming
       orders by relevance, not just walk order). Design:
