@@ -30,7 +30,7 @@ pub struct SymbolRow {
     pub parent: Option<String>,
     pub repository_id: i64,
     pub repo_identity: String,
-    /// File mtime (unix seconds) — a recency signal.
+    /// File mtime (unix *nanoseconds*) — a recency signal.
     pub mtime: Option<i64>,
     /// Last git commit time touching the file — the stronger recency signal.
     pub git_ts: Option<i64>,
@@ -481,17 +481,12 @@ impl Store {
 
     /// Current indexed totals for a repository: (files, symbols).
     pub fn repo_totals(&self, repository_id: i64) -> Result<(i64, i64)> {
-        let files = self.conn.query_row(
-            "SELECT COUNT(*) FROM files WHERE repository_id = ?1",
+        self.conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM files WHERE repository_id = ?1),
+                    (SELECT COUNT(*) FROM symbols WHERE repository_id = ?1)",
             params![repository_id],
-            |r| r.get(0),
-        )?;
-        let symbols = self.conn.query_row(
-            "SELECT COUNT(*) FROM symbols WHERE repository_id = ?1",
-            params![repository_id],
-            |r| r.get(0),
-        )?;
-        Ok((files, symbols))
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
     }
 
     /// Every symbol defined in one file (repo-relative path), in line order — a
@@ -612,7 +607,7 @@ impl Store {
     /// the exact query but any *shorter* query the user has selected for — a pick
     /// for `han` informs `handler` — so typing more keeps the benefit.
     pub fn selections_for(&self, query_norm: &str) -> Result<Vec<SelectionStat>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT repository_id, file, name, selections, last_selected_at
              FROM selection_stats WHERE ?1 LIKE query_norm || '%'",
         )?;
@@ -875,7 +870,7 @@ impl Store {
             let sql = format!(
                 "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} WHERE s.name_lower = ?1 LIMIT ?2"
             );
-            let mut stmt = self.conn.prepare(&sql)?;
+            let mut stmt = self.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params![q, limit as i64], row_to_candidate)?;
             for row in rows {
                 let (id, cand) = row?;
@@ -892,7 +887,7 @@ impl Store {
                 "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
                  WHERE s.name_lower LIKE ?1 ESCAPE '\\' LIMIT ?2"
             );
-            let mut stmt = self.conn.prepare(&sql)?;
+            let mut stmt = self.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params![like, limit as i64], row_to_candidate)?;
             for row in rows {
                 let (id, cand) = row?;
@@ -918,7 +913,7 @@ impl Store {
                 "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
                  WHERE s.name_lower LIKE ?1 ESCAPE '\\' LIMIT ?2"
             );
-            let mut stmt = self.conn.prepare(&sql)?;
+            let mut stmt = self.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params![like, limit as i64], row_to_candidate)?;
             for row in rows {
                 let (id, cand) = row?;
@@ -935,7 +930,7 @@ impl Store {
                  JOIN repositories r ON r.id = s.repository_id \
                  WHERE symbols_fts MATCH ?1 LIMIT ?2"
             );
-            let mut stmt = self.conn.prepare(&sql)?;
+            let mut stmt = self.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params![match_expr, limit as i64], row_to_candidate)?;
             for row in rows {
                 let (id, cand) = row?;
@@ -951,7 +946,7 @@ impl Store {
              WHERE fi.path LIKE ?1 ESCAPE '\\' AND s.kind IN ('class', 'module') LIMIT ?2"
         );
         {
-            let mut stmt = self.conn.prepare(&sql)?;
+            let mut stmt = self.conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(params![path_like, limit as i64], row_to_candidate)?;
             for row in rows {
                 let (id, cand) = row?;
