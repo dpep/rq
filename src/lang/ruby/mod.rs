@@ -67,8 +67,84 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                 }
                 // method bodies rarely hold further definitions; don't recurse.
             }
+            "call" => {
+                // metaprogramming: `attr_accessor :x`, `has_many :users`, … are
+                // calls that *define* methods Tree-sitter can't see as defs.
+                // Emit the literal names, pointing at the macro's line.
+                dsl_symbols(ctx, child, parent, out);
+                // still recurse: a call can wrap real definitions
+                // (`private def foo`, `Class.new do … end`)
+                walk(ctx, child, parent, out);
+            }
             _ => walk(ctx, child, parent, out),
         }
+    }
+}
+
+/// How many of a DSL macro's arguments name methods it defines.
+enum DslArgs {
+    /// Every literal argument (`attr_accessor :a, :b`, `delegate :x, :y, to:`).
+    All,
+    /// Only the first (`define_method(:x)`, `scope :active`, `has_many :users`).
+    First,
+}
+
+/// The method-defining macro vocabulary: Ruby core plus the everyday Rails
+/// surface. Deliberately small — literal, high-confidence definitions only.
+fn dsl_args(method: &str) -> Option<DslArgs> {
+    match method {
+        "attr_accessor" | "attr_reader" | "attr_writer" | "delegate" => Some(DslArgs::All),
+        "define_method" | "alias_method" | "scope" | "has_many" | "has_one" | "belongs_to" => {
+            Some(DslArgs::First)
+        }
+        _ => None,
+    }
+}
+
+/// Emit method symbols for a metaprogramming call: `attr_accessor :balance`
+/// defines `balance` even though no `def` exists. Only *literal* symbol/string
+/// arguments count — a computed name (`define_method(name)`) is unresolvable
+/// statically, so it's skipped rather than guessed. Keyword arguments
+/// (`delegate …, to: :owner`) are `pair` nodes and naturally excluded.
+fn dsl_symbols(ctx: &Ctx, call: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+    if call.child_by_field_name("receiver").is_some() {
+        return; // `Foo.attr_accessor` isn't the macro form we index
+    }
+    let Some(method) = ctx.field_text(call, "method") else {
+        return;
+    };
+    let Some(args) = dsl_args(&method) else {
+        return;
+    };
+    let Some(arg_list) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut cursor = arg_list.walk();
+    for arg in arg_list.children(&mut cursor) {
+        if !arg.is_named() {
+            continue; // parens and commas
+        }
+        if let Some(name) = literal_name(ctx, arg)
+            && !name.is_empty()
+        {
+            out.push(ctx.symbol(&name, Kind::Method, call, parent));
+        }
+        if matches!(args, DslArgs::First) {
+            break; // later args are options (`scope :active, -> {…}`), not names
+        }
+    }
+}
+
+/// The name a literal `:symbol` or `"string"` argument carries, if any.
+fn literal_name(ctx: &Ctx, node: Node) -> Option<String> {
+    match node.kind() {
+        "simple_symbol" => ctx
+            .node_text(node)
+            .map(|t| t.trim_start_matches(':').to_string()),
+        "string" => ctx
+            .node_text(node)
+            .map(|t| t.trim_matches(|c| c == '"' || c == '\'').to_string()),
+        _ => None,
     }
 }
 
@@ -154,6 +230,69 @@ end
             index.parent.as_deref(),
             Some("My::Module::EmployeesController")
         );
+    }
+
+    #[test]
+    fn metaprogramming_macros_define_methods() {
+        let src = r#"
+class Account
+  attr_accessor :balance, :currency
+  attr_reader "label"
+  has_many :transactions, dependent: :destroy
+  scope :active, -> { where(active: true) }
+  delegate :name, :email, to: :owner, prefix: true
+  define_method(:refresh!) { reload }
+  alias_method :bal, :balance
+end
+"#;
+        let syms = extract(src);
+
+        for name in [
+            "balance",
+            "currency",
+            "label",
+            "transactions",
+            "active",
+            "name",
+            "email",
+            "refresh!",
+            "bal",
+        ] {
+            let s = find(&syms, name);
+            assert_eq!(s.kind, Kind::Method, "{name} is a method");
+            assert_eq!(s.parent.as_deref(), Some("Account"), "{name} in Account");
+        }
+
+        // option arguments never become symbols
+        for non_name in ["destroy", "owner", "dependent", "to", "prefix", "where"] {
+            assert!(
+                !syms.iter().any(|s| s.name == non_name),
+                "{non_name} is an option, not a defined method: {syms:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn computed_and_received_macro_names_are_skipped() {
+        let src = r#"
+class Widget
+  define_method(dynamic_name) { }
+  Other.attr_accessor :not_ours
+end
+"#;
+        let syms = extract(src);
+        // only the class itself — no guessed names, no receiver-form macros
+        assert_eq!(syms.len(), 1, "{syms:?}");
+        assert_eq!(syms[0].name, "Widget");
+    }
+
+    #[test]
+    fn a_def_wrapped_in_a_visibility_call_is_still_found() {
+        let src = "class Widget\n  private def hidden\n  end\nend\n";
+        let syms = extract(src);
+        let hidden = find(&syms, "hidden");
+        assert_eq!(hidden.kind, Kind::Method);
+        assert_eq!(hidden.parent.as_deref(), Some("Widget"));
     }
 
     #[test]

@@ -152,6 +152,10 @@ self-contained; the only shared change a language may need is extending the
 `core::Kind` vocabulary (Rust added `struct`/`enum`/`trait`) — generalizing the
 model, not leaking a language into `index`/`search`/scoring.
 
+- [x] Ruby metaprogramming recall — `attr_accessor`/`attr_reader`/`attr_writer`,
+      `define_method`, `alias_method`, `delegate`, `scope`, `has_many`/`has_one`/
+      `belongs_to` emit the methods they define (literal names only, pointing at
+      the macro's line) — the definitions Tree-sitter can't see as `def`s
 - [x] Rust — `lang/rust/` (`fn`/`struct`/`enum`/`trait`/`mod`, impl & trait
       methods). The dogfood language: rq indexes its own source (`make dogfood`)
 - [x] Go — `lang/go/` (`func`/method, `struct`, `interface`→trait)
