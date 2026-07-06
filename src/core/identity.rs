@@ -12,8 +12,6 @@ pub enum RepoIdentity {
     Remote(String),
     /// Fallback: an absolute local path, rendered as `local:/abs/path`.
     Local(String),
-    /// An explicit, user-provided name.
-    Named(String),
 }
 
 impl RepoIdentity {
@@ -41,7 +39,6 @@ impl fmt::Display for RepoIdentity {
         match self {
             RepoIdentity::Remote(s) => f.write_str(s),
             RepoIdentity::Local(p) => write!(f, "local:{p}"),
-            RepoIdentity::Named(n) => f.write_str(n),
         }
     }
 }
@@ -144,6 +141,5 @@ mod tests {
             RepoIdentity::local("/home/dpep/rq").to_string(),
             "local:/home/dpep/rq"
         );
-        assert_eq!(RepoIdentity::Named("work".into()).to_string(), "work");
     }
 }

@@ -53,7 +53,7 @@ tracking or inheritance — those are explicit non-goals for the MVP.
 Identity answers two different questions, so it is modeled at two levels:
 
 - **Logical project** — `github.com/org/repo` (from the upstream remote) or
-  `local:/abs/path` fallback, or an explicit name. Used to dedupe symbols and
+  `local:/abs/path` fallback. Used to dedupe symbols and
   aggregate behavioral learning across checkouts. Robust to forks/clones being
   the "same" project.
 - **Local checkout** — a root path plus current branch. Used for indexing
@@ -80,9 +80,11 @@ src/
   lang/       # Tree-sitter plugins: ruby, rust, go, python
     ruby/     # the first plugin
     rust/     # what rq dogfoods on its own source
-  events/     # interaction capture + async rollup
-  adapters/   # editor event ingestion (thin, decoupled)
 ```
+
+Interaction capture and its rollup live in `store/` (the `events` /
+`selection_stats` tables and their queries); editor ingestion is just the
+`rq --record` CLI path — no dedicated module needed for either.
 
 A `LanguagePlugin` trait is the only seam languages plug into:
 
@@ -109,7 +111,6 @@ PRAGMA journal_mode = WAL;
 repositories (
   id INTEGER PRIMARY KEY,
   identity TEXT UNIQUE NOT NULL,     -- github.com/org/repo | local:/abs/path
-  display_name TEXT,
   default_branch TEXT,
   created_at INTEGER, updated_at INTEGER
 );
@@ -161,7 +162,7 @@ coverage (
   repository_id INTEGER NOT NULL REFERENCES repositories(id),
   scope TEXT NOT NULL DEFAULT 'full',   -- 'full' or a directory prefix
   files_seen INTEGER, files_indexed INTEGER,
-  status TEXT NOT NULL,                  -- never | partial | complete | stale
+  status TEXT NOT NULL,                  -- never | warming | partial | complete
   last_indexed_at INTEGER,
   UNIQUE(repository_id, scope)
 );

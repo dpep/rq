@@ -9,7 +9,6 @@ pub mod trace;
 
 pub mod cli;
 pub mod core;
-pub mod events;
 pub mod index;
 pub mod lang;
 pub mod search;

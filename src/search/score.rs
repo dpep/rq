@@ -584,7 +584,7 @@ fn wildcard_score(query: &str, name: &str) -> Option<f64> {
 
 /// The filename stem of a repo-relative path: last segment, extension dropped.
 /// `app/models/user.rb` → `user`.
-fn path_stem(path: &str) -> &str {
+pub fn path_stem(path: &str) -> &str {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     match base.rfind('.') {
         Some(i) if i > 0 => &base[..i],

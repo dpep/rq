@@ -67,7 +67,6 @@ rq/
     lang/        ← Tree-sitter plugins (ruby, rust, go, python)
       ruby/      ← first plugin
       rust/      ← rq dogfoods on its own source
-    events/      ← interaction capture + async rollup
   docs/          ← ARCHITECTURE.md, ROADMAP.md
   tests/         ← integration tests + fixtures
 ```

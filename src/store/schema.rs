@@ -6,14 +6,16 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 6;
+pub const VERSION: i64 = 7;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
+/// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
+/// bulk index drops and recreates it around a rebuild) and is applied alongside
+/// this on a fresh database.
 pub const SCHEMA: &str = r#"
 CREATE TABLE repositories (
   id INTEGER PRIMARY KEY,
   identity TEXT UNIQUE NOT NULL,
-  display_name TEXT,
   default_branch TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -64,11 +66,7 @@ CREATE VIRTUAL TABLE symbols_fts USING fts5(
 );
 
 -- keep the external-content FTS index in sync with symbols
--- (the AFTER INSERT trigger is also defined as FTS_INSERT_TRIGGER below — keep
--- them identical; a cold bulk index drops and recreates it around a rebuild)
-CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
-  INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
-END;
+-- (the AFTER INSERT trigger is FTS_INSERT_TRIGGER, defined once below)
 CREATE TRIGGER symbols_ad AFTER DELETE ON symbols BEGIN
   INSERT INTO symbols_fts(symbols_fts, rowid, name) VALUES ('delete', old.id, old.name);
 END;
@@ -187,9 +185,26 @@ UPDATE files SET mtime = mtime * 1000000000
   WHERE mtime IS NOT NULL AND mtime < 100000000000;
 "#;
 
-/// The `AFTER INSERT` FTS-sync trigger, kept identical to the copy in [`SCHEMA`].
-/// A cold bulk index drops this trigger, inserts symbols without per-row FTS
-/// maintenance, rebuilds the FTS index in one pass, then recreates it here.
+/// Migration v6 → v7: drop `repositories.display_name` — never written or read.
+pub const MIGRATION_V7: &str = r#"
+ALTER TABLE repositories DROP COLUMN display_name;
+"#;
+
+/// The cumulative migration ladder for existing databases: apply every step
+/// whose version exceeds the database's `user_version`.
+pub const MIGRATIONS: [(i64, &str); 6] = [
+    (2, MIGRATION_V2),
+    (3, MIGRATION_V3),
+    (4, MIGRATION_V4),
+    (5, MIGRATION_V5),
+    (6, MIGRATION_V6),
+    (7, MIGRATION_V7),
+];
+
+/// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]
+/// on a fresh database. A cold bulk index drops this trigger, inserts symbols
+/// without per-row FTS maintenance, rebuilds the FTS index in one pass, then
+/// recreates it from here.
 pub const FTS_INSERT_TRIGGER: &str = r#"
 CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);

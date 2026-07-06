@@ -606,12 +606,7 @@ fn cmd_search(
         match out {
             Output::Json | Output::Ndjson => {
                 let obj = serde_json::json!({ "status": status, "query": query });
-                match out {
-                    Output::Json => {
-                        println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default())
-                    }
-                    _ => println!("{obj}"),
-                }
+                let _ = emit_json(out, &obj); // exit code below carries the miss
             }
             Output::Text if interrupted => {
                 eprintln!("rq: indexing interrupted — run again to finish")
@@ -683,19 +678,11 @@ fn cmd_search(
         );
     }
 
+    if let Some(code) = emit_rows(out, &hits) {
+        return code;
+    }
     match out {
-        Output::Ndjson => {
-            for hit in &hits {
-                match serde_json::to_string(hit) {
-                    Ok(line) => println!("{line}"),
-                    Err(e) => return fail(format_args!("rq: {e}")),
-                }
-            }
-        }
-        Output::Json => match serde_json::to_string_pretty(&hits) {
-            Ok(s) => println!("{s}"),
-            Err(e) => return fail(format_args!("rq: {e}")),
-        },
+        Output::Json | Output::Ndjson => {}
         Output::Text => {
             let color = match_color();
             let c = color.as_deref();
@@ -1284,20 +1271,10 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
         rows.retain(|r| langs.iter().any(|l| l == &r.language));
     }
 
-    // Read the source once for signatures (every row is the same file).
-    // Read the source from the first recorded checkout root that has the file,
-    // falling back to the cwd-derived root — a moved repo keeps a stale checkout
-    // row, so the first-recorded root may no longer hold the file.
-    let mut roots: Vec<PathBuf> = store
-        .checkout_roots(repo_id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-    if !roots.contains(&root) {
-        roots.push(root.clone());
-    }
-    let content = roots
+    // Read the source once for signatures (every row is the same file), from
+    // the first root that actually has it (see `hit_file_roots` — a moved repo
+    // keeps a stale checkout row, so the first-recorded root can be dead).
+    let content = hit_file_roots(&store, &identity, Some(&root))
         .iter()
         .find_map(|r| std::fs::read_to_string(r.join(&rel)).ok());
     let syms: Vec<SymbolOut> = rows
@@ -1324,30 +1301,17 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
         match out {
             Output::Json | Output::Ndjson => {
                 let obj = serde_json::json!({ "status": "no_match" });
-                match out {
-                    Output::Json => {
-                        println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default())
-                    }
-                    _ => println!("{obj}"),
-                }
+                let _ = emit_json(out, &obj); // exit code below carries the miss
             }
             Output::Text => eprintln!("no symbols"),
         }
         return ExitCode::FAILURE;
     }
+    if let Some(code) = emit_rows(out, syms) {
+        return code;
+    }
     match out {
-        Output::Ndjson => {
-            for s in syms {
-                match serde_json::to_string(s) {
-                    Ok(line) => println!("{line}"),
-                    Err(e) => return fail(format_args!("rq: {e}")),
-                }
-            }
-        }
-        Output::Json => match serde_json::to_string_pretty(&syms) {
-            Ok(s) => println!("{s}"),
-            Err(e) => return fail(format_args!("rq: {e}")),
-        },
+        Output::Json | Output::Ndjson => {}
         Output::Text => {
             for s in syms {
                 let qualified = match &s.parent {
@@ -1364,8 +1328,6 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.
-/// Unknown values pass through lowercased (so they simply match nothing).
 /// A leading positional that names a symbol kind — the shorthand behind
 /// `rq class Foo` and `rq method zoom`. Only the full, unambiguous keyword forms
 /// count (never the single-letter `-k` shortcuts, which are far likelier to be a
@@ -1410,6 +1372,8 @@ fn split_kind_keyword(
     (None, target, dirs)
 }
 
+/// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.
+/// Unknown values pass through lowercased (so they simply match nothing).
 fn canonical_kind(s: &str) -> String {
     match s.to_ascii_lowercase().as_str() {
         "c" | "class" => "class",
@@ -1482,11 +1446,7 @@ fn hl_path(path: &str, query: &str, color: Option<&str>) -> String {
     // align on the filename *stem* (drop the extension), the same string the
     // scorer matched — so the query can't straggle into `.rb` instead of lighting
     // up the logical name (`employees_controller`)
-    let base = &path[base_byte..];
-    let stem = match base.rfind('.') {
-        Some(i) if i > 0 => &base[..i],
-        _ => base,
-    };
+    let stem = crate::search::path_stem(path);
     let positions: Vec<usize> = crate::search::match_positions(query, stem)
         .into_iter()
         .map(|p| p + base_start)
@@ -1720,8 +1680,8 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
 }
 
 /// Print a single value as JSON: `--json` pretty, `--ndjson` compact one-liner.
-/// Used by the single-object operations (`--index`, `--drop`); `--status` builds
-/// an array / one-row-per-line itself.
+/// Used by the single-object operations (`--index`, `--drop`) and the
+/// no-match status objects; [`emit_rows`] is the multi-row twin.
 fn emit_json<T: serde::Serialize>(out: Output, value: &T) -> ExitCode {
     let rendered = if out == Output::Json {
         serde_json::to_string_pretty(value)
@@ -1737,6 +1697,28 @@ fn emit_json<T: serde::Serialize>(out: Output, value: &T) -> ExitCode {
     }
 }
 
+/// Print a row set as structured output: `--json` one pretty array, `--ndjson`
+/// one compact object per line. Returns `Some(exit)` on a serialization
+/// failure, `None` on success (Text output is the caller's business).
+fn emit_rows<T: serde::Serialize>(out: Output, rows: &[T]) -> Option<ExitCode> {
+    match out {
+        Output::Json => match serde_json::to_string_pretty(rows) {
+            Ok(s) => println!("{s}"),
+            Err(e) => return Some(fail(format_args!("rq: {e}"))),
+        },
+        Output::Ndjson => {
+            for r in rows {
+                match serde_json::to_string(r) {
+                    Ok(line) => println!("{line}"),
+                    Err(e) => return Some(fail(format_args!("rq: {e}"))),
+                }
+            }
+        }
+        Output::Text => {}
+    }
+    None
+}
+
 fn cmd_status(out: Output) -> ExitCode {
     let store = match open_store() {
         Ok(s) => s,
@@ -1746,19 +1728,11 @@ fn cmd_status(out: Output) -> ExitCode {
         Ok(rows) => rows,
         Err(e) => return fail(format_args!("rq --status: {e}")),
     };
+    if let Some(code) = emit_rows(out, &rows) {
+        return code;
+    }
     match out {
-        Output::Json => match serde_json::to_string_pretty(&rows) {
-            Ok(s) => println!("{s}"),
-            Err(e) => return fail(format_args!("rq: {e}")),
-        },
-        Output::Ndjson => {
-            for r in &rows {
-                match serde_json::to_string(r) {
-                    Ok(line) => println!("{line}"),
-                    Err(e) => return fail(format_args!("rq: {e}")),
-                }
-            }
-        }
+        Output::Json | Output::Ndjson => {}
         Output::Text if rows.is_empty() => {
             println!("no repositories indexed yet (try `rq --index`)");
         }

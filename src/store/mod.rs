@@ -118,22 +118,14 @@ impl Store {
         if version == 0 {
             // fresh database — SCHEMA is already at the current version
             conn.execute_batch(schema::SCHEMA)?;
-        }
-        // cumulative migrations for existing databases (each guards its version)
-        if version != 0 && version < 2 {
-            conn.execute_batch(schema::MIGRATION_V2)?;
-        }
-        if version != 0 && version < 3 {
-            conn.execute_batch(schema::MIGRATION_V3)?;
-        }
-        if version != 0 && version < 4 {
-            conn.execute_batch(schema::MIGRATION_V4)?;
-        }
-        if version != 0 && version < 5 {
-            conn.execute_batch(schema::MIGRATION_V5)?;
-        }
-        if version != 0 && version < 6 {
-            conn.execute_batch(schema::MIGRATION_V6)?;
+            conn.execute_batch(schema::FTS_INSERT_TRIGGER)?;
+        } else {
+            // cumulative migrations for existing databases
+            for (v, sql) in schema::MIGRATIONS {
+                if version < v {
+                    conn.execute_batch(sql)?;
+                }
+            }
         }
         if version != schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
@@ -214,8 +206,8 @@ impl Store {
         Ok(map)
     }
 
-    /// Replace all symbols for one file in a single transaction: upsert the
-    /// file row, drop its old symbols, insert the new ones.
+    /// Replace all symbols for one file — the single-file form of
+    /// [`Store::replace_files`] (same upsert, hash-skip, and batching).
     pub fn replace_file_symbols(
         &mut self,
         repository_id: i64,
@@ -225,42 +217,17 @@ impl Store {
         content_hash: &str,
         symbols: &[Symbol],
     ) -> Result<()> {
-        let now = now_unix();
-        let tx = self.conn.transaction()?;
-        let file_id: i64 = tx.query_row(
-            "INSERT INTO files (repository_id, path, language, mtime, content_hash, indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(repository_id, path) DO UPDATE SET
-               language = excluded.language,
-               mtime = excluded.mtime,
-               content_hash = excluded.content_hash,
-               indexed_at = excluded.indexed_at
-             RETURNING id",
-            params![repository_id, path, language, mtime, content_hash, now],
-            |r| r.get(0),
+        self.replace_files(
+            repository_id,
+            &[FileSymbols {
+                path: path.to_string(),
+                language: language.to_string(),
+                mtime,
+                content_hash: content_hash.to_string(),
+                symbols: symbols.to_vec(),
+            }],
         )?;
-        tx.execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO symbols
-                   (repository_id, file_id, name, name_lower, kind, language, line, end_line, parent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )?;
-            for s in symbols {
-                stmt.execute(params![
-                    repository_id,
-                    file_id,
-                    s.name,
-                    s.name.to_lowercase(),
-                    s.kind.as_str(),
-                    s.language,
-                    s.line,
-                    s.end_line,
-                    s.parent,
-                ])?;
-            }
-        }
-        tx.commit()
+        Ok(())
     }
 
     /// Write many parsed files, one transaction per chunk — a batched `fsync`
@@ -826,22 +793,11 @@ impl Store {
     }
 
     fn meta_get_i64(&self, key: &str) -> Result<Option<i64>> {
-        let raw: Option<String> = self
-            .conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        Ok(raw.and_then(|s| s.parse().ok()))
+        Ok(self.meta_get(key)?.and_then(|s| s.parse().ok()))
     }
 
     fn meta_set_i64(&self, key: &str, value: i64) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value.to_string()],
-        )?;
-        Ok(())
+        self.meta_set(key, &value.to_string())
     }
 
     /// Candidate symbols for a query, drawn from cheap layers and merged:
@@ -863,7 +819,7 @@ impl Store {
         let q = query.to_ascii_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
 
-        // Layer 0: exact name — always included, never subject to the cap. The
+        // exact name — always included, never subject to the cap. The
         // match we most want must reach the scorer no matter how large the index
         // is (a broad capped scan could otherwise truncate it away).
         {
@@ -878,7 +834,7 @@ impl Store {
             }
         }
 
-        // Layer 1: query as a prefix — selective, so prefix matches always
+        // query as a prefix — selective, so prefix matches always
         // surface even on a huge repo (unlike the broad first-char anchor below,
         // which the cap can truncate).
         {
@@ -903,7 +859,7 @@ impl Store {
             return Ok(found.into_values().collect());
         }
 
-        // Layer 2: first-character anchor (index-backed scan) for short
+        // fuzzy recall (a): first-character anchor (index-backed scan) for short
         // skip-abbreviations like `usr → user` that prefix matching can't reach;
         // the scorer filters and ranks. Best-effort under the cap — exact and
         // prefix are already guaranteed above.
@@ -921,7 +877,7 @@ impl Store {
             }
         }
 
-        // Layer 2: trigram FTS (OR of the query's trigrams) for fuzzy recall.
+        // fuzzy recall (b): trigram FTS (OR of the query's trigrams).
         if let Some(match_expr) = trigram_or_query(&q) {
             let sql = format!(
                 "SELECT {CANDIDATE_COLS} FROM symbols_fts f \
@@ -938,7 +894,7 @@ impl Store {
             }
         }
 
-        // Layer 3: primary definitions in files whose path matches the query,
+        // path recall: primary definitions in files whose path matches the query,
         // so `billing` can surface the class defined in `billing.rb`.
         let path_like = format!("%{}%", escape_like(&q));
         let sql = format!(
@@ -1035,12 +991,14 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rq-migrate-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         {
-            // simulate a pre-v5 database: the repo-scoped indexes don't exist
+            // simulate a pre-v5 database: no repo-scoped indexes, and the
+            // (since-dropped) display_name column still present
             let store = Store::open(&path).unwrap();
             store
                 .conn
                 .execute_batch(
                     "DROP INDEX idx_symbols_repo; DROP INDEX idx_events_repo; \
+                     ALTER TABLE repositories ADD COLUMN display_name TEXT; \
                      PRAGMA user_version=4;",
                 )
                 .unwrap();
