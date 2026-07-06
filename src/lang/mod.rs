@@ -4,12 +4,90 @@
 //! model. The core stays language-agnostic; adding a language is a new plugin,
 //! not a core change.
 
-use crate::core::Symbol;
+use tree_sitter::{Language, Node, Parser};
+
+use crate::core::{Kind, Symbol};
 
 pub mod go;
 pub mod python;
 pub mod ruby;
 pub mod rust;
+
+/// Per-file extraction context shared by every plugin: the source bytes, the
+/// repo-relative path, and the language tag stamped on each emitted symbol.
+pub(crate) struct Ctx<'a> {
+    src: &'a [u8],
+    file: &'a str,
+    language: &'static str,
+}
+
+impl Ctx<'_> {
+    /// The text of `node`'s named field, if present.
+    pub(crate) fn field_text(&self, node: Node, field: &str) -> Option<String> {
+        node.child_by_field_name(field)
+            .and_then(|n| n.utf8_text(self.src).ok())
+            .map(str::to_string)
+    }
+
+    /// The text of `node` itself.
+    pub(crate) fn node_text(&self, node: Node) -> Option<String> {
+        node.utf8_text(self.src).ok().map(str::to_string)
+    }
+
+    /// Build a [`Symbol`] for `node` (1-based line span).
+    pub(crate) fn symbol(
+        &self,
+        name: &str,
+        kind: Kind,
+        node: Node,
+        parent: Option<&str>,
+    ) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            kind,
+            language: self.language.to_string(),
+            file: self.file.to_string(),
+            line: node.start_position().row as u32 + 1,
+            end_line: node.end_position().row as u32 + 1,
+            parent: parent.map(str::to_string),
+        }
+    }
+}
+
+/// Join a name onto its enclosing qualified name with the language's separator.
+pub(crate) fn qualify(parent: Option<&str>, name: &str, sep: &str) -> String {
+    match parent {
+        Some(p) => format!("{p}{sep}{name}"),
+        None => name.to_string(),
+    }
+}
+
+/// Parse `source` with `grammar` and hand the tree's root (plus a [`Ctx`]) to
+/// the plugin's `walk`. All the per-file plumbing lives here; a plugin is just
+/// its walk.
+pub(crate) fn extract_with(
+    language: &'static str,
+    grammar: Language,
+    file: &str,
+    source: &str,
+    walk: impl FnOnce(&Ctx, Node, &mut Vec<Symbol>),
+) -> Vec<Symbol> {
+    let mut parser = Parser::new();
+    if parser.set_language(&grammar).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let ctx = Ctx {
+        src: source.as_bytes(),
+        file,
+        language,
+    };
+    walk(&ctx, tree.root_node(), &mut out);
+    out
+}
 
 /// Extracts definitions from a single source file.
 pub trait LanguagePlugin {

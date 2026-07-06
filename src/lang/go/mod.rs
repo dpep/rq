@@ -3,10 +3,10 @@
 //! the same "named contract" concept). Methods are qualified by their receiver
 //! type (`Handle · Server`); interface method signatures by the interface.
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::core::{Kind, Symbol};
-use crate::lang::LanguagePlugin;
+use crate::lang::{Ctx, LanguagePlugin, extract_with};
 
 const LANGUAGE: &str = "go";
 
@@ -22,108 +22,73 @@ impl LanguagePlugin for Go {
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
-        let mut parser = Parser::new();
-        if parser
-            .set_language(&tree_sitter_go::LANGUAGE.into())
-            .is_err()
-        {
-            return Vec::new();
-        }
-        let Some(tree) = parser.parse(source, None) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        let ctx = Ctx {
-            src: source.as_bytes(),
+        extract_with(
+            LANGUAGE,
+            tree_sitter_go::LANGUAGE.into(),
             file,
-        };
-        ctx.walk(tree.root_node(), None, &mut out);
-        out
+            source,
+            |ctx, root, out| walk(ctx, root, None, out),
+        )
     }
 }
 
-struct Ctx<'a> {
-    src: &'a [u8],
-    file: &'a str,
-}
-
-impl Ctx<'_> {
-    fn walk(&self, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "function_declaration" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        out.push(self.symbol(&name, Kind::Function, child, parent));
-                    }
+fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    out.push(ctx.symbol(&name, Kind::Function, child, parent));
                 }
-                "method_declaration" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        // qualify by the receiver type: `func (s *Server) Handle()`
-                        let recv = child
-                            .child_by_field_name("receiver")
-                            .and_then(|r| self.type_identifier(r));
-                        out.push(self.symbol(&name, Kind::Method, child, recv.as_deref()));
-                    }
+            }
+            "method_declaration" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    // qualify by the receiver type: `func (s *Server) Handle()`
+                    let recv = child
+                        .child_by_field_name("receiver")
+                        .and_then(|r| type_identifier(ctx, r));
+                    out.push(ctx.symbol(&name, Kind::Method, child, recv.as_deref()));
                 }
-                "type_spec" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        match child.child_by_field_name("type").map(|t| t.kind()) {
-                            Some("struct_type") => {
-                                out.push(self.symbol(&name, Kind::Struct, child, parent));
-                            }
-                            Some("interface_type") => {
-                                out.push(self.symbol(&name, Kind::Trait, child, parent));
-                                // interface method signatures are methods of it
-                                self.walk(child, Some(&name), out);
-                            }
-                            _ => {}
+            }
+            "type_spec" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    match child.child_by_field_name("type").map(|t| t.kind()) {
+                        Some("struct_type") => {
+                            out.push(ctx.symbol(&name, Kind::Struct, child, parent));
                         }
+                        Some("interface_type") => {
+                            out.push(ctx.symbol(&name, Kind::Trait, child, parent));
+                            // interface method signatures are methods of it
+                            walk(ctx, child, Some(&name), out);
+                        }
+                        _ => {}
                     }
                 }
-                // interface method signatures (node name varies by grammar version)
-                "method_spec" | "method_elem" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        out.push(self.symbol(&name, Kind::Method, child, parent));
-                    }
+            }
+            // interface method signatures (node name varies by grammar version)
+            "method_spec" | "method_elem" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    out.push(ctx.symbol(&name, Kind::Method, child, parent));
                 }
-                _ => self.walk(child, parent, out),
             }
+            _ => walk(ctx, child, parent, out),
         }
     }
+}
 
-    fn field_text(&self, node: Node, field: &str) -> Option<String> {
-        node.child_by_field_name(field)
-            .and_then(|n| n.utf8_text(self.src).ok())
-            .map(str::to_string)
+/// The first `type_identifier` within `node` — used to pull the bare type
+/// name out of a receiver like `(s *Server)` or `(s *Stack[T])`.
+fn type_identifier(ctx: &Ctx, node: Node) -> Option<String> {
+    if node.kind() == "type_identifier" {
+        return ctx.node_text(node);
     }
-
-    /// The first `type_identifier` within `node` — used to pull the bare type
-    /// name out of a receiver like `(s *Server)` or `(s *Stack[T])`.
-    fn type_identifier(&self, node: Node) -> Option<String> {
-        if node.kind() == "type_identifier" {
-            return node.utf8_text(self.src).ok().map(str::to_string);
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(name) = self.type_identifier(child) {
-                return Some(name);
-            }
-        }
-        None
-    }
-
-    fn symbol(&self, name: &str, kind: Kind, node: Node, parent: Option<&str>) -> Symbol {
-        Symbol {
-            name: name.to_string(),
-            kind,
-            language: LANGUAGE.to_string(),
-            file: self.file.to_string(),
-            line: node.start_position().row as u32 + 1,
-            end_line: node.end_position().row as u32 + 1,
-            parent: parent.map(str::to_string),
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(name) = type_identifier(ctx, child) {
+            return Some(name);
         }
     }
+    None
 }
 
 #[cfg(test)]

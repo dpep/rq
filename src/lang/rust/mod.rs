@@ -6,10 +6,10 @@
 //! `bar · Foo` and a nested type as `outer · mod`. `impl` blocks aren't symbols
 //! themselves; they just supply the parent for the methods inside them.
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::core::{Kind, Symbol};
-use crate::lang::LanguagePlugin;
+use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "rust";
 
@@ -25,125 +25,82 @@ impl LanguagePlugin for Rust {
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
-        let mut parser = Parser::new();
-        if parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .is_err()
-        {
-            return Vec::new();
-        }
-        let Some(tree) = parser.parse(source, None) else {
-            return Vec::new();
-        };
-
-        let mut out = Vec::new();
-        let ctx = Ctx {
-            src: source.as_bytes(),
+        extract_with(
+            LANGUAGE,
+            tree_sitter_rust::LANGUAGE.into(),
             file,
-        };
-        ctx.walk(tree.root_node(), None, false, &mut out);
-        out
+            source,
+            |ctx, root, out| walk(ctx, root, None, false, out),
+        )
     }
 }
 
-struct Ctx<'a> {
-    src: &'a [u8],
-    file: &'a str,
-}
-
-impl Ctx<'_> {
-    /// Recursively collect definitions. `parent` is the enclosing qualified name;
-    /// `in_impl` is true inside an `impl`/`trait` body, where an `fn` is a method.
-    fn walk(&self, node: Node, parent: Option<&str>, in_impl: bool, out: &mut Vec<Symbol>) {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                // `function_item` has a body; `function_signature_item` is a
-                // bodyless signature (a trait method declaration)
-                "function_item" | "function_signature_item" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        let kind = if in_impl {
-                            Kind::Method
-                        } else {
-                            Kind::Function
-                        };
-                        out.push(self.symbol(&name, kind, child, parent));
-                    }
-                    // bodies rarely hold further definitions worth surfacing
-                }
-                "struct_item" | "enum_item" | "union_item" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        let kind = match child.kind() {
-                            "enum_item" => Kind::Enum,
-                            _ => Kind::Struct,
-                        };
-                        out.push(self.symbol(&name, kind, child, parent));
-                    }
-                }
-                "trait_item" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        out.push(self.symbol(&name, Kind::Trait, child, parent));
-                        // trait method signatures are methods of the trait
-                        let qualified = qualify(parent, &name);
-                        self.walk(child, Some(&qualified), true, out);
-                    }
-                }
-                "mod_item" => {
-                    // Only a module *with a body* is a definition worth surfacing.
-                    // A bare `mod x;` is just a re-export pointer to another file —
-                    // indexing it competes with (and can outrank) the real
-                    // definitions it forwards to.
-                    if child.child_by_field_name("body").is_some()
-                        && let Some(name) = self.field_text(child, "name")
-                    {
-                        out.push(self.symbol(&name, Kind::Module, child, parent));
-                        let qualified = qualify(parent, &name);
-                        self.walk(child, Some(&qualified), false, out);
-                    }
-                }
-                "impl_item" => {
-                    // an impl isn't a symbol; its `type` becomes the parent of the
-                    // methods inside it
-                    let ty = self.field_text(child, "type").map(|t| base_type(&t));
-                    let qualified = match &ty {
-                        Some(t) => qualify(parent, t),
-                        None => parent.map(str::to_string).unwrap_or_default(),
-                    };
-                    let p = if qualified.is_empty() {
-                        None
+/// Recursively collect definitions. `parent` is the enclosing qualified name;
+/// `in_impl` is true inside an `impl`/`trait` body, where an `fn` is a method.
+fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, in_impl: bool, out: &mut Vec<Symbol>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            // `function_item` has a body; `function_signature_item` is a
+            // bodyless signature (a trait method declaration)
+            "function_item" | "function_signature_item" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    let kind = if in_impl {
+                        Kind::Method
                     } else {
-                        Some(qualified.as_str())
+                        Kind::Function
                     };
-                    self.walk(child, p, true, out);
+                    out.push(ctx.symbol(&name, kind, child, parent));
                 }
-                _ => self.walk(child, parent, in_impl, out),
+                // bodies rarely hold further definitions worth surfacing
             }
+            "struct_item" | "enum_item" | "union_item" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    let kind = match child.kind() {
+                        "enum_item" => Kind::Enum,
+                        _ => Kind::Struct,
+                    };
+                    out.push(ctx.symbol(&name, kind, child, parent));
+                }
+            }
+            "trait_item" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    out.push(ctx.symbol(&name, Kind::Trait, child, parent));
+                    // trait method signatures are methods of the trait
+                    let qualified = qualify(parent, &name, "::");
+                    walk(ctx, child, Some(&qualified), true, out);
+                }
+            }
+            "mod_item" => {
+                // Only a module *with a body* is a definition worth surfacing.
+                // A bare `mod x;` is just a re-export pointer to another file —
+                // indexing it competes with (and can outrank) the real
+                // definitions it forwards to.
+                if child.child_by_field_name("body").is_some()
+                    && let Some(name) = ctx.field_text(child, "name")
+                {
+                    out.push(ctx.symbol(&name, Kind::Module, child, parent));
+                    let qualified = qualify(parent, &name, "::");
+                    walk(ctx, child, Some(&qualified), false, out);
+                }
+            }
+            "impl_item" => {
+                // an impl isn't a symbol; its `type` becomes the parent of the
+                // methods inside it
+                let ty = ctx.field_text(child, "type").map(|t| base_type(&t));
+                let qualified = match &ty {
+                    Some(t) => qualify(parent, t, "::"),
+                    None => parent.map(str::to_string).unwrap_or_default(),
+                };
+                let p = if qualified.is_empty() {
+                    None
+                } else {
+                    Some(qualified.as_str())
+                };
+                walk(ctx, child, p, true, out);
+            }
+            _ => walk(ctx, child, parent, in_impl, out),
         }
-    }
-
-    fn field_text(&self, node: Node, field: &str) -> Option<String> {
-        node.child_by_field_name(field)
-            .and_then(|n| n.utf8_text(self.src).ok())
-            .map(str::to_string)
-    }
-
-    fn symbol(&self, name: &str, kind: Kind, node: Node, parent: Option<&str>) -> Symbol {
-        Symbol {
-            name: name.to_string(),
-            kind,
-            language: LANGUAGE.to_string(),
-            file: self.file.to_string(),
-            line: node.start_position().row as u32 + 1,
-            end_line: node.end_position().row as u32 + 1,
-            parent: parent.map(str::to_string),
-        }
-    }
-}
-
-fn qualify(parent: Option<&str>, name: &str) -> String {
-    match parent {
-        Some(p) => format!("{p}::{name}"),
-        None => name.to_string(),
     }
 }
 

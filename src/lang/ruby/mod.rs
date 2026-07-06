@@ -4,10 +4,10 @@
 //! Tree-sitter. `parent` carries the enclosing qualified name so a method
 //! renders as `Foo::Bar#baz` and a nested class as `Foo::Bar`.
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::core::{Kind, Symbol};
-use crate::lang::LanguagePlugin;
+use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "ruby";
 
@@ -23,87 +23,51 @@ impl LanguagePlugin for Ruby {
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
-        let mut parser = Parser::new();
-        if parser
-            .set_language(&tree_sitter_ruby::LANGUAGE.into())
-            .is_err()
-        {
-            return Vec::new();
-        }
-        let Some(tree) = parser.parse(source, None) else {
-            return Vec::new();
-        };
-
-        let mut out = Vec::new();
-        let ctx = Ctx {
-            src: source.as_bytes(),
+        extract_with(
+            LANGUAGE,
+            tree_sitter_ruby::LANGUAGE.into(),
             file,
-        };
-        ctx.walk(tree.root_node(), None, &mut out);
-        out
+            source,
+            |ctx, root, out| walk(ctx, root, None, out),
+        )
     }
 }
 
-struct Ctx<'a> {
-    src: &'a [u8],
-    file: &'a str,
-}
-
-impl Ctx<'_> {
-    /// Recursively collect definitions. `parent` is the enclosing qualified name.
-    fn walk(&self, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "class" | "module" => {
-                    let kind = if child.kind() == "class" {
-                        Kind::Class
-                    } else {
-                        Kind::Module
+/// Recursively collect definitions. `parent` is the enclosing qualified name.
+fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class" | "module" => {
+                let kind = if child.kind() == "class" {
+                    Kind::Class
+                } else {
+                    Kind::Module
+                };
+                if let Some(name) = ctx.field_text(child, "name") {
+                    // a compact definition (`class A::B::C`) names the leaf `C`
+                    // with `A::B` folded into the parent — same shape as the
+                    // nested `module A; module B; class C` form, so the class
+                    // is found by its leaf name either way
+                    let (leaf, prefix) = split_qualified(&name);
+                    let effective_parent = match prefix {
+                        Some(p) => Some(qualify(parent, p, "::")),
+                        None => parent.map(str::to_string),
                     };
-                    if let Some(name) = self.field_text(child, "name") {
-                        // a compact definition (`class A::B::C`) names the leaf `C`
-                        // with `A::B` folded into the parent — same shape as the
-                        // nested `module A; module B; class C` form, so the class
-                        // is found by its leaf name either way
-                        let (leaf, prefix) = split_qualified(&name);
-                        let effective_parent = match prefix {
-                            Some(p) => Some(qualify(parent, p, "::")),
-                            None => parent.map(str::to_string),
-                        };
-                        out.push(self.symbol(leaf, kind, child, effective_parent.as_deref()));
-                        let qualified = qualify(effective_parent.as_deref(), leaf, "::");
-                        self.walk(child, Some(&qualified), out);
-                    } else {
-                        self.walk(child, parent, out);
-                    }
+                    out.push(ctx.symbol(leaf, kind, child, effective_parent.as_deref()));
+                    let qualified = qualify(effective_parent.as_deref(), leaf, "::");
+                    walk(ctx, child, Some(&qualified), out);
+                } else {
+                    walk(ctx, child, parent, out);
                 }
-                "method" | "singleton_method" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        out.push(self.symbol(&name, Kind::Method, child, parent));
-                    }
-                    // method bodies rarely hold further definitions; don't recurse.
-                }
-                _ => self.walk(child, parent, out),
             }
-        }
-    }
-
-    fn field_text(&self, node: Node, field: &str) -> Option<String> {
-        node.child_by_field_name(field)
-            .and_then(|n| n.utf8_text(self.src).ok())
-            .map(str::to_string)
-    }
-
-    fn symbol(&self, name: &str, kind: Kind, node: Node, parent: Option<&str>) -> Symbol {
-        Symbol {
-            name: name.to_string(),
-            kind,
-            language: LANGUAGE.to_string(),
-            file: self.file.to_string(),
-            line: node.start_position().row as u32 + 1,
-            end_line: node.end_position().row as u32 + 1,
-            parent: parent.map(str::to_string),
+            "method" | "singleton_method" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    out.push(ctx.symbol(&name, Kind::Method, child, parent));
+                }
+                // method bodies rarely hold further definitions; don't recurse.
+            }
+            _ => walk(ctx, child, parent, out),
         }
     }
 }
@@ -118,13 +82,6 @@ fn split_qualified(name: &str) -> (&str, Option<&str>) {
             (&name[i + 2..], (!prefix.is_empty()).then_some(prefix))
         }
         None => (name, None),
-    }
-}
-
-fn qualify(parent: Option<&str>, name: &str, sep: &str) -> String {
-    match parent {
-        Some(p) => format!("{p}{sep}{name}"),
-        None => name.to_string(),
     }
 }
 

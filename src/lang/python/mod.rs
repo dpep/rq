@@ -2,10 +2,10 @@
 //! class → method), qualified with `.` (`method · Account`, nested class
 //! `Inner · Outer`). Decorators are transparent — the wrapped def is what counts.
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::core::{Kind, Symbol};
-use crate::lang::LanguagePlugin;
+use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "python";
 
@@ -21,86 +21,44 @@ impl LanguagePlugin for Python {
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
-        let mut parser = Parser::new();
-        if parser
-            .set_language(&tree_sitter_python::LANGUAGE.into())
-            .is_err()
-        {
-            return Vec::new();
-        }
-        let Some(tree) = parser.parse(source, None) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        let ctx = Ctx {
-            src: source.as_bytes(),
+        extract_with(
+            LANGUAGE,
+            tree_sitter_python::LANGUAGE.into(),
             file,
-        };
-        ctx.walk(tree.root_node(), None, false, &mut out);
-        out
+            source,
+            |ctx, root, out| walk(ctx, root, None, false, out),
+        )
     }
 }
 
-struct Ctx<'a> {
-    src: &'a [u8],
-    file: &'a str,
-}
-
-impl Ctx<'_> {
-    /// `parent` is the enclosing qualified name; `in_class` is true inside a
-    /// class body, where a `def` is a method.
-    fn walk(&self, node: Node, parent: Option<&str>, in_class: bool, out: &mut Vec<Symbol>) {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "class_definition" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        out.push(self.symbol(&name, Kind::Class, child, parent));
-                        let qualified = qualify(parent, &name);
-                        self.walk(child, Some(&qualified), true, out);
-                    }
+/// `parent` is the enclosing qualified name; `in_class` is true inside a
+/// class body, where a `def` is a method.
+fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, in_class: bool, out: &mut Vec<Symbol>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_definition" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    out.push(ctx.symbol(&name, Kind::Class, child, parent));
+                    let qualified = qualify(parent, &name, ".");
+                    walk(ctx, child, Some(&qualified), true, out);
                 }
-                "function_definition" => {
-                    if let Some(name) = self.field_text(child, "name") {
-                        let kind = if in_class {
-                            Kind::Method
-                        } else {
-                            Kind::Function
-                        };
-                        out.push(self.symbol(&name, kind, child, parent));
-                    }
-                    // don't descend into a def body (nested defs rarely navigated)
-                }
-                // a decorated class/function: descend so the wrapped def is seen
-                // in the same context
-                _ => self.walk(child, parent, in_class, out),
             }
+            "function_definition" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    let kind = if in_class {
+                        Kind::Method
+                    } else {
+                        Kind::Function
+                    };
+                    out.push(ctx.symbol(&name, kind, child, parent));
+                }
+                // don't descend into a def body (nested defs rarely navigated)
+            }
+            // a decorated class/function: descend so the wrapped def is seen
+            // in the same context
+            _ => walk(ctx, child, parent, in_class, out),
         }
-    }
-
-    fn field_text(&self, node: Node, field: &str) -> Option<String> {
-        node.child_by_field_name(field)
-            .and_then(|n| n.utf8_text(self.src).ok())
-            .map(str::to_string)
-    }
-
-    fn symbol(&self, name: &str, kind: Kind, node: Node, parent: Option<&str>) -> Symbol {
-        Symbol {
-            name: name.to_string(),
-            kind,
-            language: LANGUAGE.to_string(),
-            file: self.file.to_string(),
-            line: node.start_position().row as u32 + 1,
-            end_line: node.end_position().row as u32 + 1,
-            parent: parent.map(str::to_string),
-        }
-    }
-}
-
-fn qualify(parent: Option<&str>, name: &str) -> String {
-    match parent {
-        Some(p) => format!("{p}.{name}"),
-        None => name.to_string(),
     }
 }
 
