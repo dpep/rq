@@ -62,9 +62,18 @@ pub(crate) fn qualify(parent: Option<&str>, name: &str, sep: &str) -> String {
     }
 }
 
+thread_local! {
+    /// One parser per language per thread. `set_language` (grammar table
+    /// loading) is the expensive step of parser setup, and the indexer calls
+    /// `extract` once per file — reuse makes that a one-time cost per worker.
+    static PARSERS: std::cell::RefCell<std::collections::HashMap<&'static str, Parser>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 /// Parse `source` with `grammar` and hand the tree's root (plus a [`Ctx`]) to
 /// the plugin's `walk`. All the per-file plumbing lives here; a plugin is just
-/// its walk.
+/// its walk. (The parser cache is borrowed across the walk, so a walk must
+/// never recurse into another `extract` — none does.)
 pub(crate) fn extract_with(
     language: &'static str,
     grammar: Language,
@@ -72,21 +81,30 @@ pub(crate) fn extract_with(
     source: &str,
     walk: impl FnOnce(&Ctx, Node, &mut Vec<Symbol>),
 ) -> Vec<Symbol> {
-    let mut parser = Parser::new();
-    if parser.set_language(&grammar).is_err() {
-        return Vec::new();
-    }
-    let Some(tree) = parser.parse(source, None) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let ctx = Ctx {
-        src: source.as_bytes(),
-        file,
-        language,
-    };
-    walk(&ctx, tree.root_node(), &mut out);
-    out
+    PARSERS.with(|cell| {
+        let mut parsers = cell.borrow_mut();
+        let parser = match parsers.entry(language) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let mut p = Parser::new();
+                if p.set_language(&grammar).is_err() {
+                    return Vec::new();
+                }
+                v.insert(p)
+            }
+        };
+        let Some(tree) = parser.parse(source, None) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let ctx = Ctx {
+            src: source.as_bytes(),
+            file,
+            language,
+        };
+        walk(&ctx, tree.root_node(), &mut out);
+        out
+    })
 }
 
 /// Extracts definitions from a single source file.
@@ -103,26 +121,26 @@ pub trait LanguagePlugin {
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol>;
 }
 
+/// The registered language plugins. Adding a language is one line here.
+static REGISTRY: [&(dyn LanguagePlugin + Sync); 4] =
+    [&ruby::Ruby, &rust::Rust, &go::Go, &python::Python];
+
 /// The tags of all registered languages — the set `--lang` matches against, so
 /// it can't drift from the registry.
 pub fn languages() -> Vec<&'static str> {
     registry().iter().map(|p| p.language()).collect()
 }
 
-/// The registered language plugins. Adding a language is one line here.
-pub fn registry() -> Vec<Box<dyn LanguagePlugin>> {
-    vec![
-        Box::new(ruby::Ruby),
-        Box::new(rust::Rust),
-        Box::new(go::Go),
-        Box::new(python::Python),
-    ]
+/// The registered language plugins.
+pub fn registry() -> &'static [&'static (dyn LanguagePlugin + Sync)] {
+    &REGISTRY
 }
 
 /// The plugin handling files with the given extension (without the dot), if any.
-pub fn plugin_for_extension(ext: &str) -> Option<Box<dyn LanguagePlugin>> {
-    registry()
-        .into_iter()
+pub fn plugin_for_extension(ext: &str) -> Option<&'static (dyn LanguagePlugin + Sync)> {
+    REGISTRY
+        .iter()
+        .copied()
         .find(|p| p.extensions().contains(&ext))
 }
 

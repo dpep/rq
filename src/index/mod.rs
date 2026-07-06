@@ -694,13 +694,9 @@ fn parse_file(
     }
     let content_hash = content_hash(&source);
     let symbols = plugin.extract(&rel, &source);
-    let language = symbols
-        .first()
-        .map(|s| s.language.clone())
-        .unwrap_or_else(|| "unknown".to_string());
     Some(crate::store::FileSymbols {
         path: rel,
-        language,
+        language: plugin.language().to_string(),
         mtime: file_mtime(file),
         content_hash,
         symbols,
@@ -1046,16 +1042,15 @@ pub fn refresh_file(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or_default();
-    let symbols = match lang::plugin_for_extension(ext) {
+    let plugin = lang::plugin_for_extension(ext);
+    let symbols = match plugin {
         Some(plugin) => plugin.extract(rel, &source),
         None => Vec::new(),
     };
-    let language = symbols
-        .first()
-        .map(|s| s.language.clone())
-        .unwrap_or_else(|| "unknown".to_string());
+    // the plugin knows its language even when a file parses to zero symbols
+    let language = plugin.map_or("unknown", |p| p.language());
     let mtime = file_mtime(&path);
-    store.replace_file_symbols(repository_id, rel, &language, mtime, &hash, &symbols)?;
+    store.replace_file_symbols(repository_id, rel, language, mtime, &hash, &symbols)?;
     Ok(Refresh::Updated)
 }
 
