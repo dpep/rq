@@ -447,7 +447,7 @@ impl Store {
             .optional()
     }
 
-    /// Coverage status for a repository's full scope (`never`/`partial`/
+    /// Coverage status for a repository's full scope (`never`/`warming`/
     /// `complete`), or `None` if the repository is unknown.
     pub fn coverage_status(&self, identity: &str) -> Result<Option<String>> {
         self.conn
@@ -1198,12 +1198,12 @@ mod tests {
                 &symbols,
             )
             .unwrap();
-        store.set_coverage(repo, 10, 1, "partial").unwrap();
+        store.set_coverage(repo, 10, 1, "warming").unwrap();
 
         let overview = store.coverage_overview().unwrap();
         assert_eq!(overview.len(), 1);
         assert_eq!(overview[0].identity, "github.com/dpep/rq");
-        assert_eq!(overview[0].status, "partial");
+        assert_eq!(overview[0].status, "warming");
         assert_eq!(overview[0].symbols, 2);
     }
 

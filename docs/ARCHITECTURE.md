@@ -162,7 +162,7 @@ coverage (
   repository_id INTEGER NOT NULL REFERENCES repositories(id),
   scope TEXT NOT NULL DEFAULT 'full',   -- 'full' or a directory prefix
   files_seen INTEGER, files_indexed INTEGER,
-  status TEXT NOT NULL,                  -- never | warming | partial | complete
+  status TEXT NOT NULL,                  -- never | warming | complete
   last_indexed_at INTEGER,
   UNIQUE(repository_id, scope)
 );
@@ -256,8 +256,9 @@ search only reads.
 - **Prioritized** — active (branch) files first, so the working set is indexed
   and kept fresh ahead of the rest of the repo.
 - **Coverage-aware** — every walk updates `coverage` (`warming` until a full
-  sweep completes, then `complete`; a deliberate `--index --path` subset is
-  `partial` and never auto-warmed over).
+  sweep completes, then `complete`). A subtree index (`--index --path`) is a
+  *seed*, not a fence: it gets the named files in first and leaves coverage
+  `warming`, so normal warming continues over the rest of the repo through use.
 - **Git off the hot path** — `is_git_repo` is native (walk up for `.git`),
   identity is cached by checkout root, and the `git log` for commit-time recency
   runs only when a sweep actually (re)indexed something — so a search of a clean,
@@ -337,14 +338,13 @@ a penalty. Quality of ranking matters more than the cleverness of the algorithm.
 
 The index is **never assumed complete**.
 
-- `coverage.status` tells search its own confidence (`never | warming | partial
-  | complete`). `warming` is opportunistic indexing in progress; `partial` is a
-  deliberate `--index --path` subset that auto-warming won't clobber.
-- A `warming` repo **blocks until answered** (see the indexing model); a
-  `partial` one instead gets a **bounded live-scan tail** when the index lacks
-  a confident hit — scanned over the unindexed remainder, merged and re-ranked
-  with the index results, and never persisted (the deliberate subset stays
-  deliberate). Slower, but accurate.
+- `coverage.status` tells search its own confidence (`never | warming |
+  complete`). `warming` is indexing in progress — whether opportunistic or
+  seeded by a subtree `--index --path`.
+- A `warming` repo **blocks until answered** (see the indexing model), so
+  incomplete coverage yields a delayed-but-correct answer rather than a
+  confident-looking wrong one. An untracked (never-indexed, non-git) dir gets a
+  bounded in-memory live scan, merged with whatever the index offered.
 - **Opportunistic extraction** grows coverage through normal use.
 - **Staleness:** a `content_hash` mismatch marks a file's symbols stale; search
   lazily validates only the **top-N** results (stat, re-parse if changed) before
@@ -354,7 +354,7 @@ Degradation ladder:
 
 ```text
 zero index      → pure live scan (works, slower)
-partial index   → index results + merged live-scan tail
+warming index   → index results, blocking until the answer is trustworthy
 complete + fresh → index only, sub-50 ms
 ```
 

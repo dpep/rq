@@ -440,8 +440,8 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
 
 #[test]
 fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
-    // `rq --index <subdir>` indexes only that subtree (not the whole repo), yet
-    // stores paths relative to the repo root so a later search still resolves them
+    // `rq --index <subdir>` seeds only that subtree in this run, yet stores
+    // paths relative to the repo root so a later search still resolves them
     let (dir, db) = scratch("index-subdir");
     fs::create_dir_all(dir.join("sub")).unwrap();
     fs::create_dir_all(dir.join("other")).unwrap();
@@ -451,13 +451,13 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
 
     let (ok, out) = rq(&db, &dir, &["--index", "sub"]);
     assert!(ok, "scoped index failed: {out}");
-    assert!(out.contains("partial"), "subdir index is partial: {out}");
+    assert!(out.contains("subtree"), "subdir index is a seed: {out}");
     assert!(
         out.contains("1 files"),
-        "indexed exactly the one in-scope file: {out}"
+        "this run indexed exactly the one in-scope file: {out}"
     );
 
-    // the in-scope class is found, at a repo-root-relative path
+    // the seeded class is found, at a repo-root-relative path
     let (ok, out) = rq(&db, &dir, &["inscope", "--no-record", "--ndjson"]);
     assert!(ok, "search failed: {out}");
     assert!(out.contains("InScope"), "in-scope class indexed: {out}");
@@ -466,15 +466,15 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
         "path is root-relative, not subdir-relative: {out}"
     );
 
-    // the out-of-scope class still surfaces (live-scan tail over the unindexed
-    // remainder) — but was never *persisted*: the index keeps exactly one file
+    // the seed is not a fence: searching warms the rest of the repo, so the
+    // out-of-scope class is found — and persisted
     let (found, out) = rq(&db, &dir, &["outofscope", "--no-record", "--ndjson"]);
-    assert!(found, "tail finds the out-of-scope class: {out}");
-    assert!(out.contains("\"file\":\"other/b.rb\""), "tail hit: {out}");
+    assert!(found, "warming finds the out-of-scope class: {out}");
+    assert!(out.contains("\"file\":\"other/b.rb\""), "warm hit: {out}");
     let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
     assert!(
-        status.contains("\"files\":1"),
-        "out-of-scope subtree not persisted: {status}"
+        status.contains("\"files\":2"),
+        "warming persisted the rest of the repo: {status}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -785,12 +785,19 @@ fn index_a_subset_of_a_repo() {
     // a git repo, so a search won't live-scan the whole tree (defeating the point)
     git_init(&dir);
 
-    // index only the services subtree
-    let (ok, out) = rq(&db, &dir, &["--index", "--path", "app/services"]);
+    // seed only the services subtree: this run indexes just that, and
+    // coverage stays warming (a seed, not a fence)
+    let (ok, out) = rq(&db, &dir, &["--index", "--path", "app/services", "-J"]);
     assert!(ok, "subset index failed: {out}");
-    assert!(out.contains("(partial)"), "expected partial marker: {out}");
+    assert!(out.contains("\"scope\":\"subtree\""), "seed marker: {out}");
+    assert!(out.contains("\"files\":1"), "seeded one file: {out}");
+    let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
+    assert!(
+        status.contains("\"status\":\"warming\""),
+        "a seed leaves coverage warming: {status}"
+    );
 
-    // the indexed subtree is searchable, with a repo-relative path
+    // the seeded subtree is searchable, with a repo-relative path
     let (ok, out) = rq(&db, &dir, &["charge", "--ndjson"]);
     assert!(ok, "charge search failed: {out}");
     assert!(
@@ -798,25 +805,18 @@ fn index_a_subset_of_a_repo() {
         "subset hit: {out}"
     );
 
-    // a symbol outside the subset is still found — the live-scan tail covers
-    // the unindexed remainder when the index has no confident hit
+    // a symbol outside the seed: warming continues over the rest of the repo,
+    // finds it, and persists it
     let (ok, out) = rq(&db, &dir, &["account", "--ndjson"]);
-    assert!(ok, "tail finds the unindexed symbol: {out}");
+    assert!(ok, "warming finds the unseeded symbol: {out}");
     assert!(
         out.contains("\"file\":\"app/models/account.rb\""),
-        "tail hit: {out}"
+        "warm hit: {out}"
     );
-
-    // ...without persisting: a search does NOT silently index over the
-    // deliberate partial subset (still 1 file, still partial)
     let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
     assert!(
-        status.contains("\"status\":\"partial\""),
-        "coverage stays partial: {status}"
-    );
-    assert!(
-        status.contains("\"files\":1"),
-        "tail did not persist: {status}"
+        status.contains("\"files\":2"),
+        "warming persisted the rest: {status}"
     );
 
     let _ = fs::remove_dir_all(&dir);

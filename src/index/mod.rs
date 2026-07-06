@@ -32,9 +32,10 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
 }
 
 /// Index `root`, or — when `subdirs` is non-empty — only those repo-relative
-/// subtrees of it (a partial index of the repo). Unbounded: an explicit index
-/// is thorough. A whole-repo index also reconciles deletions; a deliberate
-/// subset is marked `partial` so a later search won't auto-warm over it.
+/// subtrees of it. Unbounded: an explicit index is thorough. A whole-repo index
+/// also reconciles deletions; a subtree index is a *seed* (it gets those files
+/// in first) that leaves coverage `warming`, so normal warming continues over
+/// the rest of the repo through use.
 pub fn index_under(
     store: &mut Store,
     root: &Path,
@@ -403,7 +404,10 @@ fn sweep_outcome(
     budgeted: bool,
 ) -> (bool, &'static str) {
     if !whole_repo {
-        return (false, "partial");
+        // a subtree index is a *seed* — it never reconciles (it didn't see the
+        // whole tree) and leaves coverage `warming` so normal warming carries
+        // on over the rest of the repo
+        return (false, "warming");
     }
     if budgeted && completed && seen_empty && had_stored {
         return (false, "warming"); // suspicious empty warm — don't wipe the index
@@ -427,7 +431,7 @@ fn sweep_outcome(
 /// fresh); then the walk streams the rest in walk order. `subdirs` (empty = whole
 /// repo) scope the walk; `budget` bounds it (`None` = unbounded). A whole-repo
 /// sweep that finishes within budget reconciles deletions and is `complete`; a
-/// sweep cut short is `warming`; a deliberate subtree is `partial`.
+/// sweep cut short — or a subtree seed — is `warming`.
 fn run_index(
     store: &mut Store,
     root: &Path,
@@ -1138,10 +1142,11 @@ mod tests {
             sweep_outcome(false, true, false, true, true),
             (false, "warming")
         );
-        // a subtree index is always partial, never reconciles
+        // a subtree index is a seed: never reconciles, and leaves coverage
+        // warming so later queries keep indexing the rest of the repo
         assert_eq!(
             sweep_outcome(true, false, false, true, true),
-            (false, "partial")
+            (false, "warming")
         );
     }
 

@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 7;
+pub const VERSION: i64 = 8;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -190,15 +190,23 @@ pub const MIGRATION_V7: &str = r#"
 ALTER TABLE repositories DROP COLUMN display_name;
 "#;
 
+/// Migration v7 → v8: retire the `partial` coverage status. A subtree index
+/// (`--index --path`) is now a *seed* rather than a fence — coverage stays
+/// `warming` so normal warming continues over the rest of the repo.
+pub const MIGRATION_V8: &str = r#"
+UPDATE coverage SET status = 'warming' WHERE status = 'partial';
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub const MIGRATIONS: [(i64, &str); 6] = [
+pub const MIGRATIONS: [(i64, &str); 7] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
     (5, MIGRATION_V5),
     (6, MIGRATION_V6),
     (7, MIGRATION_V7),
+    (8, MIGRATION_V8),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]

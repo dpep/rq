@@ -75,10 +75,11 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       (and on an empty result), *persists* the matches (`index::scan_for_query` →
       `replace_files`), and searches; coverage grows toward what's actually
       searched, not just walk order
-- [x] partial-coverage scan tail — a deliberate `--index --path` subset merges a
-      bounded live scan of the unindexed remainder whenever the index lacks a
-      confident hit (accuracy over speed); nothing persists, so the subset stays
-      deliberate
+- [x] subtree index as a *seed* — `--index --path DIR` gets the named subtree in
+      first and leaves coverage `warming`, so normal warming continues over the
+      rest of the repo through use (it's an accelerator, not a permanent scope;
+      the earlier `partial` fence status is retired). Untracked non-git dirs
+      merge a bounded live scan instead of replacing index results
 - [ ] best-first indexing scheduler — extend the fused pipeline with content/
       git-recency signals and a priority heap between walk and parse (so warming
       orders by relevance, not just walk order). Design:
@@ -172,8 +173,9 @@ model, not leaking a language into `index`/`search`/scoring.
 - match highlighting — text results color the matched chars (TTY-only; honors
   `NO_COLOR` and `GREP_COLORS`)
 - `--completions <shell>` — shell completion scripts
-- `rq --index --path DIR` — partial index of a subtree (for big monorepos);
-  a later search won't silently full-index over it
+- `rq --index --path DIR` — seed the index with a subtree first (for big
+  monorepos: the part you care about answers immediately; warming fills in the
+  rest through use)
 - `rq --drop [PATH|IDENTITY]` — remove a repo's index (symbols, files, coverage,
   learned ranking); the inverse of `--index`. By path (or current repo), or by an
   identity string from `--status` to clear orphaned cruft

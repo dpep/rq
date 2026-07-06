@@ -51,7 +51,7 @@ rq <query> --show           # print the definition's source (confident match onl
 rq <query> -o/--open        # open the best match in your editor + record the pick
 rq --symbols FILE           # outline a file's definitions, in line order
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
-rq --index --path DIR       # index only a subtree (partial — for big monorepos)
+rq --index --path DIR       # seed the index with a subtree first (big monorepos)
 rq --drop [PATH|IDENTITY]   # remove a repo's index (opposite of --index)
 rq --status                 # indexing coverage per known repository
 ```

@@ -180,7 +180,7 @@ pub fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if let Some(path) = &cli.index {
-        // index PATH (else cwd); with --path, only those subtrees (partial)
+        // index PATH (else cwd); with --path, seed only those subtrees
         let out = output_format(&cli);
         return cmd_index(path.as_deref().map(PathBuf::from), &cli.path, out);
     }
@@ -358,11 +358,12 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // Opportunistic indexing (Layer 5), time-bounded so the first query in a
     // large repo never blocks on a full walk. We may warm a git work tree (safe
     // to auto-discover) *or* any dir we already track — one earns tracking by
-    // being explicitly `--index`ed, which opts a non-git dir in. We never warm an
-    // unknown non-git dir (don't walk a random directory) or a deliberate partial
-    // subset (`--index --path …`, status "partial").
+    // being explicitly `--index`ed, which opts a non-git dir in. We never warm
+    // an unknown non-git dir (don't walk a random directory). A subtree index
+    // (`--index --path …`) is a seed, not a fence: coverage stays `warming`, so
+    // warming continues over the rest of the repo from here.
     let known = coverage.is_some();
-    let warming_ok = (cwd_is_git || known) && coverage.as_deref() != Some("partial");
+    let warming_ok = cwd_is_git || known;
     if crate::trace::enabled() {
         crate::trace!(
             "query {query:?}: root={} identity={} coverage={} warming_ok={warming_ok} active={}",
@@ -527,31 +528,9 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             .unwrap_or_default();
     }
 
-    // Deliberate partial subset (`--index --path …`): auto-warm never runs over
-    // it (by design), so a query without a confident hit gets a bounded live
-    // scan of the *unindexed* remainder, merged into the index results —
-    // accuracy over speed (ARCHITECTURE's "index results + scan tail" rung).
-    // The scan doesn't persist, so the deliberate subset stays deliberate.
-    if coverage.as_deref() == Some("partial")
-        && !hits.iter().any(strong)
-        && let (Some(root), Some(repo)) = (&root, current)
-    {
-        crate::trace!("no confident hit on a partial index → live-scan tail");
-        let skip: HashSet<String> = store
-            .file_mtimes(repo)
-            .map(|m| m.into_keys().collect())
-            .unwrap_or_default();
-        let deadline = std::time::Instant::now() + live_fallback_budget();
-        let mut tail = crate::search::live_search(root, query, limit, &skip, Some(deadline), true);
-        if tail.is_empty() {
-            tail = crate::search::live_search(root, query, limit, &skip, Some(deadline), false);
-        }
-        hits = crate::search::merge(hits, tail, limit);
-    }
-
     // Untracked non-git dir — nothing persisted, no warmer running — so scan it
     // live in-memory (substring, then fuzzy) and blend with whatever the index
-    // gave. The only non-persisting scan left besides the partial tail above.
+    // gave. The only non-persisting scan left.
     if !hits.iter().any(strong)
         && indexer.is_none()
         && coverage.is_none()
@@ -1301,7 +1280,7 @@ struct SymbolOut {
 }
 
 /// `rq --symbols <file>`: list a file's symbols in line order — a structural
-/// outline, not a ranked search. Warms the file's repo if it's cold/partial or
+/// outline, not a ranked search. Warms the file's repo if it's cold/incomplete or
 /// changed (same gate as search), then reads straight from the index. Honors
 /// --kind/--lang filters and --json/--ndjson.
 fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) -> ExitCode {
@@ -1315,8 +1294,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
 
     let identity = resolve_identity(&store, &root);
     let coverage = store.coverage_status(&identity).ok().flatten();
-    let warming_ok = (crate::index::is_git_repo(&root) || coverage.is_some())
-        && coverage.as_deref() != Some("partial");
+    let warming_ok = crate::index::is_git_repo(&root) || coverage.is_some();
     let current = store.repository_id(&identity).ok().flatten();
     let needs_warm = warming_ok
         && (coverage.as_deref() != Some("complete")
@@ -1650,7 +1628,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
     let identity = crate::index::detect_identity(&root).to_string();
     match crate::index::index_under(&mut store, &root, &subdirs) {
         Ok(stats) => {
-            let partial = !subdirs.is_empty();
+            let subtree = !subdirs.is_empty();
             // distinguish this run's incremental work from the index totals
             let totals = store
                 .repository_id(&identity)
@@ -1667,7 +1645,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
                         out,
                         &serde_json::json!({
                             "repo": identity,
-                            "scope": if partial { "partial" } else { "full" },
+                            "scope": if subtree { "subtree" } else { "full" },
                             "files_added": stats.files_indexed,
                             "symbols_added": stats.symbols,
                             "files": files,
@@ -1676,7 +1654,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
                     );
                 }
                 Output::Text => {
-                    let scope = if partial { " (partial)" } else { "" };
+                    let scope = if subtree { " (subtree seed)" } else { "" };
                     match totals {
                         Some((files, symbols)) => println!(
                             "{} file(s)/{} symbol(s) added this run; index{scope} now {files} files, {symbols} symbols",
