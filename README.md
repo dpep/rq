@@ -92,8 +92,13 @@ confident it prints the full `line..=end_line` span (a `body` field in JSON),
 else it falls back to the ranked list — so it never dumps a definition it isn't
 sure about.
 
-Set `RQ_WAIT_BUDGET_MS=0` for a strictly non-blocking query — it answers from
-whatever's already indexed instead of waiting on a warming repo.
+Pass `--no-wait` (or set `RQ_WAIT_BUDGET_MS=0`) for a strictly non-blocking
+query — it answers from whatever's already committed instead of waiting on a
+warming repo. Handy for agents/scripts: a query issued while a background
+reindex is rewriting the index (say, right after a branch switch on a huge repo)
+returns at once rather than blocking up to the wait budget; a miss reports
+`warming` (exit 2) so the caller can retry, and leftover warming still continues
+in a detached background child.
 
 `--json`/`--ndjson` work for every command, not just search: `rq --status --json`
 emits the coverage rows (`repo`, `status`, `files`, `symbols`), `rq --index --json`

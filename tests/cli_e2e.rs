@@ -1125,6 +1125,43 @@ fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
 }
 
 #[test]
+fn no_wait_returns_without_blocking_on_a_rebuild() {
+    // `--no-wait` is the agent/script escape hatch: a query issued while the index
+    // is (re)building must answer from the committed index *now*, never
+    // block-until-answered on the writer. A default programmatic miss on an
+    // incomplete index blocks up to the wait budget before giving up (see
+    // `an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one`);
+    // here the wait budget is 10 minutes, so if --no-wait blocked at all this test
+    // would hang. It returns at once instead — an honest `warming` miss (exit 2,
+    // "retry"), not a multi-minute hang and not a false definitive absence.
+    let (dir, db) = scratch("no-wait");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Nonexistent", "--no-record", "--no-wait", "--json"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "0") // hermetic: no detached child races cleanup
+        .env("RQ_WAIT_BUDGET_MS", "600000") // a block, if it happened, would hang the test
+        .output()
+        .expect("run rq");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        out.contains("\"status\": \"warming\""),
+        "a --no-wait miss on a not-yet-complete index reports warming (retry), \
+         not a block or a false absence: {out:?}"
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "a --no-wait miss on an incomplete index is indeterminate (exit 2)"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn symbols_outlines_a_file_in_line_order() {
     let (dir, db) = scratch("symbols");
     fs::write(

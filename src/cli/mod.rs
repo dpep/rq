@@ -30,6 +30,7 @@ rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing --no-record      search without recording it (speculative/agent queries)\n  \
+rq thing --no-wait        answer now from the committed index; don't block on a rebuild\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
 rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
 rq class Widget           a leading kind keyword is shorthand for -k\n  \
@@ -72,6 +73,14 @@ struct Cli {
     /// Don't record this search as a behavioral signal (for agents/scripts).
     #[arg(long)]
     no_record: bool,
+
+    /// Answer immediately from the committed index — never block waiting on a
+    /// background (re)index. For agents/scripts: a query issued mid-rebuild
+    /// returns at once (a miss reports `warming`, exit 2, so a caller can retry)
+    /// instead of blocking up to the wait budget. Equivalent to a per-call
+    /// `RQ_WAIT_BUDGET_MS=0`; leftover warming still detaches to a background child.
+    #[arg(long = "no-wait")]
+    no_wait: bool,
 
     /// Open the best match in your editor and record the pick, so ranking learns.
     /// On a terminal with several matches, prompts to choose. Launcher: `RQ_OPEN`
@@ -245,6 +254,7 @@ pub fn run() -> ExitCode {
                 langs: &langs,
                 want: cli.limit,
                 no_record: cli.no_record,
+                no_wait: cli.no_wait,
                 open: cli.open,
                 all_repos: cli.all_repos,
                 show: cli.show,
@@ -305,6 +315,8 @@ struct SearchArgs<'a> {
     /// Number of results to show (`--limit`).
     want: usize,
     no_record: bool,
+    /// Answer from the committed index without blocking on a (re)index (`--no-wait`).
+    no_wait: bool,
     open: bool,
     all_repos: bool,
     show: bool,
@@ -317,6 +329,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         out,
         want,
         no_record,
+        no_wait,
         open,
         all_repos,
         show,
@@ -428,7 +441,12 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // indexed — for humans *and* programs alike. Small/medium repos finish inside
     // the normal budget and are unaffected; only a genuinely large cold repo
     // waits, and only once.
-    let block = want_warm && was_warming;
+    // `--no-wait`: a scripted/agent caller that would rather answer from the
+    // committed index right now than block up to the wait budget while a
+    // background rebuild rewrites the index. It suppresses the block-until-answered
+    // escalation *and* the in-process warm (no lock contention, no join) — leftover
+    // warming still detaches below, so the index keeps improving for next time.
+    let block = want_warm && was_warming && !no_wait;
     // A human at a plain-text terminal also gets a live progress heads-up and a
     // graceful Ctrl-C; piped/`--json` callers (agents, scripts) block silently and
     // are bounded by a wait budget instead, since there's nothing to draw to and
@@ -442,7 +460,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // `warm_done` lets the poll stop the instant the indexer finishes — so a miss
     // on a small repo returns as soon as it's indexed, not at the deadline.
     let warm_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let indexer = (want_warm && root.is_some()).then(|| {
+    let indexer = (want_warm && root.is_some() && !no_wait).then(|| {
         crate::trace!(
             "background warm ({indexer_budget:?}, block={block}, progress_ui={progress_ui}, {} jobs)",
             crate::index::parse_jobs()
@@ -568,8 +586,10 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         // A miss against a *complete* index is definitive (the symbol isn't
         // there); against a still-warming one it's only "not yet". Distinguish
         // them so a caller — agent or script — isn't misled into thinking the
-        // symbol is absent when the index simply hasn't reached it.
-        let incomplete = block
+        // symbol is absent when the index simply hasn't reached it. `--no-wait`
+        // returns without blocking, so its miss is judged the same way — an
+        // incomplete index yields `warming` (exit 2, "retry"), not a false absence.
+        let incomplete = (block || no_wait)
             && identity
                 .as_deref()
                 .and_then(|id| store.coverage_status(id).ok().flatten())

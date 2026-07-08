@@ -241,7 +241,12 @@ search only reads.
     partial results. Interactive waits are unbounded — Ctrl-C is the escape.
   - **Programs** (`--json`/`--ndjson` or any pipe) block silently, bounded by a
     wait budget (`RQ_WAIT_BUDGET_MS`, default 1 min; `0` = non-blocking) since
-    there's no one to interrupt.
+    there's no one to interrupt. A caller that prefers *fail-fast over
+    block-until-answered* passes **`--no-wait`** (a per-call `RQ_WAIT_BUDGET_MS=0`):
+    it answers from the committed index immediately — never blocking, and skipping
+    the in-process warm so a query issued mid-rebuild neither waits on nor contends
+    with the writer — while leftover warming still detaches to a background child.
+    A `--no-wait` miss on an incomplete index still reports `warming` (exit 2).
   - A miss distinguishes **definitive** (index `complete` → exit 1) from
     **indeterminate** (still `warming`, e.g. the wait budget was hit on a huge
     repo → exit 2 + a one-line stderr note), so a caller isn't misled into
