@@ -31,6 +31,7 @@ rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing --no-record      search without recording it (speculative/agent queries)\n  \
 rq thing --no-wait        answer now from the committed index; don't block on a rebuild\n  \
+rq thing --wait 2s        ...or wait up to a bounded time for the index to warm\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
 rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
 rq class Widget           a leading kind keyword is shorthand for -k\n  \
@@ -77,10 +78,17 @@ struct Cli {
     /// Answer immediately from the committed index — never block waiting on a
     /// background (re)index. For agents/scripts: a query issued mid-rebuild
     /// returns at once (a miss reports `warming`, exit 2, so a caller can retry)
-    /// instead of blocking up to the wait budget. Equivalent to a per-call
-    /// `RQ_WAIT_BUDGET_MS=0`; leftover warming still detaches to a background child.
+    /// instead of blocking up to the wait budget. Shorthand for `--wait 0`;
+    /// leftover warming still detaches to a background child.
     #[arg(long = "no-wait")]
     no_wait: bool,
+
+    /// How long a query may wait for the index to warm before answering with
+    /// whatever's committed: a duration like `50ms`, `2s`, `1m`, or a bare number
+    /// of milliseconds. `0` doesn't wait at all (same as `--no-wait`). Overrides
+    /// `RQ_WAIT_BUDGET_MS` for this call (default 1 minute).
+    #[arg(long, value_name = "DUR", value_parser = parse_wait, conflicts_with = "no_wait")]
+    wait: Option<Duration>,
 
     /// Open the best match in your editor and record the pick, so ranking learns.
     /// On a terminal with several matches, prompts to choose. Launcher: `RQ_OPEN`
@@ -255,6 +263,7 @@ pub fn run() -> ExitCode {
                 want: cli.limit,
                 no_record: cli.no_record,
                 no_wait: cli.no_wait,
+                wait: cli.wait,
                 open: cli.open,
                 all_repos: cli.all_repos,
                 show: cli.show,
@@ -291,8 +300,12 @@ fn output_format(cli: &Cli) -> Output {
 const PATH_HEADROOM: usize = 200;
 
 /// How often the search re-checks the index while a cold repo warms on the
-/// background thread — short enough to feel instant, long enough not to spin.
-const POLL_INTERVAL: Duration = Duration::from_millis(15);
+/// background thread. Each poll runs a full read query against the DB the
+/// indexer is actively writing, so polling too fast steals CPU and read-lock
+/// churn from the warm; 100 ms keeps that pressure low while staying
+/// imperceptible (an early answer or completion appears within a frame, and the
+/// progress line only redraws every `PROGRESS_REDRAW` anyway).
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// How long a cold-repo query may wait silently before we tell the user we're
 /// indexing — short enough to explain the pause, long enough that a repo which
@@ -317,6 +330,9 @@ struct SearchArgs<'a> {
     no_record: bool,
     /// Answer from the committed index without blocking on a (re)index (`--no-wait`).
     no_wait: bool,
+    /// Cap on how long to wait for the index to warm (`--wait`); `None` = the
+    /// default/`RQ_WAIT_BUDGET_MS` budget.
+    wait: Option<Duration>,
     open: bool,
     all_repos: bool,
     show: bool,
@@ -330,11 +346,16 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         want,
         no_record,
         no_wait,
+        wait,
         open,
         all_repos,
         show,
         ..
     } = args;
+    // `--wait DUR` overrides the wait budget for this call; `--wait 0` (or
+    // `--no-wait`) means don't block or warm in-process at all.
+    let wait_budget = wait.unwrap_or_else(wait_budget);
+    let no_wait = no_wait || wait_budget.is_zero();
     // post-filters (--path, --kind, --lang) need headroom before the cutoff so a
     // filtered-in result isn't lost to the top-N truncation
     let limit = if args.paths.is_empty() && args.kinds.is_empty() && args.langs.is_empty() {
@@ -452,7 +473,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // are bounded by a wait budget instead, since there's nothing to draw to and
     // no one to interrupt.
     let progress_ui = block && show_progress(out, stderr_interactive());
-    let indexer_budget = if block { wait_budget() } else { warm_budget };
+    let indexer_budget = if block { wait_budget } else { warm_budget };
     if progress_ui {
         install_interrupt_handler();
     }
@@ -508,7 +529,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let deadline = if progress_ui {
         None
     } else if block {
-        Some(poll_start + wait_budget())
+        Some(poll_start + wait_budget)
     } else {
         Some(poll_start + answer_warm_budget())
     };
@@ -1182,6 +1203,30 @@ fn warm_detach_enabled() -> bool {
 /// it answers immediately from whatever's already indexed.
 fn wait_budget() -> Duration {
     env_budget("RQ_WAIT_BUDGET_MS", 60_000)
+}
+
+/// Parse a `--wait` value into a duration: `<n>ms`, `<n>s`, `<n>m`, or a bare
+/// `<n>` (milliseconds, matching `RQ_WAIT_BUDGET_MS`). Fractions are allowed
+/// (`1.5s`); `0` (any unit) means "don't wait". A `clap` value parser, so an
+/// invalid duration is rejected at parse time with a usage error.
+fn parse_wait(s: &str) -> std::result::Result<Duration, String> {
+    let s = s.trim();
+    let bad = || format!("invalid duration {s:?} — use e.g. 50ms, 2s, 1m, or 0");
+    // check "ms" before "s" so the "s" arm doesn't swallow it
+    let (num, unit_ms) = if let Some(n) = s.strip_suffix("ms") {
+        (n, 1.0)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1_000.0)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60_000.0)
+    } else {
+        (s, 1.0)
+    };
+    let val: f64 = num.trim().parse().map_err(|_| bad())?;
+    if !val.is_finite() || val < 0.0 {
+        return Err(bad());
+    }
+    Ok(Duration::from_millis((val * unit_ms).round() as u64))
 }
 
 /// Set by the SIGINT handler during an interactive cold-start escalation. The
@@ -2009,6 +2054,27 @@ mod tests {
         assert_eq!(parse_choice("6", 5), None);
         assert_eq!(parse_choice("0", 5), None);
         assert_eq!(parse_choice("q", 5), None);
+    }
+
+    #[test]
+    fn wait_duration_parsing() {
+        use std::time::Duration;
+        // units: ms / s / m, and a bare number is milliseconds (matches the env var)
+        assert_eq!(parse_wait("50ms"), Ok(Duration::from_millis(50)));
+        assert_eq!(parse_wait("2s"), Ok(Duration::from_secs(2)));
+        assert_eq!(parse_wait("1m"), Ok(Duration::from_secs(60)));
+        assert_eq!(parse_wait("250"), Ok(Duration::from_millis(250)));
+        // fractions and zero
+        assert_eq!(parse_wait("1.5s"), Ok(Duration::from_millis(1500)));
+        assert_eq!(parse_wait("0"), Ok(Duration::ZERO));
+        assert!(parse_wait("0s").unwrap().is_zero());
+        // surrounding whitespace is tolerated
+        assert_eq!(parse_wait(" 2s "), Ok(Duration::from_secs(2)));
+        // garbage, empty, and negatives are rejected (a usage error at parse time)
+        assert!(parse_wait("2x").is_err());
+        assert!(parse_wait("").is_err());
+        assert!(parse_wait("s").is_err());
+        assert!(parse_wait("-1s").is_err());
     }
 
     #[test]
