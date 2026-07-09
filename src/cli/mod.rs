@@ -85,7 +85,7 @@ struct Cli {
 
     /// How long a query may wait for the index to warm before answering with
     /// whatever's committed: a duration like `50ms`, `2s`, `1m`, or a bare number
-    /// of milliseconds. `0` doesn't wait at all (same as `--no-wait`). Overrides
+    /// of seconds. `0` doesn't wait at all (same as `--no-wait`). Overrides
     /// `RQ_WAIT_BUDGET_MS` for this call (default 1 minute).
     #[arg(long, value_name = "DUR", value_parser = parse_wait, conflicts_with = "no_wait")]
     wait: Option<Duration>,
@@ -1206,9 +1206,9 @@ fn wait_budget() -> Duration {
 }
 
 /// Parse a `--wait` value into a duration: `<n>ms`, `<n>s`, `<n>m`, or a bare
-/// `<n>` (milliseconds, matching `RQ_WAIT_BUDGET_MS`). Fractions are allowed
-/// (`1.5s`); `0` (any unit) means "don't wait". A `clap` value parser, so an
-/// invalid duration is rejected at parse time with a usage error.
+/// `<n>` (seconds). Fractions are allowed (`1.5s`); `0` (any unit) means "don't
+/// wait". A `clap` value parser, so an invalid duration is rejected at parse
+/// time with a usage error.
 fn parse_wait(s: &str) -> std::result::Result<Duration, String> {
     let s = s.trim();
     let bad = || format!("invalid duration {s:?} — use e.g. 50ms, 2s, 1m, or 0");
@@ -1220,7 +1220,8 @@ fn parse_wait(s: &str) -> std::result::Result<Duration, String> {
     } else if let Some(n) = s.strip_suffix('m') {
         (n, 60_000.0)
     } else {
-        (s, 1.0)
+        // a bare number is seconds
+        (s, 1_000.0)
     };
     let val: f64 = num.trim().parse().map_err(|_| bad())?;
     if !val.is_finite() || val < 0.0 {
@@ -2059,11 +2060,11 @@ mod tests {
     #[test]
     fn wait_duration_parsing() {
         use std::time::Duration;
-        // units: ms / s / m, and a bare number is milliseconds (matches the env var)
+        // units: ms / s / m, and a bare number is seconds
         assert_eq!(parse_wait("50ms"), Ok(Duration::from_millis(50)));
         assert_eq!(parse_wait("2s"), Ok(Duration::from_secs(2)));
         assert_eq!(parse_wait("1m"), Ok(Duration::from_secs(60)));
-        assert_eq!(parse_wait("250"), Ok(Duration::from_millis(250)));
+        assert_eq!(parse_wait("250"), Ok(Duration::from_secs(250)));
         // fractions and zero
         assert_eq!(parse_wait("1.5s"), Ok(Duration::from_millis(1500)));
         assert_eq!(parse_wait("0"), Ok(Duration::ZERO));

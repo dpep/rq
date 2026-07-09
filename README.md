@@ -101,7 +101,7 @@ leftover warming still continues in a detached background child.
 
 `--wait <dur>` sets how long a query may wait for the index to warm before
 answering with whatever's committed — a duration like `50ms`, `2s`, `1m`, or a
-bare number of milliseconds (`--wait 0` is the same as `--no-wait`). It overrides
+bare number of seconds (`--wait 0` is the same as `--no-wait`). It overrides
 `RQ_WAIT_BUDGET_MS` (default 1 minute) for that one call.
 
 `--json`/`--ndjson` work for every command, not just search: `rq --status --json`
