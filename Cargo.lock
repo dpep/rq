@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "reference-query"
-version = "0.35.1"
+version = "0.35.2"
 dependencies = [
  "clap",
  "clap_complete",
