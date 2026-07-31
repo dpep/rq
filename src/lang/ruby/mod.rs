@@ -113,12 +113,18 @@ enum DslArgs {
 
 /// The method-defining macro vocabulary: Ruby core plus the everyday Rails
 /// surface. Deliberately small — literal, high-confidence definitions only.
+///
+/// `field` earns its place the same way `has_many` does: it's the declaration
+/// that defines the member, across several schema DSLs (graphql-ruby, Mongoid,
+/// dry-types). Without it, a field declared `field :email, String` has no
+/// definition to navigate to at all — the receiver form (`f.field :email`, a
+/// form builder) is already excluded, which is where the name would otherwise
+/// be ambiguous.
 fn dsl_args(method: &str) -> Option<DslArgs> {
     match method {
         "attr_accessor" | "attr_reader" | "attr_writer" | "delegate" => Some(DslArgs::All),
-        "define_method" | "alias_method" | "scope" | "has_many" | "has_one" | "belongs_to" => {
-            Some(DslArgs::First)
-        }
+        "define_method" | "alias_method" | "scope" | "has_many" | "has_one" | "belongs_to"
+        | "field" => Some(DslArgs::First),
         _ => None,
     }
 }
@@ -303,11 +309,56 @@ end
     }
 
     #[test]
+    fn schema_dsl_field_declarations_define_methods() {
+        let src = r#"
+module Types
+  class UserType < Types::BaseObject
+    field :id, ID, null: false
+    field :email, String, null: true
+    field :posts, [Types::PostType], null: false do
+      argument :first, Integer, required: false
+    end
+
+    def posts(first: nil)
+      object.posts.limit(first)
+    end
+  end
+end
+"#;
+        let syms = extract(src);
+
+        for name in ["id", "email", "posts"] {
+            let s = find(&syms, name);
+            assert_eq!(s.kind, Kind::Method, "{name} is a method");
+            assert_eq!(
+                s.parent.as_deref(),
+                Some("Types::UserType"),
+                "{name} in UserType"
+            );
+        }
+        // the block form declares `posts` once as a field and once as a real
+        // `def`; both are definitions of the same member, and both are indexed
+        assert_eq!(
+            syms.iter().filter(|s| s.name == "posts").count(),
+            2,
+            "{syms:?}"
+        );
+        // type arguments and options are not members
+        for non_name in ["ID", "String", "null", "required", "first"] {
+            assert!(
+                !syms.iter().any(|s| s.name == non_name),
+                "{non_name} is not a defined method: {syms:?}"
+            );
+        }
+    }
+
+    #[test]
     fn computed_and_received_macro_names_are_skipped() {
         let src = r#"
 class Widget
   define_method(dynamic_name) { }
   Other.attr_accessor :not_ours
+  form.field :not_ours_either
 end
 "#;
         let syms = extract(src);
