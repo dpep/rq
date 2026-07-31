@@ -152,6 +152,9 @@ self-contained; the only shared change a language may need is extending the
 `core::Kind` vocabulary (Rust added `struct`/`enum`/`trait`) — generalizing the
 model, not leaking a language into `index`/`search`/scoring.
 
+- [x] `--profile` — per-phase search timing to stderr (JSON alongside
+      `--json`), free when off. `examples/bench.rs` measures whether a search
+      is fast; this says which phase to look at
 - [x] Ruby metaprogramming recall — `attr_accessor`/`attr_reader`/`attr_writer`,
       `define_method`, `alias_method`, `delegate`, `scope`, `has_many`/`has_one`/
       `belongs_to`, `field` emit the methods they define (literal names only,
