@@ -956,7 +956,34 @@ pub fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
 
 /// The current HEAD commit sha, or `None` outside a git work tree.
 pub fn git_head(root: &Path) -> Option<String> {
-    git_output(root, &["rev-parse", "HEAD"])
+    // Resolved by reading `.git` rather than forking `git rev-parse`: this runs
+    // on every search to gate warming, and the fork costs ~10 ms while the
+    // lookup is one or two small file reads. A worktree or submodule points
+    // `.git` elsewhere, so those still ask git.
+    let git_dir = root.join(".git");
+    if !git_dir.is_dir() {
+        return git_output(root, &["rev-parse", "HEAD"]);
+    }
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    let Some(git_ref) = head.strip_prefix("ref: ") else {
+        // detached HEAD holds the commit itself
+        return (!head.is_empty()).then(|| head.to_string());
+    };
+    if let Ok(sha) = std::fs::read_to_string(git_dir.join(git_ref)) {
+        let sha = sha.trim();
+        if !sha.is_empty() {
+            return Some(sha.to_string());
+        }
+    }
+    // Not a loose ref, so it's packed: `<sha> refs/heads/<branch>`. Matching on
+    // the leading space keeps `refs/heads/main` from matching `…/mainline`.
+    let packed = std::fs::read_to_string(git_dir.join("packed-refs")).ok()?;
+    packed
+        .lines()
+        .find_map(|l| l.strip_suffix(&format!(" {git_ref}")))
+        .map(|sha| sha.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Whether the work tree has uncommitted changes to *tracked* files (staged or
@@ -981,7 +1008,12 @@ pub fn is_dirty(root: &Path) -> bool {
 /// branch ranking boost — necessarily a few git calls, but gated to feature
 /// branches.
 pub fn branch_changed_files(root: &Path) -> Vec<String> {
-    let Some(branch) = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]) else {
+    // Reading `.git` beats forking git here: measured on a small repo, each of
+    // these four commands costs ~10 ms and almost all of it is process spawn,
+    // not git's work. The branch name and the trunk's existence are both plain
+    // file lookups, so only the two diffs — which genuinely need git — are
+    // left, and they run concurrently since neither reads the other's output.
+    let Some(branch) = head_branch(root) else {
         return Vec::new();
     };
     if is_trunk(&branch) {
@@ -991,17 +1023,20 @@ pub fn branch_changed_files(root: &Path) -> Vec<String> {
         return Vec::new();
     };
 
-    let mut files: HashMap<String, ()> = HashMap::new();
-    // committed branch changes since divergence from the trunk (three-dot)
-    if let Some(out) = git_output(root, &["diff", "--name-only", &format!("{trunk}...HEAD")]) {
-        files.extend(
-            out.lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| (l.to_string(), ())),
-        );
-    }
+    let committed = {
+        let root = root.to_path_buf();
+        let spec = format!("{trunk}...HEAD");
+        // committed branch changes since divergence from the trunk (three-dot)
+        std::thread::spawn(move || git_output(&root, &["diff", "--name-only", &spec]))
+    };
     // uncommitted edits to tracked files
-    if let Some(out) = git_output(root, &["diff", "--name-only", "HEAD"]) {
+    let working = git_output(root, &["diff", "--name-only", "HEAD"]);
+
+    let mut files: HashMap<String, ()> = HashMap::new();
+    for out in [committed.join().ok().flatten(), working]
+        .into_iter()
+        .flatten()
+    {
         files.extend(
             out.lines()
                 .filter(|l| !l.is_empty())
@@ -1009,6 +1044,20 @@ pub fn branch_changed_files(root: &Path) -> Vec<String> {
         );
     }
     files.into_keys().collect()
+}
+
+/// The checked-out branch, read from `.git/HEAD` rather than forked out to
+/// `git rev-parse`. `None` for a detached HEAD (no branch to compare), or when
+/// `.git` isn't a plain directory — a worktree or submodule points elsewhere,
+/// and resolving that is git's job, so those fall back to the fork.
+fn head_branch(root: &Path) -> Option<String> {
+    let git_dir = root.join(".git");
+    if !git_dir.is_dir() {
+        return git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    }
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let branch = head.trim().strip_prefix("ref: refs/heads/")?;
+    (!branch.is_empty()).then(|| branch.to_string())
 }
 
 /// Branch names treated as the trunk — the "active files" signal doesn't apply
@@ -1019,10 +1068,23 @@ fn is_trunk(branch: &str) -> bool {
 
 /// The trunk ref to diff against: `main` if it exists, else `master`.
 fn trunk_ref(root: &Path) -> Option<String> {
-    ["main", "master"]
-        .into_iter()
-        .find(|name| git_output(root, &["rev-parse", "--verify", "--quiet", name]).is_some())
-        .map(str::to_string)
+    let git_dir = root.join(".git");
+    if !git_dir.is_dir() {
+        return ["main", "master"]
+            .into_iter()
+            .find(|name| git_output(root, &["rev-parse", "--verify", "--quiet", name]).is_some())
+            .map(str::to_string);
+    }
+    // A branch is a loose ref file or a line in packed-refs; both are cheaper
+    // to look at than a `git rev-parse` fork.
+    let packed = std::fs::read_to_string(git_dir.join("packed-refs")).unwrap_or_default();
+    ["main", "master"].into_iter().find_map(|name| {
+        let loose = git_dir.join("refs/heads").join(name).exists();
+        let is_packed = packed
+            .lines()
+            .any(|l| l.ends_with(&format!(" refs/heads/{name}")));
+        (loose || is_packed).then(|| name.to_string())
+    })
 }
 
 /// Lazily revalidate one indexed file against disk: re-extract it if its content

@@ -82,6 +82,64 @@ fn git_init_commit(dir: &Path) {
     ]);
 }
 
+/// `git_head` and `branch_changed_files` read `.git` directly instead of
+/// forking git — worth ~30 ms a query, and only correct if they agree with git
+/// itself. Checked against `git rev-parse` for a loose ref, a packed ref, and a
+/// detached HEAD.
+#[test]
+fn git_metadata_read_from_disk_matches_git() {
+    let (dir, _db) = scratch("gitmeta");
+    fs::write(
+        dir.join("a.rb"),
+        "class A
+end
+",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+
+    let rev_parse = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    // loose ref: .git/refs/heads/<branch>
+    let expected = rev_parse(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        reference_query::index::git_head(&dir).as_deref(),
+        Some(expected.as_str()),
+        "loose ref"
+    );
+
+    // packed: `git pack-refs` moves it into .git/packed-refs
+    let _ = Command::new("git")
+        .args(["pack-refs", "--all"])
+        .current_dir(&dir)
+        .output();
+    assert_eq!(
+        reference_query::index::git_head(&dir).as_deref(),
+        Some(expected.as_str()),
+        "packed ref"
+    );
+
+    // detached HEAD holds the commit itself
+    let _ = Command::new("git")
+        .args(["checkout", "-q", "--detach"])
+        .current_dir(&dir)
+        .output();
+    assert_eq!(
+        reference_query::index::git_head(&dir).as_deref(),
+        Some(expected.as_str()),
+        "detached HEAD"
+    );
+    // and a detached HEAD has no branch, so there are no branch files
+    assert!(reference_query::index::branch_changed_files(&dir).is_empty());
+}
+
 #[test]
 fn index_search_and_learn_through_the_cli() {
     let (dir, db) = scratch("learn");
