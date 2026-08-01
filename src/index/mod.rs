@@ -1046,6 +1046,30 @@ pub fn branch_changed_files(root: &Path) -> Vec<String> {
     files.into_keys().collect()
 }
 
+/// A cheap fingerprint of the git state that decides which files a branch has
+/// changed: the mtimes of `.git/HEAD` (commits, checkouts) and `.git/index`
+/// (staging). Two stats, microseconds.
+///
+/// Deliberately *not* a complete invalidation signal — editing a tracked file
+/// touches neither, so a caller must pair this with a freshness window rather
+/// than trusting it alone. `None` when `.git` isn't a plain directory, which
+/// means "don't cache this".
+pub fn branch_files_stamp(root: &Path) -> Option<String> {
+    let git_dir = root.join(".git");
+    if !git_dir.is_dir() {
+        return None;
+    }
+    let stamp = |name: &str| -> u64 {
+        std::fs::metadata(git_dir.join(name))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    };
+    Some(format!("{}:{}", stamp("HEAD"), stamp("index")))
+}
+
 /// The checked-out branch, read from `.git/HEAD` rather than forked out to
 /// `git rev-parse`. `None` for a detached HEAD (no branch to compare), or when
 /// `.git` isn't a plain directory — a worktree or submodule points elsewhere,

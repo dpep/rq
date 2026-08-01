@@ -824,6 +824,44 @@ impl Store {
         Ok(())
     }
 
+    /// The cached branch-changed file list for a repo: `(stamp, computed_at,
+    /// files)`. Stored rather than recomputed because the git diff behind it is
+    /// O(tracked files) and runs on the search path.
+    pub fn branch_files_get(&self, identity: &str) -> Result<Option<(String, i64, Vec<String>)>> {
+        let Some(raw) = self.meta_get(&format!("branch_files:{identity}"))? else {
+            return Ok(None);
+        };
+        let mut lines = raw.lines();
+        let (Some(stamp), Some(at)) = (lines.next(), lines.next()) else {
+            return Ok(None);
+        };
+        let Ok(at) = at.parse::<i64>() else {
+            return Ok(None);
+        };
+        Ok(Some((
+            stamp.to_string(),
+            at,
+            lines.map(str::to_string).collect(),
+        )))
+    }
+
+    pub fn branch_files_set(
+        &self,
+        identity: &str,
+        stamp: &str,
+        at: i64,
+        files: &[String],
+    ) -> Result<()> {
+        // Newline-delimited: git paths can't contain one, and it beats pulling
+        // in a serializer for three fields.
+        let mut value = format!("{stamp}\n{at}");
+        for f in files {
+            value.push('\n');
+            value.push_str(f);
+        }
+        self.meta_set(&format!("branch_files:{identity}"), &value)
+    }
+
     fn meta_get(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
@@ -1023,6 +1061,30 @@ fn now_unix() -> i64 {
 mod tests {
     use super::*;
     use crate::core::Kind;
+
+    #[test]
+    fn branch_files_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.branch_files_get("repo").unwrap().is_none());
+
+        let files = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        store
+            .branch_files_set("repo", "123:456", 99, &files)
+            .unwrap();
+        let (stamp, at, got) = store.branch_files_get("repo").unwrap().unwrap();
+        assert_eq!(stamp, "123:456");
+        assert_eq!(at, 99);
+        assert_eq!(got, files);
+
+        // a later write replaces the entry rather than accumulating
+        store.branch_files_set("repo", "789:1", 100, &[]).unwrap();
+        let (stamp, _, got) = store.branch_files_get("repo").unwrap().unwrap();
+        assert_eq!(stamp, "789:1");
+        assert!(got.is_empty(), "an empty list is a real answer, not a miss");
+
+        // repos don't share an entry
+        assert!(store.branch_files_get("other").unwrap().is_none());
+    }
 
     fn sym(name: &str, kind: Kind, line: u32, parent: Option<&str>) -> Symbol {
         Symbol {

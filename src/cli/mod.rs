@@ -397,11 +397,18 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // Files you're changing on this feature branch (and their directory
     // neighbors): the branch ranking boost, and the warm pass's priority set.
     let mut branch_span = crate::profile::span("setup: branch files");
-    let active_paths: Vec<String> = match &root {
-        Some(c) if cwd_is_git => crate::index::branch_changed_files(c),
-        _ => Vec::new(),
+    let (active_paths, branch_refresh) = match &root {
+        Some(c) if cwd_is_git => cached_branch_files(&store, c),
+        _ => (Vec::new(), None),
     };
-    branch_span.note(|| format!("{} changed", active_paths.len()));
+    branch_span.note(|| {
+        let how = if branch_refresh.is_some() {
+            "cached, refreshing alongside"
+        } else {
+            "cached"
+        };
+        format!("{} changed, {how}", active_paths.len())
+    });
     drop(branch_span);
 
     // Resolve identity from the repo root, cache-first: looked up by checkout root
@@ -709,6 +716,14 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             // separately and diffed.
             eprintln!("{}", crate::profile::json(total));
         }
+    }
+
+    // Collect the refresh started back at setup. It ran alongside the search
+    // rather than after it, so by now it has usually finished — and it only
+    // ever feeds the *next* query, never this one's ranking, so waiting on it
+    // can't reorder what was just printed.
+    if let Some(refresh) = branch_refresh {
+        refresh.store(&store);
     }
 
     // Results are out — now do the cheap deferred work, amortized across
@@ -1197,6 +1212,83 @@ fn on_path(prog: &str) -> bool {
 /// wasted a full sweep (~hundreds of ms) per search. Conservative: any
 /// uncertainty (not complete, non-git / no recorded head, git hiccup) returns
 /// false, so we warm.
+/// Seconds since the epoch.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// How long a branch-file list is served before it's refreshed. A commit or a
+/// checkout is caught by the stamp; a bare working-tree edit touches neither
+/// `.git/HEAD` nor `.git/index`, so only elapsed time catches that — short
+/// enough that a burst of searches shares one computation and the edit you just
+/// made is reflected on the next search.
+const BRANCH_FILES_TTL_SECS: i64 = 15;
+
+/// A branch-file recomputation running alongside the search. The git work
+/// happens on the thread; the store write waits for the main thread, since a
+/// SQLite connection isn't shared.
+struct BranchRefresh {
+    handle: std::thread::JoinHandle<Vec<String>>,
+    identity: String,
+    stamp: String,
+}
+
+impl BranchRefresh {
+    /// Wait for the recomputation and store it for the next query.
+    fn store(self, store: &Store) {
+        let Ok(files) = self.handle.join() else {
+            return;
+        };
+        let _ = store.branch_files_set(&self.identity, &self.stamp, unix_now(), &files);
+    }
+}
+
+/// The branch-changed file list, served from the store when it's still good.
+/// Returns the list, plus a recomputation to collect after results print when
+/// the stored one has aged out.
+///
+/// The list feeds a *ranking boost*, so serving a slightly old one costs a
+/// little ranking quality, while recomputing it first would cost every search
+/// the git diff behind it — which is O(tracked files). So the stored list is
+/// served immediately and the refresh runs concurrently with the search rather
+/// than after it, which usually hides its cost entirely. It feeds only the next
+/// query, so nothing about this run's ranking depends on how the race lands.
+///
+/// The first search in a repo has nothing to serve and computes inline; that's
+/// once per repo, like the first index.
+fn cached_branch_files(
+    store: &Store,
+    root: &std::path::Path,
+) -> (Vec<String>, Option<BranchRefresh>) {
+    let identity = resolve_identity(store, root);
+    let stamp = crate::index::branch_files_stamp(root);
+    let cached = store.branch_files_get(&identity).ok().flatten();
+    let now = unix_now();
+
+    if let (Some((cached_stamp, at, files)), Some(stamp)) = (&cached, &stamp) {
+        if cached_stamp == stamp && now.saturating_sub(*at) < BRANCH_FILES_TTL_SECS {
+            return (files.clone(), None);
+        }
+        let owned_root = root.to_path_buf();
+        let refresh = BranchRefresh {
+            handle: std::thread::spawn(move || crate::index::branch_changed_files(&owned_root)),
+            identity,
+            stamp: stamp.clone(),
+        };
+        return (files.clone(), Some(refresh));
+    }
+
+    // Nothing cached (or nowhere to cache it, e.g. a worktree): compute inline.
+    let files = crate::index::branch_changed_files(root);
+    if let Some(stamp) = stamp {
+        let _ = store.branch_files_set(&identity, &stamp, now, &files);
+    }
+    (files, None)
+}
+
 fn repo_unchanged_since_index(
     store: &Store,
     cwd: &std::path::Path,
