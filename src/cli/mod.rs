@@ -380,6 +380,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     };
     drop(open_span);
     let setup_span = crate::profile::span("setup");
+    let git_span = crate::profile::span("setup: git root");
     let cwd = std::env::current_dir().ok();
     let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
 
@@ -391,23 +392,30 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let root = cwd
         .as_deref()
         .map(|c| crate::index::repo_root(c).unwrap_or_else(|| c.to_path_buf()));
+    drop(git_span);
 
     // Files you're changing on this feature branch (and their directory
     // neighbors): the branch ranking boost, and the warm pass's priority set.
+    let mut branch_span = crate::profile::span("setup: branch files");
     let active_paths: Vec<String> = match &root {
         Some(c) if cwd_is_git => crate::index::branch_changed_files(c),
         _ => Vec::new(),
     };
+    branch_span.note(|| format!("{} changed", active_paths.len()));
+    drop(branch_span);
 
     // Resolve identity from the repo root, cache-first: looked up by checkout root
     // (no `git remote` fork), falling back to git only the first time we see a
     // repo. Computed even for non-git dirs so an explicitly `--index`ed one is
     // still recognized as the current repo below.
+    let mut identity_span = crate::profile::span("setup: identity");
     let identity = root.as_deref().map(|c| resolve_identity(&store, c));
     let coverage = identity
         .as_deref()
         .and_then(|id| store.coverage_status(id).ok())
         .flatten();
+    identity_span.note(|| coverage.as_deref().unwrap_or("unknown").to_string());
+    drop(identity_span);
 
     // Opportunistic indexing (Layer 5), time-bounded so the first query in a
     // large repo never blocks on a full walk. We may warm a git work tree (safe
@@ -427,6 +435,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             active_paths.len(),
         );
     }
+    let repo_span = crate::profile::span("setup: repo state");
     let current = identity
         .as_deref()
         .and_then(|id| store.repository_id(id).ok().flatten());
@@ -444,6 +453,9 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             let _ = store.decay_selections(repo, &qn);
         }
     }
+
+    drop(repo_span);
+    let warm_span = crate::profile::span("setup: warm decision");
 
     // Warm the index on a background thread (its own connection — WAL lets it
     // write while we read) whenever there's work: a not-yet-complete repo, or a
@@ -544,6 +556,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     } else {
         Some(poll_start + answer_warm_budget())
     };
+    drop(warm_span);
     let polling = indexer.is_some() && was_warming;
     // Everything before the first search: resolving the repo root, checking
     // coverage, deciding whether to warm. It runs on every query, so it counts
