@@ -105,6 +105,17 @@ pub fn score(
             name: "exact",
             value: 1000.0,
         });
+        // Typing a capital is a deliberate signal: `Symbol` means the type, not
+        // the `symbol` method that happens to share the name case-insensitively.
+        // Only when the query carries case, though — an all-lowercase query is
+        // how people type casually, and reading intent into it would demote
+        // `User` for `user`.
+        if leaf != q && cand.name == leaf {
+            features.push(Feature {
+                name: "case",
+                value: CASE_MATCH,
+            });
+        }
         true
     } else if name_lower.starts_with(&q) {
         // shorter remaining tail ranks higher
@@ -242,6 +253,13 @@ pub fn score(
 /// but no more. A bigger gap (the `s` in `employeescontroller` reaching past
 /// `XYZ`, three chars) is coincidence, not a match.
 const MAX_NONBOUNDARY_GAP: usize = 2;
+
+/// Reward for matching the case the query was typed in, when the query carries
+/// any. It has to outweigh the spread in `recency` (0-120), or which of two
+/// same-named symbols wins would come down to whichever file was touched more
+/// recently — that made ranking depend on file mtimes, so a fresh checkout
+/// ranked differently from a stale one.
+const CASE_MATCH: f64 = 150.0;
 
 /// Penalty per skipped char between two matched chars. Strong enough that a
 /// closer match wins over a farther one — so the query's trailing chars don't
@@ -652,6 +670,26 @@ mod tests {
 
     fn total(query: &str, name: &str) -> Option<f64> {
         score(query, &row(name, "class", 1), None, Boosts::default()).map(|s| s.total)
+    }
+
+    #[test]
+    fn a_typed_capital_picks_the_matching_case() {
+        // `Symbol` and `symbol` are both exact matches case-insensitively.
+        // Which one wins used to fall through to recency, i.e. to file mtimes,
+        // so a fresh checkout ranked differently from a stale one.
+        let upper = total("Symbol", "Symbol").unwrap();
+        let lower = total("Symbol", "symbol").unwrap();
+        assert!(upper > lower, "{upper} > {lower}");
+        // by enough to outweigh the whole recency range, or mtime decides again
+        assert!(upper - lower > 120.0, "margin {} too small", upper - lower);
+    }
+
+    #[test]
+    fn a_lowercase_query_stays_case_agnostic() {
+        // Lowercase is how people type casually — reading intent into it would
+        // demote `User` for `user`, so neither spelling is rewarded.
+        assert_eq!(total("symbol", "symbol"), total("symbol", "Symbol"));
+        assert_eq!(total("user", "User"), total("user", "user"));
     }
 
     #[test]
