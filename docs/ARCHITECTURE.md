@@ -305,6 +305,12 @@ Ranking is an additive sum of named features so `--explain` can print exactly
 why a result ranked where it did:
 
 - **match quality** — exact > prefix > camel-hump abbreviation > subsequence
+- **case** — a query carrying any uppercase rewards the candidate spelled the
+  same way, so `Symbol` finds the type rather than a `symbol` method that
+  matches case-insensitively. An all-lowercase query is how people type
+  casually, so it stays case-agnostic and neither spelling is favoured. Large
+  enough to outweigh `recency`, or which of two same-named symbols won would
+  come down to file mtimes
 - **kind weight** — tunable (e.g. class/module slightly above method)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
