@@ -186,6 +186,12 @@ struct Cli {
     #[arg(short = 'v', long)]
     verbose: bool,
 
+    /// Report where a search spent its time, phase by phase, to stderr — as
+    /// JSON alongside --json, so a baseline can be stored and diffed.
+    /// `RQ_PROFILE=1` does the same for an installed binary.
+    #[arg(long)]
+    profile: bool,
+
     /// Parse worker threads the background indexer uses (0 = auto). (`-j` is
     /// taken by `--json`, so this is `--jobs` only.) `RQ_JOBS` works too.
     #[arg(long, value_name = "N", default_value_t = 0)]
@@ -196,6 +202,7 @@ struct Cli {
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     crate::trace::enable_from(cli.verbose);
+    crate::profile::enable_from(cli.profile);
     crate::index::set_parse_jobs(cli.jobs);
 
     if let Some(shell) = cli.completions {
@@ -364,11 +371,16 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         (want * 20).max(PATH_HEADROOM)
     };
     let _timer = crate::trace::Timer::start("search done");
+    let profile_started = std::time::Instant::now();
     let t_setup = std::time::Instant::now();
+    let open_span = crate::profile::span("store open");
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
+    drop(open_span);
+    let setup_span = crate::profile::span("setup");
+    let git_span = crate::profile::span("setup: git root");
     let cwd = std::env::current_dir().ok();
     let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
 
@@ -380,23 +392,30 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let root = cwd
         .as_deref()
         .map(|c| crate::index::repo_root(c).unwrap_or_else(|| c.to_path_buf()));
+    drop(git_span);
 
     // Files you're changing on this feature branch (and their directory
     // neighbors): the branch ranking boost, and the warm pass's priority set.
+    let mut branch_span = crate::profile::span("setup: branch files");
     let active_paths: Vec<String> = match &root {
         Some(c) if cwd_is_git => crate::index::branch_changed_files(c),
         _ => Vec::new(),
     };
+    branch_span.note(|| format!("{} changed", active_paths.len()));
+    drop(branch_span);
 
     // Resolve identity from the repo root, cache-first: looked up by checkout root
     // (no `git remote` fork), falling back to git only the first time we see a
     // repo. Computed even for non-git dirs so an explicitly `--index`ed one is
     // still recognized as the current repo below.
+    let mut identity_span = crate::profile::span("setup: identity");
     let identity = root.as_deref().map(|c| resolve_identity(&store, c));
     let coverage = identity
         .as_deref()
         .and_then(|id| store.coverage_status(id).ok())
         .flatten();
+    identity_span.note(|| coverage.as_deref().unwrap_or("unknown").to_string());
+    drop(identity_span);
 
     // Opportunistic indexing (Layer 5), time-bounded so the first query in a
     // large repo never blocks on a full walk. We may warm a git work tree (safe
@@ -416,6 +435,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             active_paths.len(),
         );
     }
+    let repo_span = crate::profile::span("setup: repo state");
     let current = identity
         .as_deref()
         .and_then(|id| store.repository_id(id).ok().flatten());
@@ -433,6 +453,9 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             let _ = store.decay_selections(repo, &qn);
         }
     }
+
+    drop(repo_span);
+    let warm_span = crate::profile::span("setup: warm decision");
 
     // Warm the index on a background thread (its own connection — WAL lets it
     // write while we read) whenever there's work: a not-yet-complete repo, or a
@@ -533,7 +556,13 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     } else {
         Some(poll_start + answer_warm_budget())
     };
+    drop(warm_span);
     let polling = indexer.is_some() && was_warming;
+    // Everything before the first search: resolving the repo root, checking
+    // coverage, deciding whether to warm. It runs on every query, so it counts
+    // toward the first-answer budget even though no searching happened yet.
+    drop(setup_span);
+    let mut query_span = crate::profile::span("query");
     let label = repo_label(root.as_deref());
     let mut drew_progress = false;
     let mut last_draw = poll_start;
@@ -569,6 +598,14 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         }
         std::thread::sleep(POLL_INTERVAL);
     };
+    query_span.note(|| {
+        if polling {
+            "polled a warming index".to_string()
+        } else {
+            String::new()
+        }
+    });
+    drop(query_span);
     if drew_progress {
         clear_progress();
     }
@@ -657,6 +694,21 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
 
     if let Some(code) = render_hits(args, &hits) {
         return code;
+    }
+
+    // Report before the deferred maintenance below, so the total covers
+    // getting answers out rather than the bookkeeping that follows them.
+    if crate::profile::enabled() {
+        let total = profile_started.elapsed();
+        if args.out == Output::Text {
+            for line in crate::profile::report(total) {
+                eprintln!("{line}");
+            }
+        } else {
+            // stdout stays exactly the results, so the profile can be captured
+            // separately and diffed.
+            eprintln!("{}", crate::profile::json(total));
+        }
     }
 
     // Results are out — now do the cheap deferred work, amortized across
@@ -939,12 +991,17 @@ fn attach_confidence(hits: &mut [crate::search::Hit]) {
 /// Print the ranked results (JSON array, NDJSON lines, or highlighted text).
 /// `Some(exit)` on a serialization failure, `None` on success.
 fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCode> {
+    // Time to the first printed result, not to the last: rq streams, and the
+    // sub-50 ms budget is about the first answer. A change that speeds the
+    // total while delaying this one is a regression.
+    let render_span = crate::profile::span("render");
     if let Some(code) = emit_rows(args.out, hits) {
         return Some(code);
     }
     if args.out != Output::Text {
         return None;
     }
+    drop(render_span);
     let color = match_color();
     let c = color.as_deref();
     let query = args.query;

@@ -197,6 +197,11 @@ pub fn search(
 
     let t = std::time::Instant::now();
     sort_and_truncate(&mut hits, limit);
+    // The search path already measures these for its trace line; profiling
+    // records the same numbers rather than timing the work twice.
+    crate::profile::record("recall", t_recall, || format!("{n_candidates} candidates"));
+    crate::profile::record("score", t_score, || format!("{n_hits} hits"));
+    crate::profile::record("sort", t.elapsed(), || format!("top {limit}"));
     if trace_on {
         crate::trace!(
             "search {query:?}: recall {n_candidates} cand in {} ms, score→{n_hits} hits in {} ms, sort {} ms",

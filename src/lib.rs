@@ -5,6 +5,7 @@
 //! See `docs/ARCHITECTURE.md` for the design these modules implement.
 
 #[macro_use]
+pub mod profile;
 pub mod trace;
 
 pub mod cli;
