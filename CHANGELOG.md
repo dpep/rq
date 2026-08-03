@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.37.0 — 2026-08-03
 - TypeScript / JavaScript plugin — `.ts/.tsx/.mts/.cts` and `.js/.jsx/.mjs/.cjs`.
   Indexes `class`, `interface`, `type`, `enum`, `namespace`, `function` (and
   `const f = () => …`, the modern spelling), plus the members a class, interface,
