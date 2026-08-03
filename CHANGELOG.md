@@ -8,7 +8,16 @@ what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
 ## Unreleased
-- TypeScript / JavaScript plugin.
+- TypeScript / JavaScript plugin — `.ts/.tsx/.mts/.cts` and `.js/.jsx/.mjs/.cjs`.
+  Indexes `class`, `interface`, `type`, `enum`, `namespace`, `function` (and
+  `const f = () => …`, the modern spelling), plus the members a class, interface,
+  or object type declares. They are two languages to `-x`: `-x ts` and `-x js`
+  filter separately (aliases `tsx`, `jsx`).
+- `-k` accepts TypeScript's vocabulary: `interface` means trait, `type` means
+  struct. Both work as the leading kind keyword too (`rq interface Renderer`).
+- A repo indexed before this release already reads `complete`, so warming skips
+  it and its TypeScript/JavaScript files stay invisible. Run `rq --index` once to
+  pick them up — or let the repo's next change do it incrementally.
 
 ## 0.36.0 — 2026-07-31
 - `--profile` reports where a query's time went, phase by phase, to stderr or
