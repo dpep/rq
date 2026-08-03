@@ -261,22 +261,33 @@ pub fn run() -> ExitCode {
                 paths.extend(cli.dirs.clone());
                 target
             };
-            cmd_search(&SearchArgs {
-                query: &query,
-                explain: cli.explain,
-                out,
-                paths: &paths,
-                kinds: &kinds,
-                langs: &langs,
-                want: cli.limit,
-                no_record: cli.no_record,
-                no_wait: cli.no_wait,
-                wait: cli.wait,
-                open: cli.open,
-                all_repos: cli.all_repos,
-                show: cli.show,
-            })
+            let mut session = match Session::open() {
+                Ok(s) => s,
+                Err(code) => return code,
+            };
+            cmd_search(
+                &mut session,
+                &SearchArgs {
+                    query: &query,
+                    explain: cli.explain,
+                    out,
+                    paths: &paths,
+                    kinds: &kinds,
+                    langs: &langs,
+                    want: cli.limit,
+                    no_record: cli.no_record,
+                    no_wait: cli.no_wait,
+                    wait: cli.wait,
+                    open: cli.open,
+                    all_repos: cli.all_repos,
+                    show: cli.show,
+                    batch: false,
+                },
+            )
         }
+        // No query, but a pipe on stdin: each line is one, all sharing this
+        // run's store, repo resolution and warm.
+        None if !std::io::stdin().is_terminal() => cmd_batch(&cli, out, &paths, &kinds, &langs),
         // bare `rq` (or just flags like --explain with no query): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -343,6 +354,10 @@ struct SearchArgs<'a> {
     wait: Option<Duration>,
     open: bool,
     all_repos: bool,
+    /// One of several queries sharing a run, so each row says which query it
+    /// answers — a single stream serving many questions is otherwise
+    /// unattributable.
+    batch: bool,
     show: bool,
 }
 
@@ -432,7 +447,119 @@ impl Session {
     }
 }
 
-fn cmd_search(args: &SearchArgs) -> ExitCode {
+/// Answer a stream of queries, one per line on stdin, in a single run.
+///
+/// Everything a query doesn't vary — the store, the repo, its identity, the
+/// branch's changed files — is resolved once and reused, which on a large repo
+/// is most of what a single lookup costs. Agents and scripts do runs of
+/// lookups; this is that shape.
+///
+/// A cold repo warms **once, up front, until complete** rather than answering
+/// each line from whatever happens to be indexed. Block-until-*answered*
+/// doesn't generalise to queries we haven't read yet — you can't prioritise
+/// toward them — so block-until-*complete* is the batch-shaped equivalent, and
+/// it keeps this file's own rule that correctness beats the first query's
+/// latency. `--no-wait` opts out, exactly as it does for one query, and any
+/// line the index can't yet answer says so with `status: "warming"`.
+fn cmd_batch(
+    cli: &Cli,
+    out: Output,
+    paths: &[String],
+    kinds: &[String],
+    langs: &[String],
+) -> ExitCode {
+    if out == Output::Json {
+        return fail(format_args!(
+            "rq: --json can't frame a stream of queries — use --ndjson (-J), \
+             where each line carries the query it answers"
+        ));
+    }
+    if cli.open || cli.show {
+        return fail(format_args!(
+            "rq: --open and --show act on a single result, not a stream of queries"
+        ));
+    }
+
+    use std::io::BufRead;
+    let queries: Vec<String> = std::io::stdin()
+        .lock()
+        .lines()
+        .map_while(std::result::Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    // Nothing on stdin isn't a batch — it's a bare invocation that happens to
+    // run without a terminal (a script, a test harness, stdin from /dev/null).
+    // Treat it the way `rq` with no arguments is always treated.
+    if queries.is_empty() {
+        let _ = Cli::command().print_long_help();
+        return ExitCode::SUCCESS;
+    }
+
+    let mut session = match Session::open() {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    // Warm to completion before answering anything, so a cold repo doesn't
+    // return a page of misses that only mean "not indexed yet".
+    if !cli.no_wait
+        && session.coverage.as_deref() != Some("complete")
+        && let Some(root) = session.root.clone()
+    {
+        {
+            let budget = cli.wait.unwrap_or_else(wait_budget);
+            crate::trace!(
+                "batch: warming {} queries' worth of index first",
+                queries.len()
+            );
+            let active = session.active_paths.clone();
+            let _ = crate::index::index_budgeted(&mut session.store, &root, &active, budget, None);
+            session.coverage = session
+                .identity
+                .as_deref()
+                .and_then(|id| session.store.coverage_status(id).ok())
+                .flatten();
+        }
+    }
+
+    let mut worst = ExitCode::SUCCESS;
+    let mut any_hit = false;
+    for query in &queries {
+        let code = cmd_search(
+            &mut session,
+            &SearchArgs {
+                query,
+                explain: cli.explain,
+                out,
+                paths,
+                kinds,
+                langs,
+                want: cli.limit,
+                no_record: cli.no_record,
+                // The warm happened above, once. Per-query warming would undo
+                // the point of batching, and block-until-answered is meaningless
+                // when the queries were all read up front.
+                no_wait: true,
+                wait: cli.wait,
+                open: false,
+                all_repos: cli.all_repos,
+                show: false,
+                batch: true,
+            },
+        );
+        if code == ExitCode::SUCCESS {
+            any_hit = true;
+        } else {
+            worst = code;
+        }
+    }
+    // The batch ran; per-line `status` carries each query's outcome. Only a
+    // wholly fruitless batch reports failure, mirroring one query's contract.
+    if any_hit { ExitCode::SUCCESS } else { worst }
+}
+
+fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let &SearchArgs {
         query,
         out,
@@ -461,8 +588,10 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let t_setup = std::time::Instant::now();
     // Brackets the warm decision as well as the session, so it outlives both.
     let setup_span = crate::profile::span("setup");
+    // Borrowed field-by-field so the body reads the same as when it owned them,
+    // while the session itself outlives this call and can answer again.
     let Session {
-        mut store,
+        store,
         cwd,
         cwd_is_git,
         root,
@@ -470,10 +599,8 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         branch_refresh,
         identity,
         coverage,
-    } = match Session::open() {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
+    } = session;
+    let cwd_is_git = *cwd_is_git;
 
     // Opportunistic indexing (Layer 5), time-bounded so the first query in a
     // large repo never blocks on a full walk. We may warm a git work tree (safe
@@ -541,7 +668,9 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let indexed_head = (!was_warming)
         .then(|| current.and_then(|id| store.indexed_head(id).ok().flatten()))
         .flatten();
-    let staleness = (!was_warming && warming_ok)
+    // Whether the worktree moved is a property of the repo, not of the query,
+    // so a batch asks once (up front) instead of forking `git status` per line.
+    let staleness = (!was_warming && warming_ok && !args.batch)
         .then(|| root.clone())
         .flatten()
         .map(|c| std::thread::spawn(move || worktree_changed(&c, indexed_head.as_deref())));
@@ -639,7 +768,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let mut drew_progress = false;
     let mut last_draw = poll_start;
     let mut hits = loop {
-        match crate::search::search(&store, query, current, only_repo, &active, limit) {
+        match crate::search::search(store, query, current, only_repo, &active, limit) {
             Ok(h) => {
                 let confident = h.first().is_some_and(|hit| {
                     hit.features
@@ -656,7 +785,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
                     && poll_start.elapsed() >= HEADS_UP_DELAY
                     && last_draw.elapsed() >= PROGRESS_REDRAW
                 {
-                    draw_progress(&store, identity.as_deref(), &label);
+                    draw_progress(store, identity.as_deref(), &label);
                     drew_progress = true;
                     last_draw = std::time::Instant::now();
                 }
@@ -685,8 +814,8 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let interrupted = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
 
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
-    if !hits.is_empty() && revalidate_top(&mut store, &hits) {
-        hits = crate::search::search(&store, query, current, only_repo, &active, limit)
+    if !hits.is_empty() && revalidate_top(store, &hits) {
+        hits = crate::search::search(store, query, current, only_repo, &active, limit)
             .unwrap_or_default();
     }
 
@@ -730,12 +859,12 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         // index. This is the path a just-added symbol takes, so it has to do
         // the same settling the render path does.
         settle_warm(
-            &store,
+            store,
             staleness,
             was_warming,
             warming_ok,
             root.as_deref(),
-            &active_paths,
+            active_paths,
             query,
             warm_budget,
             no_wait,
@@ -748,7 +877,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // in text output and carried in JSON. Cheap: only the displayed results.
     for hit in &mut hits {
         hit.signature = read_signature(
-            &store,
+            store,
             &hit.repo_identity,
             &hit.file,
             hit.line,
@@ -759,7 +888,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
-    if show && let Some(code) = show_top_definition(&store, &mut hits, query, out, cwd.as_deref()) {
+    if show && let Some(code) = show_top_definition(store, &mut hits, query, out, cwd.as_deref()) {
         return code;
     }
 
@@ -767,14 +896,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // pick so ranking learns, and hand off to the editor. Returns before the
     // normal print / warm-join — opening should be snappy, and a launcher `exec`s.
     if open {
-        return finish_open(
-            &mut store,
-            &hits,
-            query,
-            current,
-            root.as_deref(),
-            no_record,
-        );
+        return finish_open(store, &hits, query, current, root.as_deref(), no_record);
     }
 
     if let Some(code) = render_hits(args, &hits) {
@@ -800,8 +922,10 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     // rather than after it, so by now it has usually finished — and it only
     // ever feeds the *next* query, never this one's ranking, so waiting on it
     // can't reorder what was just printed.
-    if let Some(refresh) = branch_refresh {
-        refresh.store(&store);
+    // Taken, not borrowed: the refresh is one-shot, and a session answering
+    // several queries must not re-store a result it already consumed.
+    if let Some(refresh) = branch_refresh.take() {
+        refresh.store(store);
     }
 
     // Results are out — now do the cheap deferred work, amortized across
@@ -818,7 +942,7 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
             None,
         );
     }
-    deferred_maintenance(&mut store);
+    deferred_maintenance(store);
 
     // Results are out; stop the in-process warm (it persists as it goes, so a
     // cut pass keeps everything parsed) and join it — then hand whatever's left
@@ -831,12 +955,12 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         let _ = h.join();
     }
     settle_warm(
-        &store,
+        store,
         staleness,
         was_warming,
         warming_ok,
         root.as_deref(),
-        &active_paths,
+        active_paths,
         query,
         warm_budget,
         no_wait,
@@ -1099,7 +1223,26 @@ fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCod
     // sub-50 ms budget is about the first answer. A change that speeds the
     // total while delaying this one is a regression.
     let render_span = crate::profile::span("render");
-    if let Some(code) = emit_rows(args.out, hits) {
+    if args.batch {
+        // One stream, many questions: tag each row with the query it answers,
+        // the same way `no_match_code` already tags a miss.
+        #[derive(serde::Serialize)]
+        struct Tagged<'a> {
+            query: &'a str,
+            #[serde(flatten)]
+            hit: &'a crate::search::Hit,
+        }
+        let rows: Vec<Tagged> = hits
+            .iter()
+            .map(|hit| Tagged {
+                query: args.query,
+                hit,
+            })
+            .collect();
+        if let Some(code) = emit_rows(args.out, &rows) {
+            return Some(code);
+        }
+    } else if let Some(code) = emit_rows(args.out, hits) {
         return Some(code);
     }
     if args.out != Output::Text {

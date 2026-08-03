@@ -1334,3 +1334,85 @@ fn detached_warm_finishes_coverage_in_the_background() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Run the binary with queries piped on stdin, returning stdout.
+fn rq_stdin(db: &Path, cwd: &Path, args: &[&str], stdin: &str) -> (bool, String) {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(args)
+        .current_dir(cwd)
+        .env("RQ_DB", db)
+        .env("RQ_WARM_DETACH", "0")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run rq");
+    child
+        .stdin
+        .take()
+        .expect("stdin piped")
+        .write_all(stdin.as_bytes())
+        .expect("write queries");
+    let out = child.wait_with_output().expect("rq exits");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn batch_answers_every_piped_query_and_says_which_is_which() {
+    // One process, many questions: each row has to name the query it answers,
+    // or a caller can't tell whose results are whose.
+    let (dir, db) = scratch("batch");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq_stdin(
+        &db,
+        &dir,
+        &["-J", "-l", "1"],
+        "widget\ngadget\nnosuchthing\n",
+    );
+    assert!(ok, "a batch that found something exits 0: {out}");
+
+    let rows: Vec<serde_json::Value> = out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("ndjson line"))
+        .collect();
+    let for_query = |q: &str| {
+        rows.iter()
+            .find(|r| r["query"] == q)
+            .unwrap_or_else(|| panic!("no row for {q}: {out}"))
+            .clone()
+    };
+    assert_eq!(for_query("widget")["name"], "Widget");
+    assert_eq!(for_query("gadget")["name"], "Gadget");
+    // a miss is reported, not silently dropped — otherwise it's
+    // indistinguishable from a query that never ran
+    assert_eq!(for_query("nosuchthing")["status"], "no_match");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batch_refuses_the_output_and_flags_it_cannot_frame() {
+    let (dir, db) = scratch("batch-flags");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    // --json would have to frame N result sets as one array; --ndjson is the
+    // shape that streams
+    let (ok, _) = rq_stdin(&db, &dir, &["--json"], "widget\n");
+    assert!(!ok, "--json is refused for a batch");
+    // --show/--open act on one result
+    let (ok, _) = rq_stdin(&db, &dir, &["-J", "--show"], "widget\n");
+    assert!(!ok, "--show is refused for a batch");
+
+    let _ = fs::remove_dir_all(&dir);
+}
