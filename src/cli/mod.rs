@@ -347,6 +347,91 @@ struct SearchArgs<'a> {
 }
 
 /// Default action: search the index and print ranked results.
+/// Everything a search needs that doesn't depend on the query: the open store,
+/// the repo it's rooted in, the branch's changed files, and who that repo is.
+///
+/// Split out because it's the expensive half — opening the store, resolving the
+/// root, reading branch files, resolving identity — and none of it varies per
+/// query. One search builds one and drops it; a caller answering many can build
+/// it once. Deliberately *not* holding the warm decision: that one is entangled
+/// with the query (the indexer path-prioritises toward it) and belongs to a
+/// single search.
+struct Session {
+    store: Store,
+    cwd: Option<PathBuf>,
+    cwd_is_git: bool,
+    root: Option<PathBuf>,
+    active_paths: Vec<String>,
+    branch_refresh: Option<BranchRefresh>,
+    identity: Option<String>,
+    coverage: Option<String>,
+}
+
+impl Session {
+    /// Resolve the search context, or the exit code to fail with.
+    fn open() -> std::result::Result<Session, ExitCode> {
+        let open_span = crate::profile::span("store open");
+        let store = match open_store() {
+            Ok(s) => s,
+            Err(e) => return Err(fail(format_args!("rq: cannot open database: {e}"))),
+        };
+        drop(open_span);
+        let git_span = crate::profile::span("setup: git root");
+        let cwd = std::env::current_dir().ok();
+        let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
+
+        // Index relative to the repo ROOT, not wherever the search happens to run.
+        // Paths and the stored checkout root must be repo-root-relative and stable, or
+        // a search from a subdirectory would re-key the same repo under subdir-relative
+        // paths — and the deletion reconcile / staleness revalidation would then forget
+        // everything indexed from the root. Outside git, the root is just the cwd.
+        let root = cwd
+            .as_deref()
+            .map(|c| crate::index::repo_root(c).unwrap_or_else(|| c.to_path_buf()));
+        drop(git_span);
+
+        // Files you're changing on this feature branch (and their directory
+        // neighbors): the branch ranking boost, and the warm pass's priority set.
+        let mut branch_span = crate::profile::span("setup: branch files");
+        let (active_paths, branch_refresh) = match &root {
+            Some(c) if cwd_is_git => cached_branch_files(&store, c),
+            _ => (Vec::new(), None),
+        };
+        branch_span.note(|| {
+            let how = if branch_refresh.is_some() {
+                "cached, refreshing alongside"
+            } else {
+                "cached"
+            };
+            format!("{} changed, {how}", active_paths.len())
+        });
+        drop(branch_span);
+
+        // Resolve identity from the repo root, cache-first: looked up by checkout root
+        // (no `git remote` fork), falling back to git only the first time we see a
+        // repo. Computed even for non-git dirs so an explicitly `--index`ed one is
+        // still recognized as the current repo below.
+        let mut identity_span = crate::profile::span("setup: identity");
+        let identity = root.as_deref().map(|c| resolve_identity(&store, c));
+        let coverage = identity
+            .as_deref()
+            .and_then(|id| store.coverage_status(id).ok())
+            .flatten();
+        identity_span.note(|| coverage.as_deref().unwrap_or("unknown").to_string());
+        drop(identity_span);
+        Ok(Session {
+            store,
+            cwd,
+            cwd_is_git,
+            root,
+            active_paths,
+            branch_refresh,
+            identity,
+            coverage,
+        })
+    }
+}
+
 fn cmd_search(args: &SearchArgs) -> ExitCode {
     let &SearchArgs {
         query,
@@ -374,56 +459,21 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     let _timer = crate::trace::Timer::start("search done");
     let profile_started = std::time::Instant::now();
     let t_setup = std::time::Instant::now();
-    let open_span = crate::profile::span("store open");
-    let mut store = match open_store() {
-        Ok(s) => s,
-        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
-    };
-    drop(open_span);
+    // Brackets the warm decision as well as the session, so it outlives both.
     let setup_span = crate::profile::span("setup");
-    let git_span = crate::profile::span("setup: git root");
-    let cwd = std::env::current_dir().ok();
-    let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
-
-    // Index relative to the repo ROOT, not wherever the search happens to run.
-    // Paths and the stored checkout root must be repo-root-relative and stable, or
-    // a search from a subdirectory would re-key the same repo under subdir-relative
-    // paths — and the deletion reconcile / staleness revalidation would then forget
-    // everything indexed from the root. Outside git, the root is just the cwd.
-    let root = cwd
-        .as_deref()
-        .map(|c| crate::index::repo_root(c).unwrap_or_else(|| c.to_path_buf()));
-    drop(git_span);
-
-    // Files you're changing on this feature branch (and their directory
-    // neighbors): the branch ranking boost, and the warm pass's priority set.
-    let mut branch_span = crate::profile::span("setup: branch files");
-    let (active_paths, branch_refresh) = match &root {
-        Some(c) if cwd_is_git => cached_branch_files(&store, c),
-        _ => (Vec::new(), None),
+    let Session {
+        mut store,
+        cwd,
+        cwd_is_git,
+        root,
+        active_paths,
+        branch_refresh,
+        identity,
+        coverage,
+    } = match Session::open() {
+        Ok(s) => s,
+        Err(code) => return code,
     };
-    branch_span.note(|| {
-        let how = if branch_refresh.is_some() {
-            "cached, refreshing alongside"
-        } else {
-            "cached"
-        };
-        format!("{} changed, {how}", active_paths.len())
-    });
-    drop(branch_span);
-
-    // Resolve identity from the repo root, cache-first: looked up by checkout root
-    // (no `git remote` fork), falling back to git only the first time we see a
-    // repo. Computed even for non-git dirs so an explicitly `--index`ed one is
-    // still recognized as the current repo below.
-    let mut identity_span = crate::profile::span("setup: identity");
-    let identity = root.as_deref().map(|c| resolve_identity(&store, c));
-    let coverage = identity
-        .as_deref()
-        .and_then(|id| store.coverage_status(id).ok())
-        .flatten();
-    identity_span.note(|| coverage.as_deref().unwrap_or("unknown").to_string());
-    drop(identity_span);
 
     // Opportunistic indexing (Layer 5), time-bounded so the first query in a
     // large repo never blocks on a full walk. We may warm a git work tree (safe
