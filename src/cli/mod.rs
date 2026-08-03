@@ -477,13 +477,27 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
         answer_warm_budget() + deferred_warm_budget()
     };
     let was_warming = coverage.as_deref() != Some("complete");
-    let want_warm = warming_ok
-        && match &root {
-            Some(c) => {
-                was_warming || !repo_unchanged_since_index(&store, c, current, coverage.as_deref())
-            }
-            None => false,
-        };
+
+    // On a complete repo the only question left is whether the worktree moved
+    // since it was indexed — and answering it forks `git status`, which on a
+    // large worktree is most of a query's cost. It decides nothing this answer
+    // depends on: with `was_warming` false, `block` and `polling` below are
+    // false too, the search reads the committed index, and `revalidate_top`
+    // guarantees the freshness of what we print. So start it alongside the
+    // search and collect it in `settle_warm` once results are out.
+    //
+    // A still-warming repo never ran this check at all — the `||` short-circuit
+    // saw to that — so its path here is unchanged.
+    let indexed_head = (!was_warming)
+        .then(|| current.and_then(|id| store.indexed_head(id).ok().flatten()))
+        .flatten();
+    let staleness = (!was_warming && warming_ok)
+        .then(|| root.clone())
+        .flatten()
+        .map(|c| std::thread::spawn(move || worktree_changed(&c, indexed_head.as_deref())));
+    // Only a repo that's still warming warms *before* the answer now; a
+    // complete-but-edited one is reindexed by `settle_warm` afterwards.
+    let want_warm = warming_ok && was_warming && root.is_some();
 
     // Block-until-answered on a cold/partial repo. A bounded warm exists so a
     // query never hangs, but on a *huge, cold* repo it can expire before the
@@ -661,9 +675,22 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
                 .and_then(|id| store.coverage_status(id).ok().flatten())
                 .as_deref()
                 != Some("complete");
-        // a "not yet" miss leaves work behind — let a detached child keep
-        // warming so a retry lands on a more complete index
-        maybe_detach_warm(&store, want_warm, root.as_deref(), identity.as_deref());
+        // a "not yet" miss leaves work behind — reindex an edited worktree and
+        // let a detached child keep warming, so the retry lands on a better
+        // index. This is the path a just-added symbol takes, so it has to do
+        // the same settling the render path does.
+        settle_warm(
+            &store,
+            staleness,
+            was_warming,
+            warming_ok,
+            root.as_deref(),
+            &active_paths,
+            query,
+            warm_budget,
+            no_wait,
+            identity.as_deref(),
+        );
         return no_match_code(out, query, interrupted, incomplete);
     }
 
@@ -753,7 +780,18 @@ fn cmd_search(args: &SearchArgs) -> ExitCode {
     if let Some(h) = indexer {
         let _ = h.join();
     }
-    maybe_detach_warm(&store, want_warm, root.as_deref(), identity.as_deref());
+    settle_warm(
+        &store,
+        staleness,
+        was_warming,
+        warming_ok,
+        root.as_deref(),
+        &active_paths,
+        query,
+        warm_budget,
+        no_wait,
+        identity.as_deref(),
+    );
 
     ExitCode::SUCCESS
 }
@@ -1290,20 +1328,60 @@ fn cached_branch_files(
     (files, None)
 }
 
-fn repo_unchanged_since_index(
+/// Whether the worktree has moved since it was indexed — a different HEAD, or
+/// uncommitted edits. Split out from the store read so this half can run on its
+/// own thread: `is_dirty` forks `git status`, which on a large worktree costs
+/// more than the search it was gating (measured: 12.6ms of a 16.8ms query on a
+/// 6k-file repo, against 0.1ms on a 54-file one).
+///
+/// `None` for `indexed_head` means we never recorded one, which counts as
+/// changed — there's nothing to compare against, so assume work is due.
+fn worktree_changed(cwd: &std::path::Path, indexed_head: Option<&str>) -> bool {
+    let Some(head) = indexed_head else {
+        return true;
+    };
+    crate::index::git_head(cwd).as_deref() != Some(head) || crate::index::is_dirty(cwd)
+}
+
+/// Settle warming once the answer is out: collect the staleness check started
+/// back at setup, reindex if the worktree moved, and hand any remainder to a
+/// detached child.
+///
+/// Called from *both* exits. The miss path matters as much as the render one —
+/// a symbol added a moment ago is precisely a miss, and reindexing before we
+/// exit is what makes the immediate retry hit.
+#[allow(clippy::too_many_arguments)]
+fn settle_warm(
     store: &Store,
-    cwd: &std::path::Path,
-    current: Option<i64>,
-    coverage: Option<&str>,
-) -> bool {
-    if coverage != Some("complete") {
-        return false;
+    staleness: Option<std::thread::JoinHandle<bool>>,
+    was_warming: bool,
+    warming_ok: bool,
+    root: Option<&std::path::Path>,
+    active: &[String],
+    query: &str,
+    budget: Duration,
+    no_wait: bool,
+    identity: Option<&str>,
+) {
+    // A panicked check counts as changed: warming needlessly costs a little
+    // time, skipping it wrongly serves a stale index.
+    let changed = staleness.is_some_and(|h| h.join().unwrap_or(true));
+    if changed
+        && !no_wait
+        && let Some(r) = root
+        && let Ok(mut idx) = open_store()
+    {
+        // Traced like the inline warm it replaces — `-v` should report that a
+        // warm happened regardless of which side of the answer it ran on.
+        crate::trace!("background warm (deferred, {budget:?}): worktree changed since index");
+        let _ = crate::index::index_budgeted(&mut idx, r, active, budget, Some(query));
     }
-    let Some(id) = current else { return false };
-    let indexed_head = store.indexed_head(id).ok().flatten();
-    indexed_head.is_some()
-        && crate::index::git_head(cwd) == indexed_head
-        && !crate::index::is_dirty(cwd)
+    maybe_detach_warm(
+        store,
+        warming_ok && (was_warming || changed),
+        root,
+        identity,
+    );
 }
 
 /// Inline warm budget on the search path. A *cap*, not a fixed delay:
@@ -1666,9 +1744,12 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let coverage = store.coverage_status(&identity).ok().flatten();
     let warming_ok = crate::index::is_git_repo(&root) || coverage.is_some();
     let current = store.repository_id(&identity).ok().flatten();
+    // Listing a file's symbols warms synchronously — there's no answer to get
+    // out of the way of here, so the staleness fork is paid inline as before.
+    let indexed_head = current.and_then(|id| store.indexed_head(id).ok().flatten());
     let needs_warm = warming_ok
         && (coverage.as_deref() != Some("complete")
-            || !repo_unchanged_since_index(&store, &root, current, coverage.as_deref()));
+            || worktree_changed(&root, indexed_head.as_deref()));
     if needs_warm {
         // Path-prioritize the warm toward the requested file so it indexes first.
         let budget = answer_warm_budget() + deferred_warm_budget();
