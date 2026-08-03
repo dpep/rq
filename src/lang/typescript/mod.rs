@@ -4,7 +4,8 @@
 //!
 //! Extracts `class` → class, `interface` → trait (a named contract, like Go's),
 //! `type` → struct (a named shape), `enum` → enum, `namespace` → module,
-//! `function` → function, and class/interface members → method. A
+//! `function` → function, and the members a class, interface, or object type
+//! declares → method. A
 //! `const f = () => …` is a function too — in modern JS that *is* how functions
 //! are declared. `parent` is `.`-joined, so a method renders as `deposit ·
 //! Account`.
@@ -93,15 +94,21 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
             // `export …` isn't a definition; it marks the one that follows public
             "export_statement" => walk(ctx, child, parent, true, out),
 
-            // types that hold members: emit, then descend so the members are
-            // qualified by them
+            // a named type (or namespace): emit it, then descend so whatever
+            // members it declares are qualified by it. `type Foo = { run(): … }`
+            // holds methods exactly like `interface Foo` does, so it's the same
+            // arm — an enum body simply has nothing we extract.
             "class_declaration"
             | "abstract_class_declaration"
             | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration"
             | "internal_module" => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     let kind = match child.kind() {
                         "interface_declaration" => Kind::Trait,
+                        "type_alias_declaration" => Kind::Struct,
+                        "enum_declaration" => Kind::Enum,
                         "internal_module" => Kind::Module,
                         _ => Kind::Class,
                     };
@@ -111,18 +118,6 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
                     // members carry their own visibility; a namespace body
                     // re-declares `export` for what it re-exports
                     walk(ctx, child, Some(&qualified), false, out);
-                }
-            }
-
-            // a type alias names a shape; an enum names a closed set
-            "type_alias_declaration" | "enum_declaration" => {
-                if let Some(name) = ctx.field_text(child, "name") {
-                    let kind = match child.kind() {
-                        "enum_declaration" => Kind::Enum,
-                        _ => Kind::Struct,
-                    };
-                    let vis = module_visibility(exported);
-                    push(ctx, out, &name, kind, child, parent, vis);
                 }
             }
 
@@ -308,6 +303,18 @@ export const makeWidget = () => new Widget();
         assert_eq!(find(&syms, "buildWidget").kind, Kind::Function);
         // an arrow assigned to a const is a function, not a mystery
         assert_eq!(find(&syms, "makeWidget").kind, Kind::Function);
+    }
+
+    #[test]
+    fn an_object_type_declares_methods_like_an_interface() {
+        // the two spellings are interchangeable in TypeScript, so a method is
+        // just as navigable through either
+        let src = "type Renderer = {\n  render(): string;\n};\n";
+        let syms = extract(src);
+        assert_eq!(find(&syms, "Renderer").kind, Kind::Struct);
+        let render = find(&syms, "render");
+        assert_eq!(render.kind, Kind::Method);
+        assert_eq!(render.parent.as_deref(), Some("Renderer"));
     }
 
     #[test]
