@@ -15,7 +15,7 @@
 //! exports nothing the grammar can see, so its definitions all read private.
 //! Visibility is only ever a small ranking nudge, so the mislabel costs little.
 
-use tree_sitter::Node;
+use tree_sitter::{Language, Node};
 
 use crate::core::{Kind, Symbol};
 use crate::lang::{Ctx, LanguagePlugin, extract_with_key, qualify};
@@ -23,9 +23,9 @@ use crate::lang::{Ctx, LanguagePlugin, extract_with_key, qualify};
 const TYPESCRIPT: &str = "typescript";
 const JAVASCRIPT: &str = "javascript";
 
-/// Parser-cache keys — one per *grammar*, not per language tag.
-const TS_GRAMMAR: &str = "typescript";
-const TSX_GRAMMAR: &str = "tsx";
+/// A grammar paired with the parser-cache key naming it. The key identifies the
+/// *grammar*, not the language tag, so the two are never named apart.
+type Grammar = (&'static str, Language);
 
 pub struct TypeScript;
 pub struct JavaScript;
@@ -41,12 +41,9 @@ impl LanguagePlugin for TypeScript {
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
         // The two grammars disagree on `<T>`: TSX reads it as a JSX tag, TS as a
-        // type parameter. Pick by extension so each file gets the one it means.
-        if has_extension(file, "tsx") {
-            run(TSX_GRAMMAR, TYPESCRIPT, tsx(), file, source)
-        } else {
-            run(TS_GRAMMAR, TYPESCRIPT, ts(), file, source)
-        }
+        // type parameter. Give each file the one it means.
+        let grammar = if is_tsx(file) { tsx() } else { ts() };
+        run(TYPESCRIPT, grammar, file, source)
     }
 }
 
@@ -62,35 +59,29 @@ impl LanguagePlugin for JavaScript {
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
         // TSX is the JSX-aware superset — it parses plain JS, and `.js` holding
         // JSX is routine in React projects.
-        run(TSX_GRAMMAR, JAVASCRIPT, tsx(), file, source)
+        run(JAVASCRIPT, tsx(), file, source)
     }
 }
 
-fn ts() -> tree_sitter::Language {
-    tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+fn ts() -> Grammar {
+    ("ts", tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
 }
 
-fn tsx() -> tree_sitter::Language {
-    tree_sitter_typescript::LANGUAGE_TSX.into()
+fn tsx() -> Grammar {
+    ("tsx", tree_sitter_typescript::LANGUAGE_TSX.into())
 }
 
-fn run(
-    key: &'static str,
-    language: &'static str,
-    grammar: tree_sitter::Language,
-    file: &str,
-    source: &str,
-) -> Vec<Symbol> {
+fn run(language: &'static str, (key, grammar): Grammar, file: &str, source: &str) -> Vec<Symbol> {
     extract_with_key(key, language, grammar, file, source, |ctx, root, out| {
         walk(ctx, root, None, false, out)
     })
 }
 
-/// Whether `file`'s extension is exactly `ext`.
-fn has_extension(file: &str, ext: &str) -> bool {
+/// Whether `file` is a `.tsx` — the JSX-bearing dialect of TypeScript.
+fn is_tsx(file: &str) -> bool {
     std::path::Path::new(file)
         .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        .is_some_and(|e| e.eq_ignore_ascii_case("tsx"))
 }
 
 /// Recursively collect definitions. `parent` is the enclosing qualified name;
@@ -150,21 +141,13 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
 
             // class and interface members
             "method_definition" | "abstract_method_signature" | "method_signature" => {
-                if let Some(raw) = ctx.field_text(child, "name") {
-                    let vis = member_visibility(ctx, child, &raw);
-                    let name = raw.trim_start_matches('#');
-                    push(ctx, out, name, Kind::Method, child, parent, vis);
-                }
+                push_member(ctx, out, child, parent);
             }
 
             // `handleClick = () => …` in a class body: a method but for syntax
             "public_field_definition" | "field_definition" => {
-                if is_function(child.child_by_field_name("value"))
-                    && let Some(raw) = ctx.field_text(child, "name")
-                {
-                    let vis = member_visibility(ctx, child, &raw);
-                    let name = raw.trim_start_matches('#');
-                    push(ctx, out, name, Kind::Method, child, parent, vis);
+                if is_function(child.child_by_field_name("value")) {
+                    push_member(ctx, out, child, parent);
                 }
             }
 
@@ -174,6 +157,16 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
 
             _ => walk(ctx, child, parent, exported, out),
         }
+    }
+}
+
+/// Emit a member of a type as a method. An ES private name (`#tally`) is
+/// indexed without its `#`, so it's found by the name you'd think to search.
+fn push_member(ctx: &Ctx, out: &mut Vec<Symbol>, node: Node, parent: Option<&str>) {
+    if let Some(raw) = ctx.field_text(node, "name") {
+        let vis = member_visibility(ctx, node, &raw);
+        let name = raw.trim_start_matches('#');
+        push(ctx, out, name, Kind::Method, node, parent, vis);
     }
 }
 
