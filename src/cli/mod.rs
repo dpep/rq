@@ -848,7 +848,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // symbol is absent when the index simply hasn't reached it. `--no-wait`
         // returns without blocking, so its miss is judged the same way — an
         // incomplete index yields `warming` (exit 2, "retry"), not a false absence.
-        let incomplete = (block || no_wait)
+        let mut incomplete = (block || no_wait)
             && identity
                 .as_deref()
                 .and_then(|id| store.coverage_status(id).ok().flatten())
@@ -858,7 +858,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // let a detached child keep warming, so the retry lands on a better
         // index. This is the path a just-added symbol takes, so it has to do
         // the same settling the render path does.
-        settle_warm(
+        // A worktree that has moved since we indexed it makes this miss
+        // provisional, not definitive: the symbol may be in an edit the
+        // detached warm hasn't caught up with. Say "warming" (exit 2, retry)
+        // rather than "no match" (exit 1, absent) — a just-added symbol is
+        // exactly this case, and a confident no is the wrong answer to it.
+        incomplete |= settle_warm(
             store,
             staleness,
             was_warming,
@@ -954,7 +959,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     if let Some(h) = indexer {
         let _ = h.join();
     }
-    settle_warm(
+    let _ = settle_warm(
         store,
         staleness,
         was_warming,
@@ -975,6 +980,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
 fn maybe_detach_warm(
     store: &Store,
     want_warm: bool,
+    changed: bool,
     root: Option<&std::path::Path>,
     identity: Option<&str>,
 ) {
@@ -984,7 +990,10 @@ fn maybe_detach_warm(
     let (Some(root), Some(id)) = (root, identity) else {
         return;
     };
-    if store.coverage_status(id).ok().flatten().as_deref() == Some("complete") {
+    // Coverage measures breadth, not freshness — an edit never demotes it. So
+    // "complete" alone isn't done; it's done only if the worktree also hasn't
+    // moved since we indexed it.
+    if !changed && store.coverage_status(id).ok().flatten().as_deref() == Some("complete") {
         return; // the in-process pass finished the job
     }
     spawn_detached_warm(root);
@@ -1007,7 +1016,7 @@ fn spawn_detached_warm(root: &std::path::Path) {
         .process_group(0);
     match cmd.spawn() {
         Ok(child) => crate::trace!(
-            "detached warm: pid {} for {}",
+            "background warm (detached): pid {} for {}",
             child.id(),
             crate::trace::abbrev(root)
         ),
@@ -1555,26 +1564,39 @@ fn settle_warm(
     budget: Duration,
     no_wait: bool,
     identity: Option<&str>,
-) {
+) -> bool {
     // A panicked check counts as changed: warming needlessly costs a little
     // time, skipping it wrongly serves a stale index.
     let changed = staleness.is_some_and(|h| h.join().unwrap_or(true));
+    // Reindexing an edited worktree means sweeping every file to find the few
+    // that moved — ~32ms on a 3000-file repo, and it was paid on *every* query
+    // for as long as anything stayed uncommitted, which is exactly while you're
+    // working. The shell shouldn't wait for that: hand it to the detached
+    // child, which is what "the shell never waits on it" already promises
+    // everywhere else.
+    //
+    // With detach off (the harness pins it so no child races a test's cleanup)
+    // there's nobody to hand it to, so do it here as before.
     if changed
         && !no_wait
+        && !warm_detach_enabled()
         && let Some(r) = root
         && let Ok(mut idx) = open_store()
     {
-        // Traced like the inline warm it replaces — `-v` should report that a
-        // warm happened regardless of which side of the answer it ran on.
         crate::trace!("background warm (deferred, {budget:?}): worktree changed since index");
         let _ = crate::index::index_budgeted(&mut idx, r, active, budget, Some(query));
     }
     maybe_detach_warm(
         store,
         warming_ok && (was_warming || changed),
+        changed,
         root,
         identity,
     );
+    // Report only that work was *deferred*, which is what makes a miss
+    // provisional. When the reindex ran inline just above (detach off), the
+    // index is as current as we can make it and a miss is definitive.
+    changed && warm_detach_enabled()
 }
 
 /// Inline warm budget on the search path. A *cap*, not a fixed delay:
