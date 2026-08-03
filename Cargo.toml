@@ -1,6 +1,6 @@
 [package]
 name = "reference-query"
-version = "0.36.0"
+version = "0.37.0"
 edition = "2024"
 description = "Reference Query — find the code you're looking for."
 license = "MIT"
@@ -24,3 +24,4 @@ tree-sitter-ruby = "0.23"
 tree-sitter-rust = "0.24"
 tree-sitter-go = "0.23"
 tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23.2"

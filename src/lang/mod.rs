@@ -12,6 +12,7 @@ pub mod go;
 pub mod python;
 pub mod ruby;
 pub mod rust;
+pub mod typescript;
 
 /// Per-file extraction context shared by every plugin: the source bytes, the
 /// repo-relative path, and the language tag stamped on each emitted symbol.
@@ -82,9 +83,24 @@ pub(crate) fn extract_with(
     source: &str,
     walk: impl FnOnce(&Ctx, Node, &mut Vec<Symbol>),
 ) -> Vec<Symbol> {
+    extract_with_key(language, language, grammar, file, source, walk)
+}
+
+/// [`extract_with`] with the parser-cache key named separately from the language
+/// tag — for a plugin that spans more than one grammar (TypeScript's `.ts` vs
+/// `.tsx`) or a grammar shared by two tags. The key identifies the *grammar*, so
+/// it must be distinct per grammar and identical wherever that grammar is used.
+pub(crate) fn extract_with_key(
+    key: &'static str,
+    language: &'static str,
+    grammar: Language,
+    file: &str,
+    source: &str,
+    walk: impl FnOnce(&Ctx, Node, &mut Vec<Symbol>),
+) -> Vec<Symbol> {
     PARSERS.with(|cell| {
         let mut parsers = cell.borrow_mut();
-        let parser = match parsers.entry(language) {
+        let parser = match parsers.entry(key) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
                 let mut p = Parser::new();
@@ -123,8 +139,14 @@ pub trait LanguagePlugin {
 }
 
 /// The registered language plugins. Adding a language is one line here.
-static REGISTRY: [&(dyn LanguagePlugin + Sync); 4] =
-    [&ruby::Ruby, &rust::Rust, &go::Go, &python::Python];
+static REGISTRY: [&(dyn LanguagePlugin + Sync); 6] = [
+    &ruby::Ruby,
+    &rust::Rust,
+    &go::Go,
+    &python::Python,
+    &typescript::TypeScript,
+    &typescript::JavaScript,
+];
 
 /// The tags of all registered languages — the set `--lang` matches against, so
 /// it can't drift from the registry.
@@ -151,7 +173,7 @@ mod tests {
 
     #[test]
     fn languages_are_registered_by_extension() {
-        for ext in ["rb", "rs", "go", "py"] {
+        for ext in ["rb", "rs", "go", "py", "ts", "tsx", "js", "jsx"] {
             assert!(plugin_for_extension(ext).is_some(), "{ext} should resolve");
         }
         assert!(plugin_for_extension("java").is_none());

@@ -77,7 +77,7 @@ src/
   store/      # SQLite schema, migrations, queries (WAL mode)
   index/      # walker, incremental indexer, coverage tracking
   search/     # staged pipeline, scorer, --explain
-  lang/       # Tree-sitter plugins: ruby, rust, go, python
+  lang/       # Tree-sitter plugins: ruby, rust, go, python, typescript
     ruby/     # the first plugin
     rust/     # what rq dogfoods on its own source
 ```
@@ -95,7 +95,7 @@ trait LanguagePlugin {
 }
 ```
 
-A registry maps file extension → plugin. Adding Go/TS/Python/Java is a new
+A registry maps file extension → plugin. Adding Java/C# is a new
 plugin. The one shared thing a language may extend is the `core::Kind`
 vocabulary — Rust added `struct`/`enum`/`trait` — which generalizes the model
 rather than leaking a language into `index`/`search`/scoring.
@@ -316,7 +316,7 @@ why a result ranked where it did:
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:
   Rust `pub`, Ruby access sections, Python underscore convention, Go
-  capitalization
+  capitalization, TypeScript member modifiers and ESM `export`
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`) matches its leaf
   against the name and rewards a candidate whose `parent` ends with the named
   scope chain (`Bar` inside `Foo`). The qualifier reorders, it doesn't filter —

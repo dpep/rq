@@ -20,7 +20,8 @@ Search is the default action — `rq <query>`, no subcommand. Every *operation* 
 - **ctags** is static and relevance-blind; rq ranks by match quality, your current repo, recency, and what you've opened before.
 - **an LSP** is heavy — per-language, per-project, slow to warm. rq is one fast binary across all your repos: in-process search at `rg` speed (sub-millisecond), warms itself on first use, self-heals on edits, and learns from the results you actually open.
 
-Definitions come from [Tree-sitter](https://tree-sitter.github.io/) for Ruby, Rust, Go, and Python.
+Definitions come from [Tree-sitter](https://tree-sitter.github.io/) for Ruby, Rust, Go, Python,
+TypeScript, and JavaScript.
 
 ## Install
 
@@ -44,7 +45,8 @@ rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
 rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait
 rq KIND <query>             # a leading kind keyword is shorthand for -k (rq class Widget)
 rq Scope::name              # scope-aware: prefer the name defined inside Scope (or Scope::Type#method)
-rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python (prefix-matched; r=ruby+rust)
+rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
+                            #   (prefix-matched; r=ruby+rust; aliases rb/rs/ts/js)
 rq <query> -l/--limit N     # cap the number of results (default 10)
 rq <query> --all-repos      # search every indexed repo (default: just the current one)
 rq <query> --show           # print the definition's source (confident match only; pipe to less)
@@ -145,13 +147,15 @@ src/search/mod.rs:316  function store_with · tests
 
 ## Ranking
 
-Symbols come from Tree-sitter (Ruby, Rust, Go, Python; the core is
+Symbols come from Tree-sitter (Ruby, Rust, Go, Python, TypeScript, JavaScript;
+the core is
 language-agnostic). A
 query is matched and scored by an additive, explainable sum of signals:
 
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence
 - **visibility** — public API edges out private/protected helpers (Rust `pub`,
-  Ruby `private` sections, Python `_underscore`, Go capitalization)
+  Ruby `private` sections, Python `_underscore`, Go capitalization, TypeScript
+  member modifiers and ESM `export`)
 - **qualifier** — a scoped query (`Foo::Bar`) prefers the definition inside that scope
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the repo you're in by default

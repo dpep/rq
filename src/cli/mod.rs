@@ -36,7 +36,7 @@ rq thing app/web          restrict to a directory (rg-style)\n  \
 rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
 rq class Widget           a leading kind keyword is shorthand for -k\n  \
 rq --symbols FILE         outline a file's definitions, in line order\n  \
-rq thing -x rust          restrict to a language (ruby/rust/go/python)\n  \
+rq thing -x rust          restrict to a language (ruby/rust/go/python/ts/js)\n  \
 rq -o thing               open the best match in your editor (and record it)\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n  \
@@ -120,13 +120,14 @@ struct Cli {
     limit: usize,
 
     /// Restrict to symbol kinds: class, module, method, function, struct, enum,
-    /// trait (shortcuts: c, mod, m, f, s, e, t). Repeatable or comma-separated.
+    /// trait (shortcuts: c, mod, m, f, s, e, t; `interface` = trait, `type` =
+    /// struct). Repeatable or comma-separated.
     #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
     kind: Vec<String>,
 
-    /// Restrict to languages: ruby, rust, go, python. Prefix-matched, so `r`
-    /// means ruby+rust and `p` means python; aliases rb, rs, golang. Repeatable
-    /// or comma-separated.
+    /// Restrict to languages: ruby, rust, go, python, typescript, javascript.
+    /// Prefix-matched, so `r` means ruby+rust and `p` means python; aliases rb,
+    /// rs, golang, ts, tsx, js, jsx. Repeatable or comma-separated.
     #[arg(short = 'x', long = "lang", value_name = "LANG", value_delimiter = ',')]
     lang: Vec<String>,
 
@@ -1756,9 +1757,9 @@ fn keyword_kind(token: &str) -> Option<&'static str> {
         "module" => Some("module"),
         "method" => Some("method"),
         "function" | "fn" => Some("function"),
-        "struct" => Some("struct"),
+        "struct" | "type" => Some("struct"),
         "enum" => Some("enum"),
-        "trait" => Some("trait"),
+        "trait" | "interface" => Some("trait"),
         _ => None,
     }
 }
@@ -1798,24 +1799,28 @@ fn canonical_kind(s: &str) -> String {
         "m" | "method" => "method",
         "f" | "fn" | "func" | "function" => "function",
         "mod" | "module" => "module",
-        "s" | "struct" => "struct",
+        "s" | "struct" | "type" => "struct",
         "e" | "enum" => "enum",
-        "t" | "trait" => "trait",
+        "t" | "trait" | "interface" => "trait",
         other => return other.to_string(),
     }
     .to_string()
 }
 
 /// Expand a `--lang` value to the language tag(s) it selects: a **prefix** of any
-/// known language name (so `r` → ruby+rust, `p`/`py` → python, `g` → go), plus a
-/// few non-prefix aliases (`rb`→ruby, `rs`→rust, `golang`→go). An unknown value
-/// passes through lowercased so it simply matches nothing.
+/// known language name (so `r` → ruby+rust, `p`/`py` → python, `g` → go,
+/// `t` → typescript, `j` → javascript), plus a few non-prefix aliases
+/// (`rb`→ruby, `rs`→rust, `golang`→go, `ts`/`tsx`→typescript,
+/// `js`/`jsx`→javascript). An unknown value passes through lowercased so it
+/// simply matches nothing.
 fn canonical_langs(s: &str) -> Vec<String> {
     let t = s.to_ascii_lowercase();
     let alias = match t.as_str() {
         "rb" => Some("ruby"),
         "rs" => Some("rust"),
         "golang" => Some("go"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" => Some("javascript"),
         _ => None,
     };
     let matched: Vec<String> = crate::lang::languages()
@@ -2269,6 +2274,33 @@ mod tests {
         assert_eq!(
             split_kind_keyword("c".into(), d(&["Foo"])),
             (None, "c".into(), d(&["Foo"]))
+        );
+    }
+
+    #[test]
+    fn a_language_selects_by_prefix_or_alias() {
+        // a prefix can name more than one language
+        assert_eq!(canonical_langs("r"), ["ruby", "rust"]);
+        assert_eq!(canonical_langs("t"), ["typescript"]);
+        // the names people actually type aren't prefixes of the tag
+        assert_eq!(canonical_langs("ts"), ["typescript"]);
+        assert_eq!(canonical_langs("jsx"), ["javascript"]);
+        assert_eq!(canonical_langs("rb"), ["ruby"]);
+        // an unknown value passes through and simply matches nothing
+        assert_eq!(canonical_langs("COBOL"), ["cobol"]);
+    }
+
+    #[test]
+    fn a_kind_normalizes_language_specific_spellings() {
+        assert_eq!(canonical_kind("f"), "function");
+        // TypeScript's spellings land on the shared model's kinds
+        assert_eq!(canonical_kind("interface"), "trait");
+        assert_eq!(canonical_kind("type"), "struct");
+        // …and work as the leading-keyword shorthand too
+        let d = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            split_kind_keyword("interface".into(), d(&["Renderer"])),
+            (Some("trait"), "Renderer".into(), vec![])
         );
     }
 

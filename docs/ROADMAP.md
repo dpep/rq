@@ -165,7 +165,10 @@ model, not leaking a language into `index`/`search`/scoring.
       methods). The dogfood language: rq indexes its own source (`make dogfood`)
 - [x] Go — `lang/go/` (`func`/method, `struct`, `interface`→trait)
 - [x] Python — `lang/python/` (`class`, `def` free/method, decorator-aware)
-- [ ] TypeScript
+- [x] TypeScript / JavaScript — `lang/typescript/` (`class`, `interface`→trait,
+      `type`→struct, `enum`, `namespace`→module, `function` and `const f = () =>`,
+      class/interface members→method). Two tags off one grammar family, so
+      `-x ts` and `-x js` each mean what they say; `.tsx`/`.jsx` parse as JSX
 - [ ] Java
 
 ## Shipped CLI affordances
@@ -174,7 +177,9 @@ model, not leaking a language into `index`/`search`/scoring.
   each result carries a `signature` (the definition's source line)
 - path filters — trailing positionals (rg-style `rq query dir…`) or `-p/--path`
 - `-k/--kind` — restrict to kind: class/module/method/function/struct/enum/trait
-- `-x/--lang` — restrict to language: ruby/rust/go/python (aliases; `r`=ruby+rust)
+  (`interface`=trait, `type`=struct)
+- `-x/--lang` — restrict to language: ruby/rust/go/python/typescript/javascript
+  (prefix-matched; `r`=ruby+rust; aliases rb/rs/golang/ts/tsx/js/jsx)
 - `-l/--limit N` — cap the number of results
 - `--no-record` — search without recording a behavioral signal (for agents)
 - `-o/--open` — open the best match in your editor and record the pick; prompts
