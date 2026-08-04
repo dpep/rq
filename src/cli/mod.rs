@@ -71,7 +71,8 @@ struct Cli {
     #[arg(short = 'e', long)]
     explain: bool,
 
-    /// Don't record this search as a behavioral signal (for agents/scripts).
+    /// Don't let this invocation teach ranking — suppresses recording a result
+    /// you open or select (for agents/scripts).
     #[arg(long)]
     no_record: bool,
 
@@ -923,20 +924,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         refresh.store(store);
     }
 
-    // Results are out — now do the cheap deferred work, amortized across
-    // interactions. Under --no-record we skip logging this search (so it isn't a
-    // behavioral signal) but still run maintenance, which only rolls up and
-    // prunes pre-existing events.
-    if !no_record {
-        let _ = store.record_event(
-            "search",
-            Some(&query.to_ascii_lowercase()),
-            current,
-            None,
-            None,
-            None,
-        );
-    }
+    // Results are out — now the cheap deferred work, amortized across
+    // interactions. Searches aren't logged: the only thing that ever read a
+    // `search` event was the repeat-query decay, and with that gone a row per
+    // query would be written and never read. Rolling up and pruning the
+    // `open`/`select` events — the picks that actually teach ranking — still
+    // happens here.
     deferred_maintenance(store);
 
     // Results are out; stop the in-process warm (it persists as it goes, so a
