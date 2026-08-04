@@ -344,7 +344,16 @@ pub fn apply_scope_gate(query: &str, hits: &mut Vec<Hit>) {
     }
 }
 
-/// Highest score first; ties broken toward shorter (more specific) names.
+/// Highest score first; ties broken toward shorter (more specific) names, then
+/// by location so the order is total.
+///
+/// That last tiebreak is what makes an answer reproducible. A query like
+/// `Transaction` in a large repo can turn up five definitions that share a
+/// name, a length, and a score — every earlier comparison ties, and a stable
+/// sort then just preserves whatever order the rows arrived in, which is the
+/// database's business and not stable between runs. The same query would
+/// answer differently each time, which is baffling from a terminal and worse
+/// from an agent, and it means output can't be diffed to check a refactor.
 fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) {
     hits.sort_by(|a, b| {
         b.score
@@ -352,6 +361,7 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.name.len().cmp(&b.name.len()))
             .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| (&a.file, a.line).cmp(&(&b.file, b.line)))
     });
     hits.truncate(limit);
 }
@@ -383,6 +393,57 @@ fn rank_one(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identical_names_rank_in_a_stable_order() {
+        // Five definitions sharing a name score the same and are the same
+        // length, so every earlier tiebreak ties. Without a final total order
+        // the winner is whatever order the rows arrived in — and the same query
+        // answers differently between runs.
+        let hit = |file: &str, line: i64| Hit {
+            name: "Transaction".into(),
+            kind: "class".into(),
+            language: "ruby".into(),
+            file: file.into(),
+            line,
+            end_line: None,
+            parent: None,
+            visibility: None,
+            score: 1.0,
+            confidence: 0.5,
+            signature: None,
+            repo_identity: "local:/tmp/x".into(),
+            features: Vec::new(),
+            body: None,
+        };
+        let ordered = |mut hits: Vec<Hit>| {
+            sort_and_truncate(&mut hits, 10);
+            hits.into_iter()
+                .map(|h| (h.file, h.line))
+                .collect::<Vec<_>>()
+        };
+
+        let a = ordered(vec![
+            hit("app/models/b.rb", 1),
+            hit("app/models/a.rb", 9),
+            hit("app/models/a.rb", 2),
+        ]);
+        // the same set, arriving in a different order, must rank the same
+        let b = ordered(vec![
+            hit("app/models/a.rb", 2),
+            hit("app/models/b.rb", 1),
+            hit("app/models/a.rb", 9),
+        ]);
+        assert_eq!(a, b, "ranking must not depend on row order");
+        assert_eq!(
+            a,
+            vec![
+                ("app/models/a.rb".to_string(), 2),
+                ("app/models/a.rb".to_string(), 9),
+                ("app/models/b.rb".to_string(), 1),
+            ]
+        );
+    }
+
     use super::*;
     use crate::core::{Kind, Symbol};
 
