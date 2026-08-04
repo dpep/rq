@@ -7,6 +7,35 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## 0.38.0 — 2026-08-03
+
+### Added
+- Queries piped on stdin, one per line, are answered in a single run — the
+  store, repo resolution, branch files, identity and the staleness check are
+  paid once instead of per query. 10 queries on a 6042-file repo: 16ms/query as
+  separate processes, 3ms/query batched. Each row carries the query it answers,
+  a miss still reports, and a cold repo warms once up front rather than
+  answering from a partial index. `--ndjson` (or text); `--json`, `--show` and
+  `--open` don't apply to a stream.
+
+### Fixed
+- The same query now returns the same answer. Hits sharing a name, a length and
+  a score tied every tiebreak, so a stable sort preserved whatever order the
+  database returned — `rq Transaction` on a large repo picked a different file
+  almost every run. Ties now break on location.
+
+### Changed
+- A query no longer waits on the staleness check. Asking whether the worktree
+  moved forks `git status`, which scales with worktree size rather than with
+  the query — 12.6ms of a 16.8ms query on a 6042-file repo. It runs alongside
+  the search now and is collected once results are out: time-to-answer 16.8ms
+  to 4.6ms, process exit 20ms to 16ms.
+- An edited worktree is reindexed by the detached child rather than in the
+  foreground. That sweep cost ~32ms on every query for as long as anything
+  stayed uncommitted — 44ms/query to 13ms on a dirty 3000-file repo. A miss
+  taken while that work is outstanding reports `warming` rather than a
+  definitive `no_match`, since the symbol may be in an edit not yet indexed.
+
 ## 0.37.0 — 2026-08-03
 - TypeScript / JavaScript plugin — `.ts/.tsx/.mts/.cts` and `.js/.jsx/.mjs/.cjs`.
   Indexes `class`, `interface`, `type`, `enum`, `namespace`, `function` (and
