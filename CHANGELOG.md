@@ -7,6 +7,20 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## 0.39.0 — 2026-08-03
+
+### Changed
+- A repeated search no longer decays that query's learned boost. It read a
+  repeat as "the last answer missed", but in practice repeats come from
+  automation re-running a command, and the signal it was protecting had never
+  been used — `selection_stats` was empty. It was also asymmetric with the
+  learning it corrected (boosts generalise by prefix; the decay matched
+  exactly) and unbounded in time. Searching no longer writes ranking state, so
+  a query's answer depends only on the index and explicitly recorded picks.
+- A learned pick now expires. The recency half-life was floored, so an old
+  choice could be diminished but never forgotten; with the repeat-decay gone,
+  time is the only forgetting left and it runs to zero.
+
 ## 0.38.0 — 2026-08-03
 
 ### Added
