@@ -629,16 +629,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let only_repo = if all_repos { None } else { current };
     let active = crate::search::ActiveFiles::new(active_paths.clone());
 
-    // A repeated search (same query, nothing opened since) means last time missed
-    // — decay this query's learned boost before ranking so a stale learned pick
-    // stops dominating. Skipped under --no-record so an agent doesn't perturb it.
-    if !no_record && let Some(repo) = current {
-        let qn = query.to_ascii_lowercase();
-        if store.is_repeat_search(repo, &qn).unwrap_or(false) {
-            let _ = store.decay_selections(repo, &qn);
-        }
-    }
-
     drop(repo_span);
     let warm_span = crate::profile::span("setup: warm decision");
 

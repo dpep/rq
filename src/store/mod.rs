@@ -612,37 +612,6 @@ impl Store {
         Ok(rows)
     }
 
-    /// Whether the most recent event for this repo is a `search` for the same
-    /// query — i.e. the query was repeated with no selection in between, a
-    /// signal that the last results missed.
-    pub fn is_repeat_search(&self, repository_id: i64, query_norm: &str) -> Result<bool> {
-        let last: Option<(String, Option<String>)> = self
-            .conn
-            .query_row(
-                "SELECT type, query FROM events WHERE repository_id = ?1 ORDER BY id DESC LIMIT 1",
-                params![repository_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        Ok(matches!(last, Some((kind, Some(q))) if kind == "search" && q == query_norm))
-    }
-
-    /// Decay the learned boost for a query — a repeated search signals the
-    /// learned pick didn't satisfy. Rows that reach zero are dropped.
-    pub fn decay_selections(&self, repository_id: i64, query_norm: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE selection_stats SET selections = selections - 1
-             WHERE repository_id = ?1 AND query_norm = ?2",
-            params![repository_id, query_norm],
-        )?;
-        self.conn.execute(
-            "DELETE FROM selection_stats
-             WHERE repository_id = ?1 AND query_norm = ?2 AND selections <= 0",
-            params![repository_id, query_norm],
-        )?;
-        Ok(())
-    }
-
     /// Roll up to `batch` new `open`/`select` events into `selection_stats`.
     /// Returns how many events were processed. Resolves the chosen symbol from
     /// `(repo, path, line)` at rollup time, turning a selection into a
@@ -1200,8 +1169,6 @@ mod tests {
         assert_eq!(store.prune_events(3).unwrap(), 8);
         // idempotent: nothing left to prune
         assert_eq!(store.prune_events(3).unwrap(), 0);
-        // the most recent event still drives repeat detection
-        assert!(store.is_repeat_search(repo, "foo").unwrap());
     }
 
     #[test]
@@ -1260,18 +1227,6 @@ mod tests {
         assert_eq!(store.selections_for("foo").unwrap().len(), 1);
         // ...and a longer query still benefits (prefix learning)
         assert_eq!(store.selections_for("foobar").unwrap().len(), 1);
-
-        // last event is the select → not a repeat
-        assert!(!store.is_repeat_search(repo, "foo").unwrap());
-        // re-search "foo" without opening anything → repeat
-        store
-            .record_event("search", Some("foo"), Some(repo), None, None, None)
-            .unwrap();
-        assert!(store.is_repeat_search(repo, "foo").unwrap());
-
-        // decaying the lone selection drops it
-        store.decay_selections(repo, "foo").unwrap();
-        assert!(store.selections_for("foo").unwrap().is_empty());
     }
 
     #[test]
