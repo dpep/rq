@@ -208,6 +208,15 @@ rq --completions <shell>        # bash, zsh, fish, elvish, powershell
 
 Homebrew installs bash/zsh completions automatically.
 
+## Using with Claude Code
+
+`rq` ships with a Claude Code skill (`claude/rq-skill.md`) so Claude reaches for it when locating a definition instead of grepping the tree. Install it:
+
+```sh
+mkdir -p ~/.claude/skills/rq
+cp claude/rq-skill.md ~/.claude/skills/rq/SKILL.md
+```
+
 ## Performance
 
 The in-process search pipeline measures p50 ~160 µs, max < 0.25 ms on a mid-size
