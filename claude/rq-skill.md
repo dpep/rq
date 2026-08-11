@@ -8,7 +8,8 @@ description: Find where a symbol is defined with the `rq` code-navigation CLI (R
 `rq` is a code *navigation* engine: given a name, it returns the single
 most-likely definition first (ranked), instead of every textual match. Reach
 for it whenever the goal is **"where is this defined?"** — a class, module,
-method, function, struct, enum, or trait, across Ruby, Rust, Go, and Python. Use
+method, function, struct, enum, or trait, across Ruby, Rust, Go, Python,
+TypeScript and JavaScript. Use
 `grep`/`rg` instead for content/text search.
 
 ## Use it like this
