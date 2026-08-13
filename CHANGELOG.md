@@ -7,6 +7,26 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## 0.39.1 — 2026-08-13
+
+### Changed
+- Searching no longer writes a `search` row. Its only reader was the
+  repeat-query decay removed in 0.39.0 — the roll-up that feeds learned ranking
+  selects `type IN ('select','open')` and always skipped them — so the producer
+  outlived its consumer by a release. Recorded picks are unaffected; this only
+  stops the store growing a row per query that nothing ever read.
+
+### Added
+- The Claude Code skill ships in the repo at `claude/rq-skill.md`, so a
+  behaviour change and its documentation land in the same commit rather than
+  drifting apart in a separate marketplace.
+
+### Fixed
+- The skill said rq indexes four languages. It indexes six — Ruby, Rust, Go,
+  Python, TypeScript and JavaScript — and its own frontmatter already said so.
+  The body is what Claude reads when deciding whether the tool applies, so the
+  short list was talking it out of using rq on a `.ts` file.
+
 ## 0.39.0 — 2026-08-03
 
 ### Changed
