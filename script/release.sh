@@ -308,19 +308,22 @@ if $DRY_RUN; then
   else
     echo "    the plugin copy is stale; a real run updates, bumps and commits it"
   fi
+elif cmp -s "$SKILL_SRC" "$SKILL_DST"; then
+  # Compare the FILES, not the destination repo's git status. That repo holds
+  # other plugins, and unrelated dirt there once read as "the skill is stale":
+  # the run bumped the plugin version for nothing and swept the unrelated edit
+  # into a commit labelled with rq's version.
+  skip "plugin skill copy is current"
 else
   # A copy, not a transform. The two files are meant to be byte-identical, so
-  # the staleness check is a plain `cmp` — a sync that rewrites its input is a
-  # sync that can disagree with the check that decides whether it ran.
+  # the staleness check above is a plain `cmp` — a sync that rewrites its input
+  # is a sync that can disagree with the check that decides whether it ran.
   cp "$SKILL_SRC" "$SKILL_DST"
-  if git -C "$SKILL_REPO" diff --quiet; then
-    skip "plugin skill copy is current"
-  else
-    # Bump the plugin's own version with it. `claude plugin update` compares
+  # Bump the plugin's own version with it. `claude plugin update` compares
     # versions, not content, so a skill change that doesn't move it never
     # reaches anyone — it answers "already at the latest version" and keeps
     # serving the old file. That has happened.
-    python3 - "$SKILL_PLUGIN_MANIFEST" <<'PY'
+  python3 - "$SKILL_PLUGIN_MANIFEST" <<'PY'
 import json, sys
 p = sys.argv[1]
 with open(p) as f:
@@ -332,14 +335,15 @@ with open(p, "w") as f:
     f.write("\n")
 print(f"    plugin version -> {d['version']}")
 PY
-    git -C "$SKILL_REPO" add -A
-    git -C "$SKILL_REPO" commit -F - <<EOF
+  # Stage only what this step touched. `add -A` here would commit whatever else
+  # happens to be in flight in that repo under rq's release message.
+  git -C "$SKILL_REPO" add "$SKILL_DST" "$SKILL_PLUGIN_MANIFEST"
+  git -C "$SKILL_REPO" commit -F - <<EOF
 rq skill: $VERSION
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 EOF
-    git -C "$SKILL_REPO" push
-  fi
+  git -C "$SKILL_REPO" push
 fi
 
 # --- done --------------------------------------------------------------------
