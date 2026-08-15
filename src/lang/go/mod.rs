@@ -10,7 +10,7 @@ use crate::lang::{Ctx, LanguagePlugin, extract_with};
 
 const LANGUAGE: &str = "go";
 
-pub struct Go;
+pub(crate) struct Go;
 
 impl LanguagePlugin for Go {
     fn language(&self) -> &'static str {

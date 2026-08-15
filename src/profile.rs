@@ -21,7 +21,7 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static PHASES: Mutex<Vec<Phase>> = Mutex::new(Vec::new());
 
 /// One measured phase.
-pub struct Phase {
+pub(crate) struct Phase {
     pub name: &'static str,
     pub elapsed: Duration,
     /// What the phase did — candidate counts, symbols scored, a cache verdict.
@@ -31,18 +31,18 @@ pub struct Phase {
 /// Enable profiling from the `--profile` flag; `RQ_PROFILE` in the environment
 /// also enables it, so a shipped binary can be measured in place — the same
 /// affordance `RQ_LOG` gives trace.
-pub fn enable_from(flag: bool) {
+pub(crate) fn enable_from(flag: bool) {
     let on = flag || std::env::var_os("RQ_PROFILE").is_some();
     ENABLED.store(on, Ordering::Relaxed);
 }
 
-pub fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
 /// Start timing a phase. The returned span records it when dropped; with
 /// profiling off it is inert.
-pub fn span(name: &'static str) -> Span {
+pub(crate) fn span(name: &'static str) -> Span {
     Span {
         name,
         start: enabled().then(Instant::now),
@@ -52,7 +52,7 @@ pub fn span(name: &'static str) -> Span {
 
 /// Record a phase whose duration was measured elsewhere — for the timings the
 /// search path already takes for its own trace lines.
-pub fn record(name: &'static str, elapsed: Duration, note: impl FnOnce() -> String) {
+pub(crate) fn record(name: &'static str, elapsed: Duration, note: impl FnOnce() -> String) {
     if !enabled() {
         return;
     }
@@ -65,7 +65,7 @@ pub fn record(name: &'static str, elapsed: Duration, note: impl FnOnce() -> Stri
     }
 }
 
-pub struct Span {
+pub(crate) struct Span {
     name: &'static str,
     start: Option<Instant>,
     note: Option<String>,
@@ -74,7 +74,7 @@ pub struct Span {
 impl Span {
     /// Attach detail to this phase. The closure runs only when profiling is on,
     /// so formatting a count is never paid for in a normal run.
-    pub fn note(&mut self, f: impl FnOnce() -> String) {
+    pub(crate) fn note(&mut self, f: impl FnOnce() -> String) {
         if self.start.is_some() {
             self.note = Some(f());
         }
@@ -95,7 +95,7 @@ impl Drop for Span {
 }
 
 /// Every phase recorded so far, in the order they finished. Drains.
-pub fn phases() -> Vec<Phase> {
+pub(crate) fn phases() -> Vec<Phase> {
     PHASES
         .lock()
         .map(|mut p| std::mem::take(&mut *p))
@@ -103,7 +103,7 @@ pub fn phases() -> Vec<Phase> {
 }
 
 /// The report as stderr-ready lines. Empty when nothing was measured.
-pub fn report(total: Duration) -> Vec<String> {
+pub(crate) fn report(total: Duration) -> Vec<String> {
     let phases = phases();
     if phases.is_empty() {
         return Vec::new();
@@ -129,7 +129,7 @@ pub fn report(total: Duration) -> Vec<String> {
 }
 
 /// Phases as JSON, for storing a baseline and diffing runs.
-pub fn json(total: Duration) -> String {
+pub(crate) fn json(total: Duration) -> String {
     let phases = phases();
     let body: Vec<String> = phases
         .iter()

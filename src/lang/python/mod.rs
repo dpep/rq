@@ -9,7 +9,7 @@ use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "python";
 
-pub struct Python;
+pub(crate) struct Python;
 
 impl LanguagePlugin for Python {
     fn language(&self) -> &'static str {

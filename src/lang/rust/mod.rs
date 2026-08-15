@@ -13,7 +13,7 @@ use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "rust";
 
-pub struct Rust;
+pub(crate) struct Rust;
 
 impl LanguagePlugin for Rust {
     fn language(&self) -> &'static str {

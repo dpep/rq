@@ -8,11 +8,11 @@ use tree_sitter::{Language, Node, Parser};
 
 use crate::core::{Kind, Symbol};
 
-pub mod go;
-pub mod python;
-pub mod ruby;
-pub mod rust;
-pub mod typescript;
+pub(crate) mod go;
+pub(crate) mod python;
+pub(crate) mod ruby;
+pub(crate) mod rust;
+pub(crate) mod typescript;
 
 /// Per-file extraction context shared by every plugin: the source bytes, the
 /// repo-relative path, and the language tag stamped on each emitted symbol.
@@ -125,7 +125,7 @@ pub(crate) fn extract_with_key(
 }
 
 /// Extracts definitions from a single source file.
-pub trait LanguagePlugin {
+pub(crate) trait LanguagePlugin {
     /// The language tag emitted on every [`Symbol`] (e.g. `"ruby"`). Also the
     /// canonical name `--lang` matches against.
     fn language(&self) -> &'static str;
@@ -150,17 +150,17 @@ static REGISTRY: [&(dyn LanguagePlugin + Sync); 6] = [
 
 /// The tags of all registered languages — the set `--lang` matches against, so
 /// it can't drift from the registry.
-pub fn languages() -> Vec<&'static str> {
+pub(crate) fn languages() -> Vec<&'static str> {
     registry().iter().map(|p| p.language()).collect()
 }
 
 /// The registered language plugins.
-pub fn registry() -> &'static [&'static (dyn LanguagePlugin + Sync)] {
+pub(crate) fn registry() -> &'static [&'static (dyn LanguagePlugin + Sync)] {
     &REGISTRY
 }
 
 /// The plugin handling files with the given extension (without the dot), if any.
-pub fn plugin_for_extension(ext: &str) -> Option<&'static (dyn LanguagePlugin + Sync)> {
+pub(crate) fn plugin_for_extension(ext: &str) -> Option<&'static (dyn LanguagePlugin + Sync)> {
     REGISTRY
         .iter()
         .copied()

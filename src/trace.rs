@@ -13,18 +13,18 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Enable tracing from the `-v` flag; `RQ_LOG` in the environment also enables
 /// it, so a shipped binary can be debugged in place.
-pub fn enable_from(flag: bool) {
+pub(crate) fn enable_from(flag: bool) {
     let on = flag || std::env::var_os("RQ_LOG").is_some();
     ENABLED.store(on, Ordering::Relaxed);
 }
 
 /// Whether trace output is on.
-pub fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
 /// A path for display in trace lines, with the home directory shown as `~`.
-pub fn abbrev(path: &std::path::Path) -> String {
+pub(crate) fn abbrev(path: &std::path::Path) -> String {
     let s = path.display().to_string();
     match std::env::var_os("HOME") {
         Some(home) if !home.is_empty() => match s.strip_prefix(&*home.to_string_lossy()) {
@@ -47,13 +47,13 @@ macro_rules! trace {
 
 /// Times a phase and logs `<label> (N ms)` when dropped — but only if tracing
 /// was on at construction, so it's free otherwise.
-pub struct Timer {
+pub(crate) struct Timer {
     label: &'static str,
     start: Option<Instant>,
 }
 
 impl Timer {
-    pub fn start(label: &'static str) -> Self {
+    pub(crate) fn start(label: &'static str) -> Self {
         Self {
             label,
             start: enabled().then(Instant::now),

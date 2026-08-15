@@ -28,8 +28,8 @@ const JAVASCRIPT: &str = "javascript";
 /// *grammar*, not the language tag, so the two are never named apart.
 type Grammar = (&'static str, Language);
 
-pub struct TypeScript;
-pub struct JavaScript;
+pub(crate) struct TypeScript;
+pub(crate) struct JavaScript;
 
 impl LanguagePlugin for TypeScript {
     fn language(&self) -> &'static str {

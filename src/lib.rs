@@ -5,12 +5,12 @@
 //! See `docs/ARCHITECTURE.md` for the design these modules implement.
 
 #[macro_use]
-pub mod profile;
-pub mod trace;
+pub(crate) mod profile;
+pub(crate) mod trace;
 
 pub mod cli;
 pub mod core;
 pub mod index;
-pub mod lang;
+pub(crate) mod lang;
 pub mod search;
 pub mod store;

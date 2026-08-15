@@ -11,7 +11,7 @@ use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "ruby";
 
-pub struct Ruby;
+pub(crate) struct Ruby;
 
 impl LanguagePlugin for Ruby {
     fn language(&self) -> &'static str {
