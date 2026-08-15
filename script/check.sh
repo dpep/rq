@@ -51,11 +51,24 @@ gate() {
 mkdir -p target
 LOG="target/check.log"
 
-if gate 2>&1 | tee "$LOG"; then
-  printf '\nall green\n'
-else
-  printf '\ncheck FAILED — full output kept at %s\n' "$LOG" >&2
-  printf 'the failing test, unfiltered:\n' >&2
-  grep -E '^(test .* FAILED|failures:|---- .* stdout ----)' -A 3 "$LOG" >&2 || true
-  exit 1
-fi
+# Tee via `exec`, not `gate | tee`. A function on the LEFT of a pipe runs with
+# `set -e` suppressed, so a failing step doesn't stop the run and the status
+# you get back is the last step's, not the first failure's. That's the same
+# trap the header warns about for `| tail`, and it is not hypothetical: this
+# script reported "all green" over a failing clippy until it was rewritten
+# this way.
+exec > >(tee "$LOG") 2>&1
+
+finish() {
+  local rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  printf '\ncheck FAILED — full output kept at %s\n' "$LOG"
+  printf 'the failing test, unfiltered:\n'
+  grep -E '^(test .* FAILED|failures:|---- .* stdout ----)' -A 3 "$LOG" || true
+  return "$rc"
+}
+trap finish EXIT
+
+gate
+
+printf '\nall green\n'
