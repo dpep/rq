@@ -25,21 +25,37 @@ command -v cargo >/dev/null 2>&1 || {
 
 step() { printf '\n=== %s\n' "$*"; }
 
-# Drop this crate's artifacts first. Cargo's fingerprint can wedge "fresh",
-# after which it reports success without recompiling changed sources and the
-# gate validates code that isn't the code you wrote. Only rq is rebuilt — the
-# six tree-sitter grammars stay cached — so this costs a few seconds and makes
-# a green run mean what it says.
-step "clean (this crate only)"
-cargo clean -p reference-query
+gate() {
+  # Drop this crate's artifacts first. Cargo's fingerprint can wedge "fresh",
+  # after which it reports success without recompiling changed sources and the
+  # gate validates code that isn't the code you wrote. Only rq is rebuilt — the
+  # six tree-sitter grammars stay cached — so this costs a few seconds and makes
+  # a green run mean what it says.
+  step "clean (this crate only)"
+  cargo clean -p reference-query
 
-step "fmt"
-cargo fmt --check
+  step "fmt"
+  cargo fmt --check
 
-step "clippy"
-cargo clippy --all-targets -- -D warnings
+  step "clippy"
+  cargo clippy --all-targets -- -D warnings
 
-step "tests"
-cargo test
+  step "tests"
+  cargo test
+}
 
-printf '\nall green\n'
+# Keep the full run on disk. A failure here is often the first sighting of an
+# intermittent one, and the name of the test that failed is the whole evidence
+# — which a caller's `| tail` throws away exactly when it matters. `target/` is
+# gitignored, and `cargo clean -p` doesn't touch this file.
+mkdir -p target
+LOG="target/check.log"
+
+if gate 2>&1 | tee "$LOG"; then
+  printf '\nall green\n'
+else
+  printf '\ncheck FAILED — full output kept at %s\n' "$LOG" >&2
+  printf 'the failing test, unfiltered:\n' >&2
+  grep -E '^(test .* FAILED|failures:|---- .* stdout ----)' -A 3 "$LOG" >&2 || true
+  exit 1
+fi
