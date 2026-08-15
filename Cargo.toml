@@ -11,6 +11,12 @@ repository = "https://github.com/dpep/rq"
 name = "rq"
 path = "src/main.rs"
 
+# Allow-by-default upstream. `pub` on an item inside a private module is
+# reachable from nowhere, yet `pub` is exactly what makes the dead_code lint
+# skip an item — so it costs API surface and buys blindness.
+[lints.rust]
+unreachable_pub = "warn"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

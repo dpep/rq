@@ -73,7 +73,7 @@ pub struct Boosts {
 ///
 /// `boosts` carries the dynamic signals (behavioral, recency) computed by
 /// [`crate::search`], which owns the time math.
-pub fn score(
+pub(crate) fn score(
     query: &str,
     cand: &SymbolRow,
     current_repo_id: Option<i64>,
@@ -422,7 +422,7 @@ pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
 /// separator: `Foo::Bar` → (`Bar`, `Some("Foo")`), `Foo::Bar#baz` → (`baz`,
 /// `Some("Foo::Bar")`), a plain `User` → (`User`, `None`). A leading or trailing
 /// separator (`::Bar`, `Foo::`) is treated as an ordinary unqualified query.
-pub fn parse_qualified(query: &str) -> (&str, Option<&str>) {
+pub(crate) fn parse_qualified(query: &str) -> (&str, Option<&str>) {
     let sep = query
         .rmatch_indices("::")
         .map(|(i, _)| (i, 2usize))
@@ -499,14 +499,14 @@ fn subsequence_score(query: &str, name: &str) -> Option<f64> {
 /// chars match *contiguously*, and the only gaps are the ones the user marked.
 /// `find*controller` keeps `FindController` and `FindUserController` but, unlike
 /// fuzzy, won't reach into a scattered `FxIxNxDxController`.
-pub fn has_wildcard(query: &str) -> bool {
+pub(crate) fn has_wildcard(query: &str) -> bool {
     query.contains(['*', '?', '.'])
 }
 
 /// A wildcard query's literal characters, metachars removed — used to seed the
 /// store's candidate recall (which keys off literal trigrams) before the glob
 /// does the precise matching. `find*controller` → `findcontroller`.
-pub fn strip_wildcards(query: &str) -> String {
+pub(crate) fn strip_wildcards(query: &str) -> String {
     query
         .chars()
         .filter(|c| !matches!(c, '*' | '?' | '.'))

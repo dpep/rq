@@ -6,13 +6,13 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub const VERSION: i64 = 9;
+pub(crate) const VERSION: i64 = 9;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
 /// bulk index drops and recreates it around a rebuild) and is applied alongside
 /// this on a fresh database.
-pub const SCHEMA: &str = r#"
+pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE repositories (
   id INTEGER PRIMARY KEY,
   identity TEXT UNIQUE NOT NULL,
@@ -124,7 +124,7 @@ CREATE TABLE meta (
 /// Migration from v1 → v2: stabilize `selection_stats`, reshape `events` for
 /// the behavioral-learning rollup, and add the `meta` table. The two tables
 /// carried no data in v1, so they are simply recreated.
-pub const MIGRATION_V2: &str = r#"
+pub(crate) const MIGRATION_V2: &str = r#"
 DROP TABLE IF EXISTS selection_stats;
 DROP TABLE IF EXISTS events;
 
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 /// Migration v2 → v3: add the per-file git last-commit time used by the recency
 /// ranking signal.
-pub const MIGRATION_V3: &str = r#"
+pub(crate) const MIGRATION_V3: &str = r#"
 ALTER TABLE files ADD COLUMN git_ts INTEGER;
 "#;
 
@@ -165,14 +165,14 @@ ALTER TABLE files ADD COLUMN git_ts INTEGER;
 /// full `line..=end_line` span. Existing rows read `NULL` and backfill lazily as
 /// files change (or on an explicit `rq --drop` + `rq --index`) — the same
 /// lazy-fill the v3 `git_ts` column uses. New/edited files get it immediately.
-pub const MIGRATION_V4: &str = r#"
+pub(crate) const MIGRATION_V4: &str = r#"
 ALTER TABLE symbols ADD COLUMN end_line INTEGER;
 "#;
 
 /// Migration v4 → v5: indexes for repo-scoped scans. `symbols(repository_id)`
 /// backs the per-repo totals/drop/coverage counts; `events(repository_id, id)`
 /// backs the per-repo event scans (rollup, prune).
-pub const MIGRATION_V5: &str = r#"
+pub(crate) const MIGRATION_V5: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repository_id);
 CREATE INDEX IF NOT EXISTS idx_events_repo ON events(repository_id, id);
 "#;
@@ -182,33 +182,33 @@ CREATE INDEX IF NOT EXISTS idx_events_repo ON events(repository_id, id);
 /// skip can't mistake the later one for "unchanged" (git's racy-mtime fix).
 /// Existing second-resolution rows are scaled in place; the magnitude guard
 /// keeps a re-run (or an already-converted row) from double-scaling.
-pub const MIGRATION_V6: &str = r#"
+pub(crate) const MIGRATION_V6: &str = r#"
 UPDATE files SET mtime = mtime * 1000000000
   WHERE mtime IS NOT NULL AND mtime < 100000000000;
 "#;
 
 /// Migration v6 → v7: drop `repositories.display_name` — never written or read.
-pub const MIGRATION_V7: &str = r#"
+pub(crate) const MIGRATION_V7: &str = r#"
 ALTER TABLE repositories DROP COLUMN display_name;
 "#;
 
 /// Migration v7 → v8: retire the `partial` coverage status. A subtree index
 /// (`--index --path`) is now a *seed* rather than a fence — coverage stays
 /// `warming` so normal warming continues over the rest of the repo.
-pub const MIGRATION_V8: &str = r#"
+pub(crate) const MIGRATION_V8: &str = r#"
 UPDATE coverage SET status = 'warming' WHERE status = 'partial';
 "#;
 
 /// Migration v8 → v9: record each definition's visibility, a ranking hint
 /// (private helpers below public API). Existing rows read `NULL` (no penalty)
 /// and backfill lazily as files re-extract.
-pub const MIGRATION_V9: &str = r#"
+pub(crate) const MIGRATION_V9: &str = r#"
 ALTER TABLE symbols ADD COLUMN visibility TEXT;
 "#;
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub const MIGRATIONS: [(i64, &str); 8] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 8] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -223,7 +223,7 @@ pub const MIGRATIONS: [(i64, &str); 8] = [
 /// on a fresh database. A cold bulk index drops this trigger, inserts symbols
 /// without per-row FTS maintenance, rebuilds the FTS index in one pass, then
 /// recreates it from here.
-pub const FTS_INSERT_TRIGGER: &str = r#"
+pub(crate) const FTS_INSERT_TRIGGER: &str = r#"
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
 END;
