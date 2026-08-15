@@ -15,7 +15,7 @@ pub struct Feature {
 
 /// A scored candidate: total plus the per-feature breakdown.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Scored {
+pub(crate) struct Scored {
     pub total: f64,
     pub features: Vec<Feature>,
 }
@@ -24,7 +24,7 @@ pub struct Scored {
 /// of ranking boosts. The dominant term in [`confidence`]. Exact is certain; a
 /// prefix nearly so; a fuzzy/abbreviation match scales with its alignment; a
 /// path-only match (name didn't match) is weak.
-pub fn match_quality(features: &[Feature]) -> f64 {
+pub(crate) fn match_quality(features: &[Feature]) -> f64 {
     for f in features {
         match f.name {
             "exact" => return 1.0,
@@ -43,7 +43,7 @@ pub fn match_quality(features: &[Feature]) -> f64 {
 /// evenly-tied candidates → ~0.5 (rq isn't sure which you mean); a lone weak
 /// fuzzy match stays low. `best_other` is the top score among the other results
 /// (`None` when this is the only one). Rounded to two decimals.
-pub fn confidence(score: f64, quality: f64, best_other: Option<f64>) -> f64 {
+pub(crate) fn confidence(score: f64, quality: f64, best_other: Option<f64>) -> f64 {
     let lead = match best_other {
         None => 1.0,
         Some(_) if score <= 0.0 => 0.5,
@@ -58,7 +58,7 @@ pub fn confidence(score: f64, quality: f64, best_other: Option<f64>) -> f64 {
 /// the time math and store lookups). Kept out of the pure match scoring so each
 /// signal can be added without threading more parameters.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Boosts {
+pub(crate) struct Boosts {
     /// Behavioral signal: results chosen before for this query.
     pub learned: f64,
     /// Git/filesystem signal: symbols in recently-modified files.
@@ -406,7 +406,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
 
 /// The char indices in `name` that `query` matched, from the best alignment —
 /// for highlighting *what* matched. Empty if `query` isn't a subsequence.
-pub fn match_positions(query: &str, name: &str) -> Vec<usize> {
+pub(crate) fn match_positions(query: &str, name: &str) -> Vec<usize> {
     // highlight what the *leaf* matched; a qualifier targets the parent, not the name
     let (leaf, _) = parse_qualified(query);
     if has_wildcard(leaf) {
@@ -617,7 +617,7 @@ fn wildcard_score(query: &str, name: &str) -> Option<f64> {
 
 /// The filename stem of a repo-relative path: last segment, extension dropped.
 /// `app/models/user.rb` → `user`.
-pub fn path_stem(path: &str) -> &str {
+pub(crate) fn path_stem(path: &str) -> &str {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     match base.rfind('.') {
         Some(i) if i > 0 => &base[..i],

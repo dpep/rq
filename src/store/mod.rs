@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::core::{RepoIdentity, Symbol};
 
-pub type Result<T> = rusqlite::Result<T>;
+pub(crate) type Result<T> = rusqlite::Result<T>;
 
 /// A symbol as returned by search candidate queries (joined with its file and
 /// repository for display and ranking).
@@ -42,7 +42,7 @@ pub struct SymbolRow {
 /// A learned selection signal for ranking: how often a `(file, name)` was
 /// chosen for a query, and when it was last chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SelectionStat {
+pub(crate) struct SelectionStat {
     pub repository_id: i64,
     pub file: String,
     pub name: String,
@@ -175,7 +175,7 @@ impl Store {
 
     /// True if `path` is already indexed at this exact content hash — the
     /// incremental-skip check.
-    pub fn file_unchanged(
+    pub(crate) fn file_unchanged(
         &self,
         repository_id: i64,
         path: &str,
@@ -194,7 +194,7 @@ impl Store {
 
     /// Indexed path → stored mtime for a repository. The budgeted warm pass uses
     /// this to skip unchanged files with a cheap `stat` (no read or re-hash).
-    pub fn file_mtimes(&self, repository_id: i64) -> Result<HashMap<String, Option<i64>>> {
+    pub(crate) fn file_mtimes(&self, repository_id: i64) -> Result<HashMap<String, Option<i64>>> {
         let mut stmt = self
             .conn
             .prepare("SELECT path, mtime FROM files WHERE repository_id = ?1")?;
@@ -238,7 +238,7 @@ impl Store {
     /// holds (a cold index of a huge repo would otherwise be one enormous txn).
     /// A file whose content hash already matches the index is skipped (not
     /// rewritten). Returns `(files_written, symbols_written)`; skips don't count.
-    pub fn replace_files(
+    pub(crate) fn replace_files(
         &mut self,
         repository_id: i64,
         files: &[FileSymbols],
@@ -327,7 +327,7 @@ impl Store {
     /// trigram tokenization. Pair with [`rebuild_fts`](Self::rebuild_fts), which
     /// rebuilds the index in one pass and restores the trigger. No-op safe to
     /// call when the trigger is already gone.
-    pub fn defer_fts_insert(&self) -> Result<()> {
+    pub(crate) fn defer_fts_insert(&self) -> Result<()> {
         self.conn
             .execute_batch("DROP TRIGGER IF EXISTS symbols_ai;")?;
         Ok(())
@@ -340,7 +340,7 @@ impl Store {
     /// a concurrent writer either lands before the rebuild (and is captured by
     /// it — the rebuild scans the whole symbols table) or after the trigger is
     /// back, never in between.
-    pub fn rebuild_fts(&self) -> Result<()> {
+    pub(crate) fn rebuild_fts(&self) -> Result<()> {
         let sql = format!(
             "BEGIN IMMEDIATE;\nINSERT INTO symbols_fts(symbols_fts) VALUES('rebuild');\n{}\nCOMMIT;",
             schema::FTS_INSERT_TRIGGER
@@ -352,7 +352,7 @@ impl Store {
     /// Whether the `AFTER INSERT` FTS-sync trigger is currently absent — true
     /// only mid-bulk-index (see [`defer_fts_insert`](Self::defer_fts_insert))
     /// or after one crashed before its [`rebuild_fts`](Self::rebuild_fts).
-    pub fn fts_trigger_missing(&self) -> Result<bool> {
+    pub(crate) fn fts_trigger_missing(&self) -> Result<bool> {
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='symbols_ai'",
             [],
@@ -362,7 +362,7 @@ impl Store {
     }
 
     /// Record indexing coverage for a repository (scope `full`).
-    pub fn set_coverage(
+    pub(crate) fn set_coverage(
         &self,
         repository_id: i64,
         files_seen: i64,
@@ -386,7 +386,7 @@ impl Store {
 
     /// Set the last-commit time for files in a repository, from a path → unix-ts
     /// map (git log). Files not in the map are left untouched.
-    pub fn set_file_git_ts(
+    pub(crate) fn set_file_git_ts(
         &mut self,
         repository_id: i64,
         times: &HashMap<String, i64>,
@@ -429,7 +429,7 @@ impl Store {
     /// The normalized identity of a repository by one of its checkout roots, if
     /// known — lets the hot path resolve identity from the cache instead of
     /// forking `git remote`. `root` should be the canonical work-tree path.
-    pub fn identity_for_root(&self, root: &str) -> Result<Option<String>> {
+    pub(crate) fn identity_for_root(&self, root: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
                 "SELECT r.identity FROM repositories r
@@ -454,7 +454,7 @@ impl Store {
 
     /// Coverage status for a repository's full scope (`never`/`warming`/
     /// `complete`), or `None` if the repository is unknown.
-    pub fn coverage_status(&self, identity: &str) -> Result<Option<String>> {
+    pub(crate) fn coverage_status(&self, identity: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
                 "SELECT c.status FROM coverage c
@@ -478,7 +478,7 @@ impl Store {
 
     /// Every symbol defined in one file (repo-relative path), in line order — a
     /// structural outline rather than a ranked search. Backed by `idx_symbols_file`.
-    pub fn symbols_in_file(&self, repository_id: i64, path: &str) -> Result<Vec<SymbolRow>> {
+    pub(crate) fn symbols_in_file(&self, repository_id: i64, path: &str) -> Result<Vec<SymbolRow>> {
         let sql = format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
              WHERE s.repository_id = ?1 AND fi.path = ?2 \
@@ -495,7 +495,7 @@ impl Store {
 
     /// The on-disk root of a repository's checkout, used to resolve relative
     /// paths when validating staleness.
-    pub fn checkout_root(&self, repository_id: i64) -> Result<Option<String>> {
+    pub(crate) fn checkout_root(&self, repository_id: i64) -> Result<Option<String>> {
         self.conn
             .query_row(
                 "SELECT root_path FROM checkouts WHERE repository_id = ?1 ORDER BY id LIMIT 1",
@@ -524,7 +524,7 @@ impl Store {
     /// Drop a checkout row — used to prune a stale binding (a repo moved away
     /// from `root_path`). Symbols/coverage are keyed by repo identity, not this
     /// row, so forgetting a checkout only forgets *where* the repo was on disk.
-    pub fn forget_checkout(&mut self, root_path: &str) -> Result<()> {
+    pub(crate) fn forget_checkout(&mut self, root_path: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM checkouts WHERE root_path = ?1",
             params![root_path],
@@ -533,7 +533,7 @@ impl Store {
     }
 
     /// Drop a file and its symbols — used when a file has been deleted on disk.
-    pub fn forget_file(&mut self, repository_id: i64, path: &str) -> Result<()> {
+    pub(crate) fn forget_file(&mut self, repository_id: i64, path: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
         let file_id: Option<i64> = tx
             .query_row(
@@ -553,7 +553,7 @@ impl Store {
     /// their FTS rows, via trigger), files, coverage, learned selections, events,
     /// checkout, and the repository row. Deleted in FK-safe order in one
     /// transaction.
-    pub fn drop_repository(&mut self, repository_id: i64) -> Result<()> {
+    pub(crate) fn drop_repository(&mut self, repository_id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
         for sql in [
             "DELETE FROM symbols WHERE repository_id = ?1",
@@ -593,7 +593,7 @@ impl Store {
     /// Learned selections relevant to a query, read by ranking. Matches not just
     /// the exact query but any *shorter* query the user has selected for — a pick
     /// for `han` informs `handler` — so typing more keeps the benefit.
-    pub fn selections_for(&self, query_norm: &str) -> Result<Vec<SelectionStat>> {
+    pub(crate) fn selections_for(&self, query_norm: &str) -> Result<Vec<SelectionStat>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT repository_id, file, name, selections, last_selected_at
              FROM selection_stats WHERE ?1 LIKE query_norm || '%'",
@@ -722,7 +722,7 @@ impl Store {
     /// Keep the raw `events` log bounded. Deletes only events that have already
     /// been rolled up (id ≤ the aggregation high-water mark) and are not among
     /// the most recent `keep_recent` rows. Returns the number deleted.
-    pub fn prune_events(&self, keep_recent: i64) -> Result<usize> {
+    pub(crate) fn prune_events(&self, keep_recent: i64) -> Result<usize> {
         let hwm = self.meta_get_i64("events_hwm")?.unwrap_or(0);
         let max_id: Option<i64> = self
             .conn
@@ -742,12 +742,12 @@ impl Store {
 
     /// The git HEAD sha recorded at the last complete index of a repo, if any —
     /// used to detect that the committed tree is unchanged since indexing.
-    pub fn indexed_head(&self, repository_id: i64) -> Result<Option<String>> {
+    pub(crate) fn indexed_head(&self, repository_id: i64) -> Result<Option<String>> {
         self.meta_get(&format!("head:{repository_id}"))
     }
 
     /// Record the git HEAD sha at a complete index.
-    pub fn set_indexed_head(&self, repository_id: i64, head: &str) -> Result<()> {
+    pub(crate) fn set_indexed_head(&self, repository_id: i64, head: &str) -> Result<()> {
         self.meta_set(&format!("head:{repository_id}"), head)
     }
 
@@ -759,14 +759,14 @@ impl Store {
     }
 
     /// Record the git HEAD sha a commit-times capture ran at.
-    pub fn set_git_ts_head(&self, repository_id: i64, head: &str) -> Result<()> {
+    pub(crate) fn set_git_ts_head(&self, repository_id: i64, head: &str) -> Result<()> {
         self.meta_set(&format!("git_ts_head:{repository_id}"), head)
     }
 
     /// The detached-warm single-flight lock for a repo: `(pid, stamped_at)` of
     /// the process that claimed it, if any. Liveness/staleness policy is the
     /// caller's (the store just holds the record).
-    pub fn warm_lock(&self, identity: &str) -> Result<Option<(u32, i64)>> {
+    pub(crate) fn warm_lock(&self, identity: &str) -> Result<Option<(u32, i64)>> {
         Ok(self
             .meta_get(&format!("warm_lock:{identity}"))?
             .and_then(|v| {
@@ -776,7 +776,7 @@ impl Store {
     }
 
     /// Claim the detached-warm lock for this process.
-    pub fn set_warm_lock(&self, identity: &str, pid: u32) -> Result<()> {
+    pub(crate) fn set_warm_lock(&self, identity: &str, pid: u32) -> Result<()> {
         self.meta_set(
             &format!("warm_lock:{identity}"),
             &format!("{pid}:{}", now_unix()),
@@ -784,7 +784,7 @@ impl Store {
     }
 
     /// Release the detached-warm lock.
-    pub fn clear_warm_lock(&self, identity: &str) -> Result<()> {
+    pub(crate) fn clear_warm_lock(&self, identity: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM meta WHERE key = ?1",
             params![format!("warm_lock:{identity}")],
@@ -795,7 +795,10 @@ impl Store {
     /// The cached branch-changed file list for a repo: `(stamp, computed_at,
     /// files)`. Stored rather than recomputed because the git diff behind it is
     /// O(tracked files) and runs on the search path.
-    pub fn branch_files_get(&self, identity: &str) -> Result<Option<(String, i64, Vec<String>)>> {
+    pub(crate) fn branch_files_get(
+        &self,
+        identity: &str,
+    ) -> Result<Option<(String, i64, Vec<String>)>> {
         let Some(raw) = self.meta_get(&format!("branch_files:{identity}"))? else {
             return Ok(None);
         };
@@ -813,7 +816,7 @@ impl Store {
         )))
     }
 
-    pub fn branch_files_set(
+    pub(crate) fn branch_files_set(
         &self,
         identity: &str,
         stamp: &str,

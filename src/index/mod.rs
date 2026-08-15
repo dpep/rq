@@ -36,7 +36,7 @@ pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::
 /// also reconciles deletions; a subtree index is a *seed* (it gets those files
 /// in first) that leaves coverage `warming`, so normal warming continues over
 /// the rest of the repo through use.
-pub fn index_under(
+pub(crate) fn index_under(
     store: &mut Store,
     root: &Path,
     subdirs: &[String],
@@ -148,14 +148,14 @@ fn collect_cap() -> usize {
 static PARSE_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Set the parse-worker count (from `--jobs`/`RQ_JOBS`); 0 restores auto.
-pub fn set_parse_jobs(n: usize) {
+pub(crate) fn set_parse_jobs(n: usize) {
     PARSE_JOBS.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Parse workers for one indexer pass — the configured value, else `RQ_JOBS`,
 /// else an auto default. Parsing is CPU-bound but writes serialize through one
 /// SQLite writer, so flooding every core rarely pays; the default caps at 8.
-pub fn parse_jobs() -> usize {
+pub(crate) fn parse_jobs() -> usize {
     let configured = PARSE_JOBS.load(std::sync::atomic::Ordering::Relaxed);
     if configured > 0 {
         return configured;
@@ -938,7 +938,7 @@ pub enum Refresh {
 /// Whether `root` is inside a git work tree. Implicit (opportunistic) indexing
 /// is gated on this so a stray query never walks a non-repo directory. Native
 /// (no `git` fork) — it runs on every search.
-pub fn is_git_repo(root: &Path) -> bool {
+pub(crate) fn is_git_repo(root: &Path) -> bool {
     repo_root(root).is_some()
 }
 
@@ -946,7 +946,7 @@ pub fn is_git_repo(root: &Path) -> bool {
 /// `.git` entry — found without shelling out. `.git` may be a directory or a
 /// file (worktrees, submodules), so we test existence either way. `None` when
 /// `path` is not inside a work tree.
-pub fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
+pub(crate) fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
     let start = path.canonicalize().ok()?;
     start
         .ancestors()
@@ -998,7 +998,7 @@ pub fn git_head(root: &Path) -> Option<String> {
 /// and `git status` still refreshes the index so a touched-but-unchanged file
 /// doesn't read as dirty. Empty stdout (clean) reports as `None` via
 /// `git_output`.
-pub fn is_dirty(root: &Path) -> bool {
+pub(crate) fn is_dirty(root: &Path) -> bool {
     git_output(root, &["status", "--porcelain", "--untracked-files=no"]).is_some()
 }
 
@@ -1054,7 +1054,7 @@ pub fn branch_changed_files(root: &Path) -> Vec<String> {
 /// touches neither, so a caller must pair this with a freshness window rather
 /// than trusting it alone. `None` when `.git` isn't a plain directory, which
 /// means "don't cache this".
-pub fn branch_files_stamp(root: &Path) -> Option<String> {
+pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
     let git_dir = root.join(".git");
     if !git_dir.is_dir() {
         return None;

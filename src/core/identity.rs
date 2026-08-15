@@ -24,7 +24,7 @@ impl RepoIdentity {
     /// https://github.com/org/repo.git    -> github.com/org/repo
     /// ssh://git@github.com/org/repo      -> github.com/org/repo
     /// ```
-    pub fn from_remote_url(url: &str) -> Option<RepoIdentity> {
+    pub(crate) fn from_remote_url(url: &str) -> Option<RepoIdentity> {
         normalize_remote(url).map(RepoIdentity::Remote)
     }
 

@@ -7,7 +7,7 @@
 
 mod score;
 
-pub use score::{Boosts, Feature, Scored, confidence, match_positions, match_quality, path_stem};
+pub(crate) use score::{Boosts, Feature, confidence, match_positions, match_quality, path_stem};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -314,7 +314,7 @@ pub fn live_search(
 /// Merge two ranked lists, de-duplicating by location and name (keeping the
 /// higher score), then re-rank and truncate. Used to blend index and live-scan
 /// results.
-pub fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize) -> Vec<Hit> {
+pub(crate) fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize) -> Vec<Hit> {
     use std::collections::HashMap;
     let mut by_key: HashMap<(String, i64, String), Hit> = HashMap::new();
     for hit in a.into_iter().chain(b) {
@@ -341,7 +341,7 @@ pub fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize) -> Vec<Hit> {
 ///
 /// An in-scope result is one the scorer gave the `parent` feature — i.e. its
 /// recorded parent ends with the qualifier's scope chain.
-pub fn apply_scope_gate(query: &str, hits: &mut Vec<Hit>) {
+pub(crate) fn apply_scope_gate(query: &str, hits: &mut Vec<Hit>) {
     if score::parse_qualified(query).1.is_none() {
         return; // unqualified query — nothing to gate on
     }
