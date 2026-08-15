@@ -10,16 +10,27 @@ and aren't listed; see `git log` for those.
 ## Unreleased
 
 ### Changed
-- **The library API is a third of its former size — 146 public items down to
-  53.** `rq` publishes as `reference-query`, and `lib.rs` re-exported all eight
-  modules, so most of that surface was public by default rather than by
-  decision. `lang`, `profile` and `trace` are now crate-private, along with 45
-  items inside the five modules that callers do use. `store::Store`,
-  `store::CoverageRow`, `index::Stats`, `search::Hit` and the search entry
-  points stay public.
+- **The library API is `cli::run()` — 146 public items down to one module.**
+  `rq` publishes as `reference-query`, and `lib.rs` re-exported all eight
+  modules, so that surface was public by default rather than by decision.
+  `core`, `index`, `lang`, `profile`, `search`, `store` and `trace` are all
+  crate-private now; rustdoc exports `cli` and nothing else.
+
+  What kept them public was the test suite, not any caller: an integration test
+  in `tests/` is a separate crate, so every internal it touches has to be
+  `pub`. Those tests now live inside the lib, where `#[cfg(test)]` code can
+  reach crate-private items, and the ones that belong at the CLI boundary drive
+  the built binary instead. Same 185 tests either way.
 
 Nothing to do on upgrade: the `rq` binary and its CLI surface are unchanged.
 This only affects code that depends on `reference-query` as a library.
+
+### Internal
+- `make bench` runs the search-latency benchmark as an `#[ignore]`d test rather
+  than `cargo run --example`. `REPO=` still selects the repository to index. It
+  had to move: an example is a separate crate, so timing `index`, `search` and
+  `store` from one meant publishing all three, and measuring in-process is the
+  point of the benchmark.
 
 ### Fixed
 - `script/check.sh` could report "all green" while `cargo clippy` was failing,
