@@ -6,6 +6,7 @@
 #   make install    - cargo install --path . (into ~/.cargo/bin)
 #   make uninstall  - cargo uninstall rq
 #   make test       - cargo test
+#   make check      - the pre-push gate: fmt + clippy + tests, stop on failure
 #   make dogfood    - run rq on its own source (Q=<query>); reproducible
 #   make bench      - search-latency benchmark over REPO (default: .)
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
@@ -20,7 +21,7 @@ CARGO ?= cargo
 BIN   := rq
 
 .DEFAULT_GOAL := help
-.PHONY: help build release install uninstall test dogfood bench lint fmt clean
+.PHONY: help build release install uninstall test check dogfood bench lint fmt clean
 
 help:
 	@echo "rq targets:"
@@ -29,6 +30,7 @@ help:
 	@echo "  make install    cargo install --path . (→ ~/.cargo/bin)"
 	@echo "  make uninstall  cargo uninstall $(BIN)"
 	@echo "  make test       cargo test"
+	@echo "  make check      pre-push gate: fmt + clippy + tests"
 	@echo "  make dogfood    run rq on its own source (Q=<query>, ARGS=<flags>)"
 	@echo "  make bench      search-latency benchmark (REPO=. by default)"
 	@echo "  make lint       cargo fmt --check && cargo clippy"
@@ -49,6 +51,13 @@ uninstall:
 
 test:
 	$(CARGO) test
+
+# The gate to run before pushing. Lives in a script, not here, because a
+# release runs the same one — and because a shell pipeline's exit status is its
+# last command's, which is how a filtered `cargo clippy` reports success while
+# failing.
+check:
+	@script/check.sh
 
 # Dogfood rq on its own (Rust) source. Reproducible and self-contained: builds,
 # fully indexes this repo into a throwaway DB under target/ (never your real
