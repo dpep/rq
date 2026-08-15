@@ -163,10 +163,16 @@ what `brew` builds, so a bump would only force an identical rebuild.
 Releasing is one command — **don't do these steps by hand**:
 
 ```sh
-release minor --summary "what changed, briefly"   # or: release 0.41.0
-release --dry-run                                 # see the plan first
-release --audit                                   # is anything out of sync?
+release 0.41.0 --steps         # the checklist: what to do, in order, with ✓ on what's done
+release minor --summary "…"    # or run the whole thing
+release 0.41.0 --dry-run       # what an automated run would do and skip
+release --audit                # is anything out of sync, across every tool in the tap?
 ```
+
+`--steps` is often the right one. The script's value is knowing the ordering,
+the derived values, and the steps that get forgotten — not executing them. Use
+it to drive a release yourself and keep judgment at each stop; it works on a
+dirty tree and part-way through.
 
 `release` lives at `~/.claude/bin/release` and is shared by every tool in the
 `dpep/tools` tap. It bumps `Cargo.toml`/`Cargo.lock`, runs `script/check.sh`,
