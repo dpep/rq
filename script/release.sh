@@ -85,7 +85,13 @@ PY
 esac
 
 TAG="v$VERSION"
-echo "releasing $CURRENT -> $VERSION${DRY_RUN:+ (dry run)}"
+# `:+` tests for non-empty, and DRY_RUN holds the string "false" — so the label
+# has to branch on the value, not its presence.
+if $DRY_RUN; then
+  echo "releasing $CURRENT -> $VERSION (dry run)"
+else
+  echo "releasing $CURRENT -> $VERSION"
+fi
 
 # --- preflight ---------------------------------------------------------------
 # Everything that would be annoying to discover at step ten.
@@ -181,7 +187,9 @@ else
       "completed success") echo "    green"; break ;;
       "completed "*)       die "CI failed on $SHA: $STATUS" ;;
       ""|"null null")      echo "    no run yet…" ;;
-      *)                   echo "    $STATUS…" ;;
+      # Braces required: the ellipsis is non-ASCII, and bash otherwise reads it
+      # as part of the variable name.
+      *)                   echo "    ${STATUS}…" ;;
     esac
     [ "$(date +%s)" -lt "$DEADLINE" ] || die "CI still not green after 15m — check $REPO"
     sleep 15
