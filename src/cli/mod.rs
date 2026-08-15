@@ -71,8 +71,9 @@ struct Cli {
     #[arg(short = 'e', long)]
     explain: bool,
 
-    /// Don't let this invocation teach ranking — suppresses recording a result
-    /// you open or select (for agents/scripts).
+    /// Don't let this invocation teach ranking — suppresses recording the result
+    /// you open, select, or `--show`. For benchmark and CI loops, whose repeated
+    /// queries would otherwise dominate the learned signal.
     #[arg(long)]
     no_record: bool,
 
@@ -884,7 +885,17 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
-    if show && let Some(code) = show_top_definition(store, &mut hits, query, out, cwd.as_deref()) {
+    if show
+        && let Some(code) = show_top_definition(
+            store,
+            &mut hits,
+            query,
+            out,
+            cwd.as_deref(),
+            current,
+            no_record,
+        )
+    {
         return code;
     }
 
@@ -1822,12 +1833,19 @@ const SHOW_CONFIDENCE: f64 = 0.85;
 /// `--show`: if the top hit is confident, read and print its full source span
 /// and return the exit code; otherwise return `None` to fall through to the
 /// ranked list. Emits a single object in JSON/NDJSON (with a `body` field).
+///
+/// Printing the body *is* the selection — the caller asked for one definition
+/// and consumed exactly this one — so it records the same signal `--open` does,
+/// no follow-up call needed. Unlike a ranked list, there was no choice left to
+/// the caller, and unlike a bare search, rq observed what was taken.
 fn show_top_definition(
-    store: &Store,
+    store: &mut Store,
     hits: &mut [crate::search::Hit],
     query: &str,
     out: Output,
     cwd: Option<&std::path::Path>,
+    current: Option<i64>,
+    no_record: bool,
 ) -> Option<ExitCode> {
     let top = hits.first()?;
     if top.confidence < SHOW_CONFIDENCE {
@@ -1837,10 +1855,11 @@ fn show_top_definition(
     let body = read_span(store, &top.repo_identity, &top.file, top.line, end, cwd);
     hits[0].body = body;
     let top = &hits[0];
-    match out {
+    let shown = (top.file.clone(), top.line);
+    let code = match out {
         Output::Json | Output::Ndjson => {
             // fail loudly on a serialize error, like every other JSON path
-            return Some(emit_json(out, top));
+            emit_json(out, top)
         }
         Output::Text => {
             let color = match_color();
@@ -1863,9 +1882,24 @@ fn show_top_definition(
                 (None, Some(sig)) => println!("{sig}"),
                 (None, None) => {}
             }
+            ExitCode::SUCCESS
         }
+    };
+
+    // After the output, like every other post-interaction write.
+    if !no_record {
+        let (file, line) = shown;
+        let _ = store.record_event(
+            "select",
+            Some(&query.to_ascii_lowercase()),
+            current,
+            Some(&file),
+            Some(line),
+            None,
+        );
+        deferred_maintenance(store);
     }
-    Some(ExitCode::SUCCESS)
+    Some(code)
 }
 
 /// The source span `start..=end` (1-based, inclusive) of a hit — the full

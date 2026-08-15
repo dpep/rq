@@ -7,6 +7,23 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## 0.40.0 — 2026-08-15
+
+### Changed
+- `--show` now records the definition it printed as a selection, so ranking
+  learns from it. Printing a confident body is a pick in a way a ranked list
+  isn't: the caller asked for one definition and consumed exactly that one, and
+  rq observed it — no follow-up `rq --record` required.
+- `--no-record` keeps its job but narrows to it: suppressing the signal from
+  benchmark and CI loops, whose repeated queries would otherwise dominate the
+  learned ranking. It is no longer the recommended default for agents — the
+  reason it once was (a search itself mutated ranking state) was removed in
+  0.39.0 and 0.39.1, and excluding the highest-volume users left the learned
+  boost with no data at all.
+
+Nothing to do on upgrade. If you script rq inside a benchmark or a loop that
+repeats the same query, pass `--no-record` there.
+
 ## 0.39.1 — 2026-08-13
 
 ### Changed

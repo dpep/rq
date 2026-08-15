@@ -925,6 +925,37 @@ fn no_record_still_returns_results() {
 }
 
 #[test]
+fn show_records_the_definition_it_printed() {
+    // Printing a confident body *is* a selection — the caller asked for one
+    // definition and consumed exactly this one — so it teaches ranking with no
+    // follow-up --record. That's what makes an agent's traffic a usable signal.
+    let (dir, db) = scratch("show-learn");
+    fs::write(
+        dir.join("beta.rb"),
+        "class HandlerB\n  def go\n    1\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // --no-record shows the body but teaches nothing (benchmark/CI loops)
+    let (ok, out) = rq(&db, &dir, &["--show", "handlerb", "--no-record"]);
+    assert!(ok && out.contains("def go"), "show printed a body: {out}");
+    let (_, out) = rq(&db, &dir, &["handlerb", "-e", "--no-record"]);
+    assert!(
+        !out.contains("learned"),
+        "--no-record taught nothing: {out}"
+    );
+
+    // without it, the shown definition is recorded and lifts the next search
+    let (ok, out) = rq(&db, &dir, &["--show", "handlerb"]);
+    assert!(ok && out.contains("def go"), "show printed a body: {out}");
+    let (_, out) = rq(&db, &dir, &["handlerb", "-e", "--no-record"]);
+    assert!(out.contains("learned"), "show taught ranking: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn kind_filter_scopes_by_symbol_kind() {
     let (dir, db) = scratch("kind");
     fs::write(dir.join("a.rb"), "class Charge\n  def charge\n  end\nend\n").unwrap();
