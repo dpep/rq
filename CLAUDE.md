@@ -160,29 +160,29 @@ binary** (behavior, a flag, ranking, even `--help`/output wording). Stay below
 Repo-only docs (README, CLAUDE.md, `docs/`) **don't** bump — they don't change
 what `brew` builds, so a bump would only force an identical rebuild.
 
-A release is a tagged tarball the Homebrew formula pins by URL + `sha256`, so
-`brew upgrade` rebuilds from that exact commit. The steps, in order:
+Releasing is one command — **don't do these steps by hand**:
 
-1. `Cargo.toml` `version`.
-2. `Cargo.lock` — run `cargo build` so the `rq` entry updates.
-3. Commit both (with the change) and push `main`. Green CI first.
-4. Tag the release commit and push the tag:
-   `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z`.
-5. Compute the tarball hash — GitHub's tag archive is stable:
-   `curl -sL https://github.com/dpep/rq/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`.
-6. In `~/code/lib/homebrew-tools/Formula/rq.rb`, update the `url` tag and the
-   `sha256` to the new values, then commit and push the tap. Build, test and
-   audit it before pushing: `brew install --build-from-source dpep/tools/rq`,
-   `brew test`, `brew audit --strict`.
-7. `cargo publish` — the crate is `reference-query`, and it has shipped every
-   release since 0.35.2.
-8. `gh release create vX.Y.Z --notes-file …` from the changelog section, which
-   is where the release notes come from.
-9. Sync the skill and bump the plugin (below), if the skill changed.
+```sh
+release minor --summary "what changed, briefly"   # or: release 0.41.0
+release --dry-run                                 # see the plan first
+release --audit                                   # is anything out of sync?
+```
 
-The tag must exist before you can hash its tarball, so the tag push (4) always
-precedes the formula edit (6). Skip the formula bump and installs serve a stale
-cached build.
+`release` lives at `~/.claude/bin/release` and is shared by every tool in the
+`dpep/tools` tap. It bumps `Cargo.toml`/`Cargo.lock`, runs `script/check.sh`,
+pushes `main`, **waits for CI**, tags, publishes `reference-query` to crates.io,
+hashes the tag tarball into `~/code/lib/homebrew-tools/Formula/rq.rb`, builds +
+tests + audits the formula, pushes the tap, opens the GitHub release from the
+changelog section, and syncs the skill with a plugin-version bump. Every step is
+idempotent, so a run that dies partway is just re-run.
+
+Ordering that the script enforces and a hand-run forgets: CI has to be green
+before the tag exists, and the tag has to be on GitHub before its tarball can be
+hashed. Skip the formula bump and installs serve a stale cached build.
+
+rq ships through **four** channels — tag, crates.io, tap, plugin skill — each
+forgettable on its own. `release --audit` compares all four across every tool in
+the tap and is the way to catch one that was missed weeks ago.
 
 `CHANGELOG.md` has no `## Unreleased` heading by convention here — write the
 version's section at release time. Four commits once shipped with no entries at
@@ -197,12 +197,12 @@ stripping — to:
 - whatever a user installed, which updates only when the **code plugin's
   version** moves in `plugins/code/.claude-plugin/plugin.json`
 
-Unlike gqls, rq has no release script, so both steps are manual. **When you
-change the skill, copy it to the marketplace and bump the code plugin's minor
-version in the same change**, or it reaches nobody: `claude plugin update`
-compares versions, not content, and reports a plugin current while serving the
-old file. That has already happened once, to gqls — four skill-touching commits
-under one plugin version.
+`release` does the copy and the plugin-version bump for you, and `release
+--audit` reports a skill copy that has drifted. If you change the skill *without*
+releasing, do both by hand in the same change — or it reaches nobody: `claude
+plugin update` compares versions, not content, and reports a plugin current
+while serving the old file. That has already happened once, to gqls — four
+skill-touching commits under one plugin version.
 
 Install guidance for humans lives in `claude/INSTALL.md`, deliberately outside
 the skill so the copy stays a copy.
