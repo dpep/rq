@@ -185,16 +185,19 @@ it still answers at zero coverage. The index is a SQLite file at `$RQ_DB`
 
 ## Learning from what you pick
 
-Ranking improves as you use it. rq logs each search; a thin hook reports which
-result you opened, so a `learned` boost lifts it next time:
+Ranking improves as you use it — once rq knows what you picked. A thin hook
+reports which result you opened, so a `learned` boost lifts it next time:
 
 ```sh
 rq --record --file app/services/refund_processor.rb --line 7 refund
 ```
 
-A pick for a shorter query (`ref`) also informs longer ones (`refund`), and
-repeating a search without opening anything is read as a miss — that query's
-learned boost decays so a stale favorite stops dominating.
+A pick for a shorter query (`ref`) also informs longer ones (`refund`), and a
+boost decays with a ~30-day half-life so a stale favorite stops dominating.
+
+Only `rq --open` and `rq --record` report a pick — a bare `rq <query>` teaches
+it nothing. If you want ranking to adapt, go through the wrapper or an editor
+integration.
 
 The wrapper [`script/rq-open`](script/rq-open) does search → pick → open →
 record in one step. See [docs/EDITORS.md](docs/EDITORS.md) for VS Code and

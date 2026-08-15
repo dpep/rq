@@ -721,8 +721,7 @@ impl Store {
 
     /// Keep the raw `events` log bounded. Deletes only events that have already
     /// been rolled up (id ≤ the aggregation high-water mark) and are not among
-    /// the most recent `keep_recent` rows (which `is_repeat_search` needs).
-    /// Returns the number deleted.
+    /// the most recent `keep_recent` rows. Returns the number deleted.
     pub fn prune_events(&self, keep_recent: i64) -> Result<usize> {
         let hwm = self.meta_get_i64("events_hwm")?.unwrap_or(0);
         let max_id: Option<i64> = self

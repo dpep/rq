@@ -387,24 +387,34 @@ The user never needs to know which layer a result came from.
 
 The long-term differentiator: ranking learns from what users actually choose.
 
-- Every interaction appends to `events`. `rq <query>` logs a `search`; the
-  `rq record` hook logs an `open`/`select` with the query, file, and line — the
-  decoupled ingestion point editors and shells call.
+- A **selection** appends to `events` — `rq --open` records the hit you picked,
+  and `rq --record` is the decoupled ingestion point editors and shells call
+  (query, file, line). Nothing else writes events: a bare `rq <query>`, and
+  every `--json`/`--ndjson` call, contribute no signal at all.
+- **This is the binding constraint on the whole feature.** The machinery below
+  is built and correct, but it only learns from the one usage mode that reports
+  a pick. Agents — the heaviest users — never do, and a human not running
+  `script/rq-open` or an editor integration never does either, so
+  `selection_stats` stays empty and the `learned` feature contributes 0. Any
+  future work here should start with *feeding* the signal, not refining how it
+  is weighted.
 - A rollup aggregates events into `selection_stats`. It resolves the chosen
   symbol from `(repo, path, line)` at rollup time and keys on `(query_norm,
   file, name)`, so ranking does one indexed lookup and never scans the raw log.
 - The **learned boost** is one additive feature whose weight **ramps with
   evidence** (saturates ~5 selections) and **decays** with recency (~30-day
-  half-life, floored). Few selections → low weight → the static prior dominates,
+  half-life, unfloored — a pick decays all the way to zero, so a wrong one
+  expires rather than nudging forever). Few selections → low weight → the static prior dominates,
   which solves cold start (new user / new repo / never indexed).
 - **Prefix learning:** a pick for a shorter query (`han`) informs longer ones
   (`handler`) — `selections_for` matches any stored query that is a prefix of
   the current one, so typing more keeps the benefit.
-- **Repeat-as-miss (exploration):** if the most recent event for a repo is a
-  `search` for the same query (nothing opened since), the query was repeated —
-  a signal the last results missed. That query's learned boost is decayed
-  before ranking, so a stale favorite stops dominating and alternatives
-  resurface. Opening a result reinforces it again.
+- **Repeat-as-miss, removed.** A repeated search (nothing opened since) once
+  decayed that query's boost as an exploration signal. It fired almost entirely
+  on machine re-runs rather than a human re-asking, so it was dropped; time
+  decay is the only forgetting left. Kept here because the idea recurs — the
+  lesson is that an agent's traffic pattern doesn't carry the intent a human's
+  does.
 
 ### No daemon — amortized and detached post-interaction work
 
@@ -412,8 +422,8 @@ Aggregation (and other proactive work like warming the index) is **not** a
 resident daemon. Each `rq` invocation prints results first, then does a small,
 bounded chunk of deferred work before exiting — rolling a batch of events into
 `selection_stats` (a high-water mark in `meta` tracks what's been rolled up;
-the same pass prunes rolled-up events, keeping a small recent window for
-repeat detection, so the raw log stays bounded).
+the same pass prunes rolled-up events, keeping a small recent window, so the
+raw log stays bounded).
 
 Leftover index warming is handed to a **detached child** instead: after
 results print, the search re-execs `rq --warm <root>` with null stdio in its
@@ -448,7 +458,10 @@ editor can jump to them.
 2. **Cross-repo ranking** — resolved for the common case by scoping to the
    current repo by default (`--all-repos` opts out); cross-repo ranking priors
    (recency) still matter under `--all-repos`.
-3. **Learning overfit** — decay + exploration are the guardrails; needs tuning.
+3. **Learning starvation, not overfit** — the risk that mattered turned out to
+   be the opposite one: only `--open`/`--record` feed the signal, so for most
+   invocations the learned feature is inert. Unfloored time decay is the
+   guardrail against a bad pick persisting.
 4. **Ranking explainability** — `--explain` from day one is the mitigation.
 5. **Scope creep** — Layers 4–5 are a streamed tail, not a second search engine;
    keep them lean for the MVP.

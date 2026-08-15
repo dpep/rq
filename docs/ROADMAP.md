@@ -96,18 +96,27 @@ doesn't have to know which layer answered.
 
 The differentiator.
 
-- [x] `events` capture — `rq <query>` logs a search; the `rq record` hook logs
-      open/select with query + file + line
+- [x] `events` capture — `rq --open` records the pick; the `rq --record` hook
+      logs open/select with query + file + line. A bare query logs nothing
 - [x] rollup → `selection_stats`, amortized in the post-interaction pass; keyed
       by `(query_norm, file, name)` so it survives reindexing
 - [x] learned boost as an additive feature with evidence-ramped weight
 - [x] time-decay (recency, ~30-day half-life)
-- [x] exploration via repeat-as-miss: a repeated search (nothing opened since)
-      decays that query's learned boost, so a stale favorite stops dominating
 - [x] prefix/related-query learning — a pick for `han` informs `handler`
 - [x] bound the raw `events` log — the deferred pass prunes events already
-      rolled up, keeping only the most recent few (for repeat detection)
-- [ ] measure: does learned ranking beat static on real usage?
+      rolled up, keeping only the most recent few
+- [x] exploration via repeat-as-miss — built, then **removed**: it fired on
+      machine re-runs rather than a human re-asking, so it decayed boosts that
+      were fine. Time decay is the only forgetting left
+- [ ] **feed the signal — the actual blocker.** The weighting is done; the
+      inputs aren't. Only `--open`/`--record` report a pick, so agents (the
+      heaviest users) and anyone typing a bare `rq foo` contribute nothing, and
+      `selection_stats` stays empty. Refining the boost is wasted until a
+      normal invocation produces evidence. Candidates: infer a pick when a
+      single confident hit is returned; treat `--show`/`--open` alike; have the
+      skill call `--record` after acting on a result
+- [ ] measure: does learned ranking beat static on real usage? Blocked on the
+      above — there's no usage data to measure with
 
 CLI shape: operations are flags (`--index`, `--status`, `--record`), not
 subcommands, so no word is reserved — every term stays searchable, matching the
@@ -241,8 +250,54 @@ a pretrained model, so it stays local, cheap, and in character with the rest.
 
 Not in scope (revisit only with a strong reason):
 
-- call graphs, type inference, reference tracking, inheritance analysis
-- full LSP feature set
+- call graphs, type inference, reference tracking, inheritance analysis.
+  Evaluated properly once (a `--refs` / reverse-lookup mode) and declined —
+  the reasoning, so it isn't re-litigated:
+  - **Accuracy is a ladder, and the useful rungs are unreachable.** Lexical
+    name matching is free but can't tell `user.save` from `record.save`. Scope
+    and import resolution (no types — roughly GitHub's stack-graphs) fixes
+    qualified names only. Resolving an unqualified receiver needs a real type
+    checker, per language.
+  - **Ruby inverts the cost/benefit.** The dynamic languages where name
+    matching is noisiest (`call`, `perform`, `save`; `send`, `define_method`,
+    `method_missing`, ActiveRecord's generated methods) are exactly the ones
+    where resolution is *unreachable*, not merely expensive. The static
+    languages where inference works are the ones where a plain name match was
+    already decent. Most effort, least payoff.
+  - **The persisted version is the expensive one.** Reference rows run ~10x
+    definitions (measured on this repo: 451 defs vs ~4,800 call-shaped tokens),
+    which taxes the cold-warm write path the indexing design works hardest to
+    protect, and doubles the cost of every future language plugin — the thing
+    that actually differentiates rq.
+  - **If it's ever revisited**, the cheap honest version is a scan for
+    occurrences *attributed to their enclosing definition* (`symbols.end_line`
+    + `idx_symbols_file` already make that a pure index lookup, no new
+    extraction). That's the one thing `rg` structurally can't do. Ship that or
+    nothing; don't build the analyzer.
+- full LSP feature set — and note the protocol is not the hard part. Precision
+  belongs to the analyzer behind it (rust-analyzer, gopls, tsserver, pyright),
+  each a multi-person-year project that must run as a **resident, workspace-
+  indexing daemon**. That's the same architectural block that exiles pretrained
+  embeddings below: it can't live inside a fork-per-query CLI with a 50 ms
+  budget. Anyone wanting precise references already has one in their editor.
+  rq's edge is what those can't do — no project setup, no build graph, no
+  warm-up, across repos you've never opened, on trees that don't compile, at 5%
+  coverage, in a terminal.
+  - The one daemon-free escape hatch, if precision is ever genuinely needed:
+    consume a precomputed **SCIP** index (Sourcegraph's format; `scip-go`,
+    `scip-typescript`, `rust-analyzer scip`, et al. emit precise defs *and*
+    refs into a static file). rq would read it when present and fall back to
+    ranking otherwise — real precision, zero analyzer code. The cost is that
+    someone must run a CI-scale indexer per repo, which contradicts the
+    zero-setup pitch. Filed as a path, not a plan.
+  - **`scip-ruby` exists but doesn't rescue the Ruby case.** It is built on
+    Sorbet, so its precision is Sorbet's precision: fine for constants and
+    class/module references, bounded by annotations for method calls, and blind
+    to metaprogrammed methods (ActiveRecord attributes, `has_many` accessors)
+    unless RBIs are generated for them. It also needs the tree to be
+    Sorbet-parseable with a sorbet config. So the SCIP escape hatch pays off in
+    exactly the static languages that needed it least — the same inversion as
+    above, one layer down.
 - pretrained-model embedding search **in the core binary** — a model + inference
   runtime + resident daemon don't belong in the fork-per-query CLI (see the
   exploratory association layer above for the local, daemon-free alternative)

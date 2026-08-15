@@ -171,7 +171,7 @@ ALTER TABLE symbols ADD COLUMN end_line INTEGER;
 
 /// Migration v4 → v5: indexes for repo-scoped scans. `symbols(repository_id)`
 /// backs the per-repo totals/drop/coverage counts; `events(repository_id, id)`
-/// backs the newest-event probe (`is_repeat_search`) that runs on every search.
+/// backs the per-repo event scans (rollup, prune).
 pub const MIGRATION_V5: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repository_id);
 CREATE INDEX IF NOT EXISTS idx_events_repo ON events(repository_id, id);
