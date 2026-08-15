@@ -171,8 +171,38 @@ A release is a tagged tarball the Homebrew formula pins by URL + `sha256`, so
 5. Compute the tarball hash — GitHub's tag archive is stable:
    `curl -sL https://github.com/dpep/rq/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`.
 6. In `~/code/lib/homebrew-tools/Formula/rq.rb`, update the `url` tag and the
-   `sha256` to the new values, then commit and push the tap.
+   `sha256` to the new values, then commit and push the tap. Build, test and
+   audit it before pushing: `brew install --build-from-source dpep/tools/rq`,
+   `brew test`, `brew audit --strict`.
+7. `cargo publish` — the crate is `reference-query`, and it has shipped every
+   release since 0.35.2.
+8. `gh release create vX.Y.Z --notes-file …` from the changelog section, which
+   is where the release notes come from.
+9. Sync the skill and bump the plugin (below), if the skill changed.
 
 The tag must exist before you can hash its tarball, so the tag push (4) always
 precedes the formula edit (6). Skip the formula bump and installs serve a stale
 cached build.
+
+`CHANGELOG.md` has no `## Unreleased` heading by convention here — write the
+version's section at release time. Four commits once shipped with no entries at
+all, and reconstructing them a week later is worse than writing them cold.
+
+## The skill has three copies; keep them one
+
+`claude/rq-skill.md` is the source. It is copied verbatim — no edits, no
+stripping — to:
+
+- `~/code/lib/claude/plugins/code/skills/rq/SKILL.md`, the public marketplace
+- whatever a user installed, which updates only when the **code plugin's
+  version** moves in `plugins/code/.claude-plugin/plugin.json`
+
+Unlike gqls, rq has no release script, so both steps are manual. **When you
+change the skill, copy it to the marketplace and bump the code plugin's minor
+version in the same change**, or it reaches nobody: `claude plugin update`
+compares versions, not content, and reports a plugin current while serving the
+old file. That has already happened once, to gqls — four skill-touching commits
+under one plugin version.
+
+Install guidance for humans lives in `claude/INSTALL.md`, deliberately outside
+the skill so the copy stays a copy.

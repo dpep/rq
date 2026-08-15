@@ -210,12 +210,19 @@ Homebrew installs bash/zsh completions automatically.
 
 ## Using with Claude Code
 
-`rq` ships with a Claude Code skill (`claude/rq-skill.md`) so Claude reaches for it when locating a definition instead of grepping the tree. Install it:
+`rq` ships with a Claude Code skill (`claude/rq-skill.md`) so Claude reaches for it when locating a definition instead of grepping the tree. Two ways to install it — the marketplace plugin, which updates itself and brings the sibling skills, or a local copy of the one file:
+
+```
+/plugin marketplace add dpep/claude
+/plugin install code@dpep
+```
 
 ```sh
 mkdir -p ~/.claude/skills/rq
 cp claude/rq-skill.md ~/.claude/skills/rq/SKILL.md
 ```
+
+The plugin is the better default; [`claude/INSTALL.md`](claude/INSTALL.md) covers when it isn't.
 
 ## Performance
 
