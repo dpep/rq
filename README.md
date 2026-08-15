@@ -195,9 +195,10 @@ rq --record --file app/services/refund_processor.rb --line 7 refund
 A pick for a shorter query (`ref`) also informs longer ones (`refund`), and a
 boost decays with a ~30-day half-life so a stale favorite stops dominating.
 
-Only `rq --open` and `rq --record` report a pick — a bare `rq <query>` teaches
-it nothing. If you want ranking to adapt, go through the wrapper or an editor
-integration.
+Three things report a pick: `rq --open`, `rq --record`, and `rq --show` (the
+confident body it printed is the definition you consumed). A bare `rq <query>`
+teaches nothing — a ranked list leaves the choice open. Pass `--no-record` in
+benchmarks or loops that repeat one query, so they don't drown out real picks.
 
 The wrapper [`script/rq-open`](script/rq-open) does search → pick → open →
 record in one step. See [docs/EDITORS.md](docs/EDITORS.md) for VS Code and

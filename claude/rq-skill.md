@@ -14,11 +14,19 @@ TypeScript and JavaScript. Use
 
 ## Use it like this
 
-Always ask for JSON and skip behavioral recording (these searches are yours, not
-the human's deliberate picks):
+Always ask for JSON:
 
 ```sh
-rq <name> --json --no-record
+rq <name> --json
+```
+
+Reading the definition rather than just locating it? Use `--show`, which prints
+the body when it's confident. It also tells rq which definition you actually
+used, which is how ranking improves for this repo — prefer it over a search
+followed by a separate file read:
+
+```sh
+rq <name> --show --json
 ```
 
 Each result is an object:
@@ -38,8 +46,8 @@ worktree once instead of per query. On a 6000-file repo that's 3ms per lookup
 against 16ms as separate processes.
 
 ```sh
-printf 'RefundProcessor\nBillingJob\nInvoice\n' | rq -J --no-record
-rq -J --no-record < symbols.txt
+printf 'RefundProcessor\nBillingJob\nInvoice\n' | rq -J
+rq -J < symbols.txt
 ```
 
 Each row carries the `query` that produced it, so a single stream stays
@@ -56,7 +64,7 @@ definition — read exactly that span instead of the whole file, or let rq hand 
 the source directly:
 
 ```sh
-rq RefundProcessor --show --json --no-record   # adds a "body" field with the source
+rq RefundProcessor --show --json   # adds a "body" field with the source
 ```
 
 `--show` prints the definition's full source when the top match is confident
@@ -85,8 +93,8 @@ get results.
   doesn't glob them: `rq 'refund*proc'`. (`::` and `#` need no quoting.)
 
 ```sh
-rq perform -k method app/services --json --no-record
-rq Widget -l 1 --json --no-record          # just the top hit
+rq perform -k method app/services --json
+rq Widget -l 1 --json          # just the top hit
 ```
 
 ## Outline a file
@@ -96,8 +104,8 @@ rq Widget -l 1 --json --no-record          # just the top hit
 right span instead of scanning the whole thing.
 
 ```sh
-rq --symbols src/store/mod.rs --json --no-record
-rq --symbols src/store/mod.rs -k method --json --no-record   # just the methods
+rq --symbols src/store/mod.rs --json
+rq --symbols src/store/mod.rs -k method --json   # just the methods
 ```
 
 ## Installing / updating the binary
@@ -123,9 +131,10 @@ To update to the latest: `brew upgrade dpep/tools/rq` (or re-run the
   Rust, Go, Python, TypeScript and JavaScript are supported.
 - Run from inside the target repo (or set the subprocess working directory) —
   rq resolves the repo from its cwd.
-- Keep `--no-record` on. Searches themselves are no longer logged, so it costs
-  nothing either way, but the flag still suppresses learning from a result you
-  open or select — and the learned boost is meant to reflect a *human's*
-  deliberate picks, not an agent's exploration. (The only time to drop it is
-  deliberately teaching rq a human's pick via
-  `rq --record --file <f> --line <n> <query>` — rare for an agent.)
+- Let rq learn from you. Ranking improves from which definition actually got
+  used, and your lookups are the bulk of the traffic — `--show` reports that for
+  free, and after navigating via a plain search you can report the hit you used:
+  `rq --record --file <f> --line <n> <query>`. Only record the one you actually
+  worked from; speculative searches cost nothing and teach nothing.
+- Pass `--no-record` when the same query repeats mechanically — a benchmark, a
+  test harness, a loop over a list — so one query doesn't dominate the signal.

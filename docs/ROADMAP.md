@@ -94,10 +94,14 @@ doesn't have to know which layer answered.
 
 ## Phase 3 — Behavioral learning
 
-The differentiator.
+Billed as the differentiator; **on probation until it earns that** (kill
+criterion below). Through 0.39.1 it ran on zero data — every piece built, tested
+and shipped, `selection_stats` empty the whole time.
 
-- [x] `events` capture — `rq --open` records the pick; the `rq --record` hook
-      logs open/select with query + file + line. A bare query logs nothing
+- [x] `events` capture — `rq --open` records the pick, `rq --show` records the
+      confident body it printed, and the `rq --record` hook logs open/select
+      with query + file + line. A bare query logs nothing: a ranked list leaves
+      the choice open, so there is no pick to observe
 - [x] rollup → `selection_stats`, amortized in the post-interaction pass; keyed
       by `(query_norm, file, name)` so it survives reindexing
 - [x] learned boost as an additive feature with evidence-ramped weight
@@ -108,15 +112,23 @@ The differentiator.
 - [x] exploration via repeat-as-miss — built, then **removed**: it fired on
       machine re-runs rather than a human re-asking, so it decayed boosts that
       were fine. Time decay is the only forgetting left
-- [ ] **feed the signal — the actual blocker.** The weighting is done; the
-      inputs aren't. Only `--open`/`--record` report a pick, so agents (the
-      heaviest users) and anyone typing a bare `rq foo` contribute nothing, and
-      `selection_stats` stays empty. Refining the boost is wasted until a
-      normal invocation produces evidence. Candidates: infer a pick when a
-      single confident hit is returned; treat `--show`/`--open` alike; have the
-      skill call `--record` after acting on a result
-- [ ] measure: does learned ranking beat static on real usage? Blocked on the
-      above — there's no usage data to measure with
+- [x] feed the signal (0.40.0) — `--show` records the definition it printed, and
+      the skill now tells agents to record the hit they worked from instead of
+      passing `--no-record`. Agents are the traffic; excluding them was why the
+      table stayed empty. `--no-record` narrows to its real job, mechanical
+      repetition (benchmarks, CI loops)
+- [ ] **measure, then decide — by 2026-10-01.** The feature has never been
+      tested with data; now it can be. Check `selection_stats` and re-rank a
+      sample of real queries with the boost zeroed:
+      - near-empty table → the signal still doesn't arrive. **Delete it.**
+      - rows accumulate but zeroing the boost changes no ordering → it only ever
+        confirmed what static ranking already had. **Delete it.**
+      - orderings change and the change is right → it earned the billing above.
+      Deleting is ~400–600 lines (two tables, four flags, the rollup, the
+      feature, `tests/learning.rs`, plus a drop migration) and would make
+      `search` a pure function of the index. That's the alternative on the
+      table, not a failure state — this item exists so the call gets made on
+      evidence instead of drifting for another year
 
 CLI shape: operations are flags (`--index`, `--status`, `--record`), not
 subcommands, so no word is reserved — every term stays searchable, matching the

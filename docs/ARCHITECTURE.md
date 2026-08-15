@@ -385,19 +385,24 @@ The user never needs to know which layer a result came from.
 
 ## Behavioral learning
 
-The long-term differentiator: ranking learns from what users actually choose.
+Ranking learns from which definition actually got used. **On probation** — see
+the kill criterion in [ROADMAP](ROADMAP.md); the machinery below is complete,
+but until 0.40.0 it had no data at all and has yet to prove it beats the static
+ranker.
 
-- A **selection** appends to `events` — `rq --open` records the hit you picked,
-  and `rq --record` is the decoupled ingestion point editors and shells call
-  (query, file, line). Nothing else writes events: a bare `rq <query>`, and
-  every `--json`/`--ndjson` call, contribute no signal at all.
-- **This is the binding constraint on the whole feature.** The machinery below
-  is built and correct, but it only learns from the one usage mode that reports
-  a pick. Agents — the heaviest users — never do, and a human not running
-  `script/rq-open` or an editor integration never does either, so
-  `selection_stats` stays empty and the `learned` feature contributes 0. Any
-  future work here should start with *feeding* the signal, not refining how it
-  is weighted.
+- A **selection** appends to `events`, from three places: `rq --open` (the hit
+  you picked), `rq --show` (the confident body it printed — the caller asked for
+  one definition and consumed exactly that one), and `rq --record`, the
+  decoupled ingestion point editors, shells, and agents call. A bare
+  `rq <query>` records nothing: a ranked list leaves the choice open, so there's
+  no pick to observe.
+- **Agents are a first-class source, deliberately.** They are the bulk of the
+  traffic, and a post-hoc `--record` — or a `--show` that *is* the read — names
+  the definition they actually worked from, with task context a click doesn't
+  carry. The earlier rule that agents should pass `--no-record` dated from when
+  a search itself mutated ranking state (removed in 0.39.0/0.39.1); keeping it
+  only starved the feature. `--no-record` now covers the real risk: mechanical
+  repetition (benchmarks, CI loops) drowning out genuine picks.
 - A rollup aggregates events into `selection_stats`. It resolves the chosen
   symbol from `(repo, path, line)` at rollup time and keys on `(query_norm,
   file, name)`, so ranking does one indexed lookup and never scans the raw log.
@@ -459,9 +464,12 @@ editor can jump to them.
    current repo by default (`--all-repos` opts out); cross-repo ranking priors
    (recency) still matter under `--all-repos`.
 3. **Learning starvation, not overfit** — the risk that mattered turned out to
-   be the opposite one: only `--open`/`--record` feed the signal, so for most
-   invocations the learned feature is inert. Unfloored time decay is the
-   guardrail against a bad pick persisting.
+   be the opposite one: through 0.39.1 nothing but `--open`/`--record` fed the
+   signal, so the learned feature was inert on every invocation. 0.40.0 gives it
+   a source (`--show`, and agents recording their picks); whether that produces
+   enough evidence to beat static ranking is now an open question with a
+   deadline, not an assumption. Unfloored time decay guards the other direction,
+   a bad pick persisting.
 4. **Ranking explainability** — `--explain` from day one is the mitigation.
 5. **Scope creep** — Layers 4–5 are a streamed tail, not a second search engine;
    keep them lean for the MVP.
