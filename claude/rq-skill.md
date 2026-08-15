@@ -129,5 +129,3 @@ To update to the latest: `brew upgrade dpep/tools/rq` (or re-run the
   deliberate picks, not an agent's exploration. (The only time to drop it is
   deliberately teaching rq a human's pick via
   `rq --record --file <f> --line <n> <query>` — rare for an agent.)
-
-To install this skill for Claude Code, copy it to `~/.claude/skills/rq/SKILL.md`.
