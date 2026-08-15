@@ -4,9 +4,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use reference_query::index::{self, Refresh};
-use reference_query::search;
-use reference_query::store::Store;
+use crate::index::{self, Refresh};
+use crate::search;
+use crate::store::Store;
 
 fn scratch_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rq-stale-{}", std::process::id()));

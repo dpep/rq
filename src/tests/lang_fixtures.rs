@@ -5,9 +5,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use reference_query::index;
-use reference_query::search::{self, ActiveFiles};
-use reference_query::store::Store;
+use crate::index;
+use crate::search::{self, ActiveFiles};
+use crate::store::Store;
 
 const WIDGET_GO: &str = include_str!("fixtures/go/widget.go");
 const ACCOUNT_PY: &str = include_str!("fixtures/python/account.py");

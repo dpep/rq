@@ -8,9 +8,9 @@
 
 use std::path::PathBuf;
 
-use reference_query::index;
-use reference_query::search::{self, ActiveFiles};
-use reference_query::store::Store;
+use crate::index;
+use crate::search::{self, ActiveFiles};
+use crate::store::Store;
 
 fn indexed_src() -> Store {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");

@@ -6,5 +6,5 @@
 mod identity;
 mod symbol;
 
-pub use identity::RepoIdentity;
-pub use symbol::{Kind, Symbol};
+pub(crate) use identity::RepoIdentity;
+pub(crate) use symbol::{Kind, Symbol};

@@ -7,7 +7,7 @@ use std::fmt;
 
 /// Normalized identity of a logical project.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum RepoIdentity {
+pub(crate) enum RepoIdentity {
     /// Derived from an upstream git remote, e.g. `github.com/org/repo`.
     Remote(String),
     /// Fallback: an absolute local path, rendered as `local:/abs/path`.
@@ -29,7 +29,7 @@ impl RepoIdentity {
     }
 
     /// Build a `local:` identity from an absolute path.
-    pub fn local(path: &str) -> RepoIdentity {
+    pub(crate) fn local(path: &str) -> RepoIdentity {
         RepoIdentity::Local(path.to_string())
     }
 }

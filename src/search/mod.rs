@@ -34,14 +34,14 @@ const BRANCH_DIR_BOOST: f64 = 60.0;
 /// plus the directories holding them. Symbols in those files (or their
 /// directory neighbors) get a branch boost. Empty on the trunk / outside git.
 #[derive(Debug, Default, Clone)]
-pub struct ActiveFiles {
+pub(crate) struct ActiveFiles {
     files: HashSet<String>,
     dirs: HashSet<String>,
 }
 
 impl ActiveFiles {
     /// Build from a list of repo-relative paths changed on the branch.
-    pub fn new<I: IntoIterator<Item = String>>(paths: I) -> Self {
+    pub(crate) fn new<I: IntoIterator<Item = String>>(paths: I) -> Self {
         let files: HashSet<String> = paths.into_iter().collect();
         let dirs = files
             .iter()
@@ -76,7 +76,7 @@ fn parent_dir(path: &str) -> Option<&str> {
 
 /// A ranked search result. Serializes for `--json` / `--ndjson`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct Hit {
+pub(crate) struct Hit {
     pub name: String,
     pub kind: String,
     pub language: String,
@@ -132,7 +132,7 @@ fn serialize_feature_names<S: serde::Serializer>(
 /// `only_repo` (if any) restricts results to that repository, so a search inside
 /// a repo answers about *that* repo rather than leaking others you've indexed;
 /// `active` boosts files you're changing on the current branch.
-pub fn search(
+pub(crate) fn search(
     store: &Store,
     query: &str,
     current_repo_id: Option<i64>,
@@ -276,7 +276,7 @@ fn now_unix() -> i64 {
 /// `prefilter` is set, only files containing the query (substring) are parsed —
 /// fast for exact/prefix/substring queries, but blind to fuzzy abbreviations, so
 /// callers retry with `prefilter = false` if a filtered scan finds nothing.
-pub fn live_search(
+pub(crate) fn live_search(
     root: &Path,
     query: &str,
     limit: usize,

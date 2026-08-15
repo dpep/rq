@@ -9,8 +9,11 @@ pub(crate) mod profile;
 pub(crate) mod trace;
 
 pub mod cli;
-pub mod core;
-pub mod index;
+pub(crate) mod core;
+pub(crate) mod index;
 pub(crate) mod lang;
-pub mod search;
-pub mod store;
+pub(crate) mod search;
+pub(crate) mod store;
+
+#[cfg(test)]
+mod tests;

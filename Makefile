@@ -72,9 +72,12 @@ dogfood: build
 	@RQ_DB="$(DOGFOOD_DB)" ./target/debug/$(BIN) --index . >/dev/null
 	@RQ_DB="$(DOGFOOD_DB)" ./target/debug/$(BIN) $(Q) --no-record $(ARGS)
 
+# The benchmark is an #[ignore]d test inside the lib, not an example: an example
+# is a separate crate, and reaching index/search/store from one meant publishing
+# all three. --nocapture because its output *is* the result.
 REPO ?= .
 bench:
-	$(CARGO) run --release --example bench -- $(REPO)
+	RQ_BENCH_REPO="$(REPO)" $(CARGO) test --release search_latency -- --ignored --nocapture
 
 lint:
 	$(CARGO) fmt --check

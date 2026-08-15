@@ -17,7 +17,7 @@ use crate::store::Store;
 
 /// Outcome of an indexing run.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Stats {
+pub(crate) struct Stats {
     /// Files matching a known language that were walked.
     pub files_seen: usize,
     /// Files (re)parsed this run (unchanged files are skipped).
@@ -26,8 +26,13 @@ pub struct Stats {
     pub symbols: usize,
 }
 
-/// Index the whole repository rooted at `root`.
-pub fn index_path(store: &mut Store, root: &Path) -> Result<Stats, Box<dyn std::error::Error>> {
+/// Index the whole repository rooted at `root`. The CLI calls [`index_under`]
+/// directly (it has subdirs to pass); this spelling exists for tests.
+#[cfg(test)]
+pub(crate) fn index_path(
+    store: &mut Store,
+    root: &Path,
+) -> Result<Stats, Box<dyn std::error::Error>> {
     index_under(store, root, &[])
 }
 
@@ -105,7 +110,7 @@ fn prioritize_by_path(
 /// *path* matches it are parsed first (a cheap, in-memory reorder of the
 /// candidate list — no file reads), so a relevant symbol indexes fast. A sweep
 /// that finishes within budget marks coverage `complete`, else `warming`.
-pub fn index_budgeted(
+pub(crate) fn index_budgeted(
     store: &mut Store,
     root: &Path,
     active: &[String],
@@ -119,7 +124,7 @@ pub fn index_budgeted(
 /// the interactive cold-start escalation (see the CLI's search path) runs a long,
 /// generous-budget warm and lets the user abort it with Ctrl-C without losing the
 /// batches already committed.
-pub fn index_budgeted_cancellable(
+pub(crate) fn index_budgeted_cancellable(
     store: &mut Store,
     root: &Path,
     active: &[String],
@@ -881,7 +886,7 @@ fn parse_git_log(text: &str) -> HashMap<String, i64> {
 /// non-git dir ranks them in-memory and discards them (there's no index to fold
 /// into). Streaming — never collect-then-parse — keeps a scan too big to finish
 /// from coming up empty.
-pub fn scan(
+pub(crate) fn scan(
     root: &Path,
     skip: &HashSet<String>,
     deadline: Option<Instant>,
@@ -927,7 +932,7 @@ fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
 
 /// Result of revalidating a single file against what's on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refresh {
+pub(crate) enum Refresh {
     /// Nothing to do — content hash still matches, or the file couldn't be read
     /// right now (left in place rather than forgotten — see [`refresh_file`]).
     Unchanged,
@@ -955,7 +960,7 @@ pub(crate) fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
 }
 
 /// The current HEAD commit sha, or `None` outside a git work tree.
-pub fn git_head(root: &Path) -> Option<String> {
+pub(crate) fn git_head(root: &Path) -> Option<String> {
     // Resolved by reading `.git` rather than forking `git rev-parse`: this runs
     // on every search to gate warming, and the fork costs ~10 ms while the
     // lookup is one or two small file reads. A worktree or submodule points
@@ -1007,7 +1012,7 @@ pub(crate) fn is_dirty(root: &Path) -> bool {
 /// trunk itself (where it isn't a useful signal) or outside git. Feeds the
 /// branch ranking boost — necessarily a few git calls, but gated to feature
 /// branches.
-pub fn branch_changed_files(root: &Path) -> Vec<String> {
+pub(crate) fn branch_changed_files(root: &Path) -> Vec<String> {
     // Reading `.git` beats forking git here: measured on a small repo, each of
     // these four commands costs ~10 ms and almost all of it is process spawn,
     // not git's work. The branch name and the trunk's existence are both plain
@@ -1120,7 +1125,7 @@ fn trunk_ref(root: &Path) -> Option<String> {
 /// whole indexes when a stale checkout root made every read fail. Genuine
 /// deletions are reconciled by an indexing pass ([`run_index`]), which sees the
 /// whole tree at once and can tell "gone" from "couldn't read one file".
-pub fn refresh_file(
+pub(crate) fn refresh_file(
     store: &mut Store,
     repository_id: i64,
     root: &Path,
@@ -1152,7 +1157,7 @@ pub fn refresh_file(
 }
 
 /// Best-effort repository identity: upstream git remote, else the local path.
-pub fn detect_identity(root: &Path) -> RepoIdentity {
+pub(crate) fn detect_identity(root: &Path) -> RepoIdentity {
     for remote in ["origin", "upstream"] {
         if let Some(url) = git_output(root, &["remote", "get-url", remote])
             && let Some(id) = RepoIdentity::from_remote_url(&url)

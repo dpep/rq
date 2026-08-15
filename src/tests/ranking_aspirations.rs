@@ -6,9 +6,9 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
-use reference_query::index;
-use reference_query::search::{self, ActiveFiles};
-use reference_query::store::Store;
+use crate::index;
+use crate::search::{self, ActiveFiles};
+use crate::store::Store;
 
 /// Index a copy of `src/` whose files all share one (old) mtime, so the recency
 /// boost is uniform and cancels out. This test asserts *match-quality* ranking;

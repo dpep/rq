@@ -11,7 +11,7 @@ use std::fmt;
 /// explicit non-goals (see `docs/ROADMAP.md`). Add a variant when a language
 /// needs a kind the model can't yet express, not a language-specific one-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Kind {
+pub(crate) enum Kind {
     Class,
     Module,
     Method,
@@ -23,7 +23,7 @@ pub enum Kind {
 
 impl Kind {
     /// Stable lowercase tag used in storage and output.
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Kind::Class => "class",
             Kind::Module => "module",
@@ -48,7 +48,7 @@ impl fmt::Display for Kind {
 /// language-specific concept. `parent` records *lexical* nesting only
 /// (e.g. `Foo::Bar#baz`) — it is not reference tracking or inheritance.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Symbol {
+pub(crate) struct Symbol {
     /// The defined name, e.g. `RefundProcessor`, `perform`.
     pub name: String,
     pub kind: Kind,

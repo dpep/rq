@@ -18,7 +18,7 @@ pub(crate) type Result<T> = rusqlite::Result<T>;
 /// A symbol as returned by search candidate queries (joined with its file and
 /// repository for display and ranking).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SymbolRow {
+pub(crate) struct SymbolRow {
     pub name: String,
     pub kind: String,
     pub language: String,
@@ -59,7 +59,7 @@ const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN repositories r ON r.id = s.repository_id";
 
 /// A handle to the rq database.
-pub struct Store {
+pub(crate) struct Store {
     conn: Connection,
 }
 
@@ -74,7 +74,7 @@ impl Drop for Store {
 /// A parsed file ready to persist — the unit the indexer produces (in parallel)
 /// and [`Store::replace_files`] writes in one batched transaction.
 #[derive(Debug, Clone)]
-pub struct FileSymbols {
+pub(crate) struct FileSymbols {
     pub path: String,
     pub language: String,
     pub mtime: Option<i64>,
@@ -85,7 +85,7 @@ pub struct FileSymbols {
 /// One row of `rq status` output — the current indexed totals for a repo (not
 /// any single run's incremental counts).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct CoverageRow {
+pub(crate) struct CoverageRow {
     /// Repository identity (`github.com/org/repo` or `local:/path`). Named `repo`
     /// in JSON, matching the search result field.
     #[serde(rename = "repo")]
@@ -98,13 +98,14 @@ pub struct CoverageRow {
 impl Store {
     /// Open (creating if needed) the database at `path`, enabling WAL and
     /// applying the schema.
-    pub fn open(path: &Path) -> Result<Store> {
+    pub(crate) fn open(path: &Path) -> Result<Store> {
         let conn = Connection::open(path)?;
         Self::init(conn)
     }
 
     /// Open an in-memory database — used by tests.
-    pub fn open_in_memory() -> Result<Store> {
+    #[cfg(test)]
+    pub(crate) fn open_in_memory() -> Result<Store> {
         let conn = Connection::open_in_memory()?;
         Self::init(conn)
     }
@@ -137,7 +138,7 @@ impl Store {
     }
 
     /// Insert or update a repository, returning its id.
-    pub fn upsert_repository(
+    pub(crate) fn upsert_repository(
         &self,
         identity: &RepoIdentity,
         default_branch: Option<&str>,
@@ -156,7 +157,7 @@ impl Store {
     }
 
     /// Record (or update) a local checkout of a repository.
-    pub fn upsert_checkout(
+    pub(crate) fn upsert_checkout(
         &self,
         repository_id: i64,
         root_path: &str,
@@ -211,7 +212,7 @@ impl Store {
 
     /// Replace all symbols for one file — the single-file form of
     /// [`Store::replace_files`] (same upsert, hash-skip, and batching).
-    pub fn replace_file_symbols(
+    pub(crate) fn replace_file_symbols(
         &mut self,
         repository_id: i64,
         path: &str,
@@ -403,7 +404,7 @@ impl Store {
     }
 
     /// All known repositories with their coverage status and current totals.
-    pub fn coverage_overview(&self) -> Result<Vec<CoverageRow>> {
+    pub(crate) fn coverage_overview(&self) -> Result<Vec<CoverageRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.identity,
                     COALESCE(c.status, 'never'),
@@ -442,7 +443,7 @@ impl Store {
     }
 
     /// The id of a repository by its normalized identity, if known.
-    pub fn repository_id(&self, identity: &str) -> Result<Option<i64>> {
+    pub(crate) fn repository_id(&self, identity: &str) -> Result<Option<i64>> {
         self.conn
             .query_row(
                 "SELECT id FROM repositories WHERE identity = ?1",
@@ -467,7 +468,7 @@ impl Store {
     }
 
     /// Current indexed totals for a repository: (files, symbols).
-    pub fn repo_totals(&self, repository_id: i64) -> Result<(i64, i64)> {
+    pub(crate) fn repo_totals(&self, repository_id: i64) -> Result<(i64, i64)> {
         self.conn.query_row(
             "SELECT (SELECT COUNT(*) FROM files WHERE repository_id = ?1),
                     (SELECT COUNT(*) FROM symbols WHERE repository_id = ?1)",
@@ -509,7 +510,7 @@ impl Store {
     /// have more than one (it was moved or cloned twice, both under the same
     /// remote identity), and an old row may be stale — so callers that read files
     /// try these in order (current checkout before a stale one).
-    pub fn checkout_roots(&self, repository_id: i64) -> Result<Vec<String>> {
+    pub(crate) fn checkout_roots(&self, repository_id: i64) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
             .prepare("SELECT root_path FROM checkouts WHERE repository_id = ?1 ORDER BY id DESC")?;
@@ -573,7 +574,7 @@ impl Store {
 
     /// Append a raw interaction event (the cheap write on the hot path; rollup
     /// happens later in [`Store::aggregate_events`]).
-    pub fn record_event(
+    pub(crate) fn record_event(
         &self,
         kind: &str,
         query: Option<&str>,
@@ -617,7 +618,7 @@ impl Store {
     /// `(repo, path, line)` at rollup time, turning a selection into a
     /// `(query, file, name)` signal. This is the amortized post-processing run
     /// after a user interaction.
-    pub fn aggregate_events(&mut self, batch: usize) -> Result<usize> {
+    pub(crate) fn aggregate_events(&mut self, batch: usize) -> Result<usize> {
         let hwm = self.meta_get_i64("events_hwm")?.unwrap_or(0);
 
         type Pending = (
@@ -754,7 +755,7 @@ impl Store {
     /// The git HEAD sha at the last commit-times capture (recency signal), if
     /// any — lets the next capture read only the commits since, or skip the
     /// `git log` entirely when HEAD hasn't moved.
-    pub fn git_ts_head(&self, repository_id: i64) -> Result<Option<String>> {
+    pub(crate) fn git_ts_head(&self, repository_id: i64) -> Result<Option<String>> {
         self.meta_get(&format!("git_ts_head:{repository_id}"))
     }
 
@@ -868,7 +869,7 @@ impl Store {
     /// once a strong (exact/prefix) hit exists, so fetching and scoring them is
     /// wasted. A wildcard query passes `force_fuzzy = true` — it isn't gated and
     /// always needs the trigram recall.
-    pub fn search_candidates(
+    pub(crate) fn search_candidates(
         &self,
         query: &str,
         limit: usize,
