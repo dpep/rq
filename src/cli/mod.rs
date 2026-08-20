@@ -117,7 +117,7 @@ struct Cli {
     #[arg(short = 'p', long, value_name = "DIR")]
     path: Vec<String>,
 
-    /// Maximum number of results to show.
+    /// Maximum number of results to show; `0` shows every match.
     #[arg(short = 'l', long, value_name = "N", default_value_t = 10)]
     limit: usize,
 
@@ -135,7 +135,7 @@ struct Cli {
 
     /// Search every indexed repository, not just the current one. By default a
     /// search inside a repo returns only that repo's definitions.
-    #[arg(long = "all-repos")]
+    #[arg(short = 'a', long = "all-repos")]
     all_repos: bool,
 
     /// Index a repository (PATH, or the current directory).
@@ -276,7 +276,7 @@ pub fn run() -> ExitCode {
                     paths: &paths,
                     kinds: &kinds,
                     langs: &langs,
-                    want: cli.limit,
+                    want: requested_limit(cli.limit),
                     no_record: cli.no_record,
                     no_wait: cli.no_wait,
                     wait: cli.wait,
@@ -319,6 +319,12 @@ fn output_format(cli: &Cli) -> Output {
 /// Minimum headroom to rank before a `--path` filter (so filtered-in results
 /// aren't lost to the cutoff).
 const PATH_HEADROOM: usize = 200;
+
+/// `--limit 0` means unlimited: every ranked hit, bounded only by how many
+/// candidates recall returned.
+fn requested_limit(limit: usize) -> usize {
+    if limit == 0 { usize::MAX } else { limit }
+}
 
 /// How often the search re-checks the index while a cold repo warms on the
 /// background thread. Each poll runs a full read query against the DB the
@@ -537,7 +543,7 @@ fn cmd_batch(
                 paths,
                 kinds,
                 langs,
-                want: cli.limit,
+                want: requested_limit(cli.limit),
                 no_record: cli.no_record,
                 // The warm happened above, once. Per-query warming would undo
                 // the point of batching, and block-until-answered is meaningless
@@ -583,7 +589,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let limit = if args.paths.is_empty() && args.kinds.is_empty() && args.langs.is_empty() {
         want
     } else {
-        (want * 20).max(PATH_HEADROOM)
+        want.saturating_mul(20).max(PATH_HEADROOM)
     };
     let _timer = crate::trace::Timer::start("search done");
     let profile_started = std::time::Instant::now();

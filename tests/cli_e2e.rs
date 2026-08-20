@@ -394,6 +394,11 @@ fn a_search_does_not_leak_another_indexed_repo() {
     assert!(ok, "--all-repos should find Gadget in repo B: {out}");
     assert!(out.contains("b.rb"), "cross-repo hit surfaces: {out}");
 
+    // -a is the short form of the same flag
+    let (ok, out) = rq(&db, &dir_a, &["Gadget", "-a", "--no-record", "--ndjson"]);
+    assert!(ok, "-a should find Gadget in repo B: {out}");
+    assert!(out.contains("b.rb"), "cross-repo hit surfaces: {out}");
+
     let _ = fs::remove_dir_all(&dir_a);
     let _ = fs::remove_dir_all(&dir_b);
 }
@@ -767,13 +772,26 @@ fn path_filter_accepts_absolute_and_relative_paths() {
 #[test]
 fn limit_caps_the_number_of_results() {
     let (dir, db) = scratch("limit");
-    fs::write(dir.join("a.rb"), "class HandlerA\nend\n").unwrap();
-    fs::write(dir.join("b.rb"), "class HandlerB\nend\n").unwrap();
+    // more definitions than the default cap, so `--limit 0` is distinguishable
+    // from the default rather than just fitting under it
+    let body: String = (0..12)
+        .map(|i| format!("class Handler{i}\nend\n"))
+        .collect();
+    fs::write(dir.join("a.rb"), body).unwrap();
     rq(&db, &dir, &["--index"]);
 
     let (ok, out) = rq(&db, &dir, &["handler", "--limit", "1", "--ndjson"]);
     assert!(ok, "limited search failed: {out}");
     assert_eq!(out.lines().count(), 1, "expected exactly one result: {out}");
+
+    let (ok, out) = rq(&db, &dir, &["handler", "--ndjson"]);
+    assert!(ok, "default search failed: {out}");
+    assert_eq!(out.lines().count(), 10, "default caps at 10: {out}");
+
+    // 0 lifts the cap rather than asking for nothing
+    let (ok, out) = rq(&db, &dir, &["handler", "--limit", "0", "--ndjson"]);
+    assert!(ok, "unlimited search failed: {out}");
+    assert_eq!(out.lines().count(), 12, "expected every match: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }

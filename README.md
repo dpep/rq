@@ -47,8 +47,8 @@ rq KIND <query>             # a leading kind keyword is shorthand for -k (rq cla
 rq Scope::name              # scope-aware: prefer the name defined inside Scope (or Scope::Type#method)
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
                             #   (prefix-matched; r=ruby+rust; aliases rb/rs/ts/js)
-rq <query> -l/--limit N     # cap the number of results (default 10)
-rq <query> --all-repos      # search every indexed repo (default: just the current one)
+rq <query> -l/--limit N     # cap the number of results (default 10; 0 = every match)
+rq <query> -a/--all-repos   # search every indexed repo (default: just the current one)
 rq <query> --show           # print the definition's source (confident match only; pipe to less)
 rq <query> -o/--open        # open the best match in your editor + record the pick
 rq --symbols FILE           # outline a file's definitions, in line order
@@ -159,7 +159,7 @@ query is matched and scored by an additive, explainable sum of signals:
 - **qualifier** — a scoped query (`Foo::Bar`) prefers the definition inside that scope
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the repo you're in by default
-  (`--all-repos` to search every indexed repo)
+  (`-a`/`--all-repos` to search every indexed repo)
 - **recency** — symbols in recently-edited or recently-committed files
 - **branch** — on a feature branch, files you're changing vs the trunk (and
   their directory neighbors) — where you're most likely working

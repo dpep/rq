@@ -9,6 +9,12 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Added
+- **`-a` is short for `--all-repos`**, for the cross-repo search you reach for
+  interactively.
+- **`--limit 0` means no limit** — every ranked match instead of the top 10.
+  Previously `0` asked for nothing and got nothing.
+
 ### Changed
 - **The library API is `cli::run()` — 146 public items down to one module.**
   `rq` publishes as `reference-query`, and `lib.rs` re-exported all eight

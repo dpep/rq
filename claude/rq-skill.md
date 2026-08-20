@@ -86,8 +86,9 @@ get results.
   `class`/`module`/`method`/`function`/`struct`/`enum`/`trait` (shortcuts
   `c`/`mod`/`m`/`f`/`s`/`e`/`t`, comma-separable: `-k m,f`).
 - Directory: `rq perform app/services` (rg-style trailing path, repeatable) or `--path`.
-- Count: `-l 1` to jump straight to the best hit, larger to survey.
-- Repo: results are scoped to the current repo by default; add `--all-repos` to
+- Count: `-l 1` to jump straight to the best hit, larger to survey, `-l 0` for
+  every match.
+- Repo: results are scoped to the current repo by default; add `-a`/`--all-repos` to
   search every repo you've indexed (a `no_match` means it's absent *here*).
 - Wildcards: `*` (any run) and `?` (one char) — **quote these** so the shell
   doesn't glob them: `rq 'refund*proc'`. (`::` and `#` need no quoting.)
