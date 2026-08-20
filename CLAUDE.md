@@ -190,9 +190,10 @@ rq ships through **four** channels — tag, crates.io, tap, plugin skill — eac
 forgettable on its own. `release --audit` compares all four across every tool in
 the tap and is the way to catch one that was missed weeks ago.
 
-`CHANGELOG.md` has no `## Unreleased` heading by convention here — write the
-version's section at release time. Four commits once shipped with no entries at
-all, and reconstructing them a week later is worse than writing them cold.
+`CHANGELOG.md` keeps a rolling `## Unreleased` heading: log a change under it in
+the commit that earns it, and `release` retitles that heading as the version and
+date. Four commits once shipped with no entries at all, and reconstructing them a
+week later is worse than writing them cold.
 
 ## The skill has three copies; keep them one
 
