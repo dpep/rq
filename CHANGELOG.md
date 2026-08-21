@@ -7,6 +7,29 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **Every search was scanning the whole symbol index.** The prefix pass asked
+  for `name_lower LIKE 'query%'`, which looks like it should use the index and
+  doesn't — SQLite only turns `LIKE` into a range scan when the index collation
+  matches the operator's case sensitivity, and case-insensitive `LIKE` against a
+  `BINARY` index falls back to reading every row. `EXPLAIN QUERY PLAN` says
+  `SCAN` for it and `SEARCH` for the range comparison that replaces it.
+
+  Recall on an ordinary query drops from ~5 ms to under a millisecond on a
+  49,000-symbol index (`rq where` was 12 ms), and a query with no exact match
+  from ~25 ms to ~18 ms. The gain scales with the index, so it's larger on a
+  monorepo than these numbers suggest.
+
+  A range is also more exact than what it replaces: `_` is a `LIKE` wildcard, so
+  `connection_pool` had to be escaped to be matched literally.
+
+### Internal
+- Lowercasing during scoring borrows instead of allocating when there's nothing
+  to change, which is most queries and most snake_case names. Worth ~0.5 ms on a
+  query that reaches thousands of candidates.
+
 ## 0.46.1 — 2026-08-21
 
 ### Internal

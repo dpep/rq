@@ -1004,13 +1004,15 @@ impl Store {
         // surface even on a huge repo (unlike the broad first-char anchor below,
         // which the cap can truncate).
         {
-            let like = format!("{}%", escape_like(&q));
             let sql = format!(
                 "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-                 WHERE s.name_lower LIKE ?1 ESCAPE '\\' LIMIT ?2"
+                 WHERE s.name_lower >= ?1 AND s.name_lower < ?2 LIMIT ?3"
             );
             let mut stmt = self.conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![like, limit as i64], row_to_candidate)?;
+            let rows = stmt.query_map(
+                params![q, prefix_upper_bound(&q), limit as i64],
+                row_to_candidate,
+            )?;
             for row in rows {
                 let (id, cand) = row?;
                 found.entry(id).or_insert(cand);
@@ -1030,13 +1032,16 @@ impl Store {
         // the scorer filters and ranks. Best-effort under the cap — exact and
         // prefix are already guaranteed above.
         if let Some(first) = q.chars().next() {
-            let like = format!("{}%", escape_like(&first.to_string()));
+            let anchor = first.to_string();
             let sql = format!(
                 "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-                 WHERE s.name_lower LIKE ?1 ESCAPE '\\' LIMIT ?2"
+                 WHERE s.name_lower >= ?1 AND s.name_lower < ?2 LIMIT ?3"
             );
             let mut stmt = self.conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![like, limit as i64], row_to_candidate)?;
+            let rows = stmt.query_map(
+                params![anchor, prefix_upper_bound(&anchor), limit as i64],
+                row_to_candidate,
+            )?;
             for row in rows {
                 let (id, cand) = row?;
                 found.entry(id).or_insert(cand);
@@ -1098,6 +1103,24 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             visibility: r.get(12)?,
         },
     ))
+}
+
+/// The exclusive upper bound of everything starting with `prefix`, for a range
+/// seek on `name_lower`.
+///
+/// `LIKE 'x%'` looks like it should use the index and doesn't: SQLite turns
+/// `LIKE` into a range scan only when the index collation matches the
+/// operator's case sensitivity, and case-insensitive `LIKE` against a `BINARY`
+/// index falls back to scanning every row. `EXPLAIN QUERY PLAN` says `SCAN` for
+/// both `LIKE 'x%'` and `LIKE 'x%' ESCAPE '\'`, and `SEARCH` for this. A range
+/// is also exact: `_` in `connection_pool` is a `LIKE` wildcard that had to be
+/// escaped, and a comparison reads it literally.
+fn prefix_upper_bound(prefix: &str) -> String {
+    // every string starting with `prefix` sorts below this one, since nothing
+    // sorts above the maximum code point
+    let mut upper = prefix.to_string();
+    upper.push(char::MAX);
+    upper
 }
 
 /// Escape LIKE wildcards so identifier characters (`_`) are matched literally.
@@ -1227,6 +1250,19 @@ mod tests {
         assert_eq!(usage, 1);
         drop(store);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_prefix_range_covers_the_prefix_and_stops_after_it() {
+        let upper = prefix_upper_bound("conn");
+        let inside = |name: &str| name < upper.as_str();
+        assert!(inside("conn"), "the bare prefix is inside");
+        assert!(inside("connection_pool"), "a longer name is inside");
+        // `_` is a LIKE wildcard; a range compares it literally
+        assert!(inside("connx"));
+        // the next name up is outside — that's what makes this a range seek
+        // rather than a scan of every row
+        assert!(!inside("cono"));
     }
 
     #[test]

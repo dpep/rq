@@ -84,8 +84,8 @@ pub(crate) fn score(
     // A qualified query (`Foo::Bar`, `Foo::Bar#baz`) names an enclosing scope:
     // match the leaf against the name, and reward a matching `parent` below.
     let (leaf, qualifier) = parse_qualified(query);
-    let q = leaf.to_ascii_lowercase();
-    let name_lower = cand.name.to_ascii_lowercase();
+    let q = lower(leaf);
+    let name_lower = lower(&cand.name);
 
     let mut features = Vec::new();
 
@@ -133,7 +133,7 @@ pub(crate) fn score(
             value: -SEPARATOR_PENALTY,
         });
         true
-    } else if name_lower.starts_with(&q) {
+    } else if name_lower.starts_with(q.as_ref()) {
         // shorter remaining tail ranks higher
         let tail = cand.name.chars().count().saturating_sub(q.chars().count());
         features.push(Feature {
@@ -867,6 +867,18 @@ fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
     }
     let d = prev[b.len()];
     (d > 0 && d <= MAX_NEAR_MISS).then_some(d)
+}
+
+/// Lowercase without allocating when there's nothing to change. Called once
+/// per candidate for the name and — wastefully, since it's constant — once per
+/// candidate for the query; most queries and most snake_case names are already
+/// lowercase, so the copy was of something identical.
+fn lower(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.bytes().any(|b| b.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(s.to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
 }
 
 /// Are these the same identifier once separators are dropped? `_`, `-`, and
