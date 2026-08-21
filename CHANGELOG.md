@@ -9,18 +9,22 @@ and aren't listed; see `git log` for those.
 
 ## 0.46.1 — 2026-08-21
 
-### Fixed
-- **Scoring got ~5x slower per candidate in 0.44.0/0.45.0.** Two features added
-  then allocated on the hot path for every candidate: the separator-insensitive
-  exact match built two squashed `String`s, and the namespace-depth signal built
-  a `Vec<String>` of scope names when it only wanted the count. Invisible on most
-  queries, which recall a handful of candidates — a query with no exact match
-  recalls thousands, and there it dominated everything else in scoring.
-- **A typo query re-scored every candidate twice.** The near-miss retry now
-  looks only at candidates that could actually *be* a near miss (a length and
-  first-letter check), instead of paying the whole name-match chain a second
-  time for ten thousand rows to serve a few hundred. On Rails, a transposed
-  query went from ~230 ms of scoring to ~70 ms.
+### Internal
+- **A typo query no longer re-scores every candidate twice.** The near-miss
+  retry looks only at candidates that could actually *be* a near miss (a length
+  and first-letter check) rather than paying the whole name-match chain a second
+  time for ten thousand rows to serve a few hundred. Two per-candidate
+  allocations went with it: the separator-insensitive exact match built two
+  squashed `String`s, and the namespace-depth signal built a `Vec<String>` of
+  scope names when it only wanted the count.
+
+  **Correction to what this entry first said.** It claimed scoring had got ~5x
+  slower per candidate in 0.44.0/0.45.0. That was wrong — it compared a debug
+  build against a release measurement and read the build profile as a
+  regression. Measured like for like, 0.42.1 scores a 10,348-candidate query in
+  5-6 ms and 0.46.1 in 7 ms, so everything added since costs ~1-2 ms and no
+  user ever saw a slowdown. The changes above are worth keeping on their own
+  terms; the regression they were credited with fixing did not exist.
 
 ## 0.46.0 — 2026-08-21
 
