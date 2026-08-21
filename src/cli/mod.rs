@@ -40,6 +40,7 @@ rq thing -x rust          restrict to a language (ruby/rust/go/python/ts/js)\n  
 rq -o thing               open the best match in your editor (and record it)\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n  \
+rq --usage                show how rq has been called (by caller and flags)\n  \
 rq --drop                 remove this repo's index (opposite of --index)\n\n\
 SHORT FLAGS (easy to misread):\n  \
 -j = --json (not jobs; --jobs is long-only)   -l = --limit (not lang)   -x = --lang\n\n\
@@ -71,9 +72,10 @@ struct Cli {
     #[arg(short = 'e', long)]
     explain: bool,
 
-    /// Don't let this invocation teach ranking — suppresses recording the result
-    /// you open, select, or `--show`. For benchmark and CI loops, whose repeated
-    /// queries would otherwise dominate the learned signal.
+    /// Don't let this invocation teach ranking or count as usage — suppresses
+    /// recording the result you open, select, or `--show`, and keeps the call
+    /// out of `--usage`. For benchmark and CI loops, whose repeated queries
+    /// would otherwise dominate both.
     #[arg(long)]
     no_record: bool,
 
@@ -118,7 +120,7 @@ struct Cli {
     path: Vec<String>,
 
     /// Maximum number of results to show; `0` shows every match.
-    #[arg(short = 'l', long, value_name = "N", default_value_t = 10)]
+    #[arg(short = 'l', long, value_name = "N", default_value_t = DEFAULT_LIMIT)]
     limit: usize,
 
     /// Restrict to symbol kinds: class, module, method, function, struct, enum,
@@ -145,6 +147,10 @@ struct Cli {
     /// Show indexing coverage per known repository.
     #[arg(long, conflicts_with_all = ["index", "record"])]
     status: bool,
+
+    /// Show how rq has been used: searches per day, by caller and flags.
+    #[arg(long, conflicts_with_all = ["index", "record", "status"])]
+    usage: bool,
 
     /// List the symbols defined in FILE, in line order — a structural outline,
     /// not a ranked search. Honors -k/-x to filter by kind/language.
@@ -222,6 +228,9 @@ pub fn run() -> ExitCode {
     }
     if cli.status {
         return cmd_status(output_format(&cli));
+    }
+    if cli.usage {
+        return cmd_usage(output_format(&cli));
     }
     if cli.drop {
         let out = output_format(&cli);
@@ -316,6 +325,9 @@ fn output_format(cli: &Cli) -> Output {
     }
 }
 
+/// Results shown when `--limit` isn't given.
+const DEFAULT_LIMIT: usize = 10;
+
 /// Minimum headroom to rank before a `--path` filter (so filtered-in results
 /// aren't lost to the cutoff).
 const PATH_HEADROOM: usize = 200;
@@ -324,6 +336,36 @@ const PATH_HEADROOM: usize = 200;
 /// candidates recall returned.
 fn requested_limit(limit: usize) -> usize {
     if limit == 0 { usize::MAX } else { limit }
+}
+
+/// The call's flags as a canonical, comma-joined string, for usage counts.
+/// A fixed vocabulary in a fixed order, so the same call always produces the
+/// same string and the counter table stays small — values are never included,
+/// only which knobs were reached for.
+fn flag_summary(args: &SearchArgs) -> String {
+    let mut on: Vec<&str> = Vec::new();
+    match args.out {
+        Output::Json => on.push("json"),
+        Output::Ndjson => on.push("ndjson"),
+        Output::Text => {}
+    }
+    for (present, name) in [
+        (args.explain, "explain"),
+        (args.show, "show"),
+        (args.open, "open"),
+        (args.all_repos, "all-repos"),
+        (args.no_wait, "no-wait"),
+        (args.batch, "batch"),
+        (!args.paths.is_empty(), "path"),
+        (!args.kinds.is_empty(), "kind"),
+        (!args.langs.is_empty(), "lang"),
+        (args.want != DEFAULT_LIMIT, "limit"),
+    ] {
+        if present {
+            on.push(name);
+        }
+    }
+    on.join(",")
 }
 
 /// How often the search re-checks the index while a cold repo warms on the
@@ -832,6 +874,19 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     apply_gates(query, &mut hits);
     apply_post_filters(args, cwd.as_deref(), root.as_deref(), &mut hits);
 
+    // Count the query here, above the miss return, so one call site covers
+    // every exit below (miss, --show, --open, the ranked list). Observability
+    // only: `search` rows are invisible to the rollup that feeds ranking.
+    if !no_record {
+        let _ = store.record_search(
+            &query.to_ascii_lowercase(),
+            current,
+            hits.len(),
+            &crate::origin::detect(),
+            &flag_summary(args),
+        );
+    }
+
     if hits.is_empty() {
         // Stop a still-running block so the join is prompt, then settle coverage.
         if block {
@@ -942,11 +997,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     }
 
     // Results are out — now the cheap deferred work, amortized across
-    // interactions. Searches aren't logged: the only thing that ever read a
-    // `search` event was the repeat-query decay, and with that gone a row per
-    // query would be written and never read. Rolling up and pruning the
-    // `open`/`select` events — the picks that actually teach ranking — still
-    // happens here.
+    // interactions: roll the `open`/`select` picks that teach ranking into
+    // `selection_stats`, and prune the raw log. The `search` row written above
+    // is skipped by the rollup — it counts usage, it doesn't teach.
     deferred_maintenance(store);
 
     // Results are out; stop the in-process warm (it persists as it goes, so a
@@ -2486,6 +2539,56 @@ fn cmd_status(out: Output) -> ExitCode {
                 );
             }
         }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--usage`: how rq has actually been called, by day, caller, and flag set.
+/// Reads `usage_daily`, which outlives the pruned raw event log.
+fn cmd_usage(out: Output) -> ExitCode {
+    let store = match open_store() {
+        Ok(s) => s,
+        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+    };
+    let rows = match store.usage_overview() {
+        Ok(rows) => rows,
+        Err(e) => return fail(format_args!("rq --usage: {e}")),
+    };
+    if let Some(code) = emit_rows(out, &rows) {
+        return code;
+    }
+    match out {
+        Output::Json | Output::Ndjson => {}
+        Output::Text if rows.is_empty() => {
+            println!("no usage recorded yet");
+        }
+        Output::Text => {
+            // Five columns of bare numbers need naming; `--status` gets away
+            // without a header because its columns carry their own units.
+            println!(
+                "{:<10}  {:<16} {:>8} {:>7}  flags",
+                "day", "caller", "found", "missed"
+            );
+            for r in &rows {
+                let flags = if r.flags.is_empty() { "-" } else { &r.flags };
+                println!(
+                    "{:<10}  {:<16} {:>8} {:>7}  {}",
+                    r.day,
+                    r.source,
+                    r.searches - r.misses,
+                    r.misses,
+                    flags
+                );
+            }
+            let searches: i64 = rows.iter().map(|r| r.searches).sum();
+            let misses: i64 = rows.iter().map(|r| r.misses).sum();
+            let plural = if searches == 1 { "search" } else { "searches" };
+            println!("{searches} {plural}, {misses} found nothing");
+        }
+    }
+    // Nothing recorded is the "nothing happened" case, like an empty --status.
+    if rows.is_empty() {
+        return ExitCode::from(1);
     }
     ExitCode::SUCCESS
 }

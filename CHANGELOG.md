@@ -7,6 +7,40 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Added
+- **`rq --usage` — how rq is actually being called.** Searches per day, broken
+  down by caller and by which flags the call used, with `--json`/`--ndjson`
+  like every other command. Answers the questions the index couldn't: how much
+  traffic is there, how much of it is agents, and how often does a search find
+  nothing.
+- **Searches are counted, and the caller is recorded with them.** rq labels the
+  invocation from its environment — `claude-code` (and `claude-code:mcp` when
+  the entrypoint isn't a shell), `cursor`, `ci`, `human` for a terminal, or
+  `piped` when nothing identifies it. Skill identity isn't exposed by any
+  environment, so it isn't recorded.
+
+  Counts live in a new `usage_daily` table and are incremented on write, so
+  they survive the rolling prune that bounds the raw event log — previously the
+  log capped at 200 rows, which made it a ceiling rather than a count.
+
+  **This is observability, not learning.** The rollup that feeds ranking reads
+  only `open`/`select` rows, so counting a search can never move a result.
+
+### Changed
+- **`--no-record` now also keeps a call out of `--usage`.** It already meant
+  "this isn't real usage"; benchmark and CI loops shouldn't skew the counts any
+  more than they should skew ranking.
+
+### Internal
+- Schema v10 adds `events.source`, `events.results`, `events.flags`, and the
+  `usage_daily` table. Existing databases migrate in place; rows written before
+  the upgrade read `NULL` for the new columns.
+- The two `profile` unit tests could interleave — they drive process-global
+  state and cargo runs tests as threads in one process, so the "off" test could
+  observe the "on" test's flag and fail. They're serialized now.
+
 ## 0.41.0 — 2026-08-19
 
 ### Added

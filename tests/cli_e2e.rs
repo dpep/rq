@@ -797,6 +797,51 @@ fn limit_caps_the_number_of_results() {
 }
 
 #[test]
+fn usage_counts_searches_by_caller_and_flags() {
+    let (dir, db) = scratch("usage");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // nothing recorded yet is a "nothing happened" exit, like an empty --status
+    let (ok, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    assert!(!ok, "empty usage should exit non-zero: {out}");
+
+    rq(&db, &dir, &["Widget", "--ndjson"]);
+    rq(&db, &dir, &["Widget", "--json", "--all-repos"]);
+    rq(&db, &dir, &["NoSuchThing", "--ndjson"]);
+
+    let (ok, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    assert!(ok, "usage failed: {out}");
+    // the flag set is recorded, so agentic calls are separable from bare ones
+    assert!(
+        out.contains("\"flags\":\"ndjson\""),
+        "bare ndjson row: {out}"
+    );
+    assert!(
+        out.contains("\"flags\":\"json,all-repos\""),
+        "flag set recorded in order: {out}"
+    );
+    // the miss is counted as a search that found nothing, not dropped: the two
+    // bare `--ndjson` calls share a row, and one of them found nothing
+    assert!(
+        out.contains("\"searches\":2") && out.contains("\"misses\":1"),
+        "the miss is counted, not dropped: {out}"
+    );
+
+    // --no-record keeps benchmark loops out of the counts
+    let before = out.lines().count();
+    rq(&db, &dir, &["Widget", "--no-record", "--ndjson"]);
+    let (_, after) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    assert_eq!(
+        after.lines().count(),
+        before,
+        "no-record adds no row: {after}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn index_a_subset_of_a_repo() {
     let (dir, db) = scratch("subset");
     fs::create_dir_all(dir.join("app/services")).unwrap();

@@ -176,9 +176,24 @@ events (
   query TEXT,                       -- normalized query, when applicable
   repository_id INTEGER,
   path TEXT, line INTEGER,          -- the file/line for open/select
-  branch TEXT, ts INTEGER NOT NULL
+  branch TEXT, ts INTEGER NOT NULL,
+  source TEXT,                      -- caller label, for search rows
+  results INTEGER,                  -- hits returned; 0 = a miss
+  flags TEXT                        -- canonical flag set, comma-joined
 );
 CREATE INDEX idx_events_repo ON events(repository_id, id);
+
+-- cumulative usage counters, read by `--usage`. Separate from `events`
+-- because that log is pruned to a rolling window, which makes it a ceiling
+-- rather than a count.
+usage_daily (
+  day TEXT NOT NULL,                -- UTC date, YYYY-MM-DD
+  source TEXT NOT NULL,
+  flags TEXT NOT NULL,
+  searches INTEGER NOT NULL,
+  misses INTEGER NOT NULL,
+  PRIMARY KEY (day, source, flags)
+);
 
 -- rollup the hot path reads; never scan raw events at query time.
 -- Keyed by (file, name), NOT symbol_id: symbol ids are recreated whenever a
@@ -208,6 +223,11 @@ Decisions worth calling out:
   append a live-scan tail.
 - **`events` + `selection_stats`** separate the append-only truth from the
   aggregate the ranking path reads, so the hot path never scans the log.
+- **`usage_daily` is observability, not learning.** The rollup that feeds
+  ranking reads only `open`/`select` rows, so counting a search can never move
+  a result. Counters are incremented on write rather than rolled up, so they
+  survive the prune that bounds the raw log — the question "how much is rq
+  used, and by whom" needs a total, and a pruned log can only give a ceiling.
 
 ## Indexing model
 

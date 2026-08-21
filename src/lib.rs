@@ -6,6 +6,7 @@
 
 #[macro_use]
 pub(crate) mod profile;
+pub(crate) mod origin;
 pub(crate) mod trace;
 
 pub mod cli;

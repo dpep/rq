@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 9;
+pub(crate) const VERSION: i64 = 10;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -97,9 +97,25 @@ CREATE TABLE events (
   path TEXT,                         -- repo-relative file, for open/select
   line INTEGER,
   branch TEXT,
-  ts INTEGER NOT NULL
+  ts INTEGER NOT NULL,
+  source TEXT,                       -- caller label, for search rows
+  results INTEGER,                   -- hits returned; 0 = a miss
+  flags TEXT                         -- canonical flag set, comma-joined
 );
 CREATE INDEX idx_events_repo ON events(repository_id, id);
+
+-- usage counters. Separate from `events` because that log is pruned to a
+-- rolling window, which makes it a ceiling rather than a count; these rows are
+-- the only cumulative record of how rq is actually used. Read by `--usage`,
+-- never by ranking.
+CREATE TABLE usage_daily (
+  day TEXT NOT NULL,                 -- UTC date, YYYY-MM-DD
+  source TEXT NOT NULL,
+  flags TEXT NOT NULL,
+  searches INTEGER NOT NULL,
+  misses INTEGER NOT NULL,
+  PRIMARY KEY (day, source, flags)
+);
 
 -- rollup the ranking hot path reads. Keyed by (file, name) rather than
 -- symbol_id so learning survives reindexing (symbol ids are recreated on every
@@ -206,9 +222,29 @@ pub(crate) const MIGRATION_V9: &str = r#"
 ALTER TABLE symbols ADD COLUMN visibility TEXT;
 "#;
 
+/// Migration v9 -> v10: usage observability. `events` gains the caller label,
+/// the hit count, and the flag set for `search` rows; `usage_daily` accumulates
+/// the same counts so they survive the rolling prune of the raw log. Existing
+/// rows read `NULL` — they predate the columns and there is nothing to backfill
+/// from.
+pub(crate) const MIGRATION_V10: &str = r#"
+ALTER TABLE events ADD COLUMN source TEXT;
+ALTER TABLE events ADD COLUMN results INTEGER;
+ALTER TABLE events ADD COLUMN flags TEXT;
+
+CREATE TABLE IF NOT EXISTS usage_daily (
+  day TEXT NOT NULL,
+  source TEXT NOT NULL,
+  flags TEXT NOT NULL,
+  searches INTEGER NOT NULL,
+  misses INTEGER NOT NULL,
+  PRIMARY KEY (day, source, flags)
+);
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, &str); 8] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 9] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -217,6 +253,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 8] = [
     (7, MIGRATION_V7),
     (8, MIGRATION_V8),
     (9, MIGRATION_V9),
+    (10, MIGRATION_V10),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]

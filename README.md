@@ -56,6 +56,7 @@ rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # seed the index with a subtree first (big monorepos)
 rq --drop [PATH|IDENTITY]   # remove a repo's index (opposite of --index)
 rq --status                 # indexing coverage per known repository
+rq --usage                  # searches per day, by caller and flags
 ```
 
 ## Opening results

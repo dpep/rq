@@ -95,6 +95,19 @@ pub(crate) struct CoverageRow {
     pub symbols: i64,
 }
 
+/// One row of `rq --usage` output: how rq was called on a given day, and how
+/// often that call found nothing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct UsageRow {
+    pub day: String,
+    /// Caller label from `crate::origin` — `claude-code`, `human`, `ci`, ...
+    pub source: String,
+    /// Canonical flag set for the call, comma-joined; empty for a bare search.
+    pub flags: String,
+    pub searches: i64,
+    pub misses: i64,
+}
+
 impl Store {
     /// Open (creating if needed) the database at `path`, enabling WAL and
     /// applying the schema.
@@ -570,8 +583,6 @@ impl Store {
         tx.commit()
     }
 
-    // ----- behavioral learning -----
-
     /// Append a raw interaction event (the cheap write on the hot path; rollup
     /// happens later in [`Store::aggregate_events`]).
     pub(crate) fn record_event(
@@ -590,6 +601,66 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // ----- usage observability -----
+
+    /// Log a search and bump its usage counters. Distinct from
+    /// [`record_event`](Self::record_event) on purpose: nothing here reaches
+    /// ranking — the rollup that feeds `selection_stats` reads only
+    /// `open`/`select` — so a query can be counted without teaching anything.
+    ///
+    /// Both writes happen in one transaction: the `events` row is the detail
+    /// (pruned to a rolling window) and the `usage_daily` row is the count that
+    /// outlives it, so they must not disagree.
+    pub(crate) fn record_search(
+        &mut self,
+        query: &str,
+        repository_id: Option<i64>,
+        results: usize,
+        source: &str,
+        flags: &str,
+    ) -> Result<()> {
+        let ts = now_unix();
+        let miss = i64::from(results == 0);
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO events (type, query, repository_id, ts, source, results, flags)
+             VALUES ('search', ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![query, repository_id, ts, source, results as i64, flags],
+        )?;
+        tx.execute(
+            "INSERT INTO usage_daily (day, source, flags, searches, misses)
+             VALUES (date(?1, 'unixepoch'), ?2, ?3, 1, ?4)
+             ON CONFLICT(day, source, flags) DO UPDATE SET
+               searches = searches + 1,
+               misses = misses + excluded.misses",
+            params![ts, source, flags, miss],
+        )?;
+        tx.commit()
+    }
+
+    /// Usage counts, newest day first. The cumulative record — `events` is
+    /// pruned, these rows are not.
+    pub(crate) fn usage_overview(&self) -> Result<Vec<UsageRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT day, source, flags, searches, misses FROM usage_daily
+             ORDER BY day DESC, searches DESC, source, flags",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(UsageRow {
+                    day: r.get(0)?,
+                    source: r.get(1)?,
+                    flags: r.get(2)?,
+                    searches: r.get(3)?,
+                    misses: r.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    // ----- behavioral learning -----
 
     /// Learned selections relevant to a query, read by ranking. Matches not just
     /// the exact query but any *shorter* query the user has selected for — a pick
@@ -1076,8 +1147,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rq-migrate-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         {
-            // simulate a pre-v5 database: no repo-scoped indexes, and the
-            // (since-dropped) display_name column still present
+            // simulate a pre-v5 database: no repo-scoped indexes, the
+            // (since-dropped) display_name column still present, and none of
+            // the columns/tables later migrations add
             let store = Store::open(&path).unwrap();
             store
                 .conn
@@ -1085,6 +1157,10 @@ mod tests {
                     "DROP INDEX idx_symbols_repo; DROP INDEX idx_events_repo; \
                      ALTER TABLE repositories ADD COLUMN display_name TEXT; \
                      ALTER TABLE symbols DROP COLUMN visibility; \
+                     ALTER TABLE events DROP COLUMN source; \
+                     ALTER TABLE events DROP COLUMN results; \
+                     ALTER TABLE events DROP COLUMN flags; \
+                     DROP TABLE usage_daily; \
                      PRAGMA user_version=4;",
                 )
                 .unwrap();
@@ -1100,6 +1176,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 2);
+        // the ladder ran to the top: v10's usage table is back
+        let usage: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='usage_daily'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(usage, 1);
         drop(store);
         let _ = std::fs::remove_file(&path);
     }
