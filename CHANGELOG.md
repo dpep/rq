@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.45.0 — 2026-08-21
 
 An independent review drove rq around the Rails source and reported what broke.
 Everything below came out of that.
