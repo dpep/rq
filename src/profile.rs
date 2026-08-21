@@ -160,8 +160,22 @@ fn ms(d: Duration) -> String {
 mod tests {
     use super::*;
 
+    /// `ENABLED` and `PHASES` are process-global and cargo runs tests as
+    /// threads in one process, so these two would otherwise interleave — the
+    /// "off" test seeing the "on" test's flag and running a closure that
+    /// panics on purpose.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// Poison-tolerant: one failing test shouldn't cascade into the other.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn a_span_is_inert_when_profiling_is_off() {
+        let _guard = serial();
+        ENABLED.store(false, Ordering::Relaxed);
+        let _ = phases();
         let mut s = span("off");
         s.note(|| panic!("the note closure must not run when disabled"));
         drop(s);
@@ -173,6 +187,7 @@ mod tests {
 
     #[test]
     fn an_enabled_span_records_its_name_and_note() {
+        let _guard = serial();
         enable_from(true);
         {
             let mut s = span("on");
