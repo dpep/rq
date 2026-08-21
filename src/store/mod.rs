@@ -52,6 +52,9 @@ pub(crate) struct SelectionStat {
 
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
+/// Longest query that still gets the first-character anchor pass.
+const FIRST_CHAR_ANCHOR_MAX: usize = 6;
+
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
     s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts, s.visibility";
 const CANDIDATE_FROM: &str = "FROM symbols s \
@@ -1031,7 +1034,16 @@ impl Store {
         // skip-abbreviations like `usr → user` that prefix matching can't reach;
         // the scorer filters and ranks. Best-effort under the cap — exact and
         // prefix are already guaranteed above.
-        if let Some(first) = q.chars().next() {
+        // Only for a short query. This exists to reach skip-abbreviations
+        // (`usr` -> `user`) that prefix matching can't, and a short query yields
+        // too few trigrams for the FTS layer below to be much of a net. A long
+        // query gets a good trigram net, so anchoring on one letter just drags
+        // in thousands of rows the scorer will reject.
+        if let Some(first) = q
+            .chars()
+            .next()
+            .filter(|_| q.chars().count() <= FIRST_CHAR_ANCHOR_MAX)
+        {
             let anchor = first.to_string();
             let sql = format!(
                 "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
@@ -1068,9 +1080,14 @@ impl Store {
         // path recall: primary definitions in files whose path matches the query,
         // so `billing` can surface the class defined in `billing.rb`.
         let path_like = format!("%{}%", escape_like(&q));
+        // Narrow on `files` first. A leading `%` can't use an index either way,
+        // but scanning 3k file rows and then seeking their symbols beats
+        // scanning 49k symbol rows to test a column on the joined table —
+        // measured at 29 ms against 0.4 ms on rq's own Rails index.
         let sql = format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE fi.path LIKE ?1 ESCAPE '\\' AND s.kind IN ('class', 'module') LIMIT ?2"
+             WHERE s.file_id IN (SELECT id FROM files WHERE path LIKE ?1 ESCAPE '\\') \
+             AND s.kind IN ('class', 'module') LIMIT ?2"
         );
         {
             let mut stmt = self.conn.prepare_cached(&sql)?;

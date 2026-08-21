@@ -797,6 +797,46 @@ fn limit_caps_the_number_of_results() {
 }
 
 #[test]
+fn a_class_is_reachable_by_the_name_of_its_file() {
+    let (dir, db) = scratch("pathrecall");
+    // the class isn't named after the file, so only path recall can reach it
+    fs::write(
+        dir.join("billing.rb"),
+        "class Invoicer\n  def run\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["billing", "--ndjson", "--no-record"]);
+    assert!(ok, "path recall should find it: {out}");
+    assert!(out.contains("Invoicer"), "the class in billing.rb: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_short_abbreviation_still_reaches_a_longer_name() {
+    let (dir, db) = scratch("abbrev");
+    fs::write(
+        dir.join("a.rb"),
+        "class UserAccount\n  def run\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // `usr` skips letters, so neither an exact nor a prefix match reaches it —
+    // this is what the first-character anchor pass exists for
+    let (ok, out) = rq(&db, &dir, &["usr", "--ndjson", "--no-record"]);
+    assert!(ok, "short abbreviation should resolve: {out}");
+    assert!(
+        out.contains("UserAccount"),
+        "reached the longer name: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn one_name_declared_in_several_files_is_one_result() {
     let (dir, db) = scratch("reopen");
     // a module reopened across files, the Ruby (and Rust `impl`) reality —

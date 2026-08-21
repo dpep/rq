@@ -7,6 +7,30 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **Recall is 2-6x faster on a query with no exact match.** Two passes were
+  doing far more work than they returned:
+
+  The path pass — the one that lets `billing` find the class in `billing.rb` —
+  tested a `LIKE '%query%'` against the joined `files` table while scanning
+  every symbol row. It now narrows on `files` first and seeks the symbols of
+  whatever matched: 29 ms to 0.4 ms on a 49,000-symbol index, same results. A
+  leading `%` can't use an index either way, but scanning 3,000 file rows beats
+  scanning 49,000 symbol rows to test a column on a join.
+
+  The first-character anchor now runs only for short queries. It exists to reach
+  skip-abbreviations (`usr` → `user`) that prefix matching can't, and a short
+  query yields too few trigrams for the FTS layer to be much of a net. A long
+  query gets a good trigram net already, so anchoring on one letter only dragged
+  in thousands of rows the scorer then rejected.
+
+  Measured on Rails: `usr` 7 ms → 2 ms, `midleware` 9 ms → 3 ms,
+  `connectoin_pool` 19 ms → 10 ms. Top-3 results are unchanged across a
+  20-query battery, and long abbreviations (`connpool`, `actctrl`, `midstack`)
+  still resolve to the same definitions.
+
 ## 0.47.0 — 2026-08-21
 
 ### Changed
