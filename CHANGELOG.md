@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.47.0 — 2026-08-21
 
 ### Changed
 - **Every search was scanning the whole symbol index.** The prefix pass asked
