@@ -127,9 +127,20 @@ added `struct`/`enum`/`trait`), which also touches the kind-keyed spots in
 `--kind` canonicalizer in `cli/`. That's generalizing the model, not a leak —
 prefer it over a one-off, and keep the new kind language-neutral.
 
-**Dogfooding.** Rust is the dogfood language: `make dogfood Q=<query>` fully
-indexes this repo into a throwaway DB and runs a query, so you can feel the
-ranking on real Rust. Use it to catch quality regressions a unit test wouldn't.
+**Dogfooding.** `make dogfood Q=<query>` fully indexes a repo into a throwaway
+DB and runs a query from inside it, so you can feel the ranking on real code.
+Use it to catch quality regressions a unit test wouldn't.
+
+`REPO=` picks the target; it defaults to this repo, which makes Rust the
+default dogfood language. Reach for someone else's code whenever the question
+is about *ranking* rather than extraction: rq's own source is ~600 symbols, too
+few for same-name collisions and ambiguity to appear at all, and it can only
+ever exercise the Rust plugin. `~/code/lib/ruby/rails` is a good large Ruby
+corpus (~3k files, indexes in seconds):
+
+```sh
+make dogfood REPO=~/code/lib/ruby/rails Q=Middleware
+```
 
 ## Schema changes
 

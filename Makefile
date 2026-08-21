@@ -31,7 +31,7 @@ help:
 	@echo "  make uninstall  cargo uninstall $(BIN)"
 	@echo "  make test       cargo test"
 	@echo "  make check      pre-push gate: fmt + clippy + tests"
-	@echo "  make dogfood    run rq on its own source (Q=<query>, ARGS=<flags>)"
+	@echo "  make dogfood    run rq on real source (Q=<query>, REPO=<path>, ARGS=<flags>)"
 	@echo "  make bench      search-latency benchmark (REPO=. by default)"
 	@echo "  make lint       cargo fmt --check && cargo clippy"
 	@echo "  make fmt        cargo fmt"
@@ -59,23 +59,31 @@ test:
 check:
 	@script/check.sh
 
-# Dogfood rq on its own (Rust) source. Reproducible and self-contained: builds,
-# fully indexes this repo into a throwaway DB under target/ (never your real
-# index), then runs the query. --no-record keeps it side-effect free.
+# The repo to index, for both dogfood and bench. rq's own source is Rust and
+# small; ranking problems — ambiguity, same-name collisions — only really show
+# up on someone else's code at scale.
+REPO     ?= .
+
+# Dogfood rq on real source. Reproducible and self-contained: builds, fully
+# indexes REPO into a throwaway DB under target/ (never your real index), then
+# runs the query. --no-record keeps it side-effect free.
 #   make dogfood Q=Store
 #   make dogfood Q=index ARGS="--explain --limit 5"
+#   make dogfood REPO=~/code/lib/ruby/rails Q=Middleware
+# The query runs *from inside* REPO: search is scoped to the cwd's repo, and
+# being in it is also what earns the current-repo boost, so this ranks the way
+# a real search there would. Indexing a large repo takes a while, every run.
 Q        ?= Store
 ARGS     ?=
 DOGFOOD_DB := $(CURDIR)/target/dogfood.db
 dogfood: build
 	@rm -f "$(DOGFOOD_DB)" "$(DOGFOOD_DB)-wal" "$(DOGFOOD_DB)-shm"
-	@RQ_DB="$(DOGFOOD_DB)" ./target/debug/$(BIN) --index . >/dev/null
-	@RQ_DB="$(DOGFOOD_DB)" ./target/debug/$(BIN) $(Q) --no-record $(ARGS)
+	@RQ_DB="$(DOGFOOD_DB)" ./target/debug/$(BIN) --index "$(REPO)" >/dev/null
+	@cd "$(REPO)" && RQ_DB="$(DOGFOOD_DB)" $(CURDIR)/target/debug/$(BIN) $(Q) --no-record $(ARGS)
 
 # The benchmark is an #[ignore]d test inside the lib, not an example: an example
 # is a separate crate, and reaching index/search/store from one meant publishing
 # all three. --nocapture because its output *is* the result.
-REPO ?= .
 bench:
 	RQ_BENCH_REPO="$(REPO)" $(CARGO) test --release search_latency -- --ignored --nocapture
 
