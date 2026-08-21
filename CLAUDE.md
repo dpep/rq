@@ -2,8 +2,11 @@
 
 `rq` (Reference Query) is a **code navigation engine** — it gets you to the
 definition you most likely want, fast. Read [README.md](README.md) for the
-product vision, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and
-[docs/ROADMAP.md](docs/ROADMAP.md) for what ships when.
+product vision, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design,
+[docs/ROADMAP.md](docs/ROADMAP.md) for what ships when, and
+[docs/DECISIONS.md](docs/DECISIONS.md) for what was considered and turned down —
+check it before proposing an optimization or a ranking signal, because the
+rejections carry the numbers that settled them.
 
 > **Shipping, maintained tool.** The design docs are the contract — keep them
 > in sync with the code, changing them in the same commit when the design
