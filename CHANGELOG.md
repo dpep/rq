@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.42.1 — 2026-08-20
 
 ### Fixed
 - **`--usage` counted a not-yet-ready index as a miss.** rq distinguishes "the
