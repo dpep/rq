@@ -112,6 +112,15 @@ pub(crate) struct Hit {
     /// The full definition source (`line..=end_line`), filled only by `--show`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// How many places declare this name, when more than one folded together
+    /// (a reopened Ruby module, a Rust type with `impl` blocks in several
+    /// files). Absent when the definition is declared once.
+    #[serde(skip_serializing_if = "is_one")]
+    pub declarations: usize,
+    /// The `file:line` of the declarations that folded into this one, so the
+    /// collapse loses nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_in: Vec<String>,
     /// Matches this window was drawn from, before `--limit`. Lets a caller tell
     /// it saw ten of a thousand rather than ten of ten. Filled before output.
     pub total: usize,
@@ -140,6 +149,11 @@ pub(crate) struct Matches {
     pub hits: Vec<Hit>,
     /// Matches before `--limit` truncated them, capped by `CANDIDATE_LIMIT`.
     pub total: usize,
+}
+
+/// A definition declared exactly once needs no count in the output.
+fn is_one(n: &usize) -> bool {
+    *n <= 1
 }
 
 /// Read-through to the window, so a caller that only wants the results reads
@@ -185,45 +199,61 @@ pub(crate) fn search(
     let now = now_unix();
     let learned = learned_boosts(store, query, now)?;
 
-    let mut hits: Vec<Hit> = candidates
-        .into_iter()
-        .filter_map(|c| {
-            // Repo scope: outside `--all-repos`, a search inside a repo returns
-            // only that repo's definitions — never another indexed repo's.
-            if only_repo.is_some_and(|r| r != c.repository_id) {
-                return None;
-            }
-            // learned is empty for most queries — skip the per-candidate
-            // String clones the key would cost
-            let learned_boost = if learned.is_empty() {
-                0.0
-            } else {
-                let key = (c.repository_id, c.file.clone(), c.name.clone());
-                learned.get(&key).copied().unwrap_or(0.0)
-            };
-            let boosts = Boosts {
-                learned: learned_boost,
-                // prefer whichever recency signal is more recent: a recent edit
-                // (mtime, stored in nanoseconds — convert to seconds) or a
-                // recent commit (git_ts, seconds)
-                recency: recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now),
-                branch: if active.is_empty() {
+    let rank = |candidates: Vec<SymbolRow>, near_miss: bool| -> Vec<Hit> {
+        candidates
+            .into_iter()
+            .filter_map(|c| {
+                // Repo scope: outside `--all-repos`, a search inside a repo returns
+                // only that repo's definitions — never another indexed repo's.
+                if only_repo.is_some_and(|r| r != c.repository_id) {
+                    return None;
+                }
+                // learned is empty for most queries — skip the per-candidate
+                // String clones the key would cost
+                let learned_boost = if learned.is_empty() {
                     0.0
                 } else {
-                    active.boost(&c.file)
-                },
-            };
-            rank_one(query, c, current_repo_id, boosts)
-        })
-        .collect();
+                    let key = (c.repository_id, c.file.clone(), c.name.clone());
+                    learned.get(&key).copied().unwrap_or(0.0)
+                };
+                let boosts = Boosts {
+                    learned: learned_boost,
+                    // prefer whichever recency signal is more recent: a recent edit
+                    // (mtime, stored in nanoseconds — convert to seconds) or a
+                    // recent commit (git_ts, seconds)
+                    recency: recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now),
+                    branch: if active.is_empty() {
+                        0.0
+                    } else {
+                        active.boost(&c.file)
+                    },
+                };
+                rank_one(query, c, current_repo_id, boosts, near_miss)
+            })
+            .collect()
+    };
+    // The typo pass is a retry, not a wider net: running it up front would let
+    // a bounded edit-distance match outrank a candidate that genuinely contains
+    // the query, and would pay for the edit distance on every search.
+    let mut hits = rank(candidates, false);
+    // Nothing above zero means nothing worth showing — `ActiveRecrod` matched
+    // only a test method whose name happens to contain `ActiveRecordRecord`,
+    // scored into the negative by the test-path penalty. A wrong answer blocks
+    // the retry just as surely as no answer, so treat them alike.
+    if hits.iter().all(|h| h.score <= 0.0) {
+        // Re-fetch rather than keep a copy: cloning every candidate up front
+        // would tax every search that *does* match to serve the rare one that
+        // doesn't.
+        let retry = store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(leaf))?;
+        hits = rank(retry, true);
+    }
     let n_hits = hits.len();
     let t_score = t.elapsed();
 
     let t = std::time::Instant::now();
-    // Counted before truncation: a caller shown ten of a thousand matches has
-    // no way to tell from the window alone.
-    let total = hits.len();
-    sort_and_truncate(&mut hits, limit);
+    // Counted after folding repeat declarations but before truncation: a caller
+    // shown ten of a thousand matches can't tell from the window alone.
+    let total = sort_and_truncate(&mut hits, limit);
     // The search path already measures these for its trace line; profiling
     // records the same numbers rather than timing the work twice.
     crate::profile::record("recall", t_recall, || format!("{n_candidates} candidates"));
@@ -331,7 +361,7 @@ pub(crate) fn live_search(
                 git_ts: None,
                 visibility: s.visibility.map(str::to_string),
             };
-            rank_one(query, row, Some(LIVE_REPO_ID), Boosts::default())
+            rank_one(query, row, Some(LIVE_REPO_ID), Boosts::default(), false)
         })
         .collect();
     sort_and_truncate(&mut hits, limit);
@@ -388,7 +418,7 @@ pub(crate) fn apply_scope_gate(query: &str, hits: &mut Vec<Hit>) {
 /// database's business and not stable between runs. The same query would
 /// answer differently each time, which is baffling from a terminal and worse
 /// from an agent, and it means output can't be diffed to check a refactor.
-fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) {
+fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) -> usize {
     hits.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -397,7 +427,67 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) {
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| (&a.file, a.line).cmp(&(&b.file, b.line)))
     });
+    collapse_declarations(hits);
+    let total = hits.len();
     hits.truncate(limit);
+    total
+}
+
+/// Fold repeat declarations of one qualified name into a single result.
+///
+/// Ruby reopens a module across files and Rust spreads `impl` blocks the same
+/// way, so a name can be declared a dozen times: `rq Middleware` spent its whole
+/// first page on four declarations of `ActiveRecord::Middleware`, one of them a
+/// six-line autoload stub. Four rows, one answer — the opposite of what a
+/// navigation tool is for.
+///
+/// The survivor is the best-ranked declaration, which `extent` already biases
+/// toward the one with a real body; the rest are recorded on it so nothing is
+/// lost. Only *qualified* names fold, deliberately: two unqualified `Widget`s
+/// are the same reopened class in Ruby but two unrelated types in Rust, and
+/// showing one row too many is the cheaper mistake.
+fn collapse_declarations(hits: &mut Vec<Hit>) {
+    use std::collections::HashMap;
+    let mut first: HashMap<(String, String, String, String), usize> = HashMap::new();
+    let mut folded: Vec<Vec<String>> = vec![Vec::new(); hits.len()];
+    let mut keep = Vec::with_capacity(hits.len());
+    for (i, hit) in hits.iter().enumerate() {
+        let Some(parent) = hit.parent.clone() else {
+            keep.push(true);
+            continue;
+        };
+        let key = (
+            hit.repo_identity.clone(),
+            parent,
+            hit.name.clone(),
+            hit.kind.clone(),
+        );
+        match first.get(&key) {
+            Some(&at) => {
+                folded[at].push(format!("{}:{}", hit.file, hit.line));
+                keep.push(false);
+            }
+            None => {
+                first.insert(key, i);
+                keep.push(true);
+            }
+        }
+    }
+    let mut i = 0;
+    hits.retain(|_| {
+        let k = keep[i];
+        i += 1;
+        k
+    });
+    // walk the survivors in their original order to reattach what folded in
+    let mut survivors = keep.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| i);
+    for hit in hits.iter_mut() {
+        let Some(src) = survivors.next() else { break };
+        if !folded[src].is_empty() {
+            hit.declarations = 1 + folded[src].len();
+            hit.also_in = std::mem::take(&mut folded[src]);
+        }
+    }
 }
 
 fn rank_one(
@@ -405,8 +495,9 @@ fn rank_one(
     c: SymbolRow,
     current_repo_id: Option<i64>,
     boosts: Boosts,
+    near_miss: bool,
 ) -> Option<Hit> {
-    let scored = score::score(query, &c, current_repo_id, boosts)?;
+    let scored = score::score(query, &c, current_repo_id, boosts, near_miss)?;
     Some(Hit {
         name: c.name,
         kind: c.kind,
@@ -422,6 +513,8 @@ fn rank_one(
         features: scored.features,
         signature: None,
         body: None,
+        declarations: 1,
+        also_in: Vec::new(),
         total: 0, // filled from the final result set before output
         explain: None,
     })
@@ -450,6 +543,8 @@ mod tests {
             repo_identity: "local:/tmp/x".into(),
             features: Vec::new(),
             body: None,
+            declarations: 1,
+            also_in: Vec::new(),
             total: 0,
             explain: None,
         };
@@ -630,6 +725,8 @@ mod tests {
             features: vec![],
             signature: None,
             body: None,
+            declarations: 1,
+            also_in: Vec::new(),
             total: 0,
             explain: None,
         };
@@ -736,6 +833,8 @@ mod tests {
             },
             signature: None,
             body: None,
+            declarations: 1,
+            also_in: Vec::new(),
             total: 0,
             explain: None,
         }

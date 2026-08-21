@@ -797,6 +797,57 @@ fn limit_caps_the_number_of_results() {
 }
 
 #[test]
+fn one_name_declared_in_several_files_is_one_result() {
+    let (dir, db) = scratch("reopen");
+    // a module reopened across files, the Ruby (and Rust `impl`) reality —
+    // four rows for one answer is the opposite of what ranking is for
+    fs::write(dir.join("a.rb"), "module Shop\n  module Cart\n  end\nend\n").unwrap();
+    fs::write(
+        dir.join("b.rb"),
+        "module Shop\n  module Cart\n    def add\n      1\n    end\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("c.rb"), "module Shop\n  module Cart\n  end\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["Cart", "--ndjson", "--no-record"]);
+    assert!(ok, "search failed: {out}");
+    assert_eq!(out.lines().count(), 1, "one result for one name: {out}");
+    // and the fold is lossless — the other declarations are still reported
+    assert!(
+        out.contains("\"declarations\":3"),
+        "counts the declarations: {out}"
+    );
+    assert!(out.contains("also_in"), "names where the others are: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_typo_still_finds_the_definition() {
+    let (dir, db) = scratch("typo");
+    fs::write(
+        dir.join("a.rb"),
+        "class ConnectionPool\n  def checkout\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // swapped letters and a doubled one both used to be hard misses: every
+    // query character has to appear in order for a subsequence match
+    for typo in ["connectoin_pool", "connection_poool"] {
+        let (ok, out) = rq(&db, &dir, &[typo, "--ndjson", "--no-record"]);
+        assert!(ok, "{typo} should find something: {out}");
+        assert!(out.contains("ConnectionPool"), "{typo} finds it: {out}");
+    }
+    // a real word that simply isn't there is still a definitive miss
+    let (ok, _) = rq(&db, &dir, &["WidgetFactory", "--ndjson", "--no-record"]);
+    assert!(!ok, "an absent symbol is still a miss");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn confidence_and_total_do_not_depend_on_the_limit() {
     let (dir, db) = scratch("confidence");
     let body: String = (0..6).map(|i| format!("class Widget{i}\nend\n")).collect();

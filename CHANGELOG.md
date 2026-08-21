@@ -7,6 +7,34 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **One name declared in several files is now one result.** Ruby reopens a
+  module across files and Rust spreads `impl` blocks the same way, so `rq
+  Middleware` spent its whole first page on four declarations of
+  `ActiveRecord::Middleware`, one of them a six-line autoload stub. The
+  best-ranked declaration survives and the rest are recorded on it —
+  `declarations` counts them and `also_in` says where they are, so the fold
+  loses nothing. Only *qualified* names fold: two unqualified `Widget`s are one
+  reopened class in Ruby but two unrelated types in Rust, and one row too many
+  is the cheaper mistake.
+
+### Added
+- **A typo finds the definition instead of nothing.** Subsequence matching
+  forgives typing too *little* and nothing else, so the two commonest typos were
+  hard misses — `cnnection_pool` worked while `connectoin_pool` (swapped
+  letters) and `connection_poool` (doubled letter) returned nothing at all.
+  Queries that already match are untouched: the near-miss pass is a retry that
+  runs only when the first pass turned up nothing worth showing, and it scores
+  below every genuine fuzzy match, so it can only ever fill a gap.
+
+  It costs an extra pass over the candidates on that path — a query that used to
+  answer "no matches" instantly now takes a few hundred milliseconds on a large
+  repo to answer correctly. Queries that match are unaffected.
+
+  `--explain` shows it as `typo`.
+
 ## 0.45.0 — 2026-08-21
 
 An independent review drove rq around the Rails source and reported what broke.

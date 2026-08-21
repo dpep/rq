@@ -78,6 +78,8 @@ pub(crate) fn score(
     cand: &SymbolRow,
     current_repo_id: Option<i64>,
     boosts: Boosts,
+    // Allow a bounded typo match — only set on a retry that found nothing.
+    near_miss: bool,
 ) -> Option<Scored> {
     // A qualified query (`Foo::Bar`, `Foo::Bar#baz`) names an enclosing scope:
     // match the leaf against the name, and reward a matching `parent` below.
@@ -149,6 +151,20 @@ pub(crate) fn score(
         features.push(Feature {
             name: "fuzzy",
             value: s.min(600.0) - (tail as f64).min(100.0),
+        });
+        true
+    } else if let Some(d) = near_miss
+        .then(|| near_miss_distance(&q, &name_lower))
+        .flatten()
+    {
+        // Last resort, and only on a query that found nothing any other way. A
+        // subsequence match forgives typing too *little* and nothing else, so
+        // the two commonest typos — swapping adjacent letters, doubling one —
+        // were hard misses: `connectoin_pool` returned nothing while
+        // `cnnection_pool` worked fine.
+        features.push(Feature {
+            name: "typo",
+            value: NEAR_MISS_SCORE - NEAR_MISS_STEP * d as f64,
         });
         true
     } else {
@@ -330,6 +346,18 @@ const MAX_NONBOUNDARY_GAP: usize = 2;
 /// recently — that made ranking depend on file mtimes, so a fresh checkout
 /// ranked differently from a stale one.
 const CASE_MATCH: f64 = 150.0;
+
+/// Ceiling for a near-miss match. Below the weakest real fuzzy match, so a
+/// candidate that genuinely contains the query always wins; this exists to turn
+/// a hard miss into a ranked guess, not to compete.
+const NEAR_MISS_SCORE: f64 = 120.0;
+
+/// Charged per edit between the query and the name.
+const NEAR_MISS_STEP: f64 = 40.0;
+
+/// How wrong a near miss may be. One edit is a slip; beyond two the "did you
+/// mean" stops being a guess and starts being a different word.
+const MAX_NEAR_MISS: usize = 2;
 
 /// What a separator-insensitive exact match gives up to a literal one, so
 /// `parse_file` still wins when the query spells it out.
@@ -753,6 +781,61 @@ fn boundaries(chars: &[char]) -> Vec<bool> {
     out
 }
 
+/// Damerau-Levenshtein distance between query and name, or `None` past
+/// [`MAX_NEAR_MISS`] — "Damerau" meaning it counts a swap of two adjacent
+/// characters as one edit rather than two, because that's what a typo is.
+///
+/// Bounded hard before doing any work: recall hands over thousands of
+/// candidates, and comparing the query against all of them is only affordable
+/// because a length difference alone rules out almost every one.
+fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
+    let (a, b): (Vec<char>, Vec<char>) = (q.chars().collect(), name.chars().collect());
+    if a.len().abs_diff(b.len()) > MAX_NEAR_MISS || a.is_empty() || b.is_empty() {
+        return None;
+    }
+    // a short query is all typo — one edit in three characters is a different
+    // word, not a slip
+    if a.len() < 4 {
+        return None;
+    }
+    // Cheap gate before the quadratic part: the first letter is the one people
+    // get right, and checking it (or its swap with the second) discards almost
+    // every candidate for the price of a comparison. The cost of missing a
+    // first-character typo is one query that stays a miss; the cost of skipping
+    // this is the edit distance against thousands of same-length names.
+    if a[0] != b[0] && !(a[0] == b[1] && a[1] == b[0]) {
+        return None;
+    }
+    // three rows, allocated once: the inner loop runs over thousands of
+    // candidates, and a per-row allocation dominated everything else
+    let mut prev2: Vec<usize> = vec![0; b.len() + 1];
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur: Vec<usize> = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        let mut best = cur[0];
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            // the Damerau step: an adjacent swap costs one, not two
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                cur[j] = cur[j].min(prev2[j - 2] + 1);
+            }
+            best = best.min(cur[j]);
+        }
+        // every alignment on this row is already too far gone
+        if best > MAX_NEAR_MISS {
+            return None;
+        }
+        // rotate: cur becomes prev, prev becomes prev2, and the old prev2's
+        // buffer is reused as the next cur (every cell is rewritten below)
+        std::mem::swap(&mut prev2, &mut prev);
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    let d = prev[b.len()];
+    (d > 0 && d <= MAX_NEAR_MISS).then_some(d)
+}
+
 /// Are these the same identifier once separators are dropped? `_`, `-`, and
 /// `.` are all word joiners across the languages rq indexes, and a query that
 /// omits them is spelling the same name.
@@ -851,7 +934,14 @@ mod tests {
     }
 
     fn total(query: &str, name: &str) -> Option<f64> {
-        score(query, &row(name, "class", 1), None, Boosts::default()).map(|s| s.total)
+        score(
+            query,
+            &row(name, "class", 1),
+            None,
+            Boosts::default(),
+            false,
+        )
+        .map(|s| s.total)
     }
 
     #[test]
@@ -867,11 +957,28 @@ mod tests {
     }
 
     #[test]
+    fn a_near_miss_catches_the_typos_a_subsequence_cannot() {
+        let d = |q: &str, name: &str| near_miss_distance(q, name);
+        // subsequence matching forgives typing too little and nothing else
+        assert_eq!(d("connectoin_pool", "connection_pool"), Some(1)); // swap
+        assert_eq!(d("connection_poool", "connection_pool"), Some(1)); // doubled
+        assert_eq!(d("activerecrod", "activerecord"), Some(1));
+        // too far gone to be a slip
+        assert_eq!(d("connection_pool", "widget_factory"), None);
+        // a short query is all typo — one edit in three chars is another word
+        assert_eq!(d("cat", "car"), None);
+        // an exact match isn't a near miss
+        assert_eq!(d("widget", "widget"), None);
+    }
+
+    #[test]
     fn a_real_body_outranks_a_stub_of_the_same_name() {
         let span = |lines: i64| {
             let mut r = row("where", "method", 1);
             r.end_line = Some(r.line + lines - 1);
-            score("where", &r, None, Boosts::default()).unwrap().total
+            score("where", &r, None, Boosts::default(), false)
+                .unwrap()
+                .total
         };
         // the Rails case: a 3-line stub and the 9-line implementation scored
         // identically, so alphabetical file order picked the stub
@@ -897,7 +1004,9 @@ mod tests {
         let nested = |parent: &str| {
             let mut r = row("save", "method", 1);
             r.parent = Some(parent.into());
-            score("save", &r, None, Boosts::default()).unwrap().total
+            score("save", &r, None, Boosts::default(), false)
+                .unwrap()
+                .total
         };
         // the Rails case: both exact matches on the same name, and before this
         // the tie fell through to alphabetical file order
@@ -918,7 +1027,9 @@ mod tests {
         let at = |file: &str| {
             let mut r = row("save", "method", 1);
             r.file = file.into();
-            score("save", &r, None, Boosts::default()).unwrap().total
+            score("save", &r, None, Boosts::default(), false)
+                .unwrap()
+                .total
         };
         // the Rails case: identical exact matches, decided by path alone
         let lib = at("activerecord/lib/active_record/persistence.rb");
@@ -958,9 +1069,9 @@ mod tests {
         private.visibility = Some("private".into());
         let unknown = row("save", "method", 1); // pre-v9 row: no signal
 
-        let pub_score = score("save", &public, None, Boosts::default()).unwrap();
-        let priv_score = score("save", &private, None, Boosts::default()).unwrap();
-        let unk_score = score("save", &unknown, None, Boosts::default()).unwrap();
+        let pub_score = score("save", &public, None, Boosts::default(), false).unwrap();
+        let priv_score = score("save", &private, None, Boosts::default(), false).unwrap();
+        let unk_score = score("save", &unknown, None, Boosts::default(), false).unwrap();
         assert!(pub_score.total > priv_score.total);
         assert_eq!(
             pub_score.total, unk_score.total,
@@ -1188,10 +1299,10 @@ mod tests {
         let mut straggler = row("Thing", "class", 1);
         straggler.file = "app/employee_x_syy.rb".into();
         let prefixed = row("EmployeesController", "class", 1);
-        let pre = score("employees", &prefixed, None, Boosts::default())
+        let pre = score("employees", &prefixed, None, Boosts::default(), false)
             .unwrap()
             .total;
-        if let Some(s) = score("employees", &straggler, None, Boosts::default()) {
+        if let Some(s) = score("employees", &straggler, None, Boosts::default(), false) {
             assert!(pre > s.total, "prefix {pre} > path straggler {}", s.total);
         }
     }
@@ -1317,17 +1428,17 @@ mod tests {
             parent: Some("Baz".into()),
             ..row("Bar", "class", 1)
         };
-        let foo = score("Foo::Bar", &in_foo, None, Boosts::default())
+        let foo = score("Foo::Bar", &in_foo, None, Boosts::default(), false)
             .unwrap()
             .total;
-        let baz = score("Foo::Bar", &in_baz, None, Boosts::default())
+        let baz = score("Foo::Bar", &in_baz, None, Boosts::default(), false)
             .unwrap()
             .total;
         assert!(foo > baz, "{foo} > {baz}");
         // the unqualified `Bar` still matches both (qualifier only reorders)
-        assert!(score("Bar", &in_baz, None, Boosts::default()).is_some());
+        assert!(score("Bar", &in_baz, None, Boosts::default(), false).is_some());
         // a wrong leaf still doesn't match, qualifier or not
-        assert!(score("Foo::Zzz", &in_foo, None, Boosts::default()).is_none());
+        assert!(score("Foo::Zzz", &in_foo, None, Boosts::default(), false).is_none());
     }
 
     #[test]
@@ -1343,13 +1454,13 @@ mod tests {
         // name "Invoice" doesn't match "billing", but the file does
         let mut cand = row("Invoice", "class", 1);
         cand.file = "app/models/billing.rb".into();
-        let s = score("billing", &cand, None, Boosts::default()).expect("path match");
+        let s = score("billing", &cand, None, Boosts::default(), false).expect("path match");
         assert!(s.features.iter().any(|f| f.name == "path"));
 
         // a method (not a primary definition) in the same file does NOT surface
         let mut method = row("compute", "method", 1);
         method.file = "app/models/billing.rb".into();
-        assert!(score("billing", &method, None, Boosts::default()).is_none());
+        assert!(score("billing", &method, None, Boosts::default(), false).is_none());
     }
 
     #[test]
@@ -1358,10 +1469,10 @@ mod tests {
         named.file = "app/models/user.rb".into();
         let mut elsewhere = row("User", "class", 1);
         elsewhere.file = "app/lib/misc.rb".into();
-        let with_path = score("user", &named, None, Boosts::default())
+        let with_path = score("user", &named, None, Boosts::default(), false)
             .unwrap()
             .total;
-        let without = score("user", &elsewhere, None, Boosts::default())
+        let without = score("user", &elsewhere, None, Boosts::default(), false)
             .unwrap()
             .total;
         assert!(with_path > without, "{with_path} > {without}");
@@ -1370,10 +1481,10 @@ mod tests {
     #[test]
     fn current_repo_boost_applies() {
         let cand = row("User", "class", 7);
-        let in_repo = score("user", &cand, Some(7), Boosts::default())
+        let in_repo = score("user", &cand, Some(7), Boosts::default(), false)
             .unwrap()
             .total;
-        let out_repo = score("user", &cand, Some(99), Boosts::default())
+        let out_repo = score("user", &cand, Some(99), Boosts::default(), false)
             .unwrap()
             .total;
         assert!(in_repo > out_repo);
@@ -1383,7 +1494,9 @@ mod tests {
     #[test]
     fn learned_boost_adds_to_the_score() {
         let cand = row("User", "class", 1);
-        let base = score("user", &cand, None, Boosts::default()).unwrap().total;
+        let base = score("user", &cand, None, Boosts::default(), false)
+            .unwrap()
+            .total;
         let boosted = score(
             "user",
             &cand,
@@ -1392,6 +1505,7 @@ mod tests {
                 learned: 150.0,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         assert_eq!(boosted.total - base, 150.0);
@@ -1401,7 +1515,9 @@ mod tests {
     #[test]
     fn recency_boost_adds_to_the_score() {
         let cand = row("User", "class", 1);
-        let base = score("user", &cand, None, Boosts::default()).unwrap().total;
+        let base = score("user", &cand, None, Boosts::default(), false)
+            .unwrap()
+            .total;
         let boosted = score(
             "user",
             &cand,
@@ -1410,6 +1526,7 @@ mod tests {
                 recency: 80.0,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         assert_eq!(boosted.total - base, 80.0);
@@ -1419,7 +1536,9 @@ mod tests {
     #[test]
     fn branch_boost_adds_to_the_score() {
         let cand = row("User", "class", 1);
-        let base = score("user", &cand, None, Boosts::default()).unwrap().total;
+        let base = score("user", &cand, None, Boosts::default(), false)
+            .unwrap()
+            .total;
         let boosted = score(
             "user",
             &cand,
@@ -1428,6 +1547,7 @@ mod tests {
                 branch: 180.0,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         assert_eq!(boosted.total - base, 180.0);
