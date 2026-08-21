@@ -126,9 +126,15 @@ pub(crate) fn score(
         });
         true
     } else if let Some(s) = subsequence_score(&q, &cand.name) {
+        // Same unmatched-tail penalty the prefix branch applies: the alignment
+        // score counts matched query chars, so a candidate's extra characters
+        // were free and `Validaton` scored `ValidationError` exactly as well as
+        // `Validations`. Capped, and gentle enough that an abbreviation still
+        // reaches a long name it barely covers (`apc` → `ApplicationController`).
+        let tail = cand.name.chars().count().saturating_sub(q.chars().count());
         features.push(Feature {
             name: "fuzzy",
-            value: s.min(600.0),
+            value: s.min(600.0) - (tail as f64).min(100.0),
         });
         true
     } else {
@@ -782,6 +788,18 @@ mod tests {
 
     fn total(query: &str, name: &str) -> Option<f64> {
         score(query, &row(name, "class", 1), None, Boosts::default()).map(|s| s.total)
+    }
+
+    #[test]
+    fn a_typo_prefers_the_tight_match_over_a_longer_superstring() {
+        // `Validaton` is a subsequence of both; the alignment score only counts
+        // matched query chars, so without a tail penalty the extra characters
+        // of `ValidationError` cost it nothing and Rails answered with that.
+        let tight = total("Validaton", "Validations").unwrap();
+        let longer = total("Validaton", "ValidationError").unwrap();
+        assert!(tight > longer, "{tight} > {longer}");
+        // but an abbreviation must still reach a name it barely covers
+        assert!(total("apc", "ApplicationController").is_some());
     }
 
     #[test]

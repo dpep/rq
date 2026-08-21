@@ -10,6 +10,13 @@ and aren't listed; see `git log` for those.
 ## Unreleased
 
 ### Changed
+- **A typo now finds the tight match, not a longer name containing it.**
+  Searching Rails for `Validaton` returned `ValidationError`, and `Assocations`
+  returned `AssociationScope` — the fuzzy score counts matched *query*
+  characters, so a candidate's extra characters were free. Fuzzy matches now
+  take the same unmatched-tail penalty prefix matches already took. Gentle and
+  capped, so an abbreviation still reaches a long name it barely covers
+  (`apc` → `ApplicationController`).
 - **Shallower definitions win a tie.** A new `depth` signal penalizes each
   level of enclosing scope, slightly. Searching Rails for `save` used to return
   `ActiveRecord::Middleware::DatabaseSelector::Resolver::Session#save` first
