@@ -197,6 +197,22 @@ pub(crate) fn score(
         });
     }
 
+    // Namespace depth — among equally-good matches the shallower definition is
+    // usually the canonical one: `ActiveRecord::Persistence#save` over
+    // `ActiveRecord::Middleware::DatabaseSelector::Resolver::Session#save`.
+    // Sized as a tiebreaker and deliberately below every real signal — on a
+    // large repo the whole visible result set routinely scores identically, and
+    // this decides it by something better than alphabetical path order.
+    // A language whose plugin records no parent reads as depth 0 and takes no
+    // penalty; that only matters when one query spans several languages.
+    let depth = cand.parent.as_deref().map_or(0, |p| segments(p).len());
+    if depth > 0 {
+        features.push(Feature {
+            name: "depth",
+            value: -(DEPTH_PENALTY * depth as f64).min(MAX_DEPTH_PENALTY),
+        });
+    }
+
     // Kind weight — definitions you navigate to most sit slightly higher.
     // Top-level types rank alongside classes; methods/functions stay neutral.
     let kind = match cand.kind.as_str() {
@@ -274,6 +290,15 @@ const MAX_NONBOUNDARY_GAP: usize = 2;
 /// recently — that made ranking depend on file mtimes, so a fresh checkout
 /// ranked differently from a stale one.
 const CASE_MATCH: f64 = 150.0;
+
+/// Per level of enclosing scope. Small: this exists to order results that are
+/// otherwise identical, not to outweigh how well a name matched.
+const DEPTH_PENALTY: f64 = 15.0;
+
+/// Cap on the depth penalty. Past a few levels everything is equally
+/// un-canonical, and without a cap a deeply nested match would start losing to
+/// signals it should never lose to.
+const MAX_DEPTH_PENALTY: f64 = 60.0;
 
 /// How far a definition under a test/spec path drops. Big enough to settle a
 /// tie between two exact matches, small enough that an exact match in a test
@@ -757,6 +782,23 @@ mod tests {
 
     fn total(query: &str, name: &str) -> Option<f64> {
         score(query, &row(name, "class", 1), None, Boosts::default()).map(|s| s.total)
+    }
+
+    #[test]
+    fn the_shallower_of_two_identical_matches_wins() {
+        let nested = |parent: &str| {
+            let mut r = row("save", "method", 1);
+            r.parent = Some(parent.into());
+            score("save", &r, None, Boosts::default()).unwrap().total
+        };
+        // the Rails case: both exact matches on the same name, and before this
+        // the tie fell through to alphabetical file order
+        let shallow = nested("ActiveRecord::Persistence");
+        let deep = nested("ActiveRecord::Middleware::DatabaseSelector::Resolver::Session");
+        assert!(shallow > deep, "{shallow} > {deep}");
+        // small enough to stay a tiebreaker — a case match is worth more than
+        // several levels of nesting
+        assert!(shallow - deep < CASE_MATCH, "depth outweighs match quality");
     }
 
     #[test]

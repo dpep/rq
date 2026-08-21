@@ -7,6 +7,20 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **Shallower definitions win a tie.** A new `depth` signal penalizes each
+  level of enclosing scope, slightly. Searching Rails for `save` used to return
+  `ActiveRecord::Middleware::DatabaseSelector::Resolver::Session#save` first
+  and `ActiveRecord::Persistence#save` second, for no better reason than
+  "middleware" sorting before "persistence" — every candidate scored
+  identically, so alphabetical file order decided it.
+
+  It is deliberately small, below every other signal: on a large repo whole
+  result sets score the same (20 of the top 20 for `perform`), and this exists
+  to order those, not to outweigh how well a name matched.
+
 ## 0.43.0 — 2026-08-21
 
 ### Changed
