@@ -260,7 +260,7 @@ pub(crate) fn score(
     let depth = cand
         .parent
         .as_deref()
-        .map_or(0, |p| segments(p).len())
+        .map_or(0, segment_count)
         .saturating_sub(FREE_DEPTH);
     if depth > 0 {
         features.push(Feature {
@@ -569,6 +569,16 @@ pub(crate) fn parse_qualified(query: &str) -> (&str, Option<&str>) {
 }
 
 /// Lowercased scope segments of a (possibly qualified) name, split on `::`/`#`.
+/// How many scopes a qualified name has, without building them. `segments`
+/// allocates a `String` per scope, which is fine for the one query but not for
+/// every candidate on a query that recalls thousands.
+fn segment_count(s: &str) -> usize {
+    s.split("::")
+        .flat_map(|p| p.split('#'))
+        .filter(|p| !p.is_empty())
+        .count()
+}
+
 fn segments(s: &str) -> Vec<String> {
     s.split("::")
         .flat_map(|p| p.split('#'))
@@ -788,24 +798,47 @@ fn boundaries(chars: &[char]) -> Vec<bool> {
 /// Bounded hard before doing any work: recall hands over thousands of
 /// candidates, and comparing the query against all of them is only affordable
 /// because a length difference alone rules out almost every one.
-fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
-    let (a, b): (Vec<char>, Vec<char>) = (q.chars().collect(), name.chars().collect());
-    if a.len().abs_diff(b.len()) > MAX_NEAR_MISS || a.is_empty() || b.is_empty() {
-        return None;
+/// The cheap half of [`near_miss_distance`], so a retry can skip candidates
+/// that could never be a near miss rather than scoring all of them: on Rails a
+/// transposed query recalls ten thousand candidates and six hundred survive
+/// this.
+pub(crate) fn near_miss_possible(query: &str, name: &str) -> bool {
+    let leaf = parse_qualified(query).0;
+    let (qlen, nlen) = (leaf.chars().count(), name.chars().count());
+    if qlen < 4 || qlen.abs_diff(nlen) > MAX_NEAR_MISS {
+        return false;
     }
+    let low = |c: char| c.to_ascii_lowercase();
+    let mut qc = leaf.chars().map(low);
+    let mut nc = name.chars().map(low);
+    match (qc.next(), qc.next(), nc.next(), nc.next()) {
+        (Some(q0), Some(q1), Some(n0), Some(n1)) => q0 == n0 || (q0 == n1 && q1 == n0),
+        _ => false,
+    }
+}
+
+fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
+    // Every gate here reads the strings directly. Collecting into `Vec<char>`
+    // first cost two allocations per candidate across thousands of them, which
+    // swamped the comparisons meant to avoid the work — a gate below an
+    // allocation isn't a gate.
+    let (qlen, nlen) = (q.chars().count(), name.chars().count());
     // a short query is all typo — one edit in three characters is a different
     // word, not a slip
-    if a.len() < 4 {
+    if qlen < 4 || qlen.abs_diff(nlen) > MAX_NEAR_MISS {
         return None;
     }
-    // Cheap gate before the quadratic part: the first letter is the one people
-    // get right, and checking it (or its swap with the second) discards almost
-    // every candidate for the price of a comparison. The cost of missing a
-    // first-character typo is one query that stays a miss; the cost of skipping
-    // this is the edit distance against thousands of same-length names.
-    if a[0] != b[0] && !(a[0] == b[1] && a[1] == b[0]) {
+    // The first letter is the one people get right, so checking it (or its swap
+    // with the second) discards almost every candidate for two comparisons.
+    // Missing a first-character typo costs one query that stays a miss.
+    let mut qc = q.chars();
+    let mut nc = name.chars();
+    let (q0, q1) = (qc.next()?, qc.next()?);
+    let (n0, n1) = (nc.next()?, nc.next()?);
+    if q0 != n0 && !(q0 == n1 && q1 == n0) {
         return None;
     }
+    let (a, b): (Vec<char>, Vec<char>) = (q.chars().collect(), name.chars().collect());
     // three rows, allocated once: the inner loop runs over thousands of
     // candidates, and a per-row allocation dominated everything else
     let mut prev2: Vec<usize> = vec![0; b.len() + 1];
@@ -840,9 +873,19 @@ fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
 /// `.` are all word joiners across the languages rq indexes, and a query that
 /// omits them is spelling the same name.
 fn alnum_eq(a: &str, b: &str) -> bool {
-    let squash = |s: &str| -> String { s.chars().filter(char::is_ascii_alphanumeric).collect() };
-    let (sa, sb) = (squash(a), squash(b));
-    !sa.is_empty() && sa == sb
+    // Compared in lockstep rather than by building two squashed Strings: this
+    // runs against every candidate, and on a query that recalls thousands the
+    // allocations cost more than everything else in scoring put together.
+    let mut sa = a.chars().filter(char::is_ascii_alphanumeric);
+    let mut sb = b.chars().filter(char::is_ascii_alphanumeric);
+    let mut any = false;
+    loop {
+        match (sa.next(), sb.next()) {
+            (None, None) => return any,
+            (Some(x), Some(y)) if x == y => any = true,
+            _ => return false,
+        }
+    }
 }
 
 /// Does this repo-relative path look like test/spec code?

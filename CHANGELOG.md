@@ -7,6 +7,21 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **Scoring got ~5x slower per candidate in 0.44.0/0.45.0.** Two features added
+  then allocated on the hot path for every candidate: the separator-insensitive
+  exact match built two squashed `String`s, and the namespace-depth signal built
+  a `Vec<String>` of scope names when it only wanted the count. Invisible on most
+  queries, which recall a handful of candidates — a query with no exact match
+  recalls thousands, and there it dominated everything else in scoring.
+- **A typo query re-scored every candidate twice.** The near-miss retry now
+  looks only at candidates that could actually *be* a near miss (a length and
+  first-letter check), instead of paying the whole name-match chain a second
+  time for ten thousand rows to serve a few hundred. On Rails, a transposed
+  query went from ~230 ms of scoring to ~70 ms.
+
 ## 0.46.0 — 2026-08-21
 
 ### Changed

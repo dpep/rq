@@ -199,9 +199,11 @@ pub(crate) fn search(
     let now = now_unix();
     let learned = learned_boosts(store, query, now)?;
 
-    let rank = |candidates: Vec<SymbolRow>, near_miss: bool| -> Vec<Hit> {
+    // Borrows rather than consumes, so the retry below can re-rank the same
+    // candidates instead of asking the store for them again.
+    let rank = |candidates: &[SymbolRow], near_miss: bool| -> Vec<Hit> {
         candidates
-            .into_iter()
+            .iter()
             .filter_map(|c| {
                 // Repo scope: outside `--all-repos`, a search inside a repo returns
                 // only that repo's definitions — never another indexed repo's.
@@ -235,17 +237,24 @@ pub(crate) fn search(
     // The typo pass is a retry, not a wider net: running it up front would let
     // a bounded edit-distance match outrank a candidate that genuinely contains
     // the query, and would pay for the edit distance on every search.
-    let mut hits = rank(candidates, false);
+    let mut hits = rank(&candidates, false);
     // Nothing above zero means nothing worth showing — `ActiveRecrod` matched
     // only a test method whose name happens to contain `ActiveRecordRecord`,
     // scored into the negative by the test-path penalty. A wrong answer blocks
     // the retry just as surely as no answer, so treat them alike.
     if hits.iter().all(|h| h.score <= 0.0) {
-        // Re-fetch rather than keep a copy: cloning every candidate up front
-        // would tax every search that *does* match to serve the rare one that
-        // doesn't.
-        let retry = store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(leaf))?;
-        hits = rank(retry, true);
+        // Only candidates that could *be* a near miss are worth re-scoring —
+        // the alternative is paying the whole name-match chain a second time
+        // for ten thousand rows to serve a few hundred.
+        let near: Vec<SymbolRow> = candidates
+            .into_iter()
+            .filter(|c| score::near_miss_possible(query, &c.name))
+            .collect();
+        let retried = rank(&near, true);
+        // keep the first pass's answer if the retry turns up nothing
+        if !retried.is_empty() {
+            hits = retried;
+        }
     }
     let n_hits = hits.len();
     let t_score = t.elapsed();
@@ -361,7 +370,7 @@ pub(crate) fn live_search(
                 git_ts: None,
                 visibility: s.visibility.map(str::to_string),
             };
-            rank_one(query, row, Some(LIVE_REPO_ID), Boosts::default(), false)
+            rank_one(query, &row, Some(LIVE_REPO_ID), Boosts::default(), false)
         })
         .collect();
     sort_and_truncate(&mut hits, limit);
@@ -492,22 +501,24 @@ fn collapse_declarations(hits: &mut Vec<Hit>) {
 
 fn rank_one(
     query: &str,
-    c: SymbolRow,
+    c: &SymbolRow,
     current_repo_id: Option<i64>,
     boosts: Boosts,
     near_miss: bool,
 ) -> Option<Hit> {
-    let scored = score::score(query, &c, current_repo_id, boosts, near_miss)?;
+    // Borrowed, so a candidate that doesn't score costs nothing; the clones
+    // below happen only for the few that become results.
+    let scored = score::score(query, c, current_repo_id, boosts, near_miss)?;
     Some(Hit {
-        name: c.name,
-        kind: c.kind,
-        language: c.language,
-        file: c.file,
+        name: c.name.clone(),
+        kind: c.kind.clone(),
+        language: c.language.clone(),
+        file: c.file.clone(),
         line: c.line,
         end_line: c.end_line,
-        parent: c.parent,
-        visibility: c.visibility,
-        repo_identity: c.repo_identity,
+        parent: c.parent.clone(),
+        visibility: c.visibility.clone(),
+        repo_identity: c.repo_identity.clone(),
         score: scored.total,
         confidence: 0.0, // filled from the final result set before output
         features: scored.features,
