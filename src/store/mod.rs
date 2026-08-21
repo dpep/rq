@@ -95,8 +95,27 @@ pub(crate) struct CoverageRow {
     pub symbols: i64,
 }
 
-/// One row of `rq --usage` output: how rq was called on a given day, and how
-/// often that call found nothing.
+/// One search, as recorded for usage. A struct rather than a long positional
+/// argument list — every field here is a label or a count, and mixing them up
+/// silently would corrupt the counters.
+pub(crate) struct SearchRecord<'a> {
+    pub query: &'a str,
+    pub repository_id: Option<i64>,
+    pub results: usize,
+    /// Caller label from [`crate::origin`].
+    pub source: &'a str,
+    /// Canonical flag set, comma-joined; empty for a bare search.
+    pub flags: &'a str,
+    /// `hit`, `miss` (the symbol isn't there), or `warming` (the index wasn't
+    /// ready to say). rq separates the last two in its exit codes; conflating
+    /// them in the counts would overstate how often it truly finds nothing.
+    pub status: &'a str,
+    /// Index state when the query arrived: `complete`, `warming`, or `none`.
+    pub coverage: &'a str,
+}
+
+/// One row of `rq --usage` output: how rq was called on a given day, and what
+/// came back.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct UsageRow {
     pub day: String,
@@ -105,7 +124,12 @@ pub(crate) struct UsageRow {
     /// Canonical flag set for the call, comma-joined; empty for a bare search.
     pub flags: String,
     pub searches: i64,
+    /// Answered nothing against a ready index — the symbol isn't there.
     pub misses: i64,
+    /// Answered nothing because the index wasn't ready yet.
+    pub warming: i64,
+    /// Ran against a fully indexed repo, whatever the outcome.
+    pub on_complete: i64,
 }
 
 impl Store {
@@ -612,29 +636,39 @@ impl Store {
     /// Both writes happen in one transaction: the `events` row is the detail
     /// (pruned to a rolling window) and the `usage_daily` row is the count that
     /// outlives it, so they must not disagree.
-    pub(crate) fn record_search(
-        &mut self,
-        query: &str,
-        repository_id: Option<i64>,
-        results: usize,
-        source: &str,
-        flags: &str,
-    ) -> Result<()> {
+    pub(crate) fn record_search(&mut self, rec: &SearchRecord) -> Result<()> {
         let ts = now_unix();
-        let miss = i64::from(results == 0);
+        let miss = i64::from(rec.status == "miss");
+        let warming = i64::from(rec.status == "warming");
+        let on_complete = i64::from(rec.coverage == "complete");
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO events (type, query, repository_id, ts, source, results, flags)
-             VALUES ('search', ?1, ?2, ?3, ?4, ?5, ?6)",
-            params![query, repository_id, ts, source, results as i64, flags],
+            "INSERT INTO events
+               (type, query, repository_id, ts, source, results, flags, status, coverage)
+             VALUES ('search', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                rec.query,
+                rec.repository_id,
+                ts,
+                rec.source,
+                rec.results as i64,
+                rec.flags,
+                rec.status,
+                rec.coverage,
+            ],
         )?;
+        // Local date, not UTC: an evening search on the US west coast would
+        // otherwise be filed under tomorrow, which makes a per-day report
+        // quietly wrong for a third of the waking day.
         tx.execute(
-            "INSERT INTO usage_daily (day, source, flags, searches, misses)
-             VALUES (date(?1, 'unixepoch'), ?2, ?3, 1, ?4)
+            "INSERT INTO usage_daily (day, source, flags, searches, misses, warming, on_complete)
+             VALUES (date(?1, 'unixepoch', 'localtime'), ?2, ?3, 1, ?4, ?5, ?6)
              ON CONFLICT(day, source, flags) DO UPDATE SET
                searches = searches + 1,
-               misses = misses + excluded.misses",
-            params![ts, source, flags, miss],
+               misses = misses + excluded.misses,
+               warming = warming + excluded.warming,
+               on_complete = on_complete + excluded.on_complete",
+            params![ts, rec.source, rec.flags, miss, warming, on_complete],
         )?;
         tx.commit()
     }
@@ -643,8 +677,8 @@ impl Store {
     /// pruned, these rows are not.
     pub(crate) fn usage_overview(&self) -> Result<Vec<UsageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT day, source, flags, searches, misses FROM usage_daily
-             ORDER BY day DESC, searches DESC, source, flags",
+            "SELECT day, source, flags, searches, misses, warming, on_complete
+             FROM usage_daily ORDER BY day DESC, searches DESC, source, flags",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -654,6 +688,8 @@ impl Store {
                     flags: r.get(2)?,
                     searches: r.get(3)?,
                     misses: r.get(4)?,
+                    warming: r.get(5)?,
+                    on_complete: r.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -1160,6 +1196,8 @@ mod tests {
                      ALTER TABLE events DROP COLUMN source; \
                      ALTER TABLE events DROP COLUMN results; \
                      ALTER TABLE events DROP COLUMN flags; \
+                     ALTER TABLE events DROP COLUMN status; \
+                     ALTER TABLE events DROP COLUMN coverage; \
                      DROP TABLE usage_daily; \
                      PRAGMA user_version=4;",
                 )
@@ -1176,11 +1214,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 2);
-        // the ladder ran to the top: v10's usage table is back
+        // the ladder ran to the top: v10 recreated the usage table and v11
+        // added its warming counter
         let usage: i64 = store
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='usage_daily'",
+                "SELECT COUNT(*) FROM pragma_table_info('usage_daily') WHERE name='warming'",
                 [],
                 |r| r.get(0),
             )

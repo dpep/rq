@@ -7,6 +7,25 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **`--usage` counted a not-yet-ready index as a miss.** rq distinguishes "the
+  symbol isn't there" (exit 1) from "the index hasn't reached it yet" (exit 2),
+  but the counts netted both into `misses` — on the first real day of data that
+  overstated genuine misses by 2x. They're separate columns now, and the two
+  call for opposite responses: index more, versus the symbol isn't there.
+- **`day` was UTC, so evening searches were filed under tomorrow.** For anyone
+  west of Greenwich a per-day report was quietly shifted for part of the day.
+  It's the local date now. Rows written before this keep the UTC day they were
+  recorded under — history isn't rewritten, so a day either side of the upgrade
+  may be split across two rows.
+
+### Added
+- **`--usage` records the index state each query arrived to** — `on_complete`
+  counts the searches that ran against a fully indexed repo, so a miss rate can
+  be read against how ready rq actually was.
+
 ## 0.42.0 — 2026-08-20
 
 ### Added

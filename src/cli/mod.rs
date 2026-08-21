@@ -338,6 +338,30 @@ fn requested_limit(limit: usize) -> usize {
     if limit == 0 { usize::MAX } else { limit }
 }
 
+/// Count one search for `--usage`. Observability only: `search` rows are
+/// invisible to the rollup that feeds ranking, so this can never move a result.
+fn record_usage(
+    store: &mut Store,
+    args: &SearchArgs,
+    repository_id: Option<i64>,
+    results: usize,
+    status: &str,
+    coverage: Option<&str>,
+) {
+    if args.no_record {
+        return;
+    }
+    let _ = store.record_search(&crate::store::SearchRecord {
+        query: &args.query.to_ascii_lowercase(),
+        repository_id,
+        results,
+        source: &crate::origin::detect(),
+        flags: &flag_summary(args),
+        status,
+        coverage: coverage.unwrap_or("none"),
+    });
+}
+
 /// The call's flags as a canonical, comma-joined string, for usage counts.
 /// A fixed vocabulary in a fixed order, so the same call always produces the
 /// same string and the counter table stays small — values are never included,
@@ -874,19 +898,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     apply_gates(query, &mut hits);
     apply_post_filters(args, cwd.as_deref(), root.as_deref(), &mut hits);
 
-    // Count the query here, above the miss return, so one call site covers
-    // every exit below (miss, --show, --open, the ranked list). Observability
-    // only: `search` rows are invisible to the rollup that feeds ranking.
-    if !no_record {
-        let _ = store.record_search(
-            &query.to_ascii_lowercase(),
-            current,
-            hits.len(),
-            &crate::origin::detect(),
-            &flag_summary(args),
-        );
-    }
-
     if hits.is_empty() {
         // Stop a still-running block so the join is prompt, then settle coverage.
         if block {
@@ -928,8 +939,23 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             no_wait,
             identity.as_deref(),
         );
+        // Recorded here rather than above the branch: whether this was a
+        // definitive miss or a not-ready one is only known now, and counting
+        // them as one number overstates how often rq truly finds nothing.
+        record_usage(
+            store,
+            args,
+            current,
+            0,
+            if incomplete { "warming" } else { "miss" },
+            coverage.as_deref(),
+        );
         return no_match_code(out, query, interrupted, incomplete);
     }
+
+    // The hit path's single count, above the --show/--open/list forks so it
+    // covers all three.
+    record_usage(store, args, current, hits.len(), "hit", coverage.as_deref());
 
     // Attach each result's definition line (e.g. `def perform(refund)`) — shown
     // in text output and carried in JSON. Cheap: only the displayed results.
@@ -2563,27 +2589,34 @@ fn cmd_usage(out: Output) -> ExitCode {
             println!("no usage recorded yet");
         }
         Output::Text => {
-            // Five columns of bare numbers need naming; `--status` gets away
-            // without a header because its columns carry their own units.
+            // Columns of bare numbers need naming; `--status` gets away without
+            // a header because its columns carry their own units.
             println!(
-                "{:<10}  {:<16} {:>8} {:>7}  flags",
-                "day", "caller", "found", "missed"
+                "{:<10}  {:<16} {:>6} {:>7} {:>8}  flags",
+                "day", "caller", "found", "missed", "warming"
             );
             for r in &rows {
                 let flags = if r.flags.is_empty() { "-" } else { &r.flags };
                 println!(
-                    "{:<10}  {:<16} {:>8} {:>7}  {}",
+                    "{:<10}  {:<16} {:>6} {:>7} {:>8}  {}",
                     r.day,
                     r.source,
-                    r.searches - r.misses,
+                    r.searches - r.misses - r.warming,
                     r.misses,
+                    r.warming,
                     flags
                 );
             }
             let searches: i64 = rows.iter().map(|r| r.searches).sum();
             let misses: i64 = rows.iter().map(|r| r.misses).sum();
+            let warming: i64 = rows.iter().map(|r| r.warming).sum();
+            let complete: i64 = rows.iter().map(|r| r.on_complete).sum();
             let plural = if searches == 1 { "search" } else { "searches" };
-            println!("{searches} {plural}, {misses} found nothing");
+            // Counts, not a percentage: these totals are often small enough
+            // that a percentage would read as more evidence than there is.
+            println!(
+                "{searches} {plural} · {misses} missed · {warming} asked too early · {complete} on a complete index"
+            );
         }
     }
     // Nothing recorded is the "nothing happened" case, like an empty --status.

@@ -827,6 +827,16 @@ fn usage_counts_searches_by_caller_and_flags() {
         out.contains("\"searches\":2") && out.contains("\"misses\":1"),
         "the miss is counted, not dropped: {out}"
     );
+    // a definitive miss against a ready index is not a warming one — rq
+    // separates them in its exit codes, so the counts must too
+    assert!(
+        out.contains("\"warming\":0"),
+        "an indexed repo's miss isn't counted as warming: {out}"
+    );
+    assert!(
+        out.contains("\"on_complete\":2"),
+        "queries against a complete index are counted: {out}"
+    );
 
     // --no-record keeps benchmark loops out of the counts
     let before = out.lines().count();

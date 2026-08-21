@@ -179,7 +179,9 @@ events (
   branch TEXT, ts INTEGER NOT NULL,
   source TEXT,                      -- caller label, for search rows
   results INTEGER,                  -- hits returned; 0 = a miss
-  flags TEXT                        -- canonical flag set, comma-joined
+  flags TEXT,                       -- canonical flag set, comma-joined
+  status TEXT,                      -- hit | miss (absent) | warming (not ready)
+  coverage TEXT                     -- index state on arrival: complete|warming|none
 );
 CREATE INDEX idx_events_repo ON events(repository_id, id);
 
@@ -187,11 +189,13 @@ CREATE INDEX idx_events_repo ON events(repository_id, id);
 -- because that log is pruned to a rolling window, which makes it a ceiling
 -- rather than a count.
 usage_daily (
-  day TEXT NOT NULL,                -- UTC date, YYYY-MM-DD
+  day TEXT NOT NULL,                -- local date, YYYY-MM-DD
   source TEXT NOT NULL,
   flags TEXT NOT NULL,
   searches INTEGER NOT NULL,
-  misses INTEGER NOT NULL,
+  misses INTEGER NOT NULL,          -- answered nothing, against a ready index
+  warming INTEGER NOT NULL,         -- answered nothing because it wasn't ready
+  on_complete INTEGER NOT NULL,     -- ran against a fully indexed repo
   PRIMARY KEY (day, source, flags)
 );
 
@@ -223,6 +227,10 @@ Decisions worth calling out:
   append a live-scan tail.
 - **`events` + `selection_stats`** separate the append-only truth from the
   aggregate the ranking path reads, so the hot path never scans the log.
+- **A miss and a not-yet are counted apart.** rq already separates them in its
+  exit codes (1 = absent, 2 = index still warming); netting them into one
+  number would overstate how often it truly finds nothing, and the two call for
+  opposite responses — index more, versus the symbol isn't there.
 - **`usage_daily` is observability, not learning.** The rollup that feeds
   ranking reads only `open`/`select` rows, so counting a search can never move
   a result. Counters are incremented on write rather than rolled up, so they

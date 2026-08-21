@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 10;
+pub(crate) const VERSION: i64 = 11;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -100,7 +100,9 @@ CREATE TABLE events (
   ts INTEGER NOT NULL,
   source TEXT,                       -- caller label, for search rows
   results INTEGER,                   -- hits returned; 0 = a miss
-  flags TEXT                         -- canonical flag set, comma-joined
+  flags TEXT,                        -- canonical flag set, comma-joined
+  status TEXT,                       -- hit | miss (absent) | warming (not ready)
+  coverage TEXT                      -- index state on arrival: complete|warming|none
 );
 CREATE INDEX idx_events_repo ON events(repository_id, id);
 
@@ -109,11 +111,13 @@ CREATE INDEX idx_events_repo ON events(repository_id, id);
 -- the only cumulative record of how rq is actually used. Read by `--usage`,
 -- never by ranking.
 CREATE TABLE usage_daily (
-  day TEXT NOT NULL,                 -- UTC date, YYYY-MM-DD
+  day TEXT NOT NULL,                 -- local date, YYYY-MM-DD
   source TEXT NOT NULL,
   flags TEXT NOT NULL,
   searches INTEGER NOT NULL,
-  misses INTEGER NOT NULL,
+  misses INTEGER NOT NULL,           -- answered nothing, against a ready index
+  warming INTEGER NOT NULL,          -- answered nothing because it wasn't ready
+  on_complete INTEGER NOT NULL,      -- ran against a fully indexed repo
   PRIMARY KEY (day, source, flags)
 );
 
@@ -242,9 +246,21 @@ CREATE TABLE IF NOT EXISTS usage_daily (
 );
 "#;
 
+/// Migration v10 -> v11: split "found nothing" into a definitive miss and a
+/// not-ready one, and record the index state a query arrived to. `misses` had
+/// been counting both, which overstates real misses — rq distinguishes them in
+/// its exit codes for the same reason. Counters are additive, so existing rows
+/// keep their `searches`/`misses` and read zero for the new columns.
+pub(crate) const MIGRATION_V11: &str = r#"
+ALTER TABLE events ADD COLUMN status TEXT;
+ALTER TABLE events ADD COLUMN coverage TEXT;
+ALTER TABLE usage_daily ADD COLUMN warming INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE usage_daily ADD COLUMN on_complete INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, &str); 9] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 10] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -254,6 +270,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 9] = [
     (8, MIGRATION_V8),
     (9, MIGRATION_V9),
     (10, MIGRATION_V10),
+    (11, MIGRATION_V11),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]
