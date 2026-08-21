@@ -7,6 +7,25 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **Definitions under test and spec paths rank below source.** Searching Rails
+  for `save` returned eight fake models from `test/` fixtures and never reached
+  `ActiveRecord::Persistence#save` — all of them scored identically, so the tie
+  fell through to alphabetical path order. `--explain` shows the new
+  `test_path` feature like any other.
+
+  It's a penalty, not a filter: when a name only lives in tests, every
+  candidate takes it equally and the order among them is unchanged, so you can
+  still navigate to a test.
+
+  Matching is by whole directory segment (`test/`, `tests/`, `spec/`, `specs/`,
+  `__tests__/`, `__mocks__/`, `testdata/`, `fixtures/`) plus filename suffixes
+  (`*_test.*`, `*_spec.*`, `*.test.*`, `*.spec.*`) and `conftest.py`. A `test_*`
+  prefix rule was tried and dropped — it wrongly demoted genuine public API
+  like `ActiveSupport::TestCase` and `ActionView::TestCase`.
+
 ## 0.42.1 — 2026-08-20
 
 ### Fixed

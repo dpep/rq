@@ -183,6 +183,20 @@ pub(crate) fn score(
         });
     }
 
+    // Test/spec path — a fixture or a test double is rarely the definition you
+    // meant, and on a large repo they collide head-on with the real ones: Rails
+    // has 64 definitions of `save`, half of them fake models under `test/`,
+    // every one scoring exactly what the real `ActiveRecord::Persistence#save`
+    // scores. Without this the tie falls through to alphabetical path order.
+    // A penalty, never a filter — when the test *is* what you're after, every
+    // candidate takes it equally and the order among them is unchanged.
+    if in_test_path(&cand.file) {
+        features.push(Feature {
+            name: "test_path",
+            value: -TEST_PATH_PENALTY,
+        });
+    }
+
     // Kind weight — definitions you navigate to most sit slightly higher.
     // Top-level types rank alongside classes; methods/functions stay neutral.
     let kind = match cand.kind.as_str() {
@@ -260,6 +274,12 @@ const MAX_NONBOUNDARY_GAP: usize = 2;
 /// recently — that made ranking depend on file mtimes, so a fresh checkout
 /// ranked differently from a stale one.
 const CASE_MATCH: f64 = 150.0;
+
+/// How far a definition under a test/spec path drops. Big enough to settle a
+/// tie between two exact matches, small enough that an exact match in a test
+/// still outranks a fuzzy match in source — when the name really only lives in
+/// a test, you still want it.
+const TEST_PATH_PENALTY: f64 = 150.0;
 
 /// Penalty per skipped char between two matched chars. Strong enough that a
 /// closer match wins over a farther one — so the query's trailing chars don't
@@ -647,9 +667,76 @@ fn boundaries(chars: &[char]) -> Vec<bool> {
     out
 }
 
+/// Does this repo-relative path look like test/spec code?
+///
+/// Directory names are matched as whole segments, and only suffix conventions
+/// are read off the filename. A `test_*` prefix rule was tried and dropped: it
+/// wrongly caught a pile of genuine library files (`active_support/test_case.rb`,
+/// `action_view/test_case.rb` — public API people search for). Missing a stray
+/// `test_foo.py` beside its source is the cheaper error, and the `tests/`
+/// directory those normally live in is caught anyway.
+fn in_test_path(file: &str) -> bool {
+    let (dirs, name) = match file.rsplit_once('/') {
+        Some((d, n)) => (d, n),
+        None => ("", file),
+    };
+    // whole segments only, so a library *about* testing (`.../testing/`) stays
+    // unpenalized
+    if dirs.split('/').any(|seg| {
+        matches!(
+            seg,
+            "test"
+                | "tests"
+                | "spec"
+                | "specs"
+                | "__tests__"
+                | "__mocks__"
+                | "testdata"
+                | "fixtures"
+        )
+    }) {
+        return true;
+    }
+    if name == "conftest.py" {
+        return true;
+    }
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    // `foo_test.go`, `foo_spec.rb`, `foo.test.ts`, `foo.spec.tsx`
+    stem.ends_with("_test")
+        || stem.ends_with("_spec")
+        || stem.ends_with(".test")
+        || stem.ends_with(".spec")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_test_paths_without_catching_libraries_about_testing() {
+        for p in [
+            "actionpack/test/lib/controller/fake_models.rb",
+            "spec/models/widget_spec.rb",
+            "pkg/thing/thing_test.go",
+            "src/__tests__/widget.ts",
+            "src/widget.test.tsx",
+            "tests/conftest.py",
+            "internal/testdata/sample.go",
+        ] {
+            assert!(in_test_path(p), "should be a test path: {p}");
+        }
+        for p in [
+            // public API that merely *mentions* testing — the case a `test_`
+            // prefix rule got wrong
+            "activesupport/lib/active_support/test_case.rb",
+            "activesupport/lib/active_support/testing/assertions.rb",
+            "activejob/lib/active_job/test_helper.rb",
+            "src/search/score.rs",
+            "lib/latest.rb",
+        ] {
+            assert!(!in_test_path(p), "should not be a test path: {p}");
+        }
+    }
 
     fn row(name: &str, kind: &str, repo: i64) -> SymbolRow {
         SymbolRow {
@@ -670,6 +757,23 @@ mod tests {
 
     fn total(query: &str, name: &str) -> Option<f64> {
         score(query, &row(name, "class", 1), None, Boosts::default()).map(|s| s.total)
+    }
+
+    #[test]
+    fn source_outranks_an_identical_match_in_a_test() {
+        let at = |file: &str| {
+            let mut r = row("save", "method", 1);
+            r.file = file.into();
+            score("save", &r, None, Boosts::default()).unwrap().total
+        };
+        // the Rails case: identical exact matches, decided by path alone
+        let lib = at("activerecord/lib/active_record/persistence.rb");
+        let fixture = at("actionpack/test/lib/controller/fake_models.rb");
+        assert!(lib > fixture, "{lib} > {fixture}");
+        // still a match, not a filter — a name that only lives in tests is
+        // penalized uniformly, so the ordering among those is untouched
+        assert!(fixture > 0.0);
+        assert_eq!(fixture, at("spec/models/widget_spec.rb"));
     }
 
     #[test]
