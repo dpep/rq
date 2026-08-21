@@ -37,6 +37,9 @@ rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
 rq class Widget           a leading kind keyword is shorthand for -k\n  \
 rq --symbols FILE         outline a file's definitions, in line order\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python/ts/js)\n  \
+rq 'Foo::Bar'             qualify by scope — the surest way past an ambiguous name\n  \
+rq 'Foo#bar'              ...and by owner, for a method\n  \
+rq 'refund*proc'          wildcards: * (any run), ? (one char) — quote them\n  \
 rq -o thing               open the best match in your editor (and record it)\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n  \
@@ -249,9 +252,35 @@ pub fn run() -> ExitCode {
         return cmd_record(&cli.event, cli.target.as_deref(), &file, cli.line);
     }
     let out = output_format(&cli);
-    let mut kinds: Vec<String> = cli.kind.iter().map(|k| canonical_kind(k)).collect();
+    if cli.target.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return fail(format_args!("rq: empty query"));
+    }
+    // Reject an unknown --kind/--lang rather than filtering everything away: a
+    // typo used to come back as `no_match`, exit 1 — the one code a script is
+    // meant to trust as "this symbol does not exist".
+    let mut kinds: Vec<String> = Vec::new();
+    for k in &cli.kind {
+        match canonical_kind(k) {
+            Some(c) => kinds.push(c.to_string()),
+            None => {
+                return fail(format_args!(
+                    "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait)"
+                ));
+            }
+        }
+    }
     // a language token can expand to several tags (`r` → ruby + rust)
-    let langs: Vec<String> = cli.lang.iter().flat_map(|x| canonical_langs(x)).collect();
+    let mut langs: Vec<String> = Vec::new();
+    for x in &cli.lang {
+        let matched = canonical_langs(x);
+        if matched.is_empty() {
+            return fail(format_args!(
+                "rq: unknown --lang {x:?} ({})",
+                crate::lang::languages().join(", ")
+            ));
+        }
+        langs.extend(matched);
+    }
     if let Some(file) = &cli.symbols {
         return cmd_symbols(file, &kinds, &langs, out);
     }
@@ -831,9 +860,16 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let label = repo_label(root.as_deref());
     let mut drew_progress = false;
     let mut last_draw = poll_start;
+    // Rank one deeper than asked: confidence is a comparison against the
+    // runner-up, so normalizing over the returned window made `-l 1` read 1.0
+    // every time — and that reading is what gates `--show`.
+    let rank_limit = limit.max(2);
+    let mut total;
     let mut hits = loop {
-        match crate::search::search(store, query, current, only_repo, &active, limit) {
-            Ok(h) => {
+        match crate::search::search(store, query, current, only_repo, &active, rank_limit) {
+            Ok(m) => {
+                total = m.total;
+                let h = m.hits;
                 let confident = h.first().is_some_and(|hit| {
                     hit.features
                         .iter()
@@ -878,9 +914,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let interrupted = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
 
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
-    if !hits.is_empty() && revalidate_top(store, &hits) {
-        hits = crate::search::search(store, query, current, only_repo, &active, limit)
-            .unwrap_or_default();
+    if !hits.is_empty()
+        && revalidate_top(store, &hits)
+        && let Ok(m) = crate::search::search(store, query, current, only_repo, &active, rank_limit)
+    {
+        total = m.total;
+        hits = m.hits;
     }
 
     // Untracked non-git dir — nothing persisted, no warmer running — so scan it
@@ -891,12 +930,18 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         && coverage.is_none()
         && let Some(root) = &root
     {
-        let tail = live_fallback(root, query, limit);
-        hits = crate::search::merge(hits, tail, limit);
+        let tail = live_fallback(root, query, rank_limit);
+        hits = crate::search::merge(hits, tail, rank_limit);
+        total = total.max(hits.len());
     }
 
     apply_gates(query, &mut hits);
     apply_post_filters(args, cwd.as_deref(), root.as_deref(), &mut hits);
+    // A filtered search reports what survived the filter — that's the set the
+    // caller asked about.
+    if !args.paths.is_empty() || !args.kinds.is_empty() || !args.langs.is_empty() {
+        total = hits.len();
+    }
 
     if hits.is_empty() {
         // Stop a still-running block so the join is prompt, then settle coverage.
@@ -957,6 +1002,24 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // covers all three.
     record_usage(store, args, current, hits.len(), "hit", coverage.as_deref());
 
+    // Confidence first, while the runner-up is still in hand, then cut to the
+    // window the caller asked for — `--show`'s gate reads this, so measuring it
+    // over an already-truncated list made `-l 1` unconditionally confident.
+    attach_confidence(&mut hits);
+    hits.truncate(want);
+    let total = total.max(hits.len());
+    for hit in &mut hits {
+        hit.total = total;
+        if args.explain {
+            hit.explain = Some(
+                hit.features
+                    .iter()
+                    .map(|f| (f.name.to_string(), f.value))
+                    .collect(),
+            );
+        }
+    }
+
     // Attach each result's definition line (e.g. `def perform(refund)`) — shown
     // in text output and carried in JSON. Cheap: only the displayed results.
     for hit in &mut hits {
@@ -968,7 +1031,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             cwd.as_deref(),
         );
     }
-    attach_confidence(&mut hits);
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
@@ -1243,8 +1305,10 @@ fn apply_post_filters(
     if !args.langs.is_empty() {
         hits.retain(|h| args.langs.iter().any(|l| l == &h.language));
     }
+    // Deliberately not truncated to `want` here: confidence is measured against
+    // the runner-up, so the final cut happens after it's assigned.
     if !args.paths.is_empty() || !args.kinds.is_empty() || !args.langs.is_empty() {
-        hits.truncate(args.want);
+        hits.truncate(args.want.max(2));
     }
 }
 
@@ -1342,8 +1406,9 @@ fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCod
     let query = args.query;
     if args.show {
         // fell through from --show: no single confident match to print
+        let total = hits.first().map_or(hits.len(), |h| h.total);
         eprintln!(
-            "rq: no single confident match for {query:?} — {} candidates below; narrow the query to --show one",
+            "rq: no single confident match for {query:?} — {} of {total} candidates below; narrow the query to --show one",
             hits.len()
         );
     }
@@ -2191,8 +2256,8 @@ fn split_kind_keyword(
 
 /// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.
 /// Unknown values pass through lowercased (so they simply match nothing).
-fn canonical_kind(s: &str) -> String {
-    match s.to_ascii_lowercase().as_str() {
+fn canonical_kind(s: &str) -> Option<&'static str> {
+    Some(match s.to_ascii_lowercase().as_str() {
         "c" | "class" => "class",
         "m" | "method" => "method",
         "f" | "fn" | "func" | "function" => "function",
@@ -2200,9 +2265,8 @@ fn canonical_kind(s: &str) -> String {
         "s" | "struct" | "type" => "struct",
         "e" | "enum" => "enum",
         "t" | "trait" | "interface" => "trait",
-        other => return other.to_string(),
-    }
-    .to_string()
+        _ => return None,
+    })
 }
 
 /// Expand a `--lang` value to the language tag(s) it selects: a **prefix** of any
@@ -2226,7 +2290,7 @@ fn canonical_langs(s: &str) -> Vec<String> {
         .filter(|lang| alias == Some(*lang) || lang.starts_with(&t))
         .map(str::to_string)
         .collect();
-    if matched.is_empty() { vec![t] } else { matched }
+    matched
 }
 
 /// The ANSI SGR code for highlighting matches, or `None` to disable color.
@@ -2741,16 +2805,18 @@ mod tests {
         assert_eq!(canonical_langs("ts"), ["typescript"]);
         assert_eq!(canonical_langs("jsx"), ["javascript"]);
         assert_eq!(canonical_langs("rb"), ["ruby"]);
-        // an unknown value passes through and simply matches nothing
-        assert_eq!(canonical_langs("COBOL"), ["cobol"]);
+        // an unknown value matches nothing, so the caller can reject it rather
+        // than silently filtering every result away
+        assert!(canonical_langs("COBOL").is_empty());
     }
 
     #[test]
     fn a_kind_normalizes_language_specific_spellings() {
-        assert_eq!(canonical_kind("f"), "function");
+        assert_eq!(canonical_kind("f"), Some("function"));
         // TypeScript's spellings land on the shared model's kinds
-        assert_eq!(canonical_kind("interface"), "trait");
-        assert_eq!(canonical_kind("type"), "struct");
+        assert_eq!(canonical_kind("interface"), Some("trait"));
+        assert_eq!(canonical_kind("type"), Some("struct"));
+        assert_eq!(canonical_kind("banana"), None);
         // …and work as the leading-keyword shorthand too
         let d = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert_eq!(

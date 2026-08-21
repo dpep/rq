@@ -30,7 +30,7 @@ fn indexed_fixture(tag: &str) -> (Store, PathBuf) {
 fn top(store: &Store, query: &str) -> search::Hit {
     let hits = search::search(store, query, None, None, &ActiveFiles::default(), 10).unwrap();
     assert!(!hits.is_empty(), "no hits for {query:?}");
-    hits.into_iter().next().unwrap()
+    hits.hits.into_iter().next().unwrap()
 }
 
 #[test]
@@ -63,6 +63,7 @@ fn kind_filter_narrows_to_struct() {
 
     let structs: Vec<_> = search::search(&store, "widget", None, None, &ActiveFiles::default(), 10)
         .unwrap()
+        .hits
         .into_iter()
         .filter(|h| h.kind == "struct")
         .collect();

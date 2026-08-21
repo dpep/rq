@@ -797,6 +797,72 @@ fn limit_caps_the_number_of_results() {
 }
 
 #[test]
+fn confidence_and_total_do_not_depend_on_the_limit() {
+    let (dir, db) = scratch("confidence");
+    let body: String = (0..6).map(|i| format!("class Widget{i}\nend\n")).collect();
+    fs::write(dir.join("a.rb"), body).unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // confidence is a comparison against the runner-up, so measuring it over
+    // the returned window made `-l 1` unconditionally certain — and that
+    // reading is what gates --show
+    let conf = |n: &str| {
+        let (_, out) = rq(&db, &dir, &["Widget", "--ndjson", "--no-record", "-l", n]);
+        out.lines().next().unwrap_or_default().to_string()
+    };
+    let one = conf("1");
+    assert!(
+        !one.contains("\"confidence\":1.0"),
+        "-l 1 isn't automatically certain: {one}"
+    );
+    // and the caller can tell how big the set it saw ten of actually was
+    assert!(
+        one.contains("\"total\":6"),
+        "total reports the full match count: {one}"
+    );
+
+    // --explain reaches structured output instead of being silently dropped
+    let (_, out) = rq(
+        &db,
+        &dir,
+        &["Widget", "--ndjson", "--no-record", "-e", "-l", "1"],
+    );
+    assert!(
+        out.contains("\"explain\""),
+        "explain is carried in JSON: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unknown_kind_or_lang_is_an_error_not_a_miss() {
+    let (dir, db) = scratch("badflag");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // a typo used to come back as a definitive no_match — the one exit code a
+    // script is supposed to trust as "this symbol does not exist"
+    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "banana", "--no-record"]);
+    assert!(!ok, "unknown kind should fail: {out}");
+    assert!(
+        !out.contains("no_match"),
+        "reported as an error, not a miss: {out}"
+    );
+    let (ok, out) = rq(&db, &dir, &["Widget", "-x", "cobol", "--no-record"]);
+    assert!(!ok, "unknown lang should fail: {out}");
+    assert!(
+        !out.contains("no_match"),
+        "reported as an error, not a miss: {out}"
+    );
+    // a real one still works
+    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "class", "--no-record"]);
+    assert!(ok, "known kind still searches: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn usage_counts_searches_by_caller_and_flags() {
     let (dir, db) = scratch("usage");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

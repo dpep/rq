@@ -112,6 +112,14 @@ pub(crate) struct Hit {
     /// The full definition source (`line..=end_line`), filled only by `--show`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Matches this window was drawn from, before `--limit`. Lets a caller tell
+    /// it saw ten of a thousand rather than ten of ten. Filled before output.
+    pub total: usize,
+    /// Feature name → weight, filled only under `--explain`, so the breakdown
+    /// text mode prints is reproducible from JSON too. `features` keeps its
+    /// name-list shape so existing callers don't break.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explain: Option<std::collections::BTreeMap<String, f64>>,
 }
 
 /// Serialize a hit's features as a name list, strongest first — the values are
@@ -127,6 +135,22 @@ fn serialize_feature_names<S: serde::Serializer>(
     names.serialize(s)
 }
 
+/// A ranked window plus how many matches it was drawn from.
+pub(crate) struct Matches {
+    pub hits: Vec<Hit>,
+    /// Matches before `--limit` truncated them, capped by `CANDIDATE_LIMIT`.
+    pub total: usize,
+}
+
+/// Read-through to the window, so a caller that only wants the results reads
+/// like it always did.
+impl std::ops::Deref for Matches {
+    type Target = [Hit];
+    fn deref(&self) -> &[Hit] {
+        &self.hits
+    }
+}
+
 /// Search the index for `query`, returning up to `limit` ranked hits.
 /// `current_repo_id` (if any) boosts results from the repository you're in;
 /// `only_repo` (if any) restricts results to that repository, so a search inside
@@ -139,7 +163,7 @@ pub(crate) fn search(
     only_repo: Option<i64>,
     active: &ActiveFiles,
     limit: usize,
-) -> crate::store::Result<Vec<Hit>> {
+) -> crate::store::Result<Matches> {
     // Recall keys off the leaf name only — a `Foo::Bar` qualifier targets the
     // parent during scoring, and the store indexes `name`, not `parent`. A
     // wildcard query then keys off its literal chars (the store indexes literal
@@ -196,6 +220,9 @@ pub(crate) fn search(
     let t_score = t.elapsed();
 
     let t = std::time::Instant::now();
+    // Counted before truncation: a caller shown ten of a thousand matches has
+    // no way to tell from the window alone.
+    let total = hits.len();
     sort_and_truncate(&mut hits, limit);
     // The search path already measures these for its trace line; profiling
     // records the same numbers rather than timing the work twice.
@@ -210,7 +237,7 @@ pub(crate) fn search(
             t.elapsed().as_millis(),
         );
     }
-    Ok(hits)
+    Ok(Matches { hits, total })
 }
 
 /// Symbols in recently-modified files rank higher. ~14-day half-life and no
@@ -395,6 +422,8 @@ fn rank_one(
         features: scored.features,
         signature: None,
         body: None,
+        total: 0, // filled from the final result set before output
+        explain: None,
     })
 }
 
@@ -421,6 +450,8 @@ mod tests {
             repo_identity: "local:/tmp/x".into(),
             features: Vec::new(),
             body: None,
+            total: 0,
+            explain: None,
         };
         let ordered = |mut hits: Vec<Hit>| {
             sort_and_truncate(&mut hits, 10);
@@ -513,11 +544,11 @@ mod tests {
             10,
         )
         .unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].repo_identity, "local:/tmp/a");
+        assert_eq!(hits.hits.len(), 1);
+        assert_eq!(hits.hits[0].repo_identity, "local:/tmp/a");
         // no scope (--all-repos): both repos' Widgets surface
         let all = search(&store, "Widget", Some(a), None, &ActiveFiles::default(), 10).unwrap();
-        assert_eq!(all.len(), 2);
+        assert_eq!(all.hits.len(), 2);
         let _ = b;
     }
 
@@ -599,6 +630,8 @@ mod tests {
             features: vec![],
             signature: None,
             body: None,
+            total: 0,
+            explain: None,
         };
         let from_index = vec![mk("User", 100.0)];
         let from_live = vec![mk("User", 500.0), mk("Account", 200.0)];
@@ -703,6 +736,8 @@ mod tests {
             },
             signature: None,
             body: None,
+            total: 0,
+            explain: None,
         }
     }
 
