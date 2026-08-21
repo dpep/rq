@@ -7,6 +7,55 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+An independent review drove rq around the Rails source and reported what broke.
+Everything below came out of that.
+
+### Fixed
+- **`--limit 1` made every result read `confidence: 1.0`.** Confidence is a
+  comparison against the runner-up, and it was measured over the *returned*
+  window — so asking for one answer always got a certain one. `rq X -j -l 1` is
+  the natural way for an agent to ask, and it also disabled the `--show` safety
+  gate: `rq initialize --show -l 1` printed one arbitrary body out of 1138
+  matches as though it were the answer. Confidence is now measured before the
+  limit truncates.
+- **An unknown `--kind` or `--lang` reported a definitive miss.** `rq foo -k
+  mehtod` filtered every result away and exited 1 — the one code a script is
+  meant to trust as "this symbol does not exist". Both now reject the value and
+  say what's valid.
+- **An empty query returned results.** It's an error now.
+
+### Added
+- **`total` in structured output** — how many matches the window was drawn
+  from, so a caller can tell it saw ten of a thousand. The `--show` refusal
+  message says so too.
+- **`--explain` reaches `--json`/`--ndjson`.** It was silently ignored there, so
+  the "ranking is explainable" promise held only for humans. Results now carry
+  an `explain` object of feature → weight when it's passed. `features` keeps its
+  existing shape.
+- **`Foo::Bar`, `Foo#bar`, and wildcards are documented in `--help`.** Qualified
+  lookup is the surest way past an ambiguous name and nothing advertised it.
+
+### Changed
+- **Definitions with a real body outrank stubs** (`extent`). `rq where` returned
+  a 3-line ActionCable method over the 9-line `ActiveRecord::QueryMethods#where`;
+  `rq cache_key` returned an `alias_method` line; `rq delegate` returned a
+  compiled JavaScript bundle. Log-scaled and capped, from `end_line`, which was
+  already stored.
+- **Leaving separators out still counts as an exact match** (`separators`).
+  `parsefile` for `parse_file` is an abbreviation of an exact match, not a fuzzy
+  one, and it was losing to whichever similar name had more lines. Spelling the
+  name out in full still ranks higher.
+- **`depth` no longer charges for ordinary namespacing.** Introduced in 0.44.0,
+  it penalized every level of scope — which made it a penalty on *languages*:
+  Ruby and Rust namespace library code two deep where JavaScript leaves it at
+  the top level, so `ActionController::Metal#dispatch` ranked 9th of 10 behind
+  eight compiled `.esm.js` bundles. Only nesting past two levels is charged now.
+- **The test/spec penalty is heavier.** At its old weight it couldn't cross the
+  gap between an exact match and a prefix one, so `rq conn` still answered with
+  a three-line private helper in a test file.
+
 ## 0.44.0 — 2026-08-21
 
 ### Changed

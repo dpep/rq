@@ -117,6 +117,20 @@ pub(crate) fn score(
             });
         }
         true
+    } else if alnum_eq(&name_lower, &q) {
+        // The same identifier with the separators left out — `parsefile` for
+        // `parse_file`, `usercontroller` for `user-controller`. That's a
+        // deliberate abbreviation of an exact match, not a fuzzy one, and it
+        // must not be decided by which candidate has the bigger body.
+        features.push(Feature {
+            name: "exact",
+            value: 1000.0,
+        });
+        features.push(Feature {
+            name: "separators",
+            value: -SEPARATOR_PENALTY,
+        });
+        true
     } else if name_lower.starts_with(&q) {
         // shorter remaining tail ranks higher
         let tail = cand.name.chars().count().saturating_sub(q.chars().count());
@@ -203,6 +217,22 @@ pub(crate) fn score(
         });
     }
 
+    // Body extent — a definition with a real body is more often the one you
+    // meant than a one-line stub, an `alias_method`, or an autoload
+    // declaration. Log-scaled and capped: 3 lines versus 30 is a real
+    // difference, 300 versus 3000 isn't.
+    if let Some(end) = cand.end_line {
+        let span = (end - cand.line + 1).max(1) as f64;
+        if span > 1.0 {
+            features.push(Feature {
+                // not "body": that's the field `--show` fills with source, and
+                // a feature sharing the name reads as the same thing in JSON
+                name: "extent",
+                value: (span.ln() * BODY_WEIGHT).min(MAX_BODY_BONUS),
+            });
+        }
+    }
+
     // Namespace depth — among equally-good matches the shallower definition is
     // usually the canonical one: `ActiveRecord::Persistence#save` over
     // `ActiveRecord::Middleware::DatabaseSelector::Resolver::Session#save`.
@@ -211,7 +241,11 @@ pub(crate) fn score(
     // this decides it by something better than alphabetical path order.
     // A language whose plugin records no parent reads as depth 0 and takes no
     // penalty; that only matters when one query spans several languages.
-    let depth = cand.parent.as_deref().map_or(0, |p| segments(p).len());
+    let depth = cand
+        .parent
+        .as_deref()
+        .map_or(0, |p| segments(p).len())
+        .saturating_sub(FREE_DEPTH);
     if depth > 0 {
         features.push(Feature {
             name: "depth",
@@ -297,8 +331,28 @@ const MAX_NONBOUNDARY_GAP: usize = 2;
 /// ranked differently from a stale one.
 const CASE_MATCH: f64 = 150.0;
 
-/// Per level of enclosing scope. Small: this exists to order results that are
-/// otherwise identical, not to outweigh how well a name matched.
+/// What a separator-insensitive exact match gives up to a literal one, so
+/// `parse_file` still wins when the query spells it out.
+const SEPARATOR_PENALTY: f64 = 50.0;
+
+/// Per natural-log line of a definition's body. Small and log-scaled — this
+/// separates an implementation from a stub, not a big file from a small one.
+const BODY_WEIGHT: f64 = 10.0;
+
+/// Cap on the body bonus, so a huge class can't outweigh match quality.
+const MAX_BODY_BONUS: f64 = 50.0;
+
+/// Levels of scope that cost nothing. Ordinary namespacing has to be free:
+/// Ruby and Rust nest library code two deep where JavaScript and Go leave it at
+/// the top level, so charging per level made this a penalty on *languages* —
+/// `ActionController::Metal#dispatch` lost to eight compiled `.esm.js` bundles
+/// whose classes happen to be top-level. Only nesting past the normal range
+/// says anything about how canonical a definition is.
+const FREE_DEPTH: usize = 2;
+
+/// Per level of enclosing scope beyond [`FREE_DEPTH`]. Small: this exists to
+/// order results that are otherwise identical, not to outweigh how well a name
+/// matched.
 const DEPTH_PENALTY: f64 = 15.0;
 
 /// Cap on the depth penalty. Past a few levels everything is equally
@@ -306,11 +360,12 @@ const DEPTH_PENALTY: f64 = 15.0;
 /// signals it should never lose to.
 const MAX_DEPTH_PENALTY: f64 = 60.0;
 
-/// How far a definition under a test/spec path drops. Big enough to settle a
-/// tie between two exact matches, small enough that an exact match in a test
-/// still outranks a fuzzy match in source — when the name really only lives in
-/// a test, you still want it.
-const TEST_PATH_PENALTY: f64 = 150.0;
+/// How far a definition under a test/spec path drops. Sized to clear the gap
+/// between an exact match (1000) and a prefix one (~700): below that, a
+/// three-line private helper in a test still beat the obvious answer, because
+/// no other feature can cross that cliff. A name that only lives in tests is
+/// unaffected — every candidate takes the same penalty.
+const TEST_PATH_PENALTY: f64 = 400.0;
 
 /// Penalty per skipped char between two matched chars. Strong enough that a
 /// closer match wins over a farther one — so the query's trailing chars don't
@@ -698,6 +753,15 @@ fn boundaries(chars: &[char]) -> Vec<bool> {
     out
 }
 
+/// Are these the same identifier once separators are dropped? `_`, `-`, and
+/// `.` are all word joiners across the languages rq indexes, and a query that
+/// omits them is spelling the same name.
+fn alnum_eq(a: &str, b: &str) -> bool {
+    let squash = |s: &str| -> String { s.chars().filter(char::is_ascii_alphanumeric).collect() };
+    let (sa, sb) = (squash(a), squash(b));
+    !sa.is_empty() && sa == sb
+}
+
 /// Does this repo-relative path look like test/spec code?
 ///
 /// Directory names are matched as whole segments, and only suffix conventions
@@ -803,6 +867,32 @@ mod tests {
     }
 
     #[test]
+    fn a_real_body_outranks_a_stub_of_the_same_name() {
+        let span = |lines: i64| {
+            let mut r = row("where", "method", 1);
+            r.end_line = Some(r.line + lines - 1);
+            score("where", &r, None, Boosts::default()).unwrap().total
+        };
+        // the Rails case: a 3-line stub and the 9-line implementation scored
+        // identically, so alphabetical file order picked the stub
+        assert!(span(9) > span(3), "a real body should outrank a stub");
+        // log-scaled and capped — a huge class can't outweigh match quality
+        assert!(span(4000) - span(40) < CASE_MATCH);
+    }
+
+    #[test]
+    fn separators_left_out_still_read_as_an_exact_match() {
+        // typing `parsefile` for `parse_file` is an abbreviation of an exact
+        // match, not a fuzzy one — it must not lose to whichever similar name
+        // happens to have more lines
+        let exact = total("parsefile", "parse_file").unwrap();
+        let plural = total("parsefile", "parse_files").unwrap();
+        assert!(exact > plural, "{exact} > {plural}");
+        // spelling it out in full still wins over leaving separators off
+        assert!(total("parse_file", "parse_file").unwrap() > exact);
+    }
+
+    #[test]
     fn the_shallower_of_two_identical_matches_wins() {
         let nested = |parent: &str| {
             let mut r = row("save", "method", 1);
@@ -814,6 +904,10 @@ mod tests {
         let shallow = nested("ActiveRecord::Persistence");
         let deep = nested("ActiveRecord::Middleware::DatabaseSelector::Resolver::Session");
         assert!(shallow > deep, "{shallow} > {deep}");
+        // ordinary namespacing is free, or this becomes a penalty on languages
+        // that namespace at all: a two-deep Ruby method would lose to a
+        // top-level JavaScript one for no reason but the language
+        assert_eq!(nested("ActiveRecord::Persistence"), nested("Widget"));
         // small enough to stay a tiebreaker — a case match is worth more than
         // several levels of nesting
         assert!(shallow - deep < CASE_MATCH, "depth outweighs match quality");
