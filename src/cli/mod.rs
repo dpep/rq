@@ -511,9 +511,9 @@ impl Session {
         // Files you're changing on this feature branch (and their directory
         // neighbors): the branch ranking boost, and the warm pass's priority set.
         let mut branch_span = crate::profile::span("setup: branch files");
-        let (active_paths, branch_refresh) = match &root {
+        let (active_paths, branch_refresh, cached_cost) = match &root {
             Some(c) if cwd_is_git => cached_branch_files(&store, c),
-            _ => (Vec::new(), None),
+            _ => (Vec::new(), None, None),
         };
         branch_span.note(|| {
             let how = if branch_refresh.is_some() {
@@ -521,7 +521,10 @@ impl Session {
             } else {
                 "cached"
             };
-            format!("{} changed, {how}", active_paths.len())
+            // The window is derived, not constant — say which one is in force,
+            // or a slow repo's backoff looks like rq ignoring stale state.
+            let ttl = branch_files_ttl(cached_cost);
+            format!("{} changed, {how} ({ttl}s window)", active_paths.len())
         });
         drop(branch_span);
 
@@ -1635,11 +1638,44 @@ fn unix_now() -> i64 {
 /// made is reflected on the next search.
 const BRANCH_FILES_TTL_SECS: i64 = 15;
 
+/// Longest a branch-file list may be served for, however slow it is to rebuild.
+/// The window only governs noticing an *unstaged* edit — every git operation
+/// invalidates by stamp regardless — so five minutes is already generous.
+const BRANCH_FILES_TTL_MAX_SECS: i64 = 300;
+
+/// How many times its own rebuild cost a list may be served for — so the
+/// refresh never eats more than about 1% of the time between searches. The
+/// floor binds below ~150 ms, which is where every small repo sits.
+///
+/// The refresh forks two `git diff`s over the whole worktree, which is cheap on
+/// a small repo and very much not on a large one — it was measured at 700 ms on
+/// a 90k-file monorepo, against a 40-115 ms query it runs *alongside* and
+/// competes with for disk. A fixed 15-second window then re-paid that every
+/// fifteen seconds of active searching. Scaling the window by the measured cost
+/// leaves small repos exactly where they were and backs off only where the
+/// evidence says it's needed.
+const BRANCH_FILES_WINDOW_MULTIPLE: i64 = 100;
+
+/// How long a cached branch-file list stays good, given what it cost to build.
+fn branch_files_ttl(cost_ms: Option<u64>) -> i64 {
+    // `as i64` would wrap a large cost to a negative and quietly hand it the
+    // floor — the opposite of what an expensive rebuild has earned.
+    let earned = cost_ms.map_or(0, |ms| {
+        i64::try_from(ms)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(BRANCH_FILES_WINDOW_MULTIPLE)
+            / 1000
+    });
+    earned.clamp(BRANCH_FILES_TTL_SECS, BRANCH_FILES_TTL_MAX_SECS)
+}
+
 /// A branch-file recomputation running alongside the search. The git work
 /// happens on the thread; the store write waits for the main thread, since a
 /// SQLite connection isn't shared.
 struct BranchRefresh {
-    handle: std::thread::JoinHandle<Vec<String>>,
+    /// Yields the file list and what it cost to build, which sets how long
+    /// the result stays good.
+    handle: std::thread::JoinHandle<(Vec<String>, u64)>,
     identity: String,
     stamp: String,
 }
@@ -1647,10 +1683,10 @@ struct BranchRefresh {
 impl BranchRefresh {
     /// Wait for the recomputation and store it for the next query.
     fn store(self, store: &Store) {
-        let Ok(files) = self.handle.join() else {
+        let Ok((files, cost_ms)) = self.handle.join() else {
             return;
         };
-        let _ = store.branch_files_set(&self.identity, &self.stamp, unix_now(), &files);
+        let _ = store.branch_files_set(&self.identity, &self.stamp, unix_now(), cost_ms, &files);
     }
 }
 
@@ -1670,31 +1706,38 @@ impl BranchRefresh {
 fn cached_branch_files(
     store: &Store,
     root: &std::path::Path,
-) -> (Vec<String>, Option<BranchRefresh>) {
+) -> (Vec<String>, Option<BranchRefresh>, Option<u64>) {
     let identity = resolve_identity(store, root);
     let stamp = crate::index::branch_files_stamp(root);
     let cached = store.branch_files_get(&identity).ok().flatten();
     let now = unix_now();
 
-    if let (Some((cached_stamp, at, files)), Some(stamp)) = (&cached, &stamp) {
-        if cached_stamp == stamp && now.saturating_sub(*at) < BRANCH_FILES_TTL_SECS {
-            return (files.clone(), None);
+    if let (Some(hit), Some(stamp)) = (&cached, &stamp) {
+        if &hit.stamp == stamp && now.saturating_sub(hit.written_at) < branch_files_ttl(hit.cost_ms)
+        {
+            return (hit.files.clone(), None, hit.cost_ms);
         }
         let owned_root = root.to_path_buf();
         let refresh = BranchRefresh {
-            handle: std::thread::spawn(move || crate::index::branch_changed_files(&owned_root)),
+            handle: std::thread::spawn(move || {
+                let t = std::time::Instant::now();
+                let files = crate::index::branch_changed_files(&owned_root);
+                (files, t.elapsed().as_millis() as u64)
+            }),
             identity,
             stamp: stamp.clone(),
         };
-        return (files.clone(), Some(refresh));
+        return (hit.files.clone(), Some(refresh), hit.cost_ms);
     }
 
     // Nothing cached (or nowhere to cache it, e.g. a worktree): compute inline.
+    let t = std::time::Instant::now();
     let files = crate::index::branch_changed_files(root);
+    let cost_ms = t.elapsed().as_millis() as u64;
     if let Some(stamp) = stamp {
-        let _ = store.branch_files_set(&identity, &stamp, now, &files);
+        let _ = store.branch_files_set(&identity, &stamp, now, cost_ms, &files);
     }
-    (files, None)
+    (files, None, Some(cost_ms))
 }
 
 /// Whether the worktree has moved since it was indexed — a different HEAD, or
@@ -2817,6 +2860,25 @@ mod tests {
             split_kind_keyword("c".into(), d(&["Foo"])),
             (None, "c".into(), d(&["Foo"]))
         );
+    }
+
+    #[test]
+    fn the_branch_window_scales_with_what_the_refresh_costs() {
+        // a cheap refresh keeps the default window exactly — small repos see no
+        // change in behaviour at all
+        assert_eq!(branch_files_ttl(Some(5)), BRANCH_FILES_TTL_SECS);
+        assert_eq!(branch_files_ttl(Some(150)), BRANCH_FILES_TTL_SECS);
+        // an expensive one earns a proportionally longer window: the refresh
+        // runs alongside the query and competes with it for disk, so a 700ms
+        // rebuild every 15s costs more than the searches it decorates
+        assert_eq!(branch_files_ttl(Some(700)), 70);
+        assert_eq!(branch_files_ttl(Some(2_000)), 200);
+        // never indefinite — the window is the only thing that notices an
+        // unstaged edit, since every git operation invalidates by stamp
+        assert_eq!(branch_files_ttl(Some(60_000)), BRANCH_FILES_TTL_MAX_SECS);
+        assert_eq!(branch_files_ttl(Some(u64::MAX)), BRANCH_FILES_TTL_MAX_SECS);
+        // an entry written before the cost was recorded falls back to default
+        assert_eq!(branch_files_ttl(None), BRANCH_FILES_TTL_SECS);
     }
 
     #[test]

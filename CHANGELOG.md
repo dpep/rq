@@ -7,6 +7,33 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **A slow branch-file refresh no longer competes with the search it decorates.**
+  rq caches the list of files your branch is changing and, once the list ages
+  out, recomputes it on a thread *alongside* the query — which hides the cost on
+  a small repo and very much doesn't on a large one. Reported on a 90k-file
+  monorepo: recall latency spiking from 40-115 ms to ~700 ms whenever the
+  profile said `refreshing alongside`. The refresh forks two `git diff`s over
+  the whole worktree, so it competes with recall for disk; the fixed 15-second
+  window then re-paid that every fifteen seconds of active searching.
+
+  The window is now derived from what the rebuild actually costs — about a
+  hundred times its own cost, so the refresh never eats more than ~1% of the
+  time between searches — floored at the previous 15 seconds and capped at 5
+  minutes. Below ~150 ms the floor binds, so small and mid-size repos behave
+  exactly as before.
+
+  The ranking cost is small and bounded: the cache is invalidated by a git-state
+  stamp that catches every commit, checkout, stage, merge and rebase regardless
+  of the window, so a longer window only delays noticing an **unstaged** edit.
+  And it delays a ranking *boost*, never recall — nothing drops out of results.
+
+  `--profile` now prints the window in force next to the branch-files line, so a
+  repo that has backed off says so instead of looking like rq ignoring stale
+  state.
+
 ## 0.49.0 — 2026-08-21
 
 ### Fixed

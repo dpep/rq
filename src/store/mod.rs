@@ -117,6 +117,21 @@ pub(crate) struct SearchRecord<'a> {
     pub coverage: &'a str,
 }
 
+/// A cached list of the files this branch is changing, plus the two things
+/// that decide whether it's still worth serving: when it was written, and what
+/// it cost to build.
+pub(crate) struct BranchFiles {
+    /// Git state fingerprint — mtimes of `.git/HEAD` and `.git/index`. Catches
+    /// every git operation; catches no bare working-tree edit, which is what
+    /// the freshness window is for.
+    pub stamp: String,
+    pub written_at: i64,
+    /// How long the git diffs behind it took. `None` for an entry written
+    /// before this was recorded.
+    pub cost_ms: Option<u64>,
+    pub files: Vec<String>,
+}
+
 /// One row of `rq --usage` output: how rq was called on a given day, and what
 /// came back.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -906,25 +921,30 @@ impl Store {
     /// The cached branch-changed file list for a repo: `(stamp, computed_at,
     /// files)`. Stored rather than recomputed because the git diff behind it is
     /// O(tracked files) and runs on the search path.
-    pub(crate) fn branch_files_get(
-        &self,
-        identity: &str,
-    ) -> Result<Option<(String, i64, Vec<String>)>> {
+    /// The cached branch-file list, with what decides whether it's still good.
+    pub(crate) fn branch_files_get(&self, identity: &str) -> Result<Option<BranchFiles>> {
         let Some(raw) = self.meta_get(&format!("branch_files:{identity}"))? else {
             return Ok(None);
         };
         let mut lines = raw.lines();
-        let (Some(stamp), Some(at)) = (lines.next(), lines.next()) else {
+        let (Some(stamp), Some(second)) = (lines.next(), lines.next()) else {
             return Ok(None);
+        };
+        // `at`, or `at:cost_ms` — appended rather than given its own line so
+        // entries written before the cost was recorded still parse.
+        let (at, cost) = match second.split_once(':') {
+            Some((at, cost)) => (at, cost.parse::<u64>().ok()),
+            None => (second, None),
         };
         let Ok(at) = at.parse::<i64>() else {
             return Ok(None);
         };
-        Ok(Some((
-            stamp.to_string(),
-            at,
-            lines.map(str::to_string).collect(),
-        )))
+        Ok(Some(BranchFiles {
+            stamp: stamp.to_string(),
+            written_at: at,
+            cost_ms: cost,
+            files: lines.map(str::to_string).collect(),
+        }))
     }
 
     pub(crate) fn branch_files_set(
@@ -932,11 +952,12 @@ impl Store {
         identity: &str,
         stamp: &str,
         at: i64,
+        cost_ms: u64,
         files: &[String],
     ) -> Result<()> {
         // Newline-delimited: git paths can't contain one, and it beats pulling
-        // in a serializer for three fields.
-        let mut value = format!("{stamp}\n{at}");
+        // in a serializer for four fields.
+        let mut value = format!("{stamp}\n{at}:{cost_ms}");
         for f in files {
             value.push('\n');
             value.push_str(f);
@@ -1188,18 +1209,37 @@ mod tests {
 
         let files = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
         store
-            .branch_files_set("repo", "123:456", 99, &files)
+            .branch_files_set("repo", "123:456", 99, 42, &files)
             .unwrap();
-        let (stamp, at, got) = store.branch_files_get("repo").unwrap().unwrap();
-        assert_eq!(stamp, "123:456");
-        assert_eq!(at, 99);
-        assert_eq!(got, files);
+        let hit = store.branch_files_get("repo").unwrap().unwrap();
+        assert_eq!(hit.stamp, "123:456");
+        assert_eq!(hit.written_at, 99);
+        assert_eq!(
+            hit.cost_ms,
+            Some(42),
+            "what it cost decides how long it's good for"
+        );
+        assert_eq!(hit.files, files);
+
+        // an entry written before the cost was recorded still parses — the
+        // timestamp line gained a suffix rather than a new line for exactly this
+        store
+            .meta_set("branch_files:old", "123:456\n99\nsrc/a.rs")
+            .unwrap();
+        let old = store.branch_files_get("old").unwrap().unwrap();
+        assert_eq!((old.written_at, old.cost_ms), (99, None));
+        assert_eq!(old.files, vec!["src/a.rs".to_string()]);
 
         // a later write replaces the entry rather than accumulating
-        store.branch_files_set("repo", "789:1", 100, &[]).unwrap();
-        let (stamp, _, got) = store.branch_files_get("repo").unwrap().unwrap();
-        assert_eq!(stamp, "789:1");
-        assert!(got.is_empty(), "an empty list is a real answer, not a miss");
+        store
+            .branch_files_set("repo", "789:1", 100, 0, &[])
+            .unwrap();
+        let hit = store.branch_files_get("repo").unwrap().unwrap();
+        assert_eq!(hit.stamp, "789:1");
+        assert!(
+            hit.files.is_empty(),
+            "an empty list is a real answer, not a miss"
+        );
 
         // repos don't share an entry
         assert!(store.branch_files_get("other").unwrap().is_none());
