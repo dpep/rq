@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.49.0 — 2026-08-21
 
 ### Fixed
 - **A scope that matched nothing was silently ignored.** `Foo#bar` and
