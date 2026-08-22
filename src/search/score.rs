@@ -283,11 +283,18 @@ pub(crate) fn score(
         });
     }
 
-    // Qualifier boost — the user named an enclosing scope (`Foo::Bar`); reward a
-    // candidate whose recorded parent ends with that scope chain.
-    if let Some(qual) = qualifier
-        && let Some(b) = parent_boost(qual, cand.parent.as_deref())
-    {
+    // Qualifier — the user named an enclosing scope (`Foo::Bar`, `Foo#bar`).
+    // A candidate outside that scope is not an answer to the question asked, so
+    // it drops out entirely rather than ranking on its name alone. Scoring it
+    // anyway meant a made-up owner returned the same definition as the real one
+    // at the same confidence 1.0, with only a missing `--explain` feature to
+    // tell them apart — the strongest signal of certainty on exactly the query
+    // whose constraint had been discarded.
+    //
+    // A candidate with no recorded parent drops out too, and that's correct:
+    // `Foo::Bar` asserts Bar sits inside Foo, and a top-level Bar does not.
+    if let Some(qual) = qualifier {
+        let b = parent_boost(qual, cand.parent.as_deref())?;
         features.push(Feature {
             name: "parent",
             value: b,
@@ -1473,7 +1480,7 @@ mod tests {
     }
 
     #[test]
-    fn qualifier_ranks_the_symbol_in_the_named_scope_first() {
+    fn a_named_scope_excludes_candidates_outside_it() {
         // two classes both named `Bar`; the qualifier picks the one inside `Foo`
         let in_foo = SymbolRow {
             parent: Some("Foo".into()),
@@ -1483,15 +1490,19 @@ mod tests {
             parent: Some("Baz".into()),
             ..row("Bar", "class", 1)
         };
-        let foo = score("Foo::Bar", &in_foo, None, Boosts::default(), false)
-            .unwrap()
-            .total;
-        let baz = score("Foo::Bar", &in_baz, None, Boosts::default(), false)
-            .unwrap()
-            .total;
-        assert!(foo > baz, "{foo} > {baz}");
-        // the unqualified `Bar` still matches both (qualifier only reorders)
+        // the named scope is a constraint, not a preference: a `Bar` somewhere
+        // else is not an answer to `Foo::Bar`. It used to merely rank lower,
+        // which meant a made-up owner returned the real definition at full
+        // confidence whenever the leaf name was unique.
+        assert!(score("Foo::Bar", &in_foo, None, Boosts::default(), false).is_some());
+        assert!(score("Foo::Bar", &in_baz, None, Boosts::default(), false).is_none());
+        // nor does a top-level `Bar` answer `Foo::Bar` — no parent means not
+        // inside anything, which is precisely what the query ruled out
+        let top_level = row("Bar", "class", 1);
+        assert!(score("Foo::Bar", &top_level, None, Boosts::default(), false).is_none());
+        // unqualified, all three are candidates again
         assert!(score("Bar", &in_baz, None, Boosts::default(), false).is_some());
+        assert!(score("Bar", &top_level, None, Boosts::default(), false).is_some());
         // a wrong leaf still doesn't match, qualifier or not
         assert!(score("Foo::Zzz", &in_foo, None, Boosts::default(), false).is_none());
     }

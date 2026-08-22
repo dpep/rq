@@ -42,8 +42,14 @@ Each result is an object:
 
 Looking up a list of symbols? Pipe them on stdin, one per line, and rq answers
 them all in a single run — it resolves the repo, opens the index and checks the
-worktree once instead of per query. On a 6000-file repo that's 3ms per lookup
-against 16ms as separate processes.
+worktree once instead of per query.
+
+Per-lookup cost grows with repo size and the saving grows with it, so batching
+matters most exactly where the repo is largest: roughly 2x on a mid-size repo
+(~28ms per separate lookup against ~14ms batched, 3k files) and around 4x on a
+large monorepo (~350ms against ~85ms, 90k files). Treat the ratio as the durable
+number — the absolute figures depend on the repo, the machine and how warm the
+index is.
 
 ```sh
 printf 'RefundProcessor\nBillingJob\nInvoice\n' | rq -J

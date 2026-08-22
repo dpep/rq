@@ -995,7 +995,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             if incomplete { "warming" } else { "miss" },
             coverage.as_deref(),
         );
-        return no_match_code(out, query, interrupted, incomplete);
+        // A named scope that matched nothing is a different miss from a name
+        // that doesn't exist: re-run on the bare leaf to tell them apart, and
+        // say where the name actually lives. Only on the miss path, so a normal
+        // search never pays for it.
+        let elsewhere = crate::search::scope_miss_owner(store, query, current, only_repo, &active);
+        return no_match_code(out, query, interrupted, incomplete, elsewhere.as_deref());
     }
 
     // The hit path's single count, above the --show/--open/list forks so it
@@ -1317,17 +1322,31 @@ fn apply_post_filters(
 /// stopped block), or `no_match` (definitive). Text keeps its human message.
 /// Exit 2 = indeterminate (index incomplete), 1 = a definitive miss — both
 /// non-zero, so `rq … && …` still reads as "found something".
-fn no_match_code(out: Output, query: &str, interrupted: bool, incomplete: bool) -> ExitCode {
+fn no_match_code(
+    out: Output,
+    query: &str,
+    interrupted: bool,
+    incomplete: bool,
+    // Where the unqualified name *does* live, when a scope was named and
+    // nothing in it matched. "Not in that scope" and "no such name" are
+    // different answers and the second is the less useful one.
+    elsewhere: Option<&str>,
+) -> ExitCode {
     let status = if interrupted {
         "interrupted"
     } else if incomplete {
         "warming"
+    } else if elsewhere.is_some() {
+        "scope_not_found"
     } else {
         "no_match"
     };
     match out {
         Output::Json | Output::Ndjson => {
-            let obj = serde_json::json!({ "status": status, "query": query });
+            let mut obj = serde_json::json!({ "status": status, "query": query });
+            if let Some(found_in) = elsewhere {
+                obj["found_in"] = serde_json::json!(found_in);
+            }
             let _ = emit_json(out, &obj); // the exit code below carries the miss
         }
         Output::Text if interrupted => {
@@ -1335,6 +1354,10 @@ fn no_match_code(out: Output, query: &str, interrupted: bool, incomplete: bool) 
         }
         Output::Text if incomplete => eprintln!(
             "rq: still indexing — no match for {query:?} yet (run again, or `rq --index` to finish)"
+        ),
+        Output::Text if elsewhere.is_some() => eprintln!(
+            "rq: nothing matching {query:?} — that name is defined under {}",
+            elsewhere.unwrap_or_default()
         ),
         Output::Text => eprintln!("no matches for {query:?}"),
     }

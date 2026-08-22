@@ -7,6 +7,41 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **A scope that matched nothing was silently ignored.** `Foo#bar` and
+  `Foo::Bar` are documented as the surest way past an ambiguous name, but the
+  scope only *reordered* candidates — it never excluded any. When the leaf name
+  happened to be unique in the index, a completely made-up owner returned the
+  real definition at **confidence 1.0**, identical to querying the correct
+  owner, with only a missing `parent` entry under `--explain` to tell them
+  apart. A caller scoping a query precisely to catch a wrong owner got rq's
+  strongest signal of certainty on the one query whose constraint had been
+  discarded.
+
+  A named scope is now a constraint: a candidate outside it isn't an answer.
+  That includes a candidate with no recorded parent, since `Foo::Bar` asserts
+  `Bar` sits inside `Foo` and a top-level `Bar` does not.
+
+  The two failures are also distinguishable, because "wrong owner" is much more
+  useful than "no such name". A scope that matches nothing reports
+  `scope_not_found` with a `found_in` field naming where the symbol actually
+  lives, and says so in text output too — not only under `--explain`:
+
+  ```
+  rq: nothing matching "CompletelyMadeUpClass#__getobj__" — that name is
+      defined under ActionMailer::MessageDelivery (…/message_delivery.rb:31)
+  ```
+
+  A name that genuinely isn't there still reports `no_match`. Both exit 1.
+
+### Changed
+- The skill's batch-mode latency figures were roughly 20x optimistic and
+  understated the ratio, which misled in the direction of skipping batching on
+  exactly the large repos where it pays most. Replaced with measured numbers at
+  two repo sizes, and the note that the ratio is the durable part.
+
 ## 0.48.0 — 2026-08-21
 
 ### Changed

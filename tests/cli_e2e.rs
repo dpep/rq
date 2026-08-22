@@ -261,14 +261,14 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
         "out-of-scope baz is gated out: {out}"
     );
 
-    // fallback: no `baz` lives in `Nope::Bar`, so both still surface rather than
-    // returning nothing — the scope was a hint, not a hard filter
+    // A scope nothing lives in is a miss, not a fallback to every candidate.
+    // It used to fall back, which made a made-up owner indistinguishable from
+    // the real one whenever the leaf name was unique.
     let (ok, out) = rq(&db, &dir, &["Nope::Bar#baz", "--no-record", "--ndjson"]);
-    assert!(ok, "fallback search failed: {out}");
-    assert!(
-        out.contains("a.rb") && out.contains("b.rb"),
-        "no scope match falls back to all candidates: {out}"
-    );
+    assert!(!ok, "an unmatched scope must not succeed: {out}");
+    assert!(out.contains("scope_not_found"), "and says why: {out}");
+    // reported as "not there, but here" — the useful half of the answer
+    assert!(out.contains("found_in"), "names where it does live: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -792,6 +792,61 @@ fn limit_caps_the_number_of_results() {
     let (ok, out) = rq(&db, &dir, &["handler", "--limit", "0", "--ndjson"]);
     assert!(ok, "unlimited search failed: {out}");
     assert_eq!(out.lines().count(), 12, "expected every match: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_scope_that_matches_nothing_is_a_miss_not_the_top_hit() {
+    let (dir, db) = scratch("scope");
+    // one globally-unique method under a real owner — the condition under which
+    // a wrong owner used to be silently discarded
+    fs::write(
+        dir.join("a.rb"),
+        "module Shop\n  class Cart\n    def recalculate_totals\n      1\n    end\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // the real owner resolves
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["Cart#recalculate_totals", "--ndjson", "--no-record"],
+    );
+    assert!(ok, "real owner should resolve: {out}");
+    assert!(out.contains("recalculate_totals"), "found it: {out}");
+
+    // a made-up owner must not return that same definition. It used to, at
+    // confidence 1.0 — the strongest signal available, on the one query whose
+    // constraint had been thrown away.
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["NoSuchClass#recalculate_totals", "--ndjson", "--no-record"],
+    );
+    assert!(!ok, "a bogus owner must not succeed: {out}");
+    assert!(
+        !out.contains("\"confidence\":1.0"),
+        "and never at full confidence: {out}"
+    );
+    // and it's distinguishable from a name that simply isn't there, since
+    // "wrong owner" is the more useful answer of the two
+    assert!(
+        out.contains("scope_not_found"),
+        "reports the scope miss: {out}"
+    );
+    assert!(out.contains("Shop::Cart"), "says where it does live: {out}");
+
+    let (_, out) = rq(
+        &db,
+        &dir,
+        &["Cart#no_such_method_at_all", "--ndjson", "--no-record"],
+    );
+    assert!(
+        out.contains("no_match"),
+        "an absent name is still a plain miss: {out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

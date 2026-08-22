@@ -279,6 +279,29 @@ pub(crate) fn search(
     Ok(Matches { hits, total })
 }
 
+/// Where the *unqualified* name lives, when a query named a scope and nothing
+/// in that scope matched — so a caller can be told "not there, but here"
+/// instead of a bare "no match".
+///
+/// Returns `None` when the query named no scope, or when the bare name doesn't
+/// resolve either (an ordinary miss). Runs only on the miss path.
+pub(crate) fn scope_miss_owner(
+    store: &Store,
+    query: &str,
+    current_repo_id: Option<i64>,
+    only_repo: Option<i64>,
+    active: &ActiveFiles,
+) -> Option<String> {
+    let (leaf, qualifier) = score::parse_qualified(query);
+    qualifier?;
+    let bare = search(store, leaf, current_repo_id, only_repo, active, 1).ok()?;
+    let hit = bare.hits.first()?;
+    Some(match &hit.parent {
+        Some(parent) => format!("{parent} ({}:{})", hit.file, hit.line),
+        None => format!("{}:{}", hit.file, hit.line),
+    })
+}
+
 /// Symbols in recently-modified files rank higher. ~14-day half-life and no
 /// floor, so files untouched for a while contribute nothing.
 fn recency_boost(mtime: Option<i64>, now: i64) -> f64 {
