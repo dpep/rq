@@ -1,6 +1,6 @@
 ---
 name: rq
-description: Find where a symbol is defined with the `rq` code-navigation CLI (Ruby, Rust, Go, Python, TypeScript, JavaScript). Use when locating a definition by name — "where is the X class / Y method / Z function defined", "find the definition of …", "jump to …", or any "where is <name>" about code; also `rq --symbols <file>` to outline a file's definitions before reading it. Prefer over grep/rg for symbol navigation (it ranks the most-likely definition first). Not for free-text/content search.
+description: Find where a symbol is defined with the `rq` code-navigation CLI (Ruby, Rust, Go, Python, TypeScript, JavaScript). Use when locating a definition by name — "where is the X class / Y method / Z function defined", "find the definition of …", "jump to …", or any "where is <name>" about code; when getting oriented in an unfamiliar codebase, where you know roughly what a thing is called but not where it lives; and `rq --symbols <file>` to outline a file's definitions before reading it. Prefer over grep/rg for symbol navigation — it ranks the definition you meant first instead of listing every textual hit. Not for free-text/content search.
 ---
 
 # rq — find the definition
