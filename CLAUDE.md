@@ -167,12 +167,20 @@ Bump the version when a change reaches users — i.e. it alters the **built
 binary** (behavior, a flag, ranking, even `--help`/output wording). Stay below
 1.0 for now — **only minor or patch bumps**, never a major:
 
-- **patch** (`0.1.x`) — fixes, output/`--help` wording, internal cleanups
-- **minor** (`0.x.0`) — new user-facing capability (a flag, a ranking signal, a
-  language plugin)
+- **patch** (`0.1.x`) — the default. Fixes, performance, output/`--help`
+  wording, internal cleanups, **and ranking changes** — a new scoring signal
+  reorders results without giving anyone something new to call.
+- **minor** (`0.x.0`) — a caller can now write something they couldn't before:
+  a flag, an output field, a status, a language plugin.
+
+The test is this repo's own definition of its public API — *flags, output shape,
+exit codes*. A change that touches none of those is a patch however much work it
+was. If you're arguing about whether it's minor, it's patch.
 
 Repo-only docs (README, CLAUDE.md, `docs/`) **don't** bump — they don't change
 what `brew` builds, so a bump would only force an identical rebuild.
+
+The `/semver` skill has the full rules, including the inverted one for plugins.
 
 Releasing is one command — **don't do these steps by hand**:
 
