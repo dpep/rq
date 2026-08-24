@@ -176,8 +176,9 @@ model, not leaking a language into `index`/`search`/scoring.
 - [x] `--profile` — per-phase search timing to stderr (JSON alongside
       `--json`), free when off. `examples/bench.rs` measures whether a search
       is fast; this says which phase to look at
-- [x] Ruby metaprogramming recall — `attr_accessor`/`attr_reader`/`attr_writer`,
-      `define_method`, `alias_method`, `delegate`, `scope`, `has_many`/`has_one`/
+- [x] Ruby metaprogramming recall — `attr`/`attr_accessor`/`attr_reader`/
+      `attr_writer`, `define_method`, the `alias` keyword and `alias_method`,
+      `delegate`, `scope`, `has_many`/`has_one`/
       `belongs_to`, `field` emit the methods they define (literal names only,
       pointing at the macro's line) — the definitions Tree-sitter can't see as
       `def`s. `field` covers the schema DSLs (graphql-ruby, Mongoid), where the

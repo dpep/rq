@@ -7,6 +7,18 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **Ruby: the `alias` keyword, bare `attr`, and rooted `class ::Foo`.** Three
+  extraction gaps surfaced by reading Shopify's rubydex
+  [ruby-behaviors](https://github.com/Shopify/rubydex/blob/main/docs/ruby-behaviors.md)
+  catalog against the plugin: `alias baz bar` now indexes `baz` (only
+  `alias_method` was covered before), the legacy `attr :a, :b` form indexes its
+  readers, and a rooted definition (`class ::Bar` inside a module) is owned by
+  the top level instead of the enclosing namespace. New symbols land as files
+  reindex on edit; `rq --drop` + a reindex picks them up everywhere at once.
+
 ## 0.50.0 — 2026-08-22
 
 ### Changed

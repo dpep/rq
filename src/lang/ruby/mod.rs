@@ -53,10 +53,19 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mu
                     // with `A::B` folded into the parent — same shape as the
                     // nested `module A; module B; class C` form, so the class
                     // is found by its leaf name either way
-                    let (leaf, prefix) = split_qualified(&name);
-                    let effective_parent = match prefix {
-                        Some(p) => Some(qualify(parent, p, "::")),
-                        None => parent.map(str::to_string),
+                    let (name, rooted) = match name.strip_prefix("::") {
+                        Some(rest) => (rest, true),
+                        None => (name.as_str(), false),
+                    };
+                    let (leaf, prefix) = split_qualified(name);
+                    let effective_parent = if rooted {
+                        // `class ::Bar` defines at the top level, ignoring nesting
+                        prefix.map(str::to_string)
+                    } else {
+                        match prefix {
+                            Some(p) => Some(qualify(parent, p, "::")),
+                            None => parent.map(str::to_string),
+                        }
                     };
                     let mut s = ctx.symbol(leaf, kind, child, effective_parent.as_deref());
                     s.visibility = Some("public");
@@ -80,6 +89,18 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mu
                     out.push(s);
                 }
                 // method bodies rarely hold further definitions; don't recurse.
+            }
+            "alias" => {
+                // `alias new old` — the keyword form of alias_method; a
+                // global-variable alias (`alias $a $b`) defines no method
+                if let Some(name) = ctx.field_text(child, "name")
+                    && !name.starts_with('$')
+                {
+                    let mut s =
+                        ctx.symbol(name.trim_start_matches(':'), Kind::Method, child, parent);
+                    s.visibility = Some(vis);
+                    out.push(s);
+                }
             }
             // a bare access marker flips the section for what follows
             "identifier" => match ctx.node_text(child).as_deref() {
@@ -122,7 +143,9 @@ enum DslArgs {
 /// be ambiguous.
 fn dsl_args(method: &str) -> Option<DslArgs> {
     match method {
-        "attr_accessor" | "attr_reader" | "attr_writer" | "delegate" => Some(DslArgs::All),
+        // `attr`'s optional boolean tail (`attr :x, true`) is skipped by the
+        // literal-name filter, so All is safe for it too
+        "attr" | "attr_accessor" | "attr_reader" | "attr_writer" | "delegate" => Some(DslArgs::All),
         "define_method" | "alias_method" | "scope" | "has_many" | "has_one" | "belongs_to"
         | "field" => Some(DslArgs::First),
         _ => None,
@@ -185,8 +208,8 @@ fn literal_name(ctx: &Ctx, node: Node) -> Option<String> {
 }
 
 /// Split a possibly compact-qualified definition name (`A::B::C`) into its leaf
-/// (`C`) and namespace prefix (`A::B`). A plain name has no prefix; a leading
-/// `::` (absolute `::Foo`) yields no prefix either.
+/// (`C`) and namespace prefix (`A::B`). A plain name has no prefix. Callers
+/// strip a rooted `::` before splitting.
 fn split_qualified(name: &str) -> (&str, Option<&str>) {
     match name.rfind("::") {
         Some(i) => {
@@ -350,6 +373,71 @@ end
                 "{non_name} is not a defined method: {syms:?}"
             );
         }
+    }
+
+    #[test]
+    fn alias_keyword_defines_the_new_name() {
+        let src = r#"
+class Foo
+  def bar
+  end
+
+  alias baz bar
+  alias :qux :bar
+  alias $copy $orig
+end
+"#;
+        let syms = extract(src);
+        for name in ["baz", "qux"] {
+            let s = find(&syms, name);
+            assert_eq!(s.kind, Kind::Method, "{name} is a method");
+            assert_eq!(s.parent.as_deref(), Some("Foo"));
+        }
+        // a global-variable alias defines no method
+        assert!(!syms.iter().any(|s| s.name.contains("copy")), "{syms:?}");
+    }
+
+    #[test]
+    fn bare_attr_defines_readers() {
+        let src = "class Foo\n  attr :size, :color\n  attr :flag, true\nend\n";
+        let syms = extract(src);
+        for name in ["size", "color", "flag"] {
+            assert_eq!(find(&syms, name).kind, Kind::Method, "{name}");
+        }
+        // the boolean writer switch is an option, not a name
+        assert_eq!(syms.len(), 4, "{syms:?}");
+    }
+
+    #[test]
+    fn rooted_definition_resets_to_top_level() {
+        // `class ::Bar` inside a module defines top-level `Bar`, not `Foo::Bar`
+        let src = "module Foo\n  class ::Bar\n  end\n  class ::Baz::Qux\n  end\nend\n";
+        let syms = extract(src);
+        assert_eq!(find(&syms, "Bar").parent, None);
+        assert_eq!(find(&syms, "Qux").parent.as_deref(), Some("Baz"));
+    }
+
+    #[test]
+    fn singleton_class_methods_belong_to_the_class() {
+        let src = r#"
+class Foo
+  class << self
+    def build
+    end
+
+    private
+
+    def hidden
+    end
+  end
+end
+"#;
+        let syms = extract(src);
+        let build = find(&syms, "build");
+        assert_eq!(build.parent.as_deref(), Some("Foo"));
+        assert_eq!(build.visibility, Some("public"));
+        // unlike `def self.x`, visibility applies inside `class << self`
+        assert_eq!(find(&syms, "hidden").visibility, Some("private"));
     }
 
     #[test]
