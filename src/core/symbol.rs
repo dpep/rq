@@ -19,6 +19,7 @@ pub(crate) enum Kind {
     Struct,
     Enum,
     Trait,
+    Constant,
 }
 
 impl Kind {
@@ -32,6 +33,7 @@ impl Kind {
             Kind::Struct => "struct",
             Kind::Enum => "enum",
             Kind::Trait => "trait",
+            Kind::Constant => "constant",
         }
     }
 }
@@ -82,5 +84,6 @@ mod tests {
         assert_eq!(Kind::Struct.as_str(), "struct");
         assert_eq!(Kind::Enum.as_str(), "enum");
         assert_eq!(Kind::Trait.as_str(), "trait");
+        assert_eq!(Kind::Constant.as_str(), "constant");
     }
 }

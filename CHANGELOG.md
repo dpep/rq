@@ -9,6 +9,15 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Added
+- **Constants are indexed.** `rq SOME_LIMIT` finds `SOME_LIMIT = …` in Ruby —
+  including qualified (`Foo::BAR = …`), rooted (`::BAR = …`), multi-assignment,
+  and `||=` forms — and `const`/`static` items in Rust. A new `constant` kind
+  joins the model: `--kind constant` (or `const`) and the leading-keyword form
+  (`rq constant FOO`) scope to it, and it appears as `"kind":"constant"` in
+  JSON output. Constants land as files reindex on edit; `rq --drop` + a reindex
+  picks them up everywhere at once. Other languages follow later.
+
 ### Fixed
 - **Ruby: the `alias` keyword, bare `attr`, and rooted `class ::Foo`.** Three
   extraction gaps surfaced by reading Shopify's rubydex

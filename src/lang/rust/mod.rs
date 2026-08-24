@@ -1,7 +1,8 @@
 //! Rust plugin — the second language, and what rq dogfoods on its own source.
 //!
 //! Extracts the definitions you navigate to: `fn` (free → function, inside an
-//! `impl`/`trait` → method), `struct`, `enum`, `trait`, and `mod`. `parent`
+//! `impl`/`trait` → method), `struct`, `enum`, `trait`, `mod`, and
+//! `const`/`static` (→ constant). `parent`
 //! carries the enclosing qualified name (`::`-joined) so a method renders as
 //! `bar · Foo` and a nested type as `outer · mod`. `impl` blocks aren't symbols
 //! themselves; they just supply the parent for the methods inside them.
@@ -62,6 +63,11 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                         _ => Kind::Struct,
                     };
                     push(ctx, out, &name, kind, child, parent);
+                }
+            }
+            "const_item" | "static_item" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    push(ctx, out, &name, Kind::Constant, child, parent);
                 }
             }
             "trait_item" => {
@@ -254,6 +260,27 @@ mod outer {
     fn empty_and_unparseable_yield_no_symbols() {
         assert!(extract("").is_empty());
         assert!(extract("// just a comment\n").is_empty());
+    }
+
+    #[test]
+    fn consts_and_statics_are_constants() {
+        let src = r#"
+pub const MAX: u32 = 10;
+static NAME: &str = "x";
+
+pub struct Widget;
+
+impl Widget {
+    pub const DEFAULT: u32 = 1;
+}
+"#;
+        let syms = extract(src);
+        let max = find(&syms, "MAX");
+        assert_eq!(max.kind, Kind::Constant);
+        assert_eq!(max.visibility, Some("public"));
+        assert_eq!(find(&syms, "NAME").visibility, Some("private"));
+        // an associated const belongs to its impl's type
+        assert_eq!(find(&syms, "DEFAULT").parent.as_deref(), Some("Widget"));
     }
 
     #[test]

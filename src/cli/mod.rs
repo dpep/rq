@@ -2289,6 +2289,7 @@ fn keyword_kind(token: &str) -> Option<&'static str> {
         "struct" | "type" => Some("struct"),
         "enum" => Some("enum"),
         "trait" | "interface" => Some("trait"),
+        "constant" | "const" => Some("constant"),
         _ => None,
     }
 }
@@ -2331,6 +2332,7 @@ fn canonical_kind(s: &str) -> Option<&'static str> {
         "s" | "struct" | "type" => "struct",
         "e" | "enum" => "enum",
         "t" | "trait" | "interface" => "trait",
+        "const" | "constant" => "constant",
         _ => return None,
     })
 }
@@ -2901,6 +2903,7 @@ mod tests {
         // TypeScript's spellings land on the shared model's kinds
         assert_eq!(canonical_kind("interface"), Some("trait"));
         assert_eq!(canonical_kind("type"), Some("struct"));
+        assert_eq!(canonical_kind("const"), Some("constant"));
         assert_eq!(canonical_kind("banana"), None);
         // …and work as the leading-keyword shorthand too
         let d = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();

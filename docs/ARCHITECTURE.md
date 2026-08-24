@@ -38,7 +38,7 @@ Symbol {
   repository   # which repo it belongs to
   language     # ruby, go, ts, ...
   name         # RefundProcessor, perform, User
-  kind         # class | module | method | function
+  kind         # class | module | method | function | struct | enum | trait | constant
   file         # repo-relative path
   line         # 1-based
   parent       # enclosing symbol (cheap nesting, NOT a call graph)
@@ -140,7 +140,7 @@ symbols (
   file_id INTEGER NOT NULL REFERENCES files(id),
   name TEXT NOT NULL,
   name_lower TEXT NOT NULL,          -- prefix / ranking
-  kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait
+  kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait|constant
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
   end_line INTEGER,                  -- 1-based last line of the definition body

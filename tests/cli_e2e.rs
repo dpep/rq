@@ -341,7 +341,7 @@ fn a_leading_kind_keyword_filters_like_dash_k() {
     let (dir, db) = scratch("kindkw");
     fs::write(
         dir.join("a.rb"),
-        "class Widget\n  def go; end\nend\nmodule Widget\nend\n",
+        "SIZE = 5\nclass Widget\n  def go; end\nend\nmodule Widget\nend\n",
     )
     .unwrap();
     rq(&db, &dir, &["--index"]);
@@ -359,6 +359,14 @@ fn a_leading_kind_keyword_filters_like_dash_k() {
     let (ok, out) = rq(&db, &dir, &["method", "go", "--no-record", "--ndjson"]);
     assert!(ok, "method keyword failed: {out}");
     assert!(out.contains("\"kind\":\"method\""), "method found: {out}");
+
+    // constants are indexed and reachable via the keyword form too
+    let (ok, out) = rq(&db, &dir, &["constant", "SIZE", "--no-record", "--ndjson"]);
+    assert!(ok, "constant keyword failed: {out}");
+    assert!(
+        out.contains("\"kind\":\"constant\""),
+        "constant found: {out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

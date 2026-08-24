@@ -1,7 +1,7 @@
 //! Ruby plugin — the first language.
 //!
-//! Extracts classes, modules, and methods (instance and singleton) via
-//! Tree-sitter. `parent` carries the enclosing qualified name so a method
+//! Extracts classes, modules, methods (instance and singleton), and constants
+//! via Tree-sitter. `parent` carries the enclosing qualified name so a method
 //! renders as `Foo::Bar#baz` and a nested class as `Foo::Bar`.
 
 use tree_sitter::Node;
@@ -53,20 +53,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mu
                     // with `A::B` folded into the parent — same shape as the
                     // nested `module A; module B; class C` form, so the class
                     // is found by its leaf name either way
-                    let (name, rooted) = match name.strip_prefix("::") {
-                        Some(rest) => (rest, true),
-                        None => (name.as_str(), false),
-                    };
-                    let (leaf, prefix) = split_qualified(name);
-                    let effective_parent = if rooted {
-                        // `class ::Bar` defines at the top level, ignoring nesting
-                        prefix.map(str::to_string)
-                    } else {
-                        match prefix {
-                            Some(p) => Some(qualify(parent, p, "::")),
-                            None => parent.map(str::to_string),
-                        }
-                    };
+                    let (leaf, effective_parent) = leaf_and_parent(&name, parent);
                     let mut s = ctx.symbol(leaf, kind, child, effective_parent.as_deref());
                     s.visibility = Some("public");
                     out.push(s);
@@ -101,6 +88,15 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mu
                     s.visibility = Some(vis);
                     out.push(s);
                 }
+            }
+            "assignment" | "operator_assignment" => {
+                // `CONST = …`, `Foo::BAR = …`, `A, B = …`, `RETRIES ||= …`
+                // define constants; the right side can hold definitions too
+                // (`Foo = Class.new do … end`)
+                if let Some(left) = child.child_by_field_name("left") {
+                    constants(ctx, left, child, parent, out);
+                }
+                walk(ctx, child, parent, vis, out);
             }
             // a bare access marker flips the section for what follows
             "identifier" => match ctx.node_text(child).as_deref() {
@@ -205,6 +201,56 @@ fn literal_name(ctx: &Ctx, node: Node) -> Option<String> {
             .map(|t| t.trim_matches(|c| c == '"' || c == '\'').to_string()),
         _ => None,
     }
+}
+
+/// Emit constant symbols for an assignment's left side: a bare `CONST`, a
+/// qualified `Foo::BAR`, or each constant in a multi-assignment list. Always
+/// public — method visibility sections never apply to constants, and the
+/// retroactive `private_constant` is out of static reach.
+fn constants(ctx: &Ctx, left: Node, def: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+    match left.kind() {
+        "constant" | "scope_resolution" => {
+            if let Some(name) = ctx.node_text(left) {
+                let (leaf, effective_parent) = leaf_and_parent(&name, parent);
+                // a scope_resolution leaf can be lowercase (`Foo::bar = 1` is a
+                // setter call, not a constant)
+                if leaf.starts_with(char::is_uppercase) {
+                    let mut s = ctx.symbol(leaf, Kind::Constant, def, effective_parent.as_deref());
+                    s.visibility = Some("public");
+                    out.push(s);
+                }
+            }
+        }
+        "left_assignment_list" => {
+            let mut cursor = left.walk();
+            for item in left.children(&mut cursor) {
+                constants(ctx, item, def, parent, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Resolve a definition name that may be compact-qualified (`A::B::C`) or
+/// rooted (`::Foo`) to its leaf plus the parent it belongs under. A compact
+/// name folds its prefix into the parent — same shape as the nested form, so
+/// the definition is found by its leaf name either way; a rooted name lives at
+/// the top level, ignoring lexical nesting.
+fn leaf_and_parent<'a>(name: &'a str, parent: Option<&str>) -> (&'a str, Option<String>) {
+    let (name, rooted) = match name.strip_prefix("::") {
+        Some(rest) => (rest, true),
+        None => (name, false),
+    };
+    let (leaf, prefix) = split_qualified(name);
+    let effective_parent = if rooted {
+        prefix.map(str::to_string)
+    } else {
+        match prefix {
+            Some(p) => Some(qualify(parent, p, "::")),
+            None => parent.map(str::to_string),
+        }
+    };
+    (leaf, effective_parent)
 }
 
 /// Split a possibly compact-qualified definition name (`A::B::C`) into its leaf
@@ -438,6 +484,41 @@ end
         assert_eq!(build.visibility, Some("public"));
         // unlike `def self.x`, visibility applies inside `class << self`
         assert_eq!(find(&syms, "hidden").visibility, Some("private"));
+    }
+
+    #[test]
+    fn constant_assignments_are_indexed() {
+        let src = r#"
+module Config
+  LIMIT = 10
+  Names::DEFAULT = "x"
+  ::ROOT = 1
+  A, B = 1, 2
+  RETRIES ||= 3
+
+  private
+
+  SECRET = 4
+end
+Version = Struct.new(:major)
+"#;
+        let syms = extract(src);
+        let limit = find(&syms, "LIMIT");
+        assert_eq!(limit.kind, Kind::Constant);
+        assert_eq!(limit.parent.as_deref(), Some("Config"));
+        // qualified and rooted lefts resolve like compact class definitions
+        assert_eq!(
+            find(&syms, "DEFAULT").parent.as_deref(),
+            Some("Config::Names")
+        );
+        assert_eq!(find(&syms, "ROOT").parent, None);
+        for name in ["A", "B", "RETRIES"] {
+            assert_eq!(find(&syms, name).kind, Kind::Constant, "{name}");
+        }
+        // method visibility sections don't apply to constants
+        assert_eq!(find(&syms, "SECRET").visibility, Some("public"));
+        // an anonymous class is at least findable by the constant naming it
+        assert_eq!(find(&syms, "Version").kind, Kind::Constant);
     }
 
     #[test]
