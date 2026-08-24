@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.50.1 — 2026-08-24
 
 ### Added
 - **Constants are indexed.** `rq SOME_LIMIT` finds `SOME_LIMIT = …` in Ruby —
