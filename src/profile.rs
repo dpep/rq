@@ -14,11 +14,23 @@
 //! total while delaying the first answer is a regression here.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static PHASES: Mutex<Vec<Phase>> = Mutex::new(Vec::new());
+static COUNTERS: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
+static SLOWEST: Mutex<Vec<(Duration, String)>> = Mutex::new(Vec::new());
+
+/// How many entries the "slowest units of work" list keeps. Enough to spot a
+/// pathological input, few enough to read at a glance.
+const SLOWEST_KEEP: usize = 5;
+
+/// Microseconds of the current worst-of-the-kept entry — the bar a candidate
+/// must clear to be worth the lock. Read as a plain atomic so the common case
+/// (a fast file, on one of many parse workers) costs a load rather than
+/// contending every worker on one mutex.
+static SLOW_BAR: AtomicU64 = AtomicU64::new(0);
 
 /// One measured phase.
 pub(crate) struct Phase {
@@ -65,6 +77,63 @@ pub(crate) fn record(name: &'static str, elapsed: Duration, note: impl FnOnce() 
     }
 }
 
+/// Add `n` to a named counter — files seen, batches committed. Counts describe
+/// *how much work there was*, which a duration alone can't distinguish from
+/// work that was merely slow. Additive: repeated calls with one name sum.
+pub(crate) fn count(name: &'static str, n: u64) {
+    if !enabled() {
+        return;
+    }
+    if let Ok(mut counters) = COUNTERS.lock() {
+        match counters.iter_mut().find(|(k, _)| *k == name) {
+            Some((_, v)) => *v += n,
+            None => counters.push((name, n)),
+        }
+    }
+}
+
+/// Offer one unit of work to the "slowest" list, which keeps the worst
+/// [`SLOWEST_KEEP`]. These locate pathological *inputs* — one generated file
+/// can dominate a phase without moving any average. `label` runs only for a
+/// candidate that clears the bar, so naming a fast file is never paid for.
+pub(crate) fn slow(elapsed: Duration, label: impl FnOnce() -> String) {
+    if !enabled() {
+        return;
+    }
+    let us = elapsed.as_micros() as u64;
+    if us <= SLOW_BAR.load(Ordering::Relaxed) {
+        return; // can't displace anything already kept
+    }
+    if let Ok(mut slowest) = SLOWEST.lock() {
+        slowest.push((elapsed, label()));
+        slowest.sort_by_key(|a| std::cmp::Reverse(a.0));
+        slowest.truncate(SLOWEST_KEEP);
+        // raise the bar only once the list is full — until then everything is
+        // worth keeping
+        if slowest.len() == SLOWEST_KEEP {
+            let bar = slowest[SLOWEST_KEEP - 1].0.as_micros() as u64;
+            SLOW_BAR.store(bar, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Counters recorded so far, highest first. Drains.
+pub(crate) fn counters() -> Vec<(&'static str, u64)> {
+    COUNTERS
+        .lock()
+        .map(|mut c| std::mem::take(&mut *c))
+        .unwrap_or_default()
+}
+
+/// The slowest units of work, slowest first. Drains.
+pub(crate) fn slowest() -> Vec<(Duration, String)> {
+    SLOW_BAR.store(0, Ordering::Relaxed);
+    SLOWEST
+        .lock()
+        .map(|mut s| std::mem::take(&mut *s))
+        .unwrap_or_default()
+}
+
 pub(crate) struct Span {
     name: &'static str,
     start: Option<Instant>,
@@ -105,7 +174,9 @@ pub(crate) fn phases() -> Vec<Phase> {
 /// The report as stderr-ready lines. Empty when nothing was measured.
 pub(crate) fn report(total: Duration) -> Vec<String> {
     let phases = phases();
-    if phases.is_empty() {
+    let counters = counters();
+    let slowest = slowest();
+    if phases.is_empty() && counters.is_empty() && slowest.is_empty() {
         return Vec::new();
     }
     let w = phases
@@ -125,12 +196,22 @@ pub(crate) fn report(total: Duration) -> Vec<String> {
         .collect();
     out.push(format!("  {:<w$}  {:>8}", "─".repeat(w.min(20)), "", w = w));
     out.push(format!("  {:<w$}  {:>8}", "total", ms(total), w = w));
+    for (name, v) in &counters {
+        out.push(format!("  {name:<w$}  {v:>8}", w = w));
+    }
+    // one "slowest" heading, then the ranked rows under it
+    for (i, (elapsed, label)) in slowest.iter().enumerate() {
+        let head = if i == 0 { "slowest" } else { "" };
+        out.push(format!("  {head:<w$}  {:>8}  {label}", ms(*elapsed), w = w));
+    }
     out
 }
 
 /// Phases as JSON, for storing a baseline and diffing runs.
 pub(crate) fn json(total: Duration) -> String {
     let phases = phases();
+    let counters = counters();
+    let slowest = slowest();
     let body: Vec<String> = phases
         .iter()
         .map(|p| {
@@ -145,11 +226,35 @@ pub(crate) fn json(total: Duration) -> String {
             )
         })
         .collect();
+    // `counters` and `slowest` are always present (empty when a run recorded
+    // none), so a consumer can read them without probing for the key.
+    let counts: Vec<String> = counters
+        .iter()
+        .map(|(k, v)| format!("{}:{v}", quote(k)))
+        .collect();
+    let slow: Vec<String> = slowest
+        .iter()
+        .map(|(elapsed, label)| {
+            format!(
+                "{{\"file\":{},\"ms\":{:.3}}}",
+                quote(label),
+                elapsed.as_secs_f64() * 1000.0
+            )
+        })
+        .collect();
     format!(
-        "{{\"total_ms\":{:.3},\"phases\":[{}]}}",
+        "{{\"total_ms\":{:.3},\"phases\":[{}],\"counters\":{{{}}},\"slowest\":[{}]}}",
         total.as_secs_f64() * 1000.0,
-        body.join(",")
+        body.join(","),
+        counts.join(","),
+        slow.join(",")
     )
+}
+
+/// A JSON string literal. Paths and counter names are arbitrary text, so they
+/// go through serde rather than hand-rolled quoting.
+fn quote(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
 fn ms(d: Duration) -> String {
@@ -182,7 +287,36 @@ mod tests {
         record("also off", Duration::from_millis(1), || {
             panic!("nor this one")
         });
+        count("off", 1);
+        slow(Duration::from_secs(9), || panic!("nor the slow label"));
         assert!(phases().is_empty());
+        assert!(counters().is_empty());
+        assert!(slowest().is_empty());
+    }
+
+    #[test]
+    fn counters_sum_and_the_slowest_list_keeps_the_worst() {
+        let _guard = serial();
+        enable_from(true);
+        let _ = (phases(), counters(), slowest());
+
+        count("files seen", 40);
+        count("files seen", 2);
+        assert_eq!(counters(), vec![("files seen", 42)]);
+
+        // offered fastest-first, so every entry has to displace the bar
+        for i in 1..=(SLOWEST_KEEP as u64 + 3) {
+            slow(Duration::from_millis(i), || format!("f{i}"));
+        }
+        let kept = slowest();
+        assert_eq!(kept.len(), SLOWEST_KEEP);
+        assert_eq!(kept[0].1, format!("f{}", SLOWEST_KEEP as u64 + 3));
+        assert!(kept.windows(2).all(|w| w[0].0 >= w[1].0), "slowest first");
+        // draining resets the bar, so the next run isn't gated by the last one's
+        slow(Duration::from_micros(1), || "tiny".to_string());
+        assert_eq!(slowest().len(), 1);
+
+        ENABLED.store(false, Ordering::Relaxed);
     }
 
     #[test]

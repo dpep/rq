@@ -2531,7 +2531,22 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
     let identity = crate::index::detect_identity(&root).to_string();
-    match crate::index::index_under(&mut store, &root, &subdirs) {
+    let started = std::time::Instant::now();
+    let indexed = crate::index::index_under(&mut store, &root, &subdirs);
+    // Phases before the result: the profile describes the indexing run, so it
+    // is reported even when the run failed part-way. Always stderr, so stdout
+    // stays exactly the machine-readable result.
+    if crate::profile::enabled() {
+        let total = started.elapsed();
+        if out == Output::Text {
+            for line in crate::profile::report(total) {
+                eprintln!("{line}");
+            }
+        } else {
+            eprintln!("{}", crate::profile::json(total));
+        }
+    }
+    match indexed {
         Ok(stats) => {
             let subtree = !subdirs.is_empty();
             // distinguish this run's incremental work from the index totals

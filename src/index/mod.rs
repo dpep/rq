@@ -181,6 +181,11 @@ pub(crate) fn parse_jobs() -> usize {
         .unwrap_or(1)
 }
 
+/// Summed per-file parse time across every worker, in microseconds. Profiling
+/// only, and CPU time rather than wall time — the workers overlap each other and
+/// the writer, so this exceeds the phase it sits inside.
+static PARSE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Files buffered before a streaming write commits them — bounds per-transaction
 /// size and how much parsed-but-unwritten work a cut-short pass can lose.
 const WRITE_BATCH: usize = 512;
@@ -197,6 +202,9 @@ struct BatchWriter<'a> {
     /// Cumulative time spent in `replace_files` (the single-writer store path) —
     /// surfaced under `-v` so we can see write vs. walk/parse contention.
     write_time: Duration,
+    /// Transactions committed — `write_time` per batch is the number that says
+    /// whether batching is sized right.
+    batches: usize,
 }
 
 impl<'a> BatchWriter<'a> {
@@ -208,6 +216,7 @@ impl<'a> BatchWriter<'a> {
             files: 0,
             symbols: 0,
             write_time: Duration::ZERO,
+            batches: 0,
         }
     }
 
@@ -224,6 +233,7 @@ impl<'a> BatchWriter<'a> {
             let t = Instant::now();
             let (f, sy) = self.store.replace_files(self.repo_id, &self.buf)?;
             self.write_time += t.elapsed();
+            self.batches += 1;
             self.files += f;
             self.symbols += sy;
             self.buf.clear();
@@ -451,6 +461,9 @@ fn run_index(
     query: Option<&str>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
+    let profiling = crate::profile::enabled();
+    PARSE_US.store(0, std::sync::atomic::Ordering::Relaxed);
+    let setup_span = crate::profile::span("index: setup");
     let identity = detect_identity(root);
     let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
@@ -469,6 +482,7 @@ fn run_index(
     }
 
     let stored = store.file_mtimes(repo_id)?;
+    drop(setup_span);
     let mut seen: HashSet<String> = HashSet::new();
 
     // A cold, unbounded index (no prior coverage, the explicit `rq --index`)
@@ -500,8 +514,11 @@ fn run_index(
             &mut active_to_parse,
         );
     }
+    let mut active_span = crate::profile::span("index: active files");
     let (active_parsed, _) = parse_files(root, &active_to_parse, None, None);
     let (mut files_indexed, mut symbols) = store.replace_files(repo_id, &active_parsed)?;
+    active_span.note(|| format!("{} file(s)", active_parsed.len()));
+    drop(active_span);
 
     // walk the whole repo, or just the requested subtrees — paths stay relative
     // to `root` so they're repo-relative either way
@@ -519,9 +536,15 @@ fn run_index(
     // (cheap) work never eats the parse budget.
     // An empty result means nothing is tracked yet (a fresh/uncommitted repo), so
     // fall back to the filesystem walk, which sees untracked files.
+    let mut enum_span = crate::profile::span("index: enumerate");
     let git_candidates = budget
         .and_then(|_| git_source_candidates(root))
         .filter(|paths| !paths.is_empty());
+    enum_span.note(|| match &git_candidates {
+        Some(p) => format!("git ls-files, {} path(s)", p.len()),
+        None => "filesystem walk (lazy — time lands in walk+parse+write)".to_string(),
+    });
+    drop(enum_span);
     let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
         // parse query-relevant files (by path) first — a cheap in-memory reorder
         Some(paths) => Box::new(prioritize_by_path(paths, root, query).into_iter()),
@@ -536,12 +559,21 @@ fn run_index(
     // pass keeps what it parsed). Only new or changed files are parsed; every
     // source file seen lands in `seen` for deletion reconcile.
     let stored_ref = &stored;
-    let keep = |rel: &str, path: &Path| match stored_ref.get(rel) {
-        Some(&Some(m)) => Some(m) != file_mtime(path),
-        _ => true, // new file, or one stored without an mtime
+    let skipped = std::sync::atomic::AtomicU64::new(0);
+    let skipped_ref = &skipped;
+    let keep = move |rel: &str, path: &Path| {
+        let changed = match stored_ref.get(rel) {
+            Some(&Some(m)) => Some(m) != file_mtime(path),
+            _ => true, // new file, or one stored without an mtime
+        };
+        if profiling && !changed {
+            skipped_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        changed
     };
     let stream_start = Instant::now();
-    let (seen, completed, walk_files, walk_symbols, write_time) = {
+    let mut fused_span = crate::profile::span("index: walk+parse+write");
+    let (seen, completed, walk_files, walk_symbols, write_time, batches) = {
         let mut writer = BatchWriter::new(&mut *store, repo_id);
         let (seen, completed) = stream_walk(
             root,
@@ -561,8 +593,22 @@ fn run_index(
             writer.files,
             writer.symbols,
             writer.write_time,
+            writer.batches,
         )
     };
+    fused_span.note(|| format!("{walk_files} file(s), {walk_symbols} symbol(s)"));
+    drop(fused_span);
+    // Both of these overlap the phase above rather than following it — the
+    // workers parse while the consumer thread writes — so they are reported as
+    // components of it, not as additional time.
+    crate::profile::record(
+        "index: parse (worker cpu)",
+        Duration::from_micros(PARSE_US.load(std::sync::atomic::Ordering::Relaxed)),
+        || format!("summed across {} worker(s)", parse_jobs()),
+    );
+    crate::profile::record("index: store writes", write_time, || {
+        format!("{batches} batch(es), serialized")
+    });
     if crate::trace::enabled() {
         let elapsed = stream_start.elapsed();
         crate::trace!(
@@ -576,6 +622,7 @@ fn run_index(
     }
     if bulk_fts {
         let t = crate::trace::Timer::start("fts bulk rebuild");
+        let _span = crate::profile::span("index: fts rebuild");
         store.rebuild_fts()?;
         drop(t);
     }
@@ -600,6 +647,7 @@ fn run_index(
     // index held some is treated as a failed enumeration (see `sweep_outcome`),
     // not finalized — so a transient empty walk can't wipe a populated index.
     if finalize {
+        let mut reconcile_span = crate::profile::span("index: reconcile");
         let mut forgotten = 0;
         for path in stored.keys() {
             if !seen.contains(path) {
@@ -607,6 +655,8 @@ fn run_index(
                 forgotten += 1;
             }
         }
+        reconcile_span.note(|| format!("{forgotten} file(s) forgotten"));
+        drop(reconcile_span);
         if forgotten > 0 {
             crate::trace!(
                 "reconcile {}: forgot {forgotten} file(s) not seen on disk",
@@ -625,6 +675,7 @@ fn run_index(
     // repo's history yet emits repo-relative paths that wouldn't match our
     // subdir-relative ones — pure waste. (A subdir index leans on mtime recency.)
     if stats.files_indexed > 0 && repo_root(root).is_some_and(|r| r == root_display) {
+        let _span = crate::profile::span("index: git metadata");
         capture_commit_times(store, repo_id, root);
     }
 
@@ -645,6 +696,17 @@ fn run_index(
         stats.files_indexed as i64,
         status,
     )?;
+    if profiling {
+        crate::profile::count("files seen", stats.files_seen as u64);
+        crate::profile::count("files parsed", stats.files_indexed as u64);
+        crate::profile::count(
+            "files skipped (mtime)",
+            skipped.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        crate::profile::count("symbols", stats.symbols as u64);
+        crate::profile::count("batches", batches as u64);
+        crate::profile::count("parse jobs", parse_jobs() as u64);
+    }
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",
         crate::trace::abbrev(&root_display),
@@ -699,6 +761,7 @@ fn parse_file(
     file: &Path,
     needle: Option<&[u8]>,
 ) -> Option<crate::store::FileSymbols> {
+    let timing = crate::profile::enabled().then(Instant::now);
     let ext = file.extension().and_then(|e| e.to_str())?;
     let plugin = lang::plugin_for_extension(ext)?;
     let rel = file
@@ -715,6 +778,15 @@ fn parse_file(
     }
     let content_hash = content_hash(&source);
     let symbols = plugin.extract(&rel, &source);
+    if let Some(started) = timing {
+        // workers run concurrently, so this sums to CPU time, not wall time
+        let elapsed = started.elapsed();
+        PARSE_US.fetch_add(
+            elapsed.as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        crate::profile::slow(elapsed, || rel.clone());
+    }
     Some(crate::store::FileSymbols {
         path: rel,
         language: plugin.language().to_string(),

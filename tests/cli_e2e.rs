@@ -38,6 +38,23 @@ fn rq(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
     )
 }
 
+/// Run the binary and hand back stdout *and* stderr — `--profile` reports to
+/// stderr so stdout stays exactly the machine-readable result.
+fn rq_both(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(args)
+        .current_dir(cwd)
+        .env("RQ_DB", db)
+        .env("RQ_WARM_DETACH", "0")
+        .output()
+        .expect("run rq");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
@@ -1681,4 +1698,72 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     assert!(!ok, "--show is refused for a batch");
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// `--profile` on an index run reports phases, counters and the slowest files —
+/// to stderr, structured when the output mode is, and nothing at all when off.
+#[test]
+fn index_profile_reports_phases_and_counters() {
+    let (dir, db) = scratch("index-profile");
+    fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
+    fs::write(dir.join("beta.rb"), "class HandlerB\ndef go\nend\nend\n").unwrap();
+
+    // off: stdout carries the result, stderr stays silent
+    let (ok, out, err) = rq_both(&db, &dir, &["--index"]);
+    assert!(ok, "index failed: {out}");
+    assert!(
+        !err.contains("walk+parse+write"),
+        "profile leaked with --profile off: {err}"
+    );
+
+    // text: a human-readable table on stderr, stdout untouched
+    let (dir2, db2) = scratch("index-profile-text");
+    fs::write(dir2.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
+    let (ok, out, err) = rq_both(&db2, &dir2, &["--index", "--profile"]);
+    assert!(ok, "index failed: {out}");
+    for phase in [
+        "index: setup",
+        "index: walk+parse+write",
+        "index: store writes",
+    ] {
+        assert!(err.contains(phase), "missing {phase} in profile: {err}");
+    }
+    for counter in ["files seen", "files parsed", "batches", "parse jobs"] {
+        assert!(err.contains(counter), "missing {counter} in profile: {err}");
+    }
+    assert!(err.contains("slowest"), "missing slowest files: {err}");
+    assert!(
+        !out.contains("walk+parse+write"),
+        "profile must not pollute stdout: {out}"
+    );
+
+    // json: one object on stderr with the same phase names; stdout stays parseable
+    let (dir3, db3) = scratch("index-profile-json");
+    fs::write(dir3.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
+    let (ok, out, err) = rq_both(&db3, &dir3, &["--index", "--profile", "--json"]);
+    assert!(ok, "index failed: {out}");
+    let stdout_json: serde_json::Value =
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("stdout not json ({e}): {out}"));
+    assert_eq!(stdout_json["scope"], "full");
+    let profile: serde_json::Value = serde_json::from_str(err.trim())
+        .unwrap_or_else(|e| panic!("profile not json ({e}): {err}"));
+    assert!(profile["total_ms"].is_number(), "total_ms missing: {err}");
+    let names: Vec<&str> = profile["phases"]
+        .as_array()
+        .expect("phases array")
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"index: walk+parse+write"),
+        "phases: {names:?}"
+    );
+    assert_eq!(profile["counters"]["files parsed"], 1);
+    assert!(
+        profile["counters"]["parse jobs"].as_u64().unwrap_or(0) >= 1,
+        "parse jobs: {err}"
+    );
+    let slowest = profile["slowest"].as_array().expect("slowest array");
+    assert_eq!(slowest.len(), 1, "one file parsed → one slowest entry");
+    assert_eq!(slowest[0]["file"], "alpha.rb");
 }

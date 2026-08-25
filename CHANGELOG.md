@@ -9,6 +9,19 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Added
+- **`--profile` now covers indexing.** `rq --index --profile` reports where the
+  run's time went — setup, candidate enumeration, the fused walk+parse+write
+  phase with its overlapping parse and write components, the FTS rebuild,
+  deletion reconcile, and git metadata — plus counters (files seen, parsed,
+  skipped by mtime, symbols, batches committed, parse jobs) and the five slowest
+  files to parse, which is how one pathological generated file gets found.
+  Human-readable to stderr; under `--json`/`--ndjson` it is a single JSON object
+  on stderr (`total_ms`, `phases`, `counters`, `slowest`), so stdout stays
+  exactly the result. Search `--profile` JSON gains the same `counters` and
+  `slowest` keys, empty for a search. Free when off, and `RQ_PROFILE=1` turns it
+  on for an installed binary the same way it does for search.
+
 ### Changed
 - **Indexing uses every available core by default.** The automatic parse-job
   count was capped at 8, on the theory that writes serialize behind the single
