@@ -1,7 +1,7 @@
 rq — Reference Query
 ====================
 
-**rq finds where a symbol is *defined* and ranks the one you meant to the top.** Ask for a name and you get the single most-likely definition first — a class, method, function, struct — not every line that mentions it. Navigation, not enumeration.
+**rq finds the code you're looking for.**  Search for a class, method, function, struct, const...and rq will find it's definition.
 
 ```sh
 rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
@@ -12,13 +12,11 @@ rq Account::save # → the save defined inside Account (scope-aware; also Accoun
 rq class Widget  # → a leading kind keyword is shorthand for -k class
 ```
 
-Search is the default action — `rq <query>`, no subcommand. Every *operation* is a flag (`--index`, `--status`, `--symbols`), so no word is reserved: `rq index` searches for a symbol named "index" like any other query. The feel is `rg`/`fd`: type a name, get an answer.
-
 ## Why not grep / ctags / an LSP?
 
 - **grep / rg** give every textual mention; rq gives the one place a symbol is *defined*, ranked.
 - **ctags** is static and relevance-blind; rq ranks by match quality, your current repo, recency, and what you've opened before.
-- **an LSP** is heavy — per-language, per-project, slow to warm. rq is one fast binary across all your repos: in-process search at `rg` speed (sub-millisecond), warms itself on first use, self-heals on edits, and learns from the results you actually open.
+- **an LSP** is heavy — per-language, per-project, slow to warm. rq is one blazingly fast binary across all your repos: in-process search at `rg` speed (sub-millisecond), warms itself on first use, self-heals on edits, and learns from the results you actually open.
 
 Definitions come from [Tree-sitter](https://tree-sitter.github.io/) for Ruby, Rust, Go, Python,
 TypeScript, and JavaScript.
