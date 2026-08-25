@@ -633,6 +633,17 @@ fn run_index(
         files_indexed,
         symbols,
     };
+    if profiling {
+        crate::profile::count("files seen", stats.files_seen as u64);
+        crate::profile::count("files parsed", stats.files_indexed as u64);
+        crate::profile::count(
+            "files skipped (mtime)",
+            skipped.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        crate::profile::count("symbols", stats.symbols as u64);
+        crate::profile::count("batches", batches as u64);
+        crate::profile::count("parse jobs", parse_jobs() as u64);
+    }
 
     let whole_repo = subdirs.is_empty();
     let (finalize, status) = sweep_outcome(
@@ -696,17 +707,6 @@ fn run_index(
         stats.files_indexed as i64,
         status,
     )?;
-    if profiling {
-        crate::profile::count("files seen", stats.files_seen as u64);
-        crate::profile::count("files parsed", stats.files_indexed as u64);
-        crate::profile::count(
-            "files skipped (mtime)",
-            skipped.load(std::sync::atomic::Ordering::Relaxed),
-        );
-        crate::profile::count("symbols", stats.symbols as u64);
-        crate::profile::count("batches", batches as u64);
-        crate::profile::count("parse jobs", parse_jobs() as u64);
-    }
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",
         crate::trace::abbrev(&root_display),
