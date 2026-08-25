@@ -158,8 +158,14 @@ pub(crate) fn set_parse_jobs(n: usize) {
 }
 
 /// Parse workers for one indexer pass — the configured value, else `RQ_JOBS`,
-/// else an auto default. Parsing is CPU-bound but writes serialize through one
-/// SQLite writer, so flooding every core rarely pays; the default caps at 8.
+/// else one per available core.
+///
+/// Parsing keeps scaling to the core count: writes overlap it on the consumer
+/// thread rather than serializing behind it, so the single SQLite writer is not
+/// the ceiling a former cap of 8 assumed (see docs/DECISIONS.md D5). Going
+/// *past* the core count buys nothing, and `available_parallelism` has the
+/// useful property of reporting the cgroup/affinity budget in a container
+/// rather than the host's core count.
 pub(crate) fn parse_jobs() -> usize {
     let configured = PARSE_JOBS.load(std::sync::atomic::Ordering::Relaxed);
     if configured > 0 {
@@ -170,10 +176,9 @@ pub(crate) fn parse_jobs() -> usize {
     {
         return n;
     }
-    let cores = std::thread::available_parallelism()
+    std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(1);
-    cores.clamp(1, 8)
+        .unwrap_or(1)
 }
 
 /// Files buffered before a streaming write commits them — bounds per-transaction
@@ -1239,6 +1244,24 @@ mod tests {
             sweep_outcome(true, false, false, true, true),
             (false, "warming")
         );
+    }
+
+    /// The auto default tracks the machine. Guards the property that matters —
+    /// no ceiling below the core count — rather than a hardcoded number, which
+    /// would just restate the implementation.
+    #[test]
+    fn parse_jobs_defaults_to_one_per_available_core() {
+        set_parse_jobs(0); // auto
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        // RQ_JOBS wins over auto, so only assert the default when it's unset
+        if std::env::var_os("RQ_JOBS").is_none() {
+            assert_eq!(parse_jobs(), cores);
+        }
+        set_parse_jobs(3);
+        assert_eq!(parse_jobs(), 3, "an explicit --jobs still wins");
+        set_parse_jobs(0);
     }
 
     #[test]

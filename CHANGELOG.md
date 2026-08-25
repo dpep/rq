@@ -7,6 +7,19 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **Indexing uses every available core by default.** The automatic parse-job
+  count was capped at 8, on the theory that writes serialize behind the single
+  SQLite writer so extra workers could not pay. Measured, they do: writes
+  overlap parsing rather than queueing behind it, and the walk+parse+write phase
+  keeps scaling to the core count. A machine with more than 8 cores was leaving
+  them idle — one monorepo report put that at ~25% of indexing time. The default
+  is now `available_parallelism()`, which additionally respects a container's
+  CPU budget instead of the host's core count. `--jobs`/`RQ_JOBS` still override
+  it, and nothing changes on an 8-core machine. See docs/DECISIONS.md D5.
+
 ## 0.50.1 — 2026-08-24
 
 ### Added
