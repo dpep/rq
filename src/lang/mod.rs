@@ -167,6 +167,21 @@ pub(crate) fn plugin_for_extension(ext: &str) -> Option<&'static (dyn LanguagePl
         .find(|p| p.extensions().contains(&ext))
 }
 
+/// Assertions every plugin's tests share. Each plugin keeps its own `extract`
+/// — that's the language-specific half — and borrows the rest from here.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::Symbol;
+
+    /// The extracted symbol with this name, or a panic naming what was found
+    /// instead — the diagnostic is the reason this isn't a bare `find`.
+    pub(crate) fn find<'a>(syms: &'a [Symbol], name: &str) -> &'a Symbol {
+        syms.iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("no symbol named {name} in {syms:?}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
