@@ -1609,14 +1609,6 @@ fn on_path(prog: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(prog).is_file()))
 }
 
-/// Whether a complete repo is provably unchanged since its last index — same
-/// HEAD and a clean work tree — so the deferred re-walk can be skipped. The git
-/// HEAD + dirty check is cheap (~tens of ms) and authoritative at any size, so
-/// it gates warming for small and large repos alike: a clean, fully-indexed repo
-/// has nothing to warm, and re-walking it on every query just to discover that
-/// wasted a full sweep (~hundreds of ms) per search. Conservative: any
-/// uncertainty (not complete, non-git / no recorded head, git hiccup) returns
-/// false, so we warm.
 /// How long a branch-file list is served before it's refreshed. A commit or a
 /// checkout is caught by the stamp; a bare working-tree edit touches neither
 /// `.git/HEAD` nor `.git/index`, so only elapsed time catches that — short
