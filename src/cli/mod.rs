@@ -9,6 +9,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 
+use crate::core::now_unix;
 use crate::store::Store;
 
 /// Search is the default action (`rq <query>`). Operations are flags rather
@@ -1215,7 +1216,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     if let Ok(Some((pid, ts))) = store.warm_lock(&identity)
         && pid != std::process::id()
         && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
-        && now_secs() - ts < WARM_LOCK_TTL_SECS
+        && now_unix() - ts < WARM_LOCK_TTL_SECS
     {
         return ExitCode::SUCCESS;
     }
@@ -1243,13 +1244,6 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     }
     let _ = store.clear_warm_lock(&identity);
     ExitCode::SUCCESS
-}
-
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// Live in-memory scan of an untracked (non-git, never-indexed) dir: substring
@@ -1623,14 +1617,6 @@ fn on_path(prog: &str) -> bool {
 /// wasted a full sweep (~hundreds of ms) per search. Conservative: any
 /// uncertainty (not complete, non-git / no recorded head, git hiccup) returns
 /// false, so we warm.
-/// Seconds since the epoch.
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// How long a branch-file list is served before it's refreshed. A commit or a
 /// checkout is caught by the stamp; a bare working-tree edit touches neither
 /// `.git/HEAD` nor `.git/index`, so only elapsed time catches that — short
@@ -1686,7 +1672,7 @@ impl BranchRefresh {
         let Ok((files, cost_ms)) = self.handle.join() else {
             return;
         };
-        let _ = store.branch_files_set(&self.identity, &self.stamp, unix_now(), cost_ms, &files);
+        let _ = store.branch_files_set(&self.identity, &self.stamp, now_unix(), cost_ms, &files);
     }
 }
 
@@ -1710,7 +1696,7 @@ fn cached_branch_files(
     let identity = resolve_identity(store, root);
     let stamp = crate::index::branch_files_stamp(root);
     let cached = store.branch_files_get(&identity).ok().flatten();
-    let now = unix_now();
+    let now = now_unix();
 
     if let (Some(hit), Some(stamp)) = (&cached, &stamp) {
         if &hit.stamp == stamp && now.saturating_sub(hit.written_at) < branch_files_ttl(hit.cost_ms)

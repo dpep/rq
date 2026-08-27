@@ -7,11 +7,10 @@ mod schema;
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::core::{RepoIdentity, Symbol};
+use crate::core::{RepoIdentity, Symbol, now_unix};
 
 pub(crate) type Result<T> = rusqlite::Result<T>;
 
@@ -1188,13 +1187,6 @@ fn trigram_or_query(q: &str) -> Option<String> {
         }
     }
     Some(grams.join(" OR "))
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
