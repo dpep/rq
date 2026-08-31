@@ -9,20 +9,14 @@
 use std::path::PathBuf;
 
 use crate::index;
-use crate::search::{self, ActiveFiles};
 use crate::store::Store;
+use crate::tests::support::top;
 
 fn indexed_src() -> Store {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut store = Store::open_in_memory().unwrap();
     index::index_path(&mut store, &src).unwrap();
     store
-}
-
-fn top(store: &Store, query: &str) -> search::Hit {
-    let hits = search::search(store, query, None, None, &ActiveFiles::default(), 10).unwrap();
-    assert!(!hits.is_empty(), "no hits for {query:?}");
-    hits.hits.into_iter().next().unwrap()
 }
 
 #[test]

@@ -234,15 +234,10 @@ fn member_visibility(ctx: &Ctx, node: Node, name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang::testing::find;
 
     fn extract(source: &str) -> Vec<Symbol> {
         TypeScript.extract("test.ts", source)
-    }
-
-    fn find<'a>(syms: &'a [Symbol], name: &str) -> &'a Symbol {
-        syms.iter()
-            .find(|s| s.name == name)
-            .unwrap_or_else(|| panic!("no symbol named {name} in {syms:?}"))
     }
 
     #[test]

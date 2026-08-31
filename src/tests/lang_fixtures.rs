@@ -3,32 +3,13 @@
 //! kind and qualification.
 
 use std::fs;
-use std::path::PathBuf;
 
-use crate::index;
-use crate::search::{self, ActiveFiles};
-use crate::store::Store;
+use crate::tests::support::{indexed, top};
 
 const WIDGET_GO: &str = include_str!("fixtures/go/widget.go");
 const ACCOUNT_PY: &str = include_str!("fixtures/python/account.py");
 const WIDGET_TS: &str = include_str!("fixtures/typescript/widget.ts");
 const ACCOUNT_JSX: &str = include_str!("fixtures/javascript/account.jsx");
-
-fn indexed(tag: &str, name: &str, source: &str) -> (Store, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rq-lang-{tag}-{}", std::process::id()));
-    fs::remove_dir_all(&dir).ok();
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(name), source).unwrap();
-    let mut store = Store::open_in_memory().unwrap();
-    index::index_path(&mut store, &dir).unwrap();
-    (store, dir)
-}
-
-fn top(store: &Store, query: &str) -> search::Hit {
-    let hits = search::search(store, query, None, None, &ActiveFiles::default(), 10).unwrap();
-    assert!(!hits.is_empty(), "no hits for {query:?}");
-    hits.hits.into_iter().next().unwrap()
-}
 
 #[test]
 fn go_definitions_rank_and_classify() {

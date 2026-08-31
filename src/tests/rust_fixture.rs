@@ -3,39 +3,17 @@
 //! substring of another name doesn't outrank the thing named for it.
 
 use std::fs;
-use std::path::PathBuf;
 
-use crate::index;
 use crate::search::{self, ActiveFiles};
-use crate::store::Store;
+use crate::tests::support::{indexed, top};
 
 /// The fixture source, embedded at compile time so there's no runtime path to
 /// resolve. Written into a throwaway repo dir the test indexes.
 const WIDGET_RS: &str = include_str!("fixtures/rust/widget.rs");
 
-/// Index the fixture into a throwaway repo dir of its own. `tag` keeps each
-/// test's dir distinct — they run as parallel threads of one process, so a
-/// shared path would let one test's cleanup wipe another's fixture mid-index.
-fn indexed_fixture(tag: &str) -> (Store, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rq-rust-fixture-{tag}-{}", std::process::id()));
-    fs::remove_dir_all(&dir).ok();
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("widget.rs"), WIDGET_RS).unwrap();
-
-    let mut store = Store::open_in_memory().unwrap();
-    index::index_path(&mut store, &dir).unwrap();
-    (store, dir)
-}
-
-fn top(store: &Store, query: &str) -> search::Hit {
-    let hits = search::search(store, query, None, None, &ActiveFiles::default(), 10).unwrap();
-    assert!(!hits.is_empty(), "no hits for {query:?}");
-    hits.hits.into_iter().next().unwrap()
-}
-
 #[test]
 fn ranks_the_named_type_first_and_classifies_kinds() {
-    let (store, dir) = indexed_fixture("ranks");
+    let (store, dir) = indexed("ranks", "widget.rs", WIDGET_RS);
 
     // exact name wins over `build_widget`, which merely contains "widget"
     let widget = top(&store, "widget");
@@ -59,7 +37,7 @@ fn ranks_the_named_type_first_and_classifies_kinds() {
 
 #[test]
 fn kind_filter_narrows_to_struct() {
-    let (store, dir) = indexed_fixture("kinds");
+    let (store, dir) = indexed("kinds", "widget.rs", WIDGET_RS);
 
     let structs: Vec<_> = search::search(&store, "widget", None, None, &ActiveFiles::default(), 10)
         .unwrap()

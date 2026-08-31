@@ -11,8 +11,9 @@ pub(crate) use score::{Boosts, Feature, confidence, match_positions, match_quali
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
+use crate::core::now_unix;
 use crate::store::{Store, SymbolRow};
 
 /// Per-layer cap on candidates pulled from the store before ranking. Exact and
@@ -349,13 +350,6 @@ fn learned_boost(selections: i64, last_selected_at: i64, now: i64) -> f64 {
     let age_days = (now - last_selected_at).max(0) as f64 / 86_400.0;
     let recency = 0.5_f64.powf(age_days / 30.0);
     260.0 * strength * recency
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// Layer 4: scan `root` live (no index required) and return ranked hits.

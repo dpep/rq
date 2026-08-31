@@ -106,15 +106,10 @@ fn type_identifier(ctx: &Ctx, node: Node) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang::testing::find;
 
     fn extract(source: &str) -> Vec<Symbol> {
         Go.extract("test.go", source)
-    }
-
-    fn find<'a>(syms: &'a [Symbol], name: &str) -> &'a Symbol {
-        syms.iter()
-            .find(|s| s.name == name)
-            .unwrap_or_else(|| panic!("no symbol named {name} in {syms:?}"))
     }
 
     #[test]
