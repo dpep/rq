@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.51.1 — 2026-09-25
 
 ### Changed
 - **`.` is a scope separator first.** `rq Foo.bar` now means `bar` inside
