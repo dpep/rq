@@ -25,9 +25,13 @@ pub(crate) struct Scored {
 /// prefix nearly so; a fuzzy/abbreviation match scales with its alignment; a
 /// path-only match (name didn't match) is weak.
 pub(crate) fn match_quality(features: &[Feature]) -> f64 {
+    // a mistyped scope is as much a guess as a mistyped name
+    if features.iter().any(|f| f.name == "scope_typo") {
+        return 0.25;
+    }
     for f in features {
         match f.name {
-            "exact" => return 1.0,
+            "exact" | "constructor" => return 1.0,
             "prefix" => return 0.9,
             "wildcard" => return 0.7,
             // the fuzzy feature value is the alignment score (capped ~600)
@@ -91,7 +95,17 @@ pub(crate) fn score(
 
     // Match quality on the symbol name — the dominant term.
     let wildcard = has_wildcard(&q);
-    let name_matched = if wildcard {
+    let name_matched = if qualifier.is_some()
+        && q == "new"
+        && crate::lang::is_constructor(&cand.language, &cand.name)
+    {
+        // `Foo.new` runs the constructor, whatever the language names it
+        features.push(Feature {
+            name: "constructor",
+            value: 1000.0,
+        });
+        true
+    } else if wildcard {
         // explicit glob: literal segments separated by the user's `*`/`?` gaps
         if let Some(s) = wildcard_score(&q, &cand.name) {
             features.push(Feature {
@@ -293,12 +307,21 @@ pub(crate) fn score(
     //
     // A candidate with no recorded parent drops out too, and that's correct:
     // `Foo::Bar` asserts Bar sits inside Foo, and a top-level Bar does not.
+    //
+    // The typo retry forgives a slip in the scope as it does in the name, so
+    // `Widgit.new` still lands inside `Widget`.
     if let Some(qual) = qualifier {
-        let b = parent_boost(qual, cand.parent.as_deref())?;
+        let (b, edits) = parent_boost(qual, cand.parent.as_deref(), near_miss)?;
         features.push(Feature {
             name: "parent",
             value: b,
         });
+        if edits > 0 {
+            features.push(Feature {
+                name: "scope_typo",
+                value: -NEAR_MISS_STEP * edits as f64,
+            });
+        }
     }
 
     // Current-repo boost — the repo you're in dominates other repos.
@@ -559,7 +582,7 @@ pub(crate) fn match_positions(query: &str, name: &str) -> Vec<usize> {
 }
 
 /// Split a query into its leaf name and the optional enclosing scope the user
-/// typed before it. The qualifier is everything before the last `::`/`#`
+/// typed before it. The qualifier is everything before the last `::`/`#`/`.`
 /// separator: `Foo::Bar` → (`Bar`, `Some("Foo")`), `Foo::Bar#baz` → (`baz`,
 /// `Some("Foo::Bar")`), a plain `User` → (`User`, `None`). A leading or trailing
 /// separator (`::Bar`, `Foo::`) is treated as an ordinary unqualified query.
@@ -567,7 +590,7 @@ pub(crate) fn parse_qualified(query: &str) -> (&str, Option<&str>) {
     let sep = query
         .rmatch_indices("::")
         .map(|(i, _)| (i, 2usize))
-        .chain(query.rmatch_indices('#').map(|(i, _)| (i, 1usize)))
+        .chain(query.rmatch_indices(['#', '.']).map(|(i, _)| (i, 1usize)))
         .max_by_key(|&(i, _)| i);
     match sep {
         Some((i, len)) if i > 0 && i + len < query.len() => (&query[i + len..], Some(&query[..i])),
@@ -575,20 +598,20 @@ pub(crate) fn parse_qualified(query: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Lowercased scope segments of a (possibly qualified) name, split on `::`/`#`.
+/// Lowercased scope segments of a (possibly qualified) name, split on `::`/`#`/`.`.
 /// How many scopes a qualified name has, without building them. `segments`
 /// allocates a `String` per scope, which is fine for the one query but not for
 /// every candidate on a query that recalls thousands.
 fn segment_count(s: &str) -> usize {
     s.split("::")
-        .flat_map(|p| p.split('#'))
+        .flat_map(|p| p.split(['#', '.']))
         .filter(|p| !p.is_empty())
         .count()
 }
 
 fn segments(s: &str) -> Vec<String> {
     s.split("::")
-        .flat_map(|p| p.split('#'))
+        .flat_map(|p| p.split(['#', '.']))
         .filter(|p| !p.is_empty())
         .map(|p| p.to_ascii_lowercase())
         .collect()
@@ -599,14 +622,23 @@ fn segments(s: &str) -> Vec<String> {
 /// (a suffix): `Foo::Bar` (qualifier `Foo`) rewards a `Bar` whose parent is
 /// `Foo` or `App::Foo`, but not one nested under some other scope. More matched
 /// segments are stronger evidence of intent, so the boost grows with them.
-fn parent_boost(qualifier: &str, parent: Option<&str>) -> Option<f64> {
+///
+/// With `near_miss`, segments may differ by up to [`MAX_NEAR_MISS`] edits in
+/// total; the edit count comes back alongside the boost (0 for an exact scope).
+fn parent_boost(qualifier: &str, parent: Option<&str>, near_miss: bool) -> Option<(f64, usize)> {
     let p = segments(parent?);
     let q = segments(qualifier);
     if q.is_empty() || q.len() > p.len() {
         return None;
     }
     let off = p.len() - q.len();
-    (p[off..] == q[..]).then(|| (120.0 + 60.0 * q.len() as f64).min(300.0))
+    let mut edits = 0;
+    for (qs, ps) in q.iter().zip(&p[off..]) {
+        if qs != ps {
+            edits += near_miss.then(|| near_miss_distance(qs, ps)).flatten()?;
+        }
+    }
+    (edits <= MAX_NEAR_MISS).then(|| ((120.0 + 60.0 * q.len() as f64).min(300.0), edits))
 }
 
 /// Trim a fuzzy match's highlight so it reads cleanly. We keep contiguous runs of
@@ -645,29 +677,26 @@ fn subsequence_score(query: &str, name: &str) -> Option<f64> {
     align(query, name).map(|a| a.score)
 }
 
-/// Does `query` use wildcard syntax — `*` (any run), `?`/`.` (one char)? When it
+/// Does `query` use wildcard syntax — `*` (any run), `?` (one char)? When it
 /// does, matching switches from fuzzy subsequence to an explicit glob: literal
 /// chars match *contiguously*, and the only gaps are the ones the user marked.
 /// `find*controller` keeps `FindController` and `FindUserController` but, unlike
 /// fuzzy, won't reach into a scattered `FxIxNxDxController`.
 pub(crate) fn has_wildcard(query: &str) -> bool {
-    query.contains(['*', '?', '.'])
+    query.contains(['*', '?'])
 }
 
 /// A wildcard query's literal characters, metachars removed — used to seed the
 /// store's candidate recall (which keys off literal trigrams) before the glob
 /// does the precise matching. `find*controller` → `findcontroller`.
 pub(crate) fn strip_wildcards(query: &str) -> String {
-    query
-        .chars()
-        .filter(|c| !matches!(c, '*' | '?' | '.'))
-        .collect()
+    query.chars().filter(|c| !matches!(c, '*' | '?')).collect()
 }
 
 /// One token of a compiled wildcard pattern.
 enum Glob {
     Lit(char), // a literal (lowercased) char — matches itself
-    Any,       // `?` / `.` — exactly one char
+    Any,       // `?` — exactly one char
     Star,      // `*` — zero or more chars
 }
 
@@ -679,7 +708,7 @@ fn compile_glob(query: &str) -> Vec<Glob> {
         .chars()
         .filter_map(|c| match c {
             '*' => Some(Glob::Star),
-            '?' | '.' => Some(Glob::Any),
+            '?' => Some(Glob::Any),
             c if c.is_alphanumeric() => Some(Glob::Lit(c.to_ascii_lowercase())),
             _ => None,
         })
@@ -1395,9 +1424,9 @@ mod tests {
 
     #[test]
     fn wildcard_question_mark_matches_one_char() {
-        // `?` and `.` each consume exactly one char
+        // `?` consumes exactly one char
         assert!(total("find?controller", "FindXController").is_some());
-        assert!(total("find.controller", "Find1Controller").is_some());
+        assert!(total("find?controller", "Find1Controller").is_some());
         // zero chars or two chars in the slot don't fit a single `?`
         assert!(total("find?controller", "FindController").is_none());
         assert!(total("find?controller", "FindXyController").is_none());
@@ -1458,6 +1487,9 @@ mod tests {
         assert_eq!(parse_qualified("App::Foo::Bar"), ("Bar", Some("App::Foo")));
         // a `#` is the innermost separator (Ruby instance method)
         assert_eq!(parse_qualified("Foo::Bar#baz"), ("baz", Some("Foo::Bar")));
+        // `.` too — a class method, or a Python/JS member
+        assert_eq!(parse_qualified("Foo.bar"), ("bar", Some("Foo")));
+        assert_eq!(parse_qualified("Foo::Bar.baz"), ("baz", Some("Foo::Bar")));
         // a leading or trailing separator is not a qualifier
         assert_eq!(parse_qualified("::Bar"), ("::Bar", None));
         assert_eq!(parse_qualified("Foo::"), ("Foo::", None));
@@ -1466,17 +1498,23 @@ mod tests {
     #[test]
     fn parent_boost_matches_the_innermost_scopes() {
         // exact parent, and a qualifier naming only the immediate scope
-        assert!(parent_boost("Foo", Some("Foo")).is_some());
-        assert!(parent_boost("Foo", Some("App::Foo")).is_some());
-        assert!(parent_boost("App::Foo", Some("App::Foo")).is_some());
+        assert!(parent_boost("Foo", Some("Foo"), false).is_some());
+        assert!(parent_boost("Foo", Some("App::Foo"), false).is_some());
+        assert!(parent_boost("App::Foo", Some("App::Foo"), false).is_some());
         // more matched segments → a stronger boost
-        let one = parent_boost("Foo", Some("App::Foo")).unwrap();
-        let two = parent_boost("App::Foo", Some("App::Foo")).unwrap();
+        let one = parent_boost("Foo", Some("App::Foo"), false).unwrap().0;
+        let two = parent_boost("App::Foo", Some("App::Foo"), false).unwrap().0;
         assert!(two > one, "{two} > {one}");
         // the qualifier must be a suffix, not just any ancestor or sibling
-        assert!(parent_boost("App", Some("App::Foo")).is_none());
-        assert!(parent_boost("Foo", Some("Foo::Inner")).is_none());
-        assert!(parent_boost("Foo", None).is_none());
+        assert!(parent_boost("App", Some("App::Foo"), false).is_none());
+        assert!(parent_boost("Foo", Some("Foo::Inner"), false).is_none());
+        assert!(parent_boost("Foo", None, false).is_none());
+        // a `.`-joined parent (Python, TypeScript) splits the same way
+        assert!(parent_boost("Inner", Some("Outer.Inner"), false).is_some());
+        // a typo'd scope matches only on the typo retry, and reports its edits
+        assert!(parent_boost("Widgit", Some("Widget"), false).is_none());
+        assert_eq!(parent_boost("Widgit", Some("Widget"), true).unwrap().1, 1);
+        assert!(parent_boost("Gadget", Some("Widget"), true).is_none());
     }
 
     #[test]

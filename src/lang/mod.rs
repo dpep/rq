@@ -136,6 +136,12 @@ pub(crate) trait LanguagePlugin {
     /// Extract definitions from `source`. `file` is the repo-relative path,
     /// recorded on each emitted [`Symbol`].
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol>;
+
+    /// The method a `Foo.new` call runs, when the language spells it otherwise
+    /// (Ruby's `initialize`). `None` where `new` is already the literal name.
+    fn constructor(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// The registered language plugins. Adding a language is one line here.
@@ -165,6 +171,18 @@ pub(crate) fn plugin_for_extension(ext: &str) -> Option<&'static (dyn LanguagePl
         .iter()
         .copied()
         .find(|p| p.extensions().contains(&ext))
+}
+
+/// Is `name` the constructor a `Foo.new` query means, in `language`?
+pub(crate) fn is_constructor(language: &str, name: &str) -> bool {
+    REGISTRY
+        .iter()
+        .any(|p| p.language() == language && p.constructor() == Some(name))
+}
+
+/// Every registered constructor name, for recalling them on a `Foo.new` query.
+pub(crate) fn constructors() -> impl Iterator<Item = &'static str> {
+    REGISTRY.iter().filter_map(|p| p.constructor())
 }
 
 /// Assertions every plugin's tests share. Each plugin keeps its own `extract`

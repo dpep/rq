@@ -179,11 +179,46 @@ pub(crate) fn search(
     active: &ActiveFiles,
     limit: usize,
 ) -> crate::store::Result<Matches> {
+    let run = |q: &str, typo: bool| {
+        search_query(store, q, current_repo_id, only_repo, active, limit, typo)
+    };
+    if !query.contains('.') {
+        return run(query, true);
+    }
+    // `.` reads as a scope first (`Foo.bar`). When no scope answers, fall back
+    // to its older meaning as a one-char wildcard (`find.controller`) — a
+    // literal match — before guessing at typos.
+    let m = run(query, false)?;
+    if found(&m) {
+        return Ok(m);
+    }
+    let glob = run(&query.replace('.', "?"), false)?;
+    if found(&glob) {
+        return Ok(glob);
+    }
+    run(query, true)
+}
+
+/// Anything above zero is worth showing; below it, only a wrong answer.
+fn found(m: &Matches) -> bool {
+    m.hits.iter().any(|h| h.score > 0.0)
+}
+
+fn search_query(
+    store: &Store,
+    query: &str,
+    current_repo_id: Option<i64>,
+    only_repo: Option<i64>,
+    active: &ActiveFiles,
+    limit: usize,
+    // retry as a near miss when nothing matches outright
+    typo: bool,
+) -> crate::store::Result<Matches> {
     // Recall keys off the leaf name only — a `Foo::Bar` qualifier targets the
     // parent during scoring, and the store indexes `name`, not `parent`. A
     // wildcard query then keys off its literal chars (the store indexes literal
     // trigrams); the glob matches precisely during scoring.
-    let (leaf, _) = score::parse_qualified(query);
+    let (leaf, qualifier) = score::parse_qualified(query);
     let stripped;
     let recall = if score::has_wildcard(leaf) {
         stripped = score::strip_wildcards(leaf);
@@ -193,7 +228,14 @@ pub(crate) fn search(
     };
     let trace_on = crate::trace::enabled();
     let t = std::time::Instant::now();
-    let candidates = store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(leaf))?;
+    let mut candidates =
+        store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(leaf))?;
+    // `Foo.new` runs a constructor the store knows by another name
+    if qualifier.is_some() && leaf.eq_ignore_ascii_case("new") {
+        for name in crate::lang::constructors() {
+            candidates.extend(store.search_candidates(name, CANDIDATE_LIMIT, false)?);
+        }
+    }
     let n_candidates = candidates.len();
     let t_recall = t.elapsed();
     let t = std::time::Instant::now();
@@ -243,13 +285,14 @@ pub(crate) fn search(
     // only a test method whose name happens to contain `ActiveRecordRecord`,
     // scored into the negative by the test-path penalty. A wrong answer blocks
     // the retry just as surely as no answer, so treat them alike.
-    if hits.iter().all(|h| h.score <= 0.0) {
+    if typo && hits.iter().all(|h| h.score <= 0.0) {
         // Only candidates that could *be* a near miss are worth re-scoring —
         // the alternative is paying the whole name-match chain a second time
         // for ten thousand rows to serve a few hundred.
         let near: Vec<SymbolRow> = candidates
             .into_iter()
-            .filter(|c| score::near_miss_possible(query, &c.name))
+            // a qualified query may have slipped in the scope, not the name
+            .filter(|c| qualifier.is_some() || score::near_miss_possible(query, &c.name))
             .collect();
         let retried = rank(&near, true);
         // keep the first pass's answer if the retry turns up nothing

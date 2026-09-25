@@ -40,6 +40,7 @@ rq --symbols FILE         outline a file's definitions, in line order\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python/ts/js)\n  \
 rq 'Foo::Bar'             qualify by scope — the surest way past an ambiguous name\n  \
 rq 'Foo#bar'              ...and by owner, for a method\n  \
+rq Foo.new                the constructor (initialize, __init__, ...)\n  \
 rq 'refund*proc'          wildcards: * (any run), ? (one char) — quote them\n  \
 rq -o thing               open the best match in your editor (and record it)\n  \
 rq --index                index the current repository\n  \

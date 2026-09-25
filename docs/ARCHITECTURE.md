@@ -345,10 +345,14 @@ why a result ranked where it did:
   filter — and unknown visibility carries no signal). Sourced per language:
   Rust `pub`, Ruby access sections, Python underscore convention, Go
   capitalization, TypeScript member modifiers and ESM `export`
-- **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`) matches its leaf
-  against the name and rewards a candidate whose `parent` ends with the named
-  scope chain (`Bar` inside `Foo`). The qualifier reorders, it doesn't filter —
-  an unscoped match still surfaces, just lower
+- **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`, `Foo.baz`; `::`,
+  `#` and `.` are all scope separators) matches its leaf against the name and
+  requires a `parent` ending with the named scope chain (`Bar` inside `Foo`) —
+  a candidate outside it drops out. `Foo.new` also matches the constructor a
+  plugin names via `LanguagePlugin::constructor` (Ruby `initialize`, Python
+  `__init__`, JS/TS `constructor`). The typo retry forgives up to two edits in
+  the scope too (a `scope_typo` feature, typo-level confidence). A `.` query
+  that no scope answers tries `.` as a one-char wildcard before any typo retry
 - **path** — query also matches the file's name (Layer 3)
 - **current-repo scope + boost** — results are restricted to the repo you're in
   by default (a search there answers about *that* repo, never leaking another

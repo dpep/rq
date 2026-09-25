@@ -22,6 +22,10 @@ impl LanguagePlugin for Ruby {
         &["rb"]
     }
 
+    fn constructor(&self) -> Option<&'static str> {
+        Some("initialize")
+    }
+
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
         extract_with(
             LANGUAGE,

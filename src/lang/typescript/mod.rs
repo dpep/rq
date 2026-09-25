@@ -40,6 +40,10 @@ impl LanguagePlugin for TypeScript {
         &["ts", "mts", "cts", "tsx"]
     }
 
+    fn constructor(&self) -> Option<&'static str> {
+        Some("constructor")
+    }
+
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
         // The two grammars disagree on `<T>`: TSX reads it as a JSX tag, TS as a
         // type parameter. Give each file the one it means.
@@ -55,6 +59,10 @@ impl LanguagePlugin for JavaScript {
 
     fn extensions(&self) -> &[&str] {
         &["js", "mjs", "cjs", "jsx"]
+    }
+
+    fn constructor(&self) -> Option<&'static str> {
+        Some("constructor")
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {

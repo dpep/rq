@@ -7,6 +7,20 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **`.` is a scope separator first.** `rq Foo.bar` now means `bar` inside
+  `Foo`, like `Foo#bar` — the way a Ruby class method or a Python/JS member is
+  written. When no scope answers, `.` falls back to its old meaning as a
+  one-character wildcard, so `find.controller` still works.
+- **A typo in the scope is forgiven** the way a typo in the name already was:
+  `Widgit.new` and `Widgit::Foo` land inside `Widget`, at typo-level confidence.
+
+### Added
+- **`rq Foo.new` finds the constructor** — Ruby `initialize`, Python
+  `__init__`, JS/TS `constructor` — inside `Foo`. `Foo::new` works the same.
+
 ## 0.51.0 — 2026-08-24
 
 ### Added

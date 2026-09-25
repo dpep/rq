@@ -7,8 +7,9 @@ rq — Reference Query
 rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
 rq perform       # → the perform you actually meant, ranked first
 rq usr           # → User              app/models/user.rb:1  (fuzzy, abbreviation-aware)
-rq refund*proc   # → explicit gaps: `*` any run, `?`/`.` one char
+rq refund*proc   # → explicit gaps: `*` any run, `?` one char (`.` too, when it isn't a scope)
 rq Account::save # → the save defined inside Account (scope-aware; also Account::Refund)
+rq Account.new   # → Account's constructor (initialize, __init__, constructor)
 rq class Widget  # → a leading kind keyword is shorthand for -k class
 ```
 
@@ -155,7 +156,7 @@ query is matched and scored by an additive, explainable sum of signals:
 - **visibility** — public API edges out private/protected helpers (Rust `pub`,
   Ruby `private` sections, Python `_underscore`, Go capitalization, TypeScript
   member modifiers and ESM `export`)
-- **qualifier** — a scoped query (`Foo::Bar`) prefers the definition inside that scope
+- **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope; `Foo.new` finds the constructor
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the repo you're in by default
   (`-a`/`--all-repos` to search every indexed repo)

@@ -85,9 +85,11 @@ get results.
 ## Scope when you know more
 
 - Fuzzy/abbreviation works: `rq refundproc`, `rq usr`, `rq perform`.
-- Scope: `rq Billing::RefundProcessor`, or `rq RefundProcessor#perform` for a
-  method inside a class — rq prefers the definition in that scope, so use it when
-  you know the enclosing module/class from the surrounding code.
+- Scope: `rq Billing::RefundProcessor`, or `rq RefundProcessor#perform` (or
+  `.perform`) for a method inside a class — rq keeps only the definitions in that
+  scope, so use it when you know the enclosing module/class from the surrounding
+  code. `rq RefundProcessor.new` finds its constructor (`initialize`, `__init__`,
+  `constructor`).
 - Kind: `rq save -k method`, or the shorthand `rq method save`. Kinds are
   `class`/`module`/`method`/`function`/`struct`/`enum`/`trait` (shortcuts
   `c`/`mod`/`m`/`f`/`s`/`e`/`t`, comma-separable: `-k m,f`).
@@ -97,7 +99,7 @@ get results.
 - Repo: results are scoped to the current repo by default; add `-a`/`--all-repos` to
   search every repo you've indexed (a `no_match` means it's absent *here*).
 - Wildcards: `*` (any run) and `?` (one char) — **quote these** so the shell
-  doesn't glob them: `rq 'refund*proc'`. (`::` and `#` need no quoting.)
+  doesn't glob them: `rq 'refund*proc'`. (`::`, `#` and `.` need no quoting.)
 
 ```sh
 rq perform -k method app/services --json

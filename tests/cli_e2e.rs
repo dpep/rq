@@ -254,6 +254,56 @@ fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
 }
 
 #[test]
+fn foo_dot_new_finds_the_constructor() {
+    // `Widget.new` runs `initialize` (Ruby) / `__init__` (Python) — the name
+    // the user typed is not the name the definition carries.
+    let (dir, db) = scratch("constructor");
+    fs::write(
+        dir.join("a.rb"),
+        "class Widget\n  def initialize; end\n  def self.build; end\nend\nclass Other\n  def initialize; end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.py"),
+        "class Gadget:\n    def __init__(self):\n        pass\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["Widget.new", "--no-record", "--ndjson"]);
+    assert!(ok, "Widget.new should resolve: {out}");
+    assert!(out.contains("\"initialize\""), "finds initialize: {out}");
+    assert!(out.contains("\"line\":2"), "the one in Widget: {out}");
+    assert!(!out.contains("\"line\":6"), "not Other's: {out}");
+
+    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--no-record", "--ndjson"]);
+    assert!(ok && out.contains("__init__"), "python too: {out}");
+
+    // `.` is a scope separator generally, not only for `new`
+    let (ok, out) = rq(&db, &dir, &["Widget.build", "--no-record", "--ndjson"]);
+    assert!(ok && out.contains("\"build\""), "class method: {out}");
+
+    // a slip in the scope recovers on the typo retry, flagged as a guess
+    let (ok, out) = rq(&db, &dir, &["Widgit.new", "--no-record", "--ndjson"]);
+    assert!(
+        ok && out.contains("\"line\":2"),
+        "scope typo recovers: {out}"
+    );
+    assert!(!out.contains("\"confidence\":1.0"), "not certain: {out}");
+
+    // no scope answers `Widget.Builder`, so `.` falls back to a one-char wildcard
+    fs::write(dir.join("c.rb"), "class Widget2Builder\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    let (ok, out) = rq(&db, &dir, &["Widget.Builder", "--no-record", "--ndjson"]);
+    assert!(
+        ok && out.contains("Widget2Builder"),
+        "wildcard fallback: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
     // `Foo::Bar#baz` must find the `baz` defined inside `Foo::Bar` and, since a
     // scope match exists, suppress the same-named `baz` in another scope.

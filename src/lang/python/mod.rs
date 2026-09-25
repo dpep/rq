@@ -20,6 +20,10 @@ impl LanguagePlugin for Python {
         &["py"]
     }
 
+    fn constructor(&self) -> Option<&'static str> {
+        Some("__init__")
+    }
+
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
         extract_with(
             LANGUAGE,
