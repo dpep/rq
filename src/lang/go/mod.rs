@@ -2,6 +2,10 @@
 //! `type … struct` → struct, and `type … interface` → trait (Go's interface is
 //! the same "named contract" concept). Methods are qualified by their receiver
 //! type (`Handle · Server`); interface method signatures by the interface.
+//! A package-level `const` (single or grouped, iota included) → constant. A
+//! package-level `var` is not: it's mutable state, and calling it a constant
+//! would mislabel it — even the `var ErrFoo = errors.New(…)` sentinels that are
+//! constant in all but name.
 
 use tree_sitter::Node;
 
@@ -65,6 +69,10 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                     }
                 }
             }
+            // only at package level — a func body's consts are locals
+            "const_declaration" if node.kind() == "source_file" => {
+                constants(ctx, child, out);
+            }
             // interface method signatures (node name varies by grammar version)
             "method_spec" | "method_elem" => {
                 if let Some(name) = ctx.field_text(child, "name") {
@@ -72,6 +80,26 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                 }
             }
             _ => walk(ctx, child, parent, out),
+        }
+    }
+}
+
+/// Emit each name a `const` declaration binds, at its own spec's line — a
+/// grouped `const ( … )` is one declaration of many specs. `_` binds nothing.
+fn constants(ctx: &Ctx, decl: Node, out: &mut Vec<Symbol>) {
+    let mut specs = decl.walk();
+    for spec in decl.named_children(&mut specs) {
+        if spec.kind() != "const_spec" {
+            continue;
+        }
+        let mut names = spec.walk();
+        for ident in spec.children_by_field_name("name", &mut names) {
+            if ident.kind() == "identifier"
+                && let Some(name) = ctx.node_text(ident)
+                && name != "_"
+            {
+                push(ctx, out, &name, Kind::Constant, spec, None);
+            }
         }
     }
 }
@@ -153,6 +181,51 @@ func Build() *Widget {
         assert_eq!(render.parent.as_deref(), Some("Renderer"));
 
         assert_eq!(build.language, "go");
+    }
+
+    #[test]
+    fn package_level_consts_are_constants() {
+        let src = r#"
+package widget
+
+const MaxRetries = 3
+
+const (
+	StateIdle State = iota
+	stateBusy
+	_
+)
+
+const Low, High = 1, 9
+
+var DefaultWidget = Widget{}
+
+func Build() {
+	const localLimit = 5
+}
+"#;
+        let syms = extract(src);
+
+        let max = find(&syms, "MaxRetries");
+        assert_eq!(max.kind, Kind::Constant);
+        assert_eq!(max.parent, None);
+        assert_eq!(max.visibility, Some("public"));
+
+        // each name in a grouped block sits on its own line
+        let idle = find(&syms, "StateIdle");
+        assert_eq!(idle.kind, Kind::Constant);
+        let busy = find(&syms, "stateBusy");
+        assert_eq!(busy.line, idle.line + 1);
+        assert_eq!(busy.visibility, Some("private"));
+
+        // one spec may bind several names
+        assert_eq!(find(&syms, "Low").kind, Kind::Constant);
+        assert_eq!(find(&syms, "High").kind, Kind::Constant);
+
+        // not constants: `_`, a mutable var, a function-local const
+        for absent in ["_", "DefaultWidget", "localLimit"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
     }
 
     #[test]

@@ -1535,6 +1535,30 @@ fn kind_filter_scopes_by_symbol_kind() {
 }
 
 #[test]
+fn kind_constant_selects_constants_across_languages() {
+    let (dir, db) = scratch("kind-const");
+    fs::write(
+        dir.join("limits.go"),
+        "package limits\n\nconst MaxRetries = 3\n\nfunc MaxRetriesFor() int { return MaxRetries }\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["MaxRetries", "-k", "constant", "--ndjson"]);
+    assert!(ok, "constant search failed: {out}");
+    assert!(
+        out.contains("\"kind\":\"constant\",\"language\":\"go\""),
+        "go constant kept: {out}"
+    );
+    assert!(
+        !out.contains("\"kind\":\"function\""),
+        "function filtered: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn first_query_warms_the_index_without_an_explicit_reindex() {
     // A git repo that was never explicitly indexed: the first query opportunistically
     // warms the index (time-bounded) and still answers.

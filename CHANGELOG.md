@@ -9,6 +9,12 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Added
+- **Go constants are indexed.** Package-level `const` declarations, grouped
+  blocks and `iota` enumerations included, are found as `constant` (and by
+  `-k constant`). They land as files reindex on edit; `rq --drop` then
+  `rq --index` picks them up across a repo at once.
+
 ### Changed
 - **The VS Code extension (0.2.0) answers for every rq language without
   duplicating a language server.** In the new default `rq.mode: fallback`, rq

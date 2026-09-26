@@ -26,6 +26,14 @@ fn go_definitions_rank_and_classify() {
 
     assert_eq!(top(&store, "BuildWidget").kind, "function");
 
+    // the const outranks a function whose name only starts with it
+    let max = top(&store, "MaxRetries");
+    assert_eq!(
+        (max.name.as_str(), max.kind.as_str()),
+        ("MaxRetries", "constant")
+    );
+    assert_eq!(top(&store, "ColorBlue").kind, "constant");
+
     fs::remove_dir_all(&dir).ok();
 }
 

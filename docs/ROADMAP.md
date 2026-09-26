@@ -173,7 +173,8 @@ model, not leaking a language into `index`/`search`/scoring.
       declaration *is* the definition
 - [x] Rust — `lang/rust/` (`fn`/`struct`/`enum`/`trait`/`mod`, impl & trait
       methods). The dogfood language: rq indexes its own source (`make dogfood`)
-- [x] Go — `lang/go/` (`func`/method, `struct`, `interface`→trait)
+- [x] Go — `lang/go/` (`func`/method, `struct`, `interface`→trait,
+      package-level `const`→constant)
 - [x] Python — `lang/python/` (`class`, `def` free/method, decorator-aware)
 - [x] TypeScript / JavaScript — `lang/typescript/` (`class`, `interface`→trait,
       `type`→struct, `enum`, `namespace`→module, `function` and `const f = () =>`,
