@@ -140,10 +140,5 @@ To update to the latest: `brew upgrade dpep/tools/rq` (or re-run the
   Rust, Go, Python, TypeScript and JavaScript are supported.
 - Run from inside the target repo (or set the subprocess working directory) —
   rq resolves the repo from its cwd.
-- Let rq learn from you. Ranking improves from which definition actually got
-  used, and your lookups are the bulk of the traffic — `--show` reports that for
-  free, and after navigating via a plain search you can report the hit you used:
-  `rq --record --file <f> --line <n> <query>`. Only record the one you actually
-  worked from; speculative searches cost nothing and teach nothing.
 - Pass `--no-record` when the same query repeats mechanically — a benchmark, a
   test harness, a loop over a list — so one query doesn't dominate the signal.

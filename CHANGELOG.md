@@ -14,6 +14,13 @@ and aren't listed; see `git log` for those.
   that result for the same query next time. Six weeks of real use left the
   signal empty, so ranking is now a function of the index, recency, and your
   branch alone — the `learned` row no longer appears in `--explain`.
+- **`--record` is gone** (and its `--file`, `--line`, `--event`). An editor
+  hook or script that calls `rq --record` will now fail with an unknown-flag
+  error — delete that call. `--open`, `--web`, and `--show` no longer record
+  anything, and `script/rq-open` no longer calls it.
+- **The database drops its learning tables.** The first run of this version
+  migrates the DB, deleting `selection_stats` and the raw `events` log; nothing
+  to do. `--usage` keeps every count it had.
 
 ## 0.51.3 — 2026-09-26
 

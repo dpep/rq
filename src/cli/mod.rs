@@ -24,8 +24,8 @@ use crate::store::Store;
 likely meant to the top — not every match.\n\n\
 Search is the default action; operations are flags, not subcommands, so every \
 word (including \"index\", \"status\", \"record\") stays searchable. Ranking favors \
-your current repo and recently-active files, and learns from the results you open \
-(see RECORDING below). Run `rq <query> --explain` to see the score behind each result.",
+your current repo, recently-active files, and the files your branch changes. Run \
+`rq <query> --explain` to see the score behind each result.",
     after_help = "EXAMPLES:\n  \
 rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
@@ -42,17 +42,13 @@ rq 'Foo::Bar'             qualify by scope — the surest way past an ambiguous 
 rq 'Foo#bar'              ...and by owner, for a method\n  \
 rq Foo.new                the constructor (initialize, __init__, ...)\n  \
 rq 'refund*proc'          wildcards: * (any run), ? (one char) — quote them\n  \
-rq -o thing               open the best match in your editor (and record it)\n  \
+rq -o thing               open the best match in your editor\n  \
 rq --index                index the current repository\n  \
 rq --status               show indexing coverage\n  \
 rq --usage                show how rq has been called (by caller and flags)\n  \
 rq --drop                 remove this repo's index (opposite of --index)\n\n\
 SHORT FLAGS (easy to misread):\n  \
 -j = --json (not jobs; --jobs is long-only)   -l = --limit (not lang)   -x = --lang\n\n\
-RECORDING (editor/shell hook):\n  \
-rq --record --file <path> --line <n> <query>\n  \
-Tells rq which result you opened for a query, so ranking learns. Pass --no-record \
-to a search to skip this. Editors and the script/rq-open wrapper call --record for you.\n\n\
 The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms \
 automatically on the first search in a git repo. On a large, cold repo a search \
 keeps indexing until it can answer rather than reporting a premature \"no \
@@ -60,8 +56,7 @@ matches\" (an interactive run shows progress and stops on Ctrl-C). Exit codes: 0
 = matched, 1 = no match, 2 = no match yet (index still warming — try again)."
 )]
 struct Cli {
-    /// Search query. With --drop, the repo path/identity to drop; with --record,
-    /// the query the selection was made for.
+    /// Search query. With --drop, the repo path/identity to drop.
     //
     // `Other` keeps shells from offering filenames here: a search query isn't a
     // path. The path-valued operations (--index, --symbols) carry their own
@@ -99,24 +94,24 @@ struct Cli {
     #[arg(long, value_name = "DUR", value_parser = parse_wait, conflicts_with = "no_wait")]
     wait: Option<Duration>,
 
-    /// Open the best match in your editor and record the pick, so ranking learns.
+    /// Open the best match in your editor.
     /// On a terminal with several matches, prompts to choose. Launcher: `RQ_OPEN`
     /// (a template with `{file}`/`{line}`/`{}` = path:line), else VS Code
     /// (`code`), else `$VISUAL`/`$EDITOR`, else prints the resolved path:line.
-    #[arg(short = 'o', long, conflicts_with_all = ["index", "status", "record", "json", "ndjson"])]
+    #[arg(short = 'o', long, conflicts_with_all = ["index", "status", "json", "ndjson"])]
     open: bool,
 
     /// Like --open, but in the browser: the match on its git host (GitHub-style
     /// `blob/<sha>/<file>#L<line>` URL), pinned to the newest pushed commit in
     /// HEAD's history so the link resolves and stays accurate. Launcher: `$BROWSER`, else `open`/`xdg-open`, else
     /// prints the URL.
-    #[arg(short = 'w', long, conflicts_with_all = ["open", "index", "status", "record", "json", "ndjson"])]
+    #[arg(short = 'w', long, conflicts_with_all = ["open", "index", "status", "json", "ndjson"])]
     web: bool,
 
     /// Print the definition's source, not just its location — but only when the
     /// top match is confident; otherwise falls back to the ranked list. Pipe to a
     /// pager (`rq --show foo | less`). JSON adds a `body` field.
-    #[arg(long, conflicts_with_all = ["open", "web", "index", "status", "record", "symbols", "drop"])]
+    #[arg(long, conflicts_with_all = ["open", "web", "index", "status", "symbols", "drop"])]
     show: bool,
 
     /// Emit results as a JSON array (for editors and scripts).
@@ -153,49 +148,32 @@ struct Cli {
     all_repos: bool,
 
     /// Index a repository (PATH, or the current directory).
-    #[arg(long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["status", "record"])]
+    #[arg(long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with = "status")]
     index: Option<Option<String>>,
 
     /// Show indexing coverage per known repository.
-    #[arg(long, conflicts_with_all = ["index", "record"])]
+    #[arg(long, conflicts_with = "index")]
     status: bool,
 
     /// Show how rq has been used: searches per day, by caller and flags.
-    #[arg(long, conflicts_with_all = ["index", "record", "status"])]
+    #[arg(long, conflicts_with_all = ["index", "status"])]
     usage: bool,
 
     /// List the symbols defined in FILE, in line order — a structural outline,
     /// not a ranked search. Honors -k/-x to filter by kind/language.
-    #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "record", "drop", "open", "web"])]
+    #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "drop", "open", "web"])]
     symbols: Option<String>,
 
     /// Drop a repository's index — the opposite of --index. Removes its symbols,
-    /// files, coverage, and learned ranking. TARGET is the repo's path (or the
+    /// files, and coverage. TARGET is the repo's path (or the
     /// current repo); a known identity string (as shown by --status) also works.
-    #[arg(long, conflicts_with_all = ["index", "status", "record", "open", "web"])]
+    #[arg(long, conflicts_with_all = ["index", "status", "open", "web"])]
     drop: bool,
-
-    /// Record an interaction (editor/shell hook): the result opened for a query.
-    /// Requires --file.
-    #[arg(long, requires = "file", conflicts_with_all = ["index", "status"])]
-    record: bool,
-
-    /// (--record) File that was opened/selected.
-    #[arg(long)]
-    file: Option<String>,
-
-    /// (--record) Line landed on (attributes the selection to a definition).
-    #[arg(long)]
-    line: Option<i64>,
-
-    /// (--record) Event kind (select or open).
-    #[arg(long, default_value = "select")]
-    event: String,
 
     /// Finish warming a repository's index in the background — the target a
     /// search re-execs after printing results, detached, so the shell never
     /// waits on it. Single-flighted per repo; safe to run by hand.
-    #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "record", "drop", "symbols", "open", "web", "show"])]
+    #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "drop", "symbols", "open", "web", "show"])]
     warm: Option<Option<String>>,
 
     /// Print a shell completion script (bash, zsh, fish, elvish, powershell).
@@ -253,18 +231,6 @@ fn dispatch(cli: Cli) -> ExitCode {
     if cli.drop {
         let out = output_format(&cli);
         return cmd_drop(cli.target, out);
-    }
-    if cli.record {
-        // a typo'd --event would otherwise record silently and never roll up
-        if !matches!(cli.event.as_str(), "select" | "open") {
-            return fail(format_args!(
-                "rq --record: unknown --event {:?} (expected select or open)",
-                cli.event
-            ));
-        }
-        // clap guarantees --file is present via `requires`
-        let file = cli.file.expect("--record requires --file");
-        return cmd_record(&cli.event, cli.target.as_deref(), &file, cli.line);
     }
     let out = output_format(&cli);
     if cli.target.as_deref().is_some_and(|t| t.trim().is_empty()) {
@@ -383,23 +349,13 @@ fn requested_limit(limit: usize) -> usize {
     if limit == 0 { usize::MAX } else { limit }
 }
 
-/// Count one search for `--usage`. Observability only: `search` rows are
-/// invisible to the rollup that feeds ranking, so this can never move a result.
-fn record_usage(
-    store: &mut Store,
-    args: &SearchArgs,
-    repository_id: Option<i64>,
-    results: usize,
-    status: &str,
-    coverage: Option<&str>,
-) {
+/// Count one search for `--usage`. Observability only: nothing reads it back
+/// into ranking.
+fn record_usage(store: &Store, args: &SearchArgs, status: &str, coverage: Option<&str>) {
     if args.no_record {
         return;
     }
     let _ = store.record_search(&crate::store::SearchRecord {
-        query: &args.query.to_ascii_lowercase(),
-        repository_id,
-        results,
         source: &crate::origin::detect(),
         flags: &flag_summary(args),
         status,
@@ -689,7 +645,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         query,
         out,
         want,
-        no_record,
         no_wait,
         wait,
         open,
@@ -1025,8 +980,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         record_usage(
             store,
             args,
-            current,
-            0,
             if incomplete { "warming" } else { "miss" },
             coverage.as_deref(),
         );
@@ -1042,7 +995,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // covers all three.
     {
         let _span = crate::profile::span("record usage");
-        record_usage(store, args, current, hits.len(), "hit", coverage.as_deref());
+        record_usage(store, args, "hit", coverage.as_deref());
     }
 
     // Confidence first, while the runner-up is still in hand, then cut to the
@@ -1073,27 +1026,16 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
-    if show
-        && let Some(code) =
-            show_top_definition(store, &mut hits, query, out, here, current, no_record)
-    {
+    if show && let Some(code) = show_top_definition(store, &mut hits, query, out, here) {
         return code;
     }
 
-    // --open/--web: pick the best match (prompting on a TTY with several),
-    // record the pick so ranking learns, and hand off to the editor or browser.
+    // --open/--web: pick the best match (prompting on a TTY with several) and
+    // hand off to the editor or browser.
     // Returns before the normal print / warm-join — opening should be snappy,
     // and a launcher `exec`s.
     if open || web {
-        return finish_open(
-            store,
-            &hits,
-            query,
-            current,
-            root.as_deref(),
-            no_record,
-            web,
-        );
+        return finish_open(store, &hits, current, root.as_deref(), web);
     }
 
     if let Some(code) = render_hits(args, &hits) {
@@ -1113,15 +1055,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     if let Some(refresh) = branch_refresh.take() {
         let _span = crate::profile::span("after: branch refresh");
         refresh.store(store);
-    }
-
-    // Results are out — now the cheap deferred work, amortized across
-    // interactions: roll the `open`/`select` picks that teach ranking into
-    // `selection_stats`, and prune the raw log. The `search` row written above
-    // is skipped by the rollup — it counts usage, it doesn't teach.
-    {
-        let _span = crate::profile::span("after: rollup + prune");
-        deferred_maintenance(store);
     }
 
     // Results are out; stop the in-process warm (it persists as it goes, so a
@@ -1550,35 +1483,18 @@ fn parse_choice(input: &str, n: usize) -> Option<usize> {
     (i < n).then_some(i)
 }
 
-/// `--open`/`--web`: choose a hit, record it as a selection so ranking learns,
-/// then hand off to the editor or browser. The launcher `exec`s (replacing this
+/// `--open`/`--web`: choose a hit, then hand off to the editor or browser. The launcher `exec`s (replacing this
 /// process), so the shell waits on it — not on rq's background warm.
 fn finish_open(
-    store: &mut Store,
+    store: &Store,
     hits: &[crate::search::Hit],
-    query: &str,
     current: Option<i64>,
     root: Option<&std::path::Path>,
-    no_record: bool,
     web: bool,
 ) -> ExitCode {
     let Some(hit) = choose_hit(hits) else {
         return ExitCode::SUCCESS; // aborted at the prompt
     };
-
-    // Record the pick — same signal as `rq --record`. The hit's path is already
-    // repo-relative, which is what the selection rollup keys off.
-    if !no_record {
-        let _ = store.record_event(
-            "select",
-            Some(&query.to_ascii_lowercase()),
-            current,
-            Some(&hit.file),
-            Some(hit.line),
-            None,
-        );
-        deferred_maintenance(store);
-    }
 
     if web {
         return open_web(store, hit, current, root);
@@ -2104,61 +2020,6 @@ fn env_budget(var: &str, default_ms: u64) -> Duration {
     Duration::from_millis(ms)
 }
 
-/// How many events to roll up per interaction. Bounded so the deferred pass
-/// after a command stays quick.
-const AGGREGATE_BATCH: usize = 256;
-
-/// Recent raw events to retain after rollup (enough for repeat detection); the
-/// rest, once aggregated, are pruned to keep the log from growing unbounded.
-const KEEP_RECENT_EVENTS: i64 = 200;
-
-/// The bounded background work run after a user interaction, once results are
-/// out: roll new events into the learning rollup, then prune the raw log.
-fn deferred_maintenance(store: &mut Store) {
-    let _ = store.aggregate_events(AGGREGATE_BATCH);
-    let _ = store.prune_events(KEEP_RECENT_EVENTS);
-}
-
-/// Hook entry point: record that `file` was opened/selected for `query`, then
-/// amortize a chunk of event aggregation.
-fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) -> ExitCode {
-    let mut store = match open_store() {
-        Ok(s) => s,
-        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
-    };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    // cache-first: an editor hook calls this on every open, so no `git remote`
-    let identity = resolve_identity(
-        &store,
-        &crate::index::repo_root(&cwd).unwrap_or_else(|| cwd.clone()),
-    );
-    let repo_id = store.repository_id(&identity).ok().flatten();
-
-    // Store the path repo-relative so the rollup can resolve it against indexed
-    // files — relative to the checkout we're in, not another clone's root.
-    let root = crate::index::repo_root(&cwd).or_else(|| {
-        let id = repo_id?;
-        store
-            .checkout_roots(id)
-            .ok()?
-            .into_iter()
-            .next()
-            .map(PathBuf::from)
-    });
-    let rel = match root {
-        Some(root) => repo_relative(&root, &cwd, file),
-        None => file.to_string(),
-    };
-    let query_norm = query.map(|q| q.to_ascii_lowercase());
-
-    if let Err(e) = store.record_event(kind, query_norm.as_deref(), repo_id, Some(&rel), line, None)
-    {
-        return fail(format_args!("rq record: {e}"));
-    }
-    deferred_maintenance(&mut store);
-    ExitCode::SUCCESS
-}
-
 /// The checkout a command runs in: its repo identity and root.
 #[derive(Clone, Copy)]
 struct Here<'a> {
@@ -2216,19 +2077,12 @@ const SHOW_CONFIDENCE: f64 = 0.85;
 /// `--show`: if the top hit is confident, read and print its full source span
 /// and return the exit code; otherwise return `None` to fall through to the
 /// ranked list. Emits a single object in JSON/NDJSON (with a `body` field).
-///
-/// Printing the body *is* the selection — the caller asked for one definition
-/// and consumed exactly this one — so it records the same signal `--open` does,
-/// no follow-up call needed. Unlike a ranked list, there was no choice left to
-/// the caller, and unlike a bare search, rq observed what was taken.
 fn show_top_definition(
-    store: &mut Store,
+    store: &Store,
     hits: &mut [crate::search::Hit],
     query: &str,
     out: Output,
     here: Option<Here>,
-    current: Option<i64>,
-    no_record: bool,
 ) -> Option<ExitCode> {
     let top = hits.first()?;
     if top.confidence < SHOW_CONFIDENCE {
@@ -2238,7 +2092,6 @@ fn show_top_definition(
     let body = read_span(store, &top.repo_identity, &top.file, top.line, end, here);
     hits[0].body = body;
     let top = &hits[0];
-    let shown = (top.file.clone(), top.line);
     let code = match out {
         Output::Json | Output::Ndjson => {
             // fail loudly on a serialize error, like every other JSON path
@@ -2269,19 +2122,6 @@ fn show_top_definition(
         }
     };
 
-    // After the output, like every other post-interaction write.
-    if !no_record {
-        let (file, line) = shown;
-        let _ = store.record_event(
-            "select",
-            Some(&query.to_ascii_lowercase()),
-            current,
-            Some(&file),
-            Some(line),
-            None,
-        );
-        deferred_maintenance(store);
-    }
     Some(code)
 }
 

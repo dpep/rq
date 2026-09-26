@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 12;
+pub(crate) const VERSION: i64 = 13;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -88,28 +88,9 @@ CREATE TABLE coverage (
   UNIQUE(repository_id, scope)
 );
 
--- raw, append-only interaction log
-CREATE TABLE events (
-  id INTEGER PRIMARY KEY,
-  type TEXT NOT NULL,                 -- search | open | select
-  query TEXT,                        -- normalized query, when applicable
-  repository_id INTEGER,
-  path TEXT,                         -- repo-relative file, for open/select
-  line INTEGER,
-  branch TEXT,
-  ts INTEGER NOT NULL,
-  source TEXT,                       -- caller label, for search rows
-  results INTEGER,                   -- hits returned; 0 = a miss
-  flags TEXT,                        -- canonical flag set, comma-joined
-  status TEXT,                       -- hit | miss (absent) | warming (not ready)
-  coverage TEXT                      -- index state on arrival: complete|warming|none
-);
-CREATE INDEX idx_events_repo ON events(repository_id, id);
-
--- usage counters. Separate from `events` because that log is pruned to a
--- rolling window, which makes it a ceiling rather than a count; these rows are
--- the only cumulative record of how rq is actually used. Read by `--usage`,
--- never by ranking.
+-- usage counters, one row per (day, caller, flag set), incremented on write.
+-- The only record of how rq is actually used. Read by `--usage`, never by
+-- ranking.
 CREATE TABLE usage_daily (
   day TEXT NOT NULL,                 -- local date, YYYY-MM-DD
   source TEXT NOT NULL,
@@ -121,20 +102,7 @@ CREATE TABLE usage_daily (
   PRIMARY KEY (day, source, flags)
 );
 
--- rollup the ranking hot path reads. Keyed by (file, name) rather than
--- symbol_id so learning survives reindexing (symbol ids are recreated on every
--- file re-extract; file+name is stable).
-CREATE TABLE selection_stats (
-  repository_id INTEGER NOT NULL,
-  query_norm TEXT NOT NULL,
-  file TEXT NOT NULL,
-  name TEXT NOT NULL,
-  selections INTEGER NOT NULL,
-  last_selected_at INTEGER,
-  PRIMARY KEY (repository_id, query_norm, file, name)
-);
-
--- small key/value store (e.g. the event-rollup high-water mark)
+-- small key/value store (indexed HEAD, warm lock, branch-file cache)
 CREATE TABLE meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -266,9 +234,19 @@ CREATE INDEX IF NOT EXISTS idx_symbols_repo_name ON symbols(repository_id, name_
 DROP INDEX IF EXISTS idx_symbols_repo;
 "#;
 
+/// Migration v12 -> v13: behavioral learning is removed. `selection_stats` was
+/// its rollup, and `events` existed to feed it (search rows were only ever
+/// pruned); `usage_daily` keeps the counts. `events_hwm` was the rollup's
+/// position in the log.
+pub(crate) const MIGRATION_V13: &str = r#"
+DROP TABLE IF EXISTS selection_stats;
+DROP TABLE IF EXISTS events;
+DELETE FROM meta WHERE key = 'events_hwm';
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, &str); 11] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -280,6 +258,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 11] = [
     (10, MIGRATION_V10),
     (11, MIGRATION_V11),
     (12, MIGRATION_V12),
+    (13, MIGRATION_V13),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]

@@ -7,13 +7,12 @@ document is the contract the implementation should satisfy.
 ## Core principle
 
 `rq` is a **navigation engine**. It optimizes for reaching the one result a
-developer most likely wants, fast — not for enumerating every match. Four
+developer most likely wants, fast — not for enumerating every match. Three
 ranked priorities resolve every design tension:
 
 1. relevance over completeness
 2. navigation over discovery
 3. speed over exhaustiveness
-4. learned behavior over static ranking
 
 The latency target is **< 50 ms perceived** for index-backed results, then
 *progressive improvement* — slower layers stream in behind the fast first
@@ -53,15 +52,14 @@ tracking or inheritance — those are explicit non-goals for the MVP.
 Identity answers two different questions, so it is modeled at two levels:
 
 - **Logical project** — `github.com/org/repo` (from the upstream remote) or
-  `local:/abs/path` fallback. Used to dedupe symbols and
-  aggregate behavioral learning across checkouts. Robust to forks/clones being
-  the "same" project.
+  `local:/abs/path` fallback. Used to dedupe symbols across checkouts. Robust
+  to forks/clones being the "same" project.
 - **Local checkout** — a root path plus current branch. Used for indexing
   coverage state and git-aware ranking. One project may have several checkouts
   (multiple clones, all valid). A checkout whose path no longer exists is pruned
   when the repo is next indexed/warmed (not on every search — stale rows are
-  cheap, since reads route around them), so a moved repo self-heals; symbols and
-  learning are keyed by identity, so pruning a checkout only forgets a *location*.
+  cheap, since reads route around them), so a moved repo self-heals; symbols
+  are keyed by identity, so pruning a checkout only forgets a *location*.
 
 The system is designed for **many** repositories and millions of symbols from
 day one. It never assumes a single repository.
@@ -81,10 +79,6 @@ src/
     ruby/     # the first plugin
     rust/     # what rq dogfoods on its own source
 ```
-
-Interaction capture and its rollup live in `store/` (the `events` /
-`selection_stats` tables and their queries); editor ingestion is just the
-`rq --record` CLI path — no dedicated module needed for either.
 
 A `LanguagePlugin` trait is the only seam languages plug into:
 
@@ -171,25 +165,7 @@ coverage (
   UNIQUE(repository_id, scope)
 );
 
--- raw, append-only interaction log
-events (
-  id INTEGER PRIMARY KEY,
-  type TEXT NOT NULL,                -- search | open | select
-  query TEXT,                       -- normalized query, when applicable
-  repository_id INTEGER,
-  path TEXT, line INTEGER,          -- the file/line for open/select
-  branch TEXT, ts INTEGER NOT NULL,
-  source TEXT,                      -- caller label, for search rows
-  results INTEGER,                  -- hits returned; 0 = a miss
-  flags TEXT,                       -- canonical flag set, comma-joined
-  status TEXT,                      -- hit | miss (absent) | warming (not ready)
-  coverage TEXT                     -- index state on arrival: complete|warming|none
-);
-CREATE INDEX idx_events_repo ON events(repository_id, id);
-
--- cumulative usage counters, read by `--usage`. Separate from `events`
--- because that log is pruned to a rolling window, which makes it a ceiling
--- rather than a count.
+-- cumulative usage counters, read by `--usage`, never by ranking.
 usage_daily (
   day TEXT NOT NULL,                -- local date, YYYY-MM-DD
   source TEXT NOT NULL,
@@ -201,21 +177,7 @@ usage_daily (
   PRIMARY KEY (day, source, flags)
 );
 
--- rollup the hot path reads; never scan raw events at query time.
--- Keyed by (file, name), NOT symbol_id: symbol ids are recreated whenever a
--- file is re-extracted, so keying on the stable file+name keeps learning across
--- reindexing.
-selection_stats (
-  repository_id INTEGER NOT NULL,
-  query_norm TEXT NOT NULL,
-  file TEXT NOT NULL,
-  name TEXT NOT NULL,
-  selections INTEGER NOT NULL,
-  last_selected_at INTEGER,
-  PRIMARY KEY (repository_id, query_norm, file, name)
-);
-
--- small key/value store (e.g. the event-rollup high-water mark)
+-- small key/value store (indexed HEAD, warm lock, branch-file cache)
 meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 ```
 
@@ -227,17 +189,15 @@ Decisions worth calling out:
   point at moved lines.
 - **`coverage`** lets search know its own confidence and decide whether to
   append a live-scan tail.
-- **`events` + `selection_stats`** separate the append-only truth from the
-  aggregate the ranking path reads, so the hot path never scans the log.
 - **A miss and a not-yet are counted apart.** rq already separates them in its
   exit codes (1 = absent, 2 = index still warming); netting them into one
   number would overstate how often it truly finds nothing, and the two call for
   opposite responses — index more, versus the symbol isn't there.
-- **`usage_daily` is observability, not learning.** The rollup that feeds
-  ranking reads only `open`/`select` rows, so counting a search can never move
-  a result. Counters are incremented on write rather than rolled up, so they
-  survive the prune that bounds the raw log — the question "how much is rq
-  used, and by whom" needs a total, and a pruned log can only give a ceiling.
+- **`usage_daily` is observability, not ranking input.** Nothing reads it
+  back into scoring, so counting a search can never move a result. Counters
+  are incremented on write rather than kept as a raw log: the question "how
+  much is rq used, and by whom" needs a total, and a bounded log can only give
+  a ceiling.
 
 ## Indexing model
 
@@ -429,56 +389,22 @@ complete + fresh → index only, sub-50 ms
 
 The user never needs to know which layer a result came from.
 
-## Behavioral learning
+## Behavioral learning — removed
 
-Ranking learns from which definition actually got used. **On probation** — see
-the kill criterion in [ROADMAP](ROADMAP.md); the machinery below is complete,
-but until 0.40.0 it had no data at all and has yet to prove it beats the static
-ranker.
+Ranking once learned from which definition got used: `--open`, `--show`, and a
+`--record` hook logged picks, a rollup aggregated them into `selection_stats`,
+and a decaying `learned` boost fed the scorer. It was deleted after six weeks
+of real use left the table empty — see [DECISIONS](DECISIONS.md) D10 for the
+numbers, and why `--show` could only ever have confirmed static ranking. Search
+is now a function of the index, recency, and the branch.
 
-- A **selection** appends to `events`, from three places: `rq --open` (the hit
-  you picked), `rq --show` (the confident body it printed — the caller asked for
-  one definition and consumed exactly that one), and `rq --record`, the
-  decoupled ingestion point editors, shells, and agents call. A bare
-  `rq <query>` records nothing: a ranked list leaves the choice open, so there's
-  no pick to observe.
-- **Agents are a first-class source, deliberately.** They are the bulk of the
-  traffic, and a post-hoc `--record` — or a `--show` that *is* the read — names
-  the definition they actually worked from, with task context a click doesn't
-  carry. The earlier rule that agents should pass `--no-record` dated from when
-  a search itself mutated ranking state (removed in 0.39.0/0.39.1); keeping it
-  only starved the feature. `--no-record` now covers the real risk: mechanical
-  repetition (benchmarks, CI loops) drowning out genuine picks.
-- A rollup aggregates events into `selection_stats`. It resolves the chosen
-  symbol from `(repo, path, line)` at rollup time and keys on `(query_norm,
-  file, name)`, so ranking does one indexed lookup and never scans the raw log.
-- The **learned boost** is one additive feature whose weight **ramps with
-  evidence** (saturates ~5 selections) and **decays** with recency (~30-day
-  half-life, unfloored — a pick decays all the way to zero, so a wrong one
-  expires rather than nudging forever). Few selections → low weight → the static prior dominates,
-  which solves cold start (new user / new repo / never indexed).
-- **Prefix learning:** a pick for a shorter query (`han`) informs longer ones
-  (`handler`) — `selections_for` matches any stored query that is a prefix of
-  the current one, so typing more keeps the benefit.
-- **Repeat-as-miss, removed.** A repeated search (nothing opened since) once
-  decayed that query's boost as an exploration signal. It fired almost entirely
-  on machine re-runs rather than a human re-asking, so it was dropped; time
-  decay is the only forgetting left. Kept here because the idea recurs — the
-  lesson is that an agent's traffic pattern doesn't carry the intent a human's
-  does.
+### No daemon — detached post-interaction work
 
-### No daemon — amortized and detached post-interaction work
-
-Aggregation (and other proactive work like warming the index) is **not** a
-resident daemon. Each `rq` invocation prints results first, then does a small,
-bounded chunk of deferred work before exiting — rolling a batch of events into
-`selection_stats` (a high-water mark in `meta` tracks what's been rolled up;
-the same pass prunes rolled-up events, keeping a small recent window, so the
-raw log stays bounded).
-
-Leftover index warming is handed to a **detached child** instead: after
-results print, the search re-execs `rq --warm <root>` with null stdio in its
-own process group and exits — the shell only ever waits on the answer. The
+Proactive work like warming the index is **not** a resident daemon. Each `rq`
+invocation prints results first; leftover index warming is handed to a
+**detached child**: after results print, the search re-execs `rq --warm <root>`
+with null stdio in its own process group and exits — the shell only ever waits
+on the answer. The
 child runs niced (and with throttled disk I/O on macOS) on a seconds-scale
 budget (`RQ_WARM_BUDGET_MS`), sweeping until coverage completes, and is
 single-flighted per repo via a pid-stamped lock in `meta`, so a burst of
@@ -493,16 +419,10 @@ areas) enters later as additional **ranking hints — never hard filters**.
 
 ## Editor integration
 
-Designed for early, decoupled editor integration. Editors POST a minimal event
-to a thin local endpoint:
-
-```text
-{ type: "open" | "focus" | "select", file, repository, branch, ts }
-```
-
-No editor-specific coupling in the core. VS Code, Neovim, and JetBrains are all
-just event sources and result openers. Result locations are `path:line` so any
-editor can jump to them.
+No editor-specific coupling in the core. Result locations are `path:line`, so
+any editor can jump to them, and `rq -o/--open` hands the best match to a
+launcher. VS Code, Neovim, and JetBrains are all just result openers — see
+[EDITORS](EDITORS.md).
 
 ## Open risks (tracked, not yet resolved)
 
@@ -511,13 +431,6 @@ editor can jump to them.
 2. **Cross-repo ranking** — resolved for the common case by scoping to the
    current repo by default (`--all-repos` opts out); cross-repo ranking priors
    (recency) still matter under `--all-repos`.
-3. **Learning starvation, not overfit** — the risk that mattered turned out to
-   be the opposite one: through 0.39.1 nothing but `--open`/`--record` fed the
-   signal, so the learned feature was inert on every invocation. 0.40.0 gives it
-   a source (`--show`, and agents recording their picks); whether that produces
-   enough evidence to beat static ranking is now an open question with a
-   deadline, not an assumption. Unfloored time decay guards the other direction,
-   a bad pick persisting.
-4. **Ranking explainability** — `--explain` from day one is the mitigation.
-5. **Scope creep** — Layers 4–5 are a streamed tail, not a second search engine;
+3. **Ranking explainability** — `--explain` from day one is the mitigation.
+4. **Scope creep** — Layers 4–5 are a streamed tail, not a second search engine;
    keep them lean for the MVP.

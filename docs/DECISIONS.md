@@ -198,7 +198,7 @@ dominate usage so the win lands on too few searches to pay for the writes.
 
 *Merging the per-search writes into one transaction.* A search writes its usage row
 (`events` + `usage_daily`, one transaction) before printing, then rolls up and prunes
-after. The usage write is 0.4–0.5 ms at the median; rollup + prune together 0.1 ms.
+after. (Since D10 there is only the `usage_daily` write.) The usage write is 0.4–0.5 ms at the median; rollup + prune together 0.1 ms.
 Merging saves at most the post-answer ~0.1 ms. Moving the usage write after the output
 would take ~0.45 ms off `first answer` (≈2.0 ms) and nothing off the process's wall
 time. It would also split one count across the three exits (`--show`, `--open`,
@@ -286,3 +286,27 @@ the cost is re-parsing files that were edited anyway. Not worth a hash dependenc
 
 *Reverses if:* a language plugin's extraction (not its grammar) shows up in a profile, or
 an incremental re-index becomes something users wait on interactively.
+
+## D10 — Behavioral learning: deleted
+
+**Deleted**, 2026-09-26. Measured on the author's own database, the one place it had
+real traffic, six weeks after 0.40.0 gave the feature its first source of data.
+
+`selection_stats` had **0 rows**. `usage_daily` shows why: 346 of 349 searches came from
+Claude Code, and not one used `--show`, `--open`, or `--web`. Human `--open` and editor
+`--record` traffic was effectively nil, and no editor hook was ever installed.
+
+The bulk feed couldn't have rescued it either. `--show` records a pick only when the top
+hit already clears the 0.85 confidence gate — so by construction it can only confirm the
+result static ranking put first, never move a different one up. A signal that can only
+agree with the ranker adds nothing to it.
+
+ROADMAP Phase 3 set the rule in advance: an empty table by 2026-10-01 means delete. Gone:
+`selection_stats` and the `events` log that fed it (a v13 migration drops both), the
+rollup, the `learned` feature, and the `--record` and `--no-record` flags. `usage_daily`
+stays, so `--usage` is unchanged, and `search` is now a function of the index, recency,
+and the branch.
+
+*Reverses if:* a source of picks appears that isn't already the top hit — an editor
+integration where people choose from a list, say — at a volume that can outvote noise.
+Rebuild it against that source, and measure before billing it as a feature.

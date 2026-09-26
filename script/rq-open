@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# rq-open: search with rq, open the chosen result in your editor, and record
-# the choice so ranking learns which result you wanted.
+# rq-open: search with rq and open the chosen result in your editor.
 #
 #   rq-open <query>
 #
@@ -9,10 +8,9 @@
 # the top-ranked result. Opening: VS Code (`code --goto`) if present, else
 # $EDITOR, else just prints the location.
 #
-# `rq -o/--open` now does this natively (top match → open → record). This wrapper
-# stays as the reference "shell hook" for an interactive fzf picker or a custom
-# flow — it's all `rq` plus `rq --record`, so any editor or launcher can do the
-# same. See docs/EDITORS.md.
+# `rq -o/--open` does this natively (top match → open). This wrapper stays as
+# the reference for an interactive fzf picker or a custom flow — it's just `rq`,
+# so any editor or launcher can do the same. See docs/EDITORS.md.
 
 set -euo pipefail
 
@@ -39,11 +37,6 @@ fi
 loc="${choice%% *}"          # first token: path:line
 file="${loc%:*}"             # repo-root-relative path (matches the index)
 line="${loc##*:}"
-
-# Record the pick so ranking learns. Use the *relative* path — that's what rq
-# indexed, so the behavioral signal lands on the right symbol. Best-effort;
-# never block the open.
-rq --record --file "$file" --line "$line" "$query" || true
 
 # Open at the line. rq prints repo-root-relative paths, so resolve against the
 # work-tree root — the bare path won't open from a subdirectory otherwise.

@@ -1,22 +1,13 @@
 # Editor integration
 
-rq is editor-independent. Integration is two small things:
-
-1. **Open** a result — every result is a `path:line`, so any editor can jump to it.
-2. **Report** the open — call `rq --record` so ranking learns which result you
-   wanted for a query (see "Learning" in the [README](../README.md)).
-
-```sh
-rq --record --file <path> --line <n> <query>
-```
-
-That's the whole contract. No daemon, no socket — just two CLI calls. Everything
-below is a thin wrapper around them.
+rq is editor-independent: every result is a `path:line`, so any editor can
+jump to it. That's the whole contract. No daemon, no socket — just a CLI call.
+Everything below is a thin wrapper around it.
 
 ## Native (works today)
 
-`rq -o/--open <query>` does both steps for you: it opens the best match (prompting
-to choose on a TTY with several) and records the pick. The launcher resolves
+`rq -o/--open <query>` opens the best match for you (prompting to choose on a
+TTY with several). The launcher resolves
 `RQ_OPEN` (a template with `{file}`/`{line}`/`{}` = `path:line`) → `code` →
 `$VISUAL`/`$EDITOR` → printing the location. Simplest integration: bind a key to
 `rq -o`. The wrappers below remain useful for an interactive fzf picker or a
@@ -24,16 +15,16 @@ custom flow.
 
 ## Shell (works today)
 
-[`script/rq-open`](../script/rq-open) does search → pick → open → record:
+[`script/rq-open`](../script/rq-open) does search → pick → open:
 
 ```sh
 rq-open RefundProcessor
 ```
 
 It uses `fzf` to pick when available (auto-selecting a lone match), opens in VS
-Code (`code --goto`) or `$EDITOR`, and records the choice. Drop it on your
-`PATH`, or wire a shell function / key binding to it. It's ~30 lines of `rq` +
-`rq --record` — copy and adapt freely.
+Code (`code --goto`) or `$EDITOR`. Drop it on your `PATH`, or wire a shell
+function / key binding to it. It's ~30 lines around `rq` — copy and adapt
+freely.
 
 ## VS Code
 
@@ -58,8 +49,7 @@ A `tasks.json` entry that prompts for a query and runs the wrapper:
 
 ### Extension (richer)
 
-A small extension gives a native picker and accurate recording. Sketch of the
-command handler:
+A small extension gives a native picker. Sketch of the command handler:
 
 ```ts
 import { execFile } from "node:child_process";
@@ -77,8 +67,6 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!pick) return;
 
       const [path, line] = pick.split(/\s+/)[0].split(":");
-      // record the choice so ranking learns
-      await run("rq", ["--record", "--file", path, "--line", line, query], cwd);
       // open at the line
       const doc = await vscode.workspace.openTextDocument(`${cwd}/${path}`);
       const ed = await vscode.window.showTextDocument(doc);
@@ -99,9 +87,7 @@ const run = (cmd: string, args: string[], cwd?: string) =>
 
 Note the `{ cwd }` option so rq runs against the workspace regardless of the
 extension host's working directory (rq resolves the repository from its own
-working directory). A fuller extension could also record passive opens
-(`onDidOpenTextDocument`) attributed to the last query — but explicit
-record-on-pick is the high-signal event and the place to start.
+working directory).
 
 ## Neovim
 
@@ -113,7 +99,6 @@ vim.keymap.set("n", "<leader>rq", function()
   if not line or line == "" then return end
   local loc = vim.split(line, "%s+")[1]                -- file:line
   local file, lnum = loc:match("([^:]+):(%d+)")
-  vim.fn.system({ "rq", "--record", "--file", file, "--line", lnum, query })
   vim.cmd(("edit +%s %s"):format(lnum, file))
 end)
 ```

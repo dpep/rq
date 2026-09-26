@@ -86,13 +86,10 @@ pub(crate) struct CoverageRow {
     pub symbols: i64,
 }
 
-/// One search, as recorded for usage. A struct rather than a long positional
-/// argument list — every field here is a label or a count, and mixing them up
-/// silently would corrupt the counters.
+/// One search, as recorded for usage. A struct rather than a positional
+/// argument list — every field here is a label, and mixing them up silently
+/// would corrupt the counters.
 pub(crate) struct SearchRecord<'a> {
-    pub query: &'a str,
-    pub repository_id: Option<i64>,
-    pub results: usize,
     /// Caller label from [`crate::origin`].
     pub source: &'a str,
     /// Canonical flag set, comma-joined; empty for a bare search.
@@ -628,8 +625,8 @@ impl Store {
     }
 
     /// Drop a repository entirely — the inverse of indexing it: its symbols (and
-    /// their FTS rows, via trigger), files, coverage, learned selections, events,
-    /// checkout, and the repository row. Deleted in FK-safe order in one
+    /// their FTS rows, via trigger), files, coverage, checkout, and the
+    /// repository row. Deleted in FK-safe order in one
     /// transaction.
     pub(crate) fn drop_repository(&mut self, repository_id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -637,8 +634,6 @@ impl Store {
             "DELETE FROM symbols WHERE repository_id = ?1",
             "DELETE FROM files WHERE repository_id = ?1",
             "DELETE FROM coverage WHERE repository_id = ?1",
-            "DELETE FROM selection_stats WHERE repository_id = ?1",
-            "DELETE FROM events WHERE repository_id = ?1",
             "DELETE FROM checkouts WHERE repository_id = ?1",
             "DELETE FROM repositories WHERE id = ?1",
         ] {
@@ -647,60 +642,17 @@ impl Store {
         tx.commit()
     }
 
-    /// Append a raw interaction event (the cheap write on the hot path; rollup
-    /// happens later in [`Store::aggregate_events`]).
-    pub(crate) fn record_event(
-        &self,
-        kind: &str,
-        query: Option<&str>,
-        repository_id: Option<i64>,
-        path: Option<&str>,
-        line: Option<i64>,
-        branch: Option<&str>,
-    ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO events (type, query, repository_id, path, line, branch, ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![kind, query, repository_id, path, line, branch, now_unix()],
-        )?;
-        Ok(())
-    }
-
     // ----- usage observability -----
 
-    /// Log a search and bump its usage counters. Distinct from
-    /// [`record_event`](Self::record_event) on purpose: nothing here reaches
-    /// ranking — the rollup that feeds `selection_stats` reads only
-    /// `open`/`select` — so a query can be counted without teaching anything.
-    ///
-    /// Both writes happen in one transaction: the `events` row is the detail
-    /// (pruned to a rolling window) and the `usage_daily` row is the count that
-    /// outlives it, so they must not disagree.
-    pub(crate) fn record_search(&mut self, rec: &SearchRecord) -> Result<()> {
-        let ts = now_unix();
+    /// Count a search in `usage_daily`.
+    pub(crate) fn record_search(&self, rec: &SearchRecord) -> Result<()> {
         let miss = i64::from(rec.status == "miss");
         let warming = i64::from(rec.status == "warming");
         let on_complete = i64::from(rec.coverage == "complete");
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO events
-               (type, query, repository_id, ts, source, results, flags, status, coverage)
-             VALUES ('search', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                rec.query,
-                rec.repository_id,
-                ts,
-                rec.source,
-                rec.results as i64,
-                rec.flags,
-                rec.status,
-                rec.coverage,
-            ],
-        )?;
         // Local date, not UTC: an evening search on the US west coast would
         // otherwise be filed under tomorrow, which makes a per-day report
         // quietly wrong for a third of the waking day.
-        tx.execute(
+        self.conn.execute(
             "INSERT INTO usage_daily (day, source, flags, searches, misses, warming, on_complete)
              VALUES (date(?1, 'unixepoch', 'localtime'), ?2, ?3, 1, ?4, ?5, ?6)
              ON CONFLICT(day, source, flags) DO UPDATE SET
@@ -708,13 +660,19 @@ impl Store {
                misses = misses + excluded.misses,
                warming = warming + excluded.warming,
                on_complete = on_complete + excluded.on_complete",
-            params![ts, rec.source, rec.flags, miss, warming, on_complete],
+            params![
+                now_unix(),
+                rec.source,
+                rec.flags,
+                miss,
+                warming,
+                on_complete
+            ],
         )?;
-        tx.commit()
+        Ok(())
     }
 
-    /// Usage counts, newest day first. The cumulative record — `events` is
-    /// pruned, these rows are not.
+    /// Usage counts, newest day first.
     pub(crate) fn usage_overview(&self) -> Result<Vec<UsageRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT day, source, flags, searches, misses, warming, on_complete
@@ -734,134 +692,6 @@ impl Store {
             })?
             .collect::<Result<Vec<_>>>()?;
         Ok(rows)
-    }
-
-    /// Roll up to `batch` new `open`/`select` events into `selection_stats`.
-    /// Returns how many events were processed. Resolves the chosen symbol from
-    /// `(repo, path, line)` at rollup time, turning a selection into a
-    /// `(query, file, name)` signal. This is the amortized post-processing run
-    /// after a user interaction.
-    pub(crate) fn aggregate_events(&mut self, batch: usize) -> Result<usize> {
-        let hwm = self.meta_get_i64("events_hwm")?.unwrap_or(0);
-
-        type Pending = (
-            i64,
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-            Option<i64>,
-            i64,
-        );
-        let pending: Vec<Pending> = {
-            let mut stmt = self.conn.prepare(
-                "SELECT id, query, repository_id, path, line, ts FROM events
-                 WHERE id > ?1 AND type IN ('select', 'open')
-                 ORDER BY id LIMIT ?2",
-            )?;
-            stmt.query_map(params![hwm, batch as i64], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>>>()?
-        };
-
-        if pending.is_empty() {
-            // advance past trailing non-selection events so we don't rescan them
-            let max_id: Option<i64> =
-                self.conn
-                    .query_row("SELECT MAX(id) FROM events", [], |r| r.get(0))?;
-            if let Some(m) = max_id.filter(|m| *m > hwm) {
-                self.meta_set_i64("events_hwm", m)?;
-            }
-            return Ok(0);
-        }
-
-        let drained = pending.len() < batch;
-        let max_pending_id = pending.iter().map(|p| p.0).max().unwrap_or(hwm);
-
-        let tx = self.conn.transaction()?;
-        let mut processed = 0;
-        for (_id, query, repo, path, line, ts) in &pending {
-            processed += 1;
-            let (Some(query), Some(repo), Some(path)) = (query, repo, path) else {
-                continue;
-            };
-            let name: Option<String> = match line {
-                Some(line) => tx
-                    .query_row(
-                        "SELECT s.name FROM symbols s JOIN files fi ON fi.id = s.file_id
-                         WHERE s.repository_id = ?1 AND fi.path = ?2 AND s.line <= ?3
-                         ORDER BY s.line DESC LIMIT 1",
-                        params![repo, path, line],
-                        |r| r.get(0),
-                    )
-                    .optional()?,
-                None => tx
-                    .query_row(
-                        "SELECT s.name FROM symbols s JOIN files fi ON fi.id = s.file_id
-                         WHERE s.repository_id = ?1 AND fi.path = ?2
-                           AND s.kind IN ('class', 'module')
-                         ORDER BY s.line ASC LIMIT 1",
-                        params![repo, path],
-                        |r| r.get(0),
-                    )
-                    .optional()?,
-            };
-            if let Some(name) = name {
-                tx.execute(
-                    "INSERT INTO selection_stats
-                       (repository_id, query_norm, file, name, selections, last_selected_at)
-                     VALUES (?1, ?2, ?3, ?4, 1, ?5)
-                     ON CONFLICT(repository_id, query_norm, file, name) DO UPDATE SET
-                       selections = selections + 1,
-                       last_selected_at = max(last_selected_at, excluded.last_selected_at)",
-                    params![repo, query, path, name, ts],
-                )?;
-            }
-        }
-
-        let new_hwm = if drained {
-            tx.query_row("SELECT MAX(id) FROM events", [], |r| {
-                r.get::<_, Option<i64>>(0)
-            })?
-            .unwrap_or(max_pending_id)
-        } else {
-            max_pending_id
-        };
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('events_hwm', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![new_hwm.to_string()],
-        )?;
-        tx.commit()?;
-        Ok(processed)
-    }
-
-    /// Keep the raw `events` log bounded. Deletes only events that have already
-    /// been rolled up (id ≤ the aggregation high-water mark) and are not among
-    /// the most recent `keep_recent` rows. Returns the number deleted.
-    pub(crate) fn prune_events(&self, keep_recent: i64) -> Result<usize> {
-        let hwm = self.meta_get_i64("events_hwm")?.unwrap_or(0);
-        let max_id: Option<i64> = self
-            .conn
-            .query_row("SELECT MAX(id) FROM events", [], |r| r.get(0))?;
-        let Some(max_id) = max_id else {
-            return Ok(0);
-        };
-        let cutoff = hwm.min(max_id - keep_recent);
-        if cutoff <= 0 {
-            return Ok(0);
-        }
-        let n = self
-            .conn
-            .execute("DELETE FROM events WHERE id <= ?1", params![cutoff])?;
-        Ok(n)
     }
 
     /// The git HEAD sha recorded at the last complete index of a repo, if any —
@@ -978,14 +808,6 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
-    }
-
-    fn meta_get_i64(&self, key: &str) -> Result<Option<i64>> {
-        Ok(self.meta_get(key)?.and_then(|s| s.parse().ok()))
-    }
-
-    fn meta_set_i64(&self, key: &str, value: i64) -> Result<()> {
-        self.meta_set(key, &value.to_string())
     }
 
     /// Candidate symbols for a query, drawn from cheap layers and merged:
@@ -1251,20 +1073,22 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             // simulate a pre-v5 database: no repo-scoped indexes, the
-            // (since-dropped) display_name column still present, and none of
-            // the columns/tables later migrations add
+            // (since-dropped) display_name column and learning tables still
+            // present, and none of the columns/tables later migrations add
             let store = Store::open(&path).unwrap();
             store
                 .conn
                 .execute_batch(
-                    "DROP INDEX idx_symbols_repo_name; DROP INDEX idx_events_repo; \
+                    "DROP INDEX idx_symbols_repo_name; \
                      ALTER TABLE repositories ADD COLUMN display_name TEXT; \
                      ALTER TABLE symbols DROP COLUMN visibility; \
-                     ALTER TABLE events DROP COLUMN source; \
-                     ALTER TABLE events DROP COLUMN results; \
-                     ALTER TABLE events DROP COLUMN flags; \
-                     ALTER TABLE events DROP COLUMN status; \
-                     ALTER TABLE events DROP COLUMN coverage; \
+                     CREATE TABLE events (id INTEGER PRIMARY KEY, type TEXT NOT NULL, \
+                       query TEXT, repository_id INTEGER, path TEXT, line INTEGER, \
+                       branch TEXT, ts INTEGER NOT NULL); \
+                     CREATE TABLE selection_stats (repository_id INTEGER NOT NULL, \
+                       query_norm TEXT NOT NULL, file TEXT NOT NULL, name TEXT NOT NULL, \
+                       selections INTEGER NOT NULL, last_selected_at INTEGER); \
+                     INSERT INTO meta (key, value) VALUES ('events_hwm', '7'); \
                      DROP TABLE usage_daily; \
                      PRAGMA user_version=4;",
                 )
@@ -1283,8 +1107,23 @@ mod tests {
             .unwrap()
             .collect::<Result<_>>()
             .unwrap();
-        // v5 added idx_symbols_repo; v12 replaced it with the composite
-        assert_eq!(indexes, ["idx_events_repo", "idx_symbols_repo_name"]);
+        // v5 added both; v12 replaced idx_symbols_repo with the composite, and
+        // v13 dropped the events table (and its index) with learning
+        assert_eq!(indexes, ["idx_symbols_repo_name"]);
+        let learning: i64 = store
+            .conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM sqlite_master \
+                   WHERE name IN ('events', 'selection_stats')) \
+                 + (SELECT COUNT(*) FROM meta WHERE key = 'events_hwm')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            learning, 0,
+            "v13 removes the learning tables and rollup mark"
+        );
         // the ladder ran to the top: v10 recreated the usage table and v11
         // added its warming counter
         let usage: i64 = store
@@ -1340,47 +1179,6 @@ mod tests {
         // only the live binding remains; the repo (and its symbols) is untouched
         assert_eq!(store.checkout_roots(repo).unwrap(), vec!["/new/path"]);
         assert_eq!(store.repository_id("local:/x").unwrap(), Some(repo));
-    }
-
-    #[test]
-    fn prune_events_drops_aggregated_but_keeps_recent() {
-        let mut store = Store::open_in_memory().unwrap();
-        let repo = store
-            .upsert_repository(&RepoIdentity::local("/x"), None)
-            .unwrap();
-        store
-            .replace_file_symbols(
-                repo,
-                "a.rb",
-                "ruby",
-                None,
-                "h",
-                &[sym("Foo", Kind::Class, 1, None)],
-            )
-            .unwrap();
-
-        // a select, then a run of searches (so the newest event is a search)
-        store
-            .record_event(
-                "select",
-                Some("foo"),
-                Some(repo),
-                Some("a.rb"),
-                Some(1),
-                None,
-            )
-            .unwrap();
-        for _ in 0..10 {
-            store
-                .record_event("search", Some("foo"), Some(repo), None, None, None)
-                .unwrap();
-        }
-        store.aggregate_events(100).unwrap(); // hwm advances to the last id (11)
-
-        // 11 events, all aggregated; keep the 3 newest → drop ids 1..=8
-        assert_eq!(store.prune_events(3).unwrap(), 8);
-        // idempotent: nothing left to prune
-        assert_eq!(store.prune_events(3).unwrap(), 0);
     }
 
     #[test]

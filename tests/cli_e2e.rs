@@ -761,9 +761,9 @@ fn empty_status_points_at_the_real_index_flag() {
 }
 
 #[test]
-fn open_launches_and_records_the_pick() {
-    // `rq --open` picks the top hit, records it as a selection (so ranking
-    // learns), and execs the launcher. RQ_OPEN drives a harmless command here.
+fn open_launches_the_top_hit() {
+    // `rq --open` picks the top hit and execs the launcher. RQ_OPEN drives a
+    // harmless command here.
     let (dir, db) = scratch("open");
     fs::write(dir.join("user.rb"), "class User\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
@@ -2074,7 +2074,7 @@ fn index_profile_reports_phases_and_counters() {
 }
 
 /// A search's profile covers the whole run: the time to the first answer is
-/// marked, `total` includes the work after it, and a miss reports too.
+/// marked within `total`, and a miss reports too.
 #[test]
 fn search_profile_covers_the_whole_run() {
     let (dir, db) = scratch("search-profile");
@@ -2107,10 +2107,6 @@ fn search_profile_covers_the_whole_run() {
         .find(|(n, _)| n == "first answer")
         .unwrap_or_else(|| panic!("no first answer: {hit:?}"));
     assert!(answer.1 <= total, "first answer after total: {hit:?}");
-    assert!(
-        hit.iter().any(|(n, _)| n == "after: rollup + prune"),
-        "{hit:?}"
-    );
 
     let (_, miss) = phases(&["Nonexistent", "--profile", "--json"]);
     assert!(

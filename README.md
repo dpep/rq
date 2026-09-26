@@ -49,7 +49,7 @@ rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescri
 rq <query> -l/--limit N     # cap the number of results (default 10; 0 = every match)
 rq <query> -a/--all-repos   # search every indexed repo (default: just the current one)
 rq <query> --show           # print the definition's source (confident match only; pipe to less)
-rq <query> -o/--open        # open the best match in your editor + record the pick
+rq <query> -o/--open        # open the best match in your editor
 rq <query> -w/--web         # open the best match on GitHub, pinned to a pushed sha
 rq --symbols FILE           # outline a file's definitions, in line order
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
@@ -61,15 +61,14 @@ rq --usage                  # searches per day, by caller and flags
 
 ## Opening results
 
-`rq -o <query>` jumps straight to the best match in your editor and records the
-pick, so ranking learns which result you actually wanted. On a terminal with
-several matches it prompts you to choose; otherwise it takes the top hit. The
+`rq -o <query>` jumps straight to the best match in your editor. On a terminal
+with several matches it prompts you to choose; otherwise it takes the top hit. The
 launcher is resolved in order: `RQ_OPEN` (a command template with `{file}`,
 `{line}`, or `{}` = `path:line`), then VS Code (`code`), then `$VISUAL`/`$EDITOR`,
 and failing all that it just prints the resolved `path:line`.
 
 ```sh
-rq -o refund                          # open the top match, record it
+rq -o refund                          # open the top match
 RQ_OPEN='vim +{line} {file}' rq -o x  # force a specific launcher
 ```
 
@@ -82,7 +81,8 @@ out there. The launcher is `$BROWSER`, then `open`/`xdg-open`, else the URL is
 printed.
 
 For an interactive fzf picker (or to wire a custom flow), `script/rq-open` is a
-small reference wrapper around `rq` + `rq --record`.
+small reference wrapper around `rq`; see [docs/EDITORS.md](docs/EDITORS.md) for
+VS Code and Neovim.
 
 ## For agents / scripts
 
@@ -190,27 +190,6 @@ A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
 it still answers at zero coverage. The index is a SQLite file at `$RQ_DB`
 (default `~/.local/share/rq/rq.db`).
-
-## Learning from what you pick
-
-Ranking improves as you use it — once rq knows what you picked. A thin hook
-reports which result you opened, so a `learned` boost lifts it next time:
-
-```sh
-rq --record --file app/services/refund_processor.rb --line 7 refund
-```
-
-A pick for a shorter query (`ref`) also informs longer ones (`refund`), and a
-boost decays with a ~30-day half-life so a stale favorite stops dominating.
-
-Three things report a pick: `rq --open`, `rq --record`, and `rq --show` (the
-confident body it printed is the definition you consumed). A bare `rq <query>`
-teaches nothing — a ranked list leaves the choice open. Pass `--no-record` in
-benchmarks or loops that repeat one query, so they don't drown out real picks.
-
-The wrapper [`script/rq-open`](script/rq-open) does search → pick → open →
-record in one step. See [docs/EDITORS.md](docs/EDITORS.md) for VS Code and
-Neovim — it's just `rq` plus `rq --record`, no socket.
 
 ## Shell completions
 

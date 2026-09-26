@@ -1,7 +1,7 @@
 //! Repository identity — the normalized name a logical project is keyed by.
 //!
 //! Two checkouts of the same project (clone, fork) should resolve to the same
-//! identity so symbols and learned behavior aggregate. See `docs/ARCHITECTURE.md`.
+//! identity so their symbols aggregate. See `docs/ARCHITECTURE.md`.
 
 use std::fmt;
 

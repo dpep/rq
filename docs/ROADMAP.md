@@ -7,7 +7,7 @@ actually run. Earlier phases must not assume later ones exist.
 
 - [x] Product vision and priorities ([README](../README.md))
 - [x] Architecture: symbol model, repo identity, schema, indexing, search,
-      partial indexing, behavioral learning ([ARCHITECTURE](ARCHITECTURE.md))
+      partial indexing ([ARCHITECTURE](ARCHITECTURE.md))
 - [x] Implementation language decided: Rust
 - [ ] Crate scaffold (`cargo init`, module skeleton, CI)
 
@@ -92,45 +92,19 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
 Exit criteria met: search works at 0%, partial, and 100% coverage; the user
 doesn't have to know which layer answered.
 
-## Phase 3 — Behavioral learning
+## Phase 3 — Behavioral learning (deleted)
 
-Billed as the differentiator; **on probation until it earns that** (kill
-criterion below). Through 0.39.1 it ran on zero data — every piece built, tested
-and shipped, `selection_stats` empty the whole time.
+Billed as the differentiator, then put on probation with a deadline: measure by
+2026-10-01, and delete it if the signal never arrived or only ever confirmed
+static ranking.
 
-- [x] `events` capture — `rq --open` records the pick, `rq --show` records the
-      confident body it printed, and the `rq --record` hook logs open/select
-      with query + file + line. A bare query logs nothing: a ranked list leaves
-      the choice open, so there is no pick to observe
-- [x] rollup → `selection_stats`, amortized in the post-interaction pass; keyed
-      by `(query_norm, file, name)` so it survives reindexing
-- [x] learned boost as an additive feature with evidence-ramped weight
-- [x] time-decay (recency, ~30-day half-life)
-- [x] prefix/related-query learning — a pick for `han` informs `handler`
-- [x] bound the raw `events` log — the deferred pass prunes events already
-      rolled up, keeping only the most recent few
-- [x] exploration via repeat-as-miss — built, then **removed**: it fired on
-      machine re-runs rather than a human re-asking, so it decayed boosts that
-      were fine. Time decay is the only forgetting left
-- [x] feed the signal (0.40.0) — `--show` records the definition it printed, and
-      the skill now tells agents to record the hit they worked from instead of
-      passing `--no-record`. Agents are the traffic; excluding them was why the
-      table stayed empty. `--no-record` narrows to its real job, mechanical
-      repetition (benchmarks, CI loops)
-- [ ] **measure, then decide — by 2026-10-01.** The feature has never been
-      tested with data; now it can be. Check `selection_stats` and re-rank a
-      sample of real queries with the boost zeroed:
-      - near-empty table → the signal still doesn't arrive. **Delete it.**
-      - rows accumulate but zeroing the boost changes no ordering → it only ever
-        confirmed what static ranking already had. **Delete it.**
-      - orderings change and the change is right → it earned the billing above.
-      Deleting is ~400–600 lines (two tables, four flags, the rollup, the
-      feature, `tests/learning.rs`, plus a drop migration) and would make
-      `search` a pure function of the index. That's the alternative on the
-      table, not a failure state — this item exists so the call gets made on
-      evidence instead of drifting for another year
+- [x] **measured, then deleted.** After six weeks `selection_stats` had 0 rows;
+      346 of 349 searches came from Claude Code, with no `--show`, `--open`, or
+      `--web` at all. See [DECISIONS](DECISIONS.md) D10. The tables, the
+      rollup, the `learned` feature and `--record` went, and `search` is now a
+      function of the index, recency, and the branch
 
-CLI shape: operations are flags (`--index`, `--status`, `--record`), not
+CLI shape: operations are flags (`--index`, `--status`, `--drop`), not
 subcommands, so no word is reserved — every term stays searchable, matching the
 rg/fd feel.
 
@@ -154,14 +128,12 @@ signal slots into the scorer without threading new parameters.
 
 ## Phase 5 — Editor integration
 
-- [x] ingestion point — `rq --record` (plus `-C` to target a workspace); no
-      daemon, just CLI calls
 - [x] result-opening protocol — every result is a `path:line`
-- [x] native open-and-record — `rq -o/--open` jumps to the best match (prompting
-      on a TTY with several), records the pick, and `exec`s the launcher
+- [x] native open — `rq -o/--open` jumps to the best match (prompting
+      on a TTY with several) and `exec`s the launcher
       (`RQ_OPEN` template → `code` → `$VISUAL`/`$EDITOR` → print). Bare `rq` stays
-      a `path:line` printer; the model + record path are unchanged
-- [x] reference shell wrapper — `script/rq-open` (search → pick → open → record),
+      a `path:line` printer
+- [x] reference shell wrapper — `script/rq-open` (search → pick → open),
       now for interactive fzf picking / custom flows; `rq -o` covers the default
 - [x] integration guide — docs/EDITORS.md (VS Code task + extension sketch, Neovim)
 - [ ] a packaged VS Code extension (the doc has the sketch; not yet shipped)
@@ -204,7 +176,7 @@ model, not leaking a language into `index`/`search`/scoring.
   (prefix-matched; `r`=ruby+rust; aliases rb/rs/golang/ts/tsx/js/jsx)
 - `-l/--limit N` — cap the number of results
 - `--no-record` — search without recording a behavioral signal (for agents)
-- `-o/--open` — open the best match in your editor and record the pick; prompts
+- `-o/--open` — open the best match in your editor; prompts
   to choose on a TTY with several. Launcher: `RQ_OPEN` → `code` → `$VISUAL`/`$EDITOR`
 - `-e/--explain` — per-result score breakdown
 - match highlighting — text results color the matched chars (TTY-only; honors
@@ -213,8 +185,8 @@ model, not leaking a language into `index`/`search`/scoring.
 - `rq --index --path DIR` — seed the index with a subtree first (for big
   monorepos: the part you care about answers immediately; warming fills in the
   rest through use)
-- `rq --drop [PATH|IDENTITY]` — remove a repo's index (symbols, files, coverage,
-  learned ranking); the inverse of `--index`. By path (or current repo), or by an
+- `rq --drop [PATH|IDENTITY]` — remove a repo's index (symbols, files,
+  coverage); the inverse of `--index`. By path (or current repo), or by an
   identity string from `--status` to clear orphaned cruft
 - `rq --symbols FILE` — outline one file's definitions in line order (kind,
   parent, signature); a structural read of a file you're already at, not a
@@ -231,14 +203,13 @@ a pretrained model, so it stays local, cheap, and in character with the rest.
 - [ ] self-derived associations from symbol proximity. Signals rq can use, some
       already captured: same-file / same-scope / N-line-window co-occurrence;
       `parent` nesting; **git co-change** (files committed together — already
-      sourced for recency); **behavioral co-selection** (the `events` /
-      `selection_stats` already record which pick answered which query).
+      sourced for recency).
 - [ ] two flavors, increasing in ambition:
   - sparse **association graph** — a `cooccurrence(a, b, count)` table
     accumulated during the parse walk. Query → top co-occurring symbols (query
     expansion / "related"). Cheap, incremental, and **explainable** ("related:
     co-occurs in 14 files, co-changed in 9 commits"), which a neural cosine is
-    not. Compounds with the learned ranking already in place.
+    not.
   - dense **self-derived vectors** — factorize the co-occurrence matrix
     (PMI + truncated SVD), store ~100-dim int8 per symbol (~100 B; cheaper than
     neural since the vocabulary is repo-scale), ANN-recall as a gated `semantic`
