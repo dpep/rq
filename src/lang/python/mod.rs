@@ -1,6 +1,9 @@
 //! Python plugin. Extracts `class` → class and `def` (free → function, inside a
 //! class → method), qualified with `.` (`method · Account`, nested class
 //! `Inner · Outer`). Decorators are transparent — the wrapped def is what counts.
+//! An `UPPER_SNAKE` assignment at module or class level → constant: Python has
+//! no `const`, so the naming convention is the only declaration of intent there
+//! is. A lowercase module variable is ordinary state and stays out.
 
 use tree_sitter::Node;
 
@@ -63,11 +66,52 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, in_class: bool, out: &mut V
                 }
                 // don't descend into a def body (nested defs rarely navigated)
             }
+            // reached only at module/class level — a def body is never walked
+            "assignment" => constants(ctx, child, parent, out),
             // a decorated class/function: descend so the wrapped def is seen
             // in the same context
             _ => walk(ctx, child, parent, in_class, out),
         }
     }
+}
+
+/// Emit the constant names an assignment binds: `X = …`, `X: int = …`, each
+/// name of `A, B = …`, and every target of a chained `A = B = …`.
+fn constants(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+    let mut emit = |target: Node| {
+        if let Some(name) = ctx.node_text(target)
+            && is_constant_name(&name)
+        {
+            let mut s = ctx.symbol(&name, Kind::Constant, assign, parent);
+            s.visibility = Some(name_visibility(&name));
+            out.push(s);
+        }
+    };
+    if let Some(left) = assign.child_by_field_name("left") {
+        match left.kind() {
+            "identifier" => emit(left),
+            "pattern_list" | "tuple_pattern" => {
+                let mut cursor = left.walk();
+                left.named_children(&mut cursor)
+                    .filter(|n| n.kind() == "identifier")
+                    .for_each(&mut emit);
+            }
+            _ => {} // `obj.attr = …`, `x[i] = …`: not a new name
+        }
+    }
+    if let Some(right) = assign.child_by_field_name("right")
+        && right.kind() == "assignment"
+    {
+        constants(ctx, right, parent, out);
+    }
+}
+
+/// `UPPER_SNAKE`, with at least two letters — a lone capital is a `TypeVar`
+/// (`T = TypeVar("T")`), not a constant.
+fn is_constant_name(name: &str) -> bool {
+    name.chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && name.chars().filter(char::is_ascii_uppercase).count() >= 2
 }
 
 /// Python's naming convention: a leading underscore marks internal —
@@ -123,6 +167,53 @@ def build():
         assert_eq!(build.parent, None);
 
         assert_eq!(account.language, "python");
+    }
+
+    #[test]
+    fn upper_snake_assignments_are_constants() {
+        let src = r#"
+MAX_RETRIES = 3
+TIMEOUT: float = 1.5
+LOW, HIGH = 1, 9
+FIRST = SECOND = 0
+_INTERNAL_LIMIT = 2
+T = TypeVar("T")
+default_widget = None
+
+try:
+    FAST_PATH = True
+except ImportError:
+    pass
+
+class Account:
+    DEFAULT_BALANCE = 0
+    kind = "basic"
+
+    def deposit(self, amount):
+        LOCAL_CAP = 10
+        self.LIMIT = amount
+"#;
+        let syms = extract(src);
+
+        let max = find(&syms, "MAX_RETRIES");
+        assert_eq!(max.kind, Kind::Constant);
+        assert_eq!(max.parent, None);
+        assert_eq!(max.visibility, Some("public"));
+
+        for name in ["TIMEOUT", "LOW", "HIGH", "FIRST", "SECOND", "FAST_PATH"] {
+            assert_eq!(find(&syms, name).kind, Kind::Constant, "{name}");
+        }
+        assert_eq!(find(&syms, "_INTERNAL_LIMIT").visibility, Some("private"));
+
+        // a class-level constant belongs to its class
+        let default = find(&syms, "DEFAULT_BALANCE");
+        assert_eq!(default.kind, Kind::Constant);
+        assert_eq!(default.parent.as_deref(), Some("Account"));
+
+        // not constants: a TypeVar, lowercase state, a def's locals and attrs
+        for absent in ["T", "default_widget", "kind", "LOCAL_CAP", "LIMIT"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
     }
 
     #[test]

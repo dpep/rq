@@ -175,7 +175,8 @@ model, not leaking a language into `index`/`search`/scoring.
       methods). The dogfood language: rq indexes its own source (`make dogfood`)
 - [x] Go — `lang/go/` (`func`/method, `struct`, `interface`→trait,
       package-level `const`→constant)
-- [x] Python — `lang/python/` (`class`, `def` free/method, decorator-aware)
+- [x] Python — `lang/python/` (`class`, `def` free/method, decorator-aware,
+      module/class-level `UPPER_SNAKE =`→constant)
 - [x] TypeScript / JavaScript — `lang/typescript/` (`class`, `interface`→trait,
       `type`→struct, `enum`, `namespace`→module, `function` and `const f = () =>`,
       class/interface members→method). Two tags off one grammar family, so

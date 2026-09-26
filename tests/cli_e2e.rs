@@ -1542,18 +1542,25 @@ fn kind_constant_selects_constants_across_languages() {
         "package limits\n\nconst MaxRetries = 3\n\nfunc MaxRetriesFor() int { return MaxRetries }\n",
     )
     .unwrap();
+    fs::write(
+        dir.join("limits.py"),
+        "MAX_RETRIES = 3\n\ndef max_retries_for():\n    return MAX_RETRIES\n",
+    )
+    .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["MaxRetries", "-k", "constant", "--ndjson"]);
-    assert!(ok, "constant search failed: {out}");
-    assert!(
-        out.contains("\"kind\":\"constant\",\"language\":\"go\""),
-        "go constant kept: {out}"
-    );
-    assert!(
-        !out.contains("\"kind\":\"function\""),
-        "function filtered: {out}"
-    );
+    for (query, lang) in [("MaxRetries", "go"), ("MAX_RETRIES", "python")] {
+        let (ok, out) = rq(&db, &dir, &[query, "-k", "constant", "--ndjson"]);
+        assert!(ok, "{lang} constant search failed: {out}");
+        assert!(
+            out.contains(&format!("\"kind\":\"constant\",\"language\":\"{lang}\"")),
+            "{lang} constant kept: {out}"
+        );
+        assert!(
+            !out.contains("\"kind\":\"function\""),
+            "{lang} function filtered: {out}"
+        );
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

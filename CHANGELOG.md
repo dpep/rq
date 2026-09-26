@@ -14,6 +14,10 @@ and aren't listed; see `git log` for those.
   blocks and `iota` enumerations included, are found as `constant` (and by
   `-k constant`). They land as files reindex on edit; `rq --drop` then
   `rq --index` picks them up across a repo at once.
+- **Python constants are indexed.** An `UPPER_SNAKE` assignment at module or
+  class level (`MAX_RETRIES = 3`, `TIMEOUT: float = 1.5`, `A, B = …`) is a
+  `constant`, qualified by its class when it has one. Lowercase variables and
+  anything inside a function stay out. They land as Go's do (above).
 
 ### Changed
 - **The VS Code extension (0.2.0) answers for every rq language without

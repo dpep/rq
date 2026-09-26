@@ -51,6 +51,16 @@ fn python_definitions_rank_and_classify() {
 
     assert_eq!(top(&store, "build_account").kind, "function");
 
+    // the constant outranks a function whose name only starts with it
+    let max = top(&store, "MAX_RETRIES");
+    assert_eq!(
+        (max.name.as_str(), max.kind.as_str()),
+        ("MAX_RETRIES", "constant")
+    );
+    let default = top(&store, "DEFAULT_BALANCE");
+    assert_eq!(default.kind, "constant");
+    assert_eq!(default.parent.as_deref(), Some("Account"));
+
     fs::remove_dir_all(&dir).ok();
 }
 
