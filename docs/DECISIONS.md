@@ -202,7 +202,8 @@ after. (Since D10 there is only the `usage_daily` write.) The usage write is 0.4
 Merging saves at most the post-answer ~0.1 ms. Moving the usage write after the output
 would take ~0.45 ms off `first answer` (≈2.0 ms) and nothing off the process's wall
 time. It would also split one count across the three exits (`--show`, `--open`,
-list). That's imperceptible, and a toll on every future exit path.
+list). That's imperceptible, and a toll on every future exit path. (Revisited in D13
+with a loaded-machine tail, and adopted.)
 
 *The warm child checking "did anything move?" before taking its lock*, so the common
 case writes nothing. The search's `record usage` p90 was 2.2–2.6 ms back-to-back with
@@ -455,3 +456,66 @@ searches in both builds spend 5–15 ms in `record usage`, before the first answ
 filter can't be a necessary condition); or per-search function registration shows up
 in a profile. The window widening is worth revisiting once the retry trigger and
 scattered-match ranking are addressed, since that would make it a pure relevance win.
+
+## D13 — The usage write after the answer: adopted. The lock was never contended
+
+**Adopted**, 2026-09-26. Revisits D7's rejection. Rails, release build, the fuzzy
+queries from D12 plus ten exact names; every burst interleaves the two builds search by
+search on identical copies of one DB.
+
+*The lead.* D12 saw about 9% of searches spend 5–15 ms in `record usage`, before the
+first answer, and suspected the write lock: the detached `rq --warm` child writes too,
+and `busy_timeout` sleeps 1, 2, 5, 10 ms between retries. The shape fits. The cause
+doesn't.
+
+*What the tail is.* It appears on a saturated machine: under 8 CPU spinners on 8 cores,
+9–18% of usage writes take over 3 ms (max ~20 ms), against 0–2% without them. Probed
+with a throwaway build:
+- With `busy_timeout` set to 0 for the write, **0 of ~700** loaded searches got
+  `SQLITE_BUSY`. Nothing held the lock.
+- No detached child (`RQ_WARM_DETACH=0`): unchanged, 14%. `synchronous=OFF`: unchanged,
+  14%. No checkpoint on close, so the next process appends to a live WAL instead of
+  restarting it: unchanged.
+- Split inside the write: preparing the statement is 0.02 ms, stepping it carries all of
+  it. A second identical upsert in the same process is 0.02 ms (max 0.07), and a plain
+  file append 0.16 ms at worst.
+
+So it is the process's first write transaction stretching under CPU contention, not a
+wait on another process. The mechanism inside SQLite and the kernel wasn't pinned, and
+doesn't need to be: nothing about the write made it cheaper, so the fix is to move it.
+
+*What was built.* The ranked list counts its search after printing, before the warm child
+is spawned. A miss counts after its answer too. `--show`, `--open` and `--web` still
+count before they fork, since they leave by their own exits and `--open` `exec`s; a
+`--show` that falls through to the list is already counted there. D7's objection, a
+count split across exits, now covers only those rare exits (none of the 349 searches in
+D10 used them). A test checks the order in `--profile`, and that a `--show` that prints a
+body and one that falls through count as two.
+
+| 300 searches a build, 8 spinners | before | after |
+|---|---|---|
+| exact: first answer p50 / p90 / p99 / max | 3.4 / 7.2 / 14.6 / 22.4 ms | 2.5 / 4.3 / 6.9 / 8.8 |
+| exact: wall p50 / p90 | 12.7 / 19.1 | 12.5 / 18.2 |
+| fuzzy: first answer p50 / p90 | 11.4 / 28.3 | 9.7 / 26.3 |
+| fuzzy: wall p50 / p90 | 21.8 / 37.3 | 21.2 / 37.7 |
+
+Output and exit codes are identical on all 600 search pairs, and `--usage` totals match
+the searches run (900 and 900): no count is dropped. On an unloaded machine the change is
+the ~0.45 ms D7 measured.
+
+**Wall time does not move**, and it's what an agent waits on: the shell returns at exit,
+not at the last line. The win is for a person at a terminal and anything reading the
+stream.
+
+*Rejected:*
+- **Try once, drop the count on `SQLITE_BUSY`.** There's no contention to skip, and it
+  would lose counts exactly when some is real (a search during `--index`).
+- **Handing the count to the warm child**, the only route off wall time. The child isn't
+  spawned on a miss, outside git, or with detach off, so it needs a second path, for
+  0.5–0.7 ms of a 12–22 ms wall at the median.
+- **A writer thread alongside `signatures` and render.** A connection isn't `Sync`, a
+  second one costs about what the write does, and the process still joins it before
+  exit.
+
+*Reverses if:* a search must read back something it wrote, or the usage write grows past
+bookkeeping.

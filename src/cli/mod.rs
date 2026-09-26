@@ -960,26 +960,31 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             no_wait,
             identity.as_deref(),
         );
-        // Recorded here rather than above the branch: whether this was a
-        // definitive miss or a not-ready one is only known now, and counting
-        // them as one number overstates how often rq truly finds nothing.
+        // A named scope that matched nothing is a different miss from a name
+        // that doesn't exist: re-run on the bare leaf to tell them apart, and
+        // say where the name actually lives. Only on the miss path, so a normal
+        // search never pays for it.
+        let elsewhere = crate::search::scope_miss_owner(store, query, current, only_repo, &active);
+        let code = no_match_code(out, query, interrupted, incomplete, elsewhere.as_deref());
+        // Counted after the answer, and only here: whether this was a
+        // definitive miss or a not-ready one is only known on this path, and
+        // counting them as one number overstates how often rq truly finds nothing.
+        let _span = crate::profile::span("after: record usage");
         record_usage(
             store,
             args,
             if incomplete { "warming" } else { "miss" },
             coverage.as_deref(),
         );
-        // A named scope that matched nothing is a different miss from a name
-        // that doesn't exist: re-run on the bare leaf to tell them apart, and
-        // say where the name actually lives. Only on the miss path, so a normal
-        // search never pays for it.
-        let elsewhere = crate::search::scope_miss_owner(store, query, current, only_repo, &active);
-        return no_match_code(out, query, interrupted, incomplete, elsewhere.as_deref());
+        return code;
     }
 
-    // The hit path's single count, above the --show/--open/list forks so it
-    // covers all three.
-    {
+    // A process's first write can stall for milliseconds on a busy machine
+    // (DECISIONS D13), so the ranked list counts itself once it has printed.
+    // --show/--open/--web leave by their own exits (--open `exec`s), so they
+    // count here; a --show that falls through to the list was already counted.
+    let counted_early = show || open || web;
+    if counted_early {
         let _span = crate::profile::span("record usage");
         record_usage(store, args, "hit", coverage.as_deref());
     }
@@ -1031,6 +1036,13 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // The budget's number. `total` adds the bookkeeping below, which runs
     // after results are out but still before the process exits.
     crate::profile::mark("first answer");
+
+    // Before the warm child is spawned below, whose own writes it would
+    // otherwise queue behind.
+    if !counted_early {
+        let _span = crate::profile::span("after: record usage");
+        record_usage(store, args, "hit", coverage.as_deref());
+    }
 
     // Collect the refresh started back at setup. It ran alongside the search
     // rather than after it, so by now it has usually finished — and it only

@@ -14,6 +14,9 @@ and aren't listed; see `git log` for those.
   `connectoin_pool`) used to hand the scorer thousands of rows it would reject;
   those are now dropped inside the database before being read. Search time
   falls by about a third on Rails and Discourse, with identical results.
+- **Results print before the search is counted.** On a busy machine the usage
+  write could hold the first result back by 5–15 ms; it now runs after the
+  output. `--usage` counts are unchanged.
 
 ## 0.52.1 — 2026-09-26
 

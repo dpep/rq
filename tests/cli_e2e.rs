@@ -1345,6 +1345,21 @@ fn usage_counts_searches_by_caller_and_flags() {
         "queries against a complete index are counted: {out}"
     );
 
+    // --show counts once whether it prints the body or falls through to the
+    // list, which counts on its own exit
+    fs::write(dir.join("b.rb"), "class Widgetry\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    let (_, shown) = rq(&db, &dir, &["Widget", "--show", "--ndjson"]);
+    assert!(shown.contains("\"body\""), "confident --show: {shown}");
+    let (_, fell) = rq(&db, &dir, &["Widg", "--show", "--ndjson"]);
+    assert!(!fell.contains("\"body\""), "--show fell through: {fell}");
+    let (_, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    let show_row = out
+        .lines()
+        .find(|l| l.contains("\"flags\":\"ndjson,show\""))
+        .unwrap_or_else(|| panic!("no --show row: {out}"));
+    assert!(show_row.contains("\"searches\":2"), "{show_row}");
+
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -2126,6 +2141,12 @@ fn search_profile_covers_the_whole_run() {
         .find(|(n, _)| n == "first answer")
         .unwrap_or_else(|| panic!("no first answer: {hit:?}"));
     assert!(answer.1 <= total, "first answer after total: {hit:?}");
+    // the usage write is bookkeeping: it must never hold up the answer
+    let at = |name: &str| hit.iter().position(|(n, _)| n == name);
+    assert!(
+        at("first answer") < at("after: record usage"),
+        "usage recorded before the answer: {hit:?}"
+    );
 
     let (_, miss) = phases(&["Nonexistent", "--profile", "--json"]);
     assert!(

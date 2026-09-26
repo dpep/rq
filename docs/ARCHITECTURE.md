@@ -201,6 +201,9 @@ Decisions worth calling out:
   are incremented on write rather than kept as a raw log: the question "how
   much is rq used, and by whom" needs a total, and a bounded log can only give
   a ceiling.
+- **Counted after the answer.** A search's usage write runs once its results
+  are printed, so a slow write never delays them (DECISIONS D13). `--show`,
+  `--open` and `--web` count before they fork, since `--open` `exec`s.
 
 ## Indexing model
 
