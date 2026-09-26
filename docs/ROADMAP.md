@@ -142,8 +142,12 @@ signal slots into the scorer without threading new parameters.
       the newest pushed commit in HEAD's history so the link resolves
 - [x] reference shell wrapper — `script/rq-open` (search → pick → open),
       now for interactive fzf picking / custom flows; `rq -o` covers the default
-- [x] integration guide — docs/EDITORS.md (VS Code task + extension sketch, Neovim)
-- [ ] a packaged VS Code extension (the doc has the sketch; not yet shipped)
+- [x] integration guide — docs/EDITORS.md (VS Code, Neovim, shell)
+- [x] VS Code extension — `editors/vscode/`: Go to Definition / Peek (the word
+      under the cursor plus its receiver become a scoped rq query, exact names
+      only), Cmd-T workspace symbols, an `rq.search` picker. Ruby-only by default
+      so it doesn't double up with precise language servers; a local `.vsix`,
+      not on the Marketplace
 
 ## Later — more languages
 

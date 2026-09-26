@@ -82,7 +82,7 @@ printed.
 
 For an interactive fzf picker (or to wire a custom flow), `script/rq-open` is a
 small reference wrapper around `rq`; see [docs/EDITORS.md](docs/EDITORS.md) for
-VS Code and Neovim.
+the VS Code extension (Cmd-click Go to Definition) and Neovim.
 
 ## For agents / scripts
 

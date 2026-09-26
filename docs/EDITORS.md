@@ -28,7 +28,74 @@ freely.
 
 ## VS Code
 
-Two approaches, smallest first.
+### Extension
+
+[`editors/vscode/`](../editors/vscode) is a small extension that makes
+Cmd/Ctrl-click, F12 and Peek Definition go through rq. It is not on the
+Marketplace; build and install the `.vsix` locally:
+
+```sh
+cd editors/vscode
+npm install
+npm run package                               # → rq-0.1.0.vsix
+code --install-extension rq-0.1.0.vsix
+```
+
+It needs `rq` on VS Code's `PATH`, or `rq.path` set. If rq can't be run, it says so once, with a
+button to the setting.
+
+**How a click becomes a query.** The word under the cursor, plus the receiver
+written right before it — no parsing, just the characters on the line:
+
+| Cursor on               | Queries, in order                     |
+| ----------------------- | ------------------------------------- |
+| `widget.save`           | `save`                                |
+| `Account::Ledger`       | `Account::Ledger`, then `Ledger`      |
+| `Widget.find`           | `Widget.find`, then `find`            |
+| `Widget.new`            | `Widget.new`, then `Widget`           |
+| `self.save`, `@w.save`  | `save`                                |
+| `w.empty?`, `w.save!`   | `empty?`, `save!` (Ruby)              |
+
+A lowercase receiver is a variable whose class the extension can't know, so it
+is dropped; a constant or a `::` path scopes the query, and the bare name is the
+fallback for an inherited or mixed-in method. `--lang` is set from the file's
+language (TypeScript and JavaScript together). Only exact, case-sensitive names
+are kept — rq's fuzzy neighbours are right for a search box, wrong for a jump.
+When one match remains or rq's top confidence is ≥ 0.8, the click jumps straight
+there; otherwise up to five candidates show as a peek list.
+
+rq runs in the file's repo root (the nearest `.git` ancestor, as rq itself
+resolves it), falling back to the workspace folder outside git, with
+`--wait 2s` and a 5 s kill: a cold repo answers with what's indexed and keeps
+warming in the background, and a `warming` miss shows a status-bar note rather
+than an error. A request VS Code cancels kills its rq process.
+
+**Settings.**
+
+| Setting        | Default    | Meaning                                              |
+| -------------- | ---------- | ---------------------------------------------------- |
+| `rq.path`      | `"rq"`     | The rq binary.                                       |
+| `rq.languages` | `["ruby"]` | Languages rq answers Go to Definition and Cmd-T for. |
+
+**Living with language servers.** VS Code merges every definition provider's
+answers, and rq's ranges (the whole definition) never match a language server's
+(the name), so where both answer, every definition appears twice and a
+Cmd-click opens a peek list instead of jumping. rust-analyzer, gopls, Pylance
+and the built-in TypeScript server are type-aware and precise, so rq has little
+to add there. Ruby is the opposite: without types, its language servers miss
+much of what metaprogramming defines (`delegate`, `has_many`, `scope`), which rq
+indexes, and often aren't installed at all — which is why the default is Ruby
+only. Add another language when you
+don't run a server for it.
+
+**Also included.** Go to Symbol in Workspace (Cmd/Ctrl-T) from rq's ranked
+index, for the same languages, and **rq: Search Definitions** in the command
+palette — any rq query, every language, picked from a list.
+
+**Developing it.** `npm test` runs the unit tests (the query builder, result
+picking, the runner against a stub binary); `npm run test:e2e` launches a
+downloaded VS Code on a Ruby fixture and asserts Go to Definition end to end
+through the real `rq`.
 
 ### Task (no extension)
 
@@ -46,48 +113,6 @@ A `tasks.json` entry that prompts for a query and runs the wrapper:
   "inputs": [{ "id": "rqQuery", "type": "promptString", "description": "rq query" }]
 }
 ```
-
-### Extension (richer)
-
-A small extension gives a native picker. Sketch of the command handler:
-
-```ts
-import { execFile } from "node:child_process";
-import * as vscode from "vscode";
-
-export function activate(ctx: vscode.ExtensionContext) {
-  ctx.subscriptions.push(
-    vscode.commands.registerCommand("rq.search", async () => {
-      const query = await vscode.window.showInputBox({ prompt: "rq" });
-      if (!query) return;
-      const cwd = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
-
-      const lines = await run("rq", [query], cwd);          // ranked results
-      const pick = await vscode.window.showQuickPick(lines); // "file:line  kind name"
-      if (!pick) return;
-
-      const [path, line] = pick.split(/\s+/)[0].split(":");
-      // open at the line
-      const doc = await vscode.workspace.openTextDocument(`${cwd}/${path}`);
-      const ed = await vscode.window.showTextDocument(doc);
-      const pos = new vscode.Position(Math.max(0, +line - 1), 0);
-      ed.selection = new vscode.Selection(pos, pos);
-      ed.revealRange(new vscode.Range(pos, pos));
-    })
-  );
-}
-
-const run = (cmd: string, args: string[], cwd?: string) =>
-  new Promise<string[]>((res, rej) =>
-    execFile(cmd, args, { cwd }, (e, out) =>
-      e && (e as any).code !== 1 ? rej(e) : res(out.trim().split("\n").filter(Boolean))
-    )
-  );
-```
-
-Note the `{ cwd }` option so rq runs against the workspace regardless of the
-extension host's working directory (rq resolves the repository from its own
-working directory).
 
 ## Neovim
 
