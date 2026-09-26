@@ -7,6 +7,15 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Added
+- **A VS Code extension** in `editors/vscode/`: Cmd/Ctrl-click, F12 and Peek
+  Definition answered by rq, plus Cmd-T workspace symbols and an `rq: Search
+  Definitions` picker. It serves Ruby by default (`rq.languages` adds more).
+  Not on the Marketplace — build the `.vsix` and install it; see
+  `docs/EDITORS.md`. The rq binary is unchanged.
+
 ## 0.52.2 — 2026-09-26
 
 ### Changed

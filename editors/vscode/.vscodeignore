@@ -1,0 +1,6 @@
+# Only the compiled extension, manifest, README and license ship in the .vsix.
+**
+!out/src/**/*.js
+!package.json
+!README.md
+!LICENSE.txt

@@ -1,0 +1,89 @@
+{
+  "name": "rq",
+  "displayName": "rq — Go to Definition",
+  "description": "Go to Definition, Peek and workspace symbols backed by the rq code-navigation CLI. Strongest for Ruby.",
+  "version": "0.1.0",
+  "publisher": "dpep",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dpep/rq"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ruby",
+    "go to definition",
+    "navigation",
+    "rq"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:ruby",
+    "onLanguage:rust",
+    "onLanguage:go",
+    "onLanguage:python",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "rq.search",
+        "title": "rq: Search Definitions"
+      }
+    ],
+    "configuration": {
+      "title": "rq",
+      "properties": {
+        "rq.path": {
+          "type": "string",
+          "default": "rq",
+          "markdownDescription": "Path to the `rq` binary. The default finds it on `PATH`; set an absolute path if VS Code's `PATH` doesn't include it (e.g. `/opt/homebrew/bin/rq`)."
+        },
+        "rq.languages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ruby",
+              "rust",
+              "go",
+              "python",
+              "typescript",
+              "typescriptreact",
+              "javascript",
+              "javascriptreact"
+            ]
+          },
+          "uniqueItems": true,
+          "default": [
+            "ruby"
+          ],
+          "markdownDescription": "Languages rq answers Go to Definition and workspace symbols for. VS Code merges every provider's answers, so a language that already has a precise language server (rust-analyzer, gopls, Pylance, the built-in TypeScript server) would show each definition twice — add it here only if you don't run one."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "test": "npm run compile && node --test out/test/unit/*.test.js",
+    "test:e2e": "npm run compile && node out/test/e2e/run.js",
+    "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "~1.85.0",
+    "@vscode/test-electron": "^3.1.0",
+    "typescript": "^5.4.0"
+  }
+}
