@@ -677,7 +677,11 @@ fn subsequence_score(query: &str, name: &str) -> Option<f64> {
 /// `find*controller` keeps `FindController` and `FindUserController` but, unlike
 /// fuzzy, won't reach into a scattered `FxIxNxDxController`.
 pub(crate) fn has_wildcard(query: &str) -> bool {
-    query.contains(['*', '?'])
+    match query.strip_suffix('?') {
+        // a lone trailing `?` ends a Ruby predicate's name (`empty?`), not a glob
+        Some(body) if !body.contains(['*', '?']) => false,
+        _ => query.contains(['*', '?']),
+    }
 }
 
 /// A wildcard query's literal characters, metachars removed — used to seed the
@@ -731,6 +735,11 @@ fn glob_positions(query: &str, name: &str) -> Option<Vec<usize>> {
             Some(Glob::Lit(c)) if lower[ni] == *c => {
                 positions.push(ni);
                 ti += 1;
+                ni += 1;
+            }
+            // the query's separators were dropped at compile, so the name's are
+            // transparent to a literal too — else `only_up*` never meets `only_uploads`
+            Some(Glob::Lit(_)) if !lower[ni].is_alphanumeric() => {
                 ni += 1;
             }
             Some(Glob::Any) => {
@@ -1414,6 +1423,20 @@ mod tests {
         assert!(total("find*ctrlr", "FindController").is_none());
         // and a name missing a literal segment doesn't match
         assert!(total("find*controller", "FindService").is_none());
+    }
+
+    #[test]
+    fn a_trailing_question_mark_is_a_predicate_name() {
+        assert!(!has_wildcard("empty?"));
+        assert!(has_wildcard("emp?y"));
+        assert!(has_wildcard("emp?y?"));
+        assert!(has_wildcard("find*?"));
+    }
+
+    #[test]
+    fn wildcard_literals_step_over_the_names_separators() {
+        assert!(total("only_up*s", "only_uploads").is_some());
+        assert!(total("onlyup*s", "only_uploads").is_some());
     }
 
     #[test]

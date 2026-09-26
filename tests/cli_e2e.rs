@@ -2139,3 +2139,29 @@ fn search_profile_covers_the_whole_run() {
         "{symbols:?}"
     );
 }
+
+#[test]
+fn a_ruby_predicate_is_found_by_its_full_name() {
+    // `?` ends a Ruby predicate's name; typed in full it must not read as a
+    // one-char wildcard that can never match the name's own `?`
+    let (dir, db) = scratch("predicate");
+    fs::write(
+        dir.join("a.rb"),
+        "class Widget\n  def empty?; end\n  def save!; end\n  def only_uploads?; end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    for q in ["empty?", "Widget#empty?", "save!", "only_uploads?"] {
+        let (ok, out) = rq(&db, &dir, &[q]);
+        assert!(ok && out.contains("a.rb"), "{q}: {out}");
+    }
+    // a `?` inside a query is still a wildcard
+    let (ok, out) = rq(&db, &dir, &["emp?y?"]);
+    assert!(ok && out.contains("empty?"), "glob: {out}");
+    // and a glob crosses the name's `_` the way it ignores the query's
+    let (ok, out) = rq(&db, &dir, &["only_up*s"]);
+    assert!(ok && out.contains("only_uploads?"), "glob over _: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

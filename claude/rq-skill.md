@@ -99,7 +99,8 @@ get results.
 - Repo: results are scoped to the current repo by default; add `-a`/`--all-repos` to
   search every repo you've indexed (a `no_match` means it's absent *here*).
 - Wildcards: `*` (any run) and `?` (one char) — **quote these** so the shell
-  doesn't glob them: `rq 'refund*proc'`. (`::`, `#` and `.` need no quoting.)
+  doesn't glob them: `rq 'refund*proc'`. (`::`, `#` and `.` need no quoting.) A
+  lone trailing `?` is part of the name, so `rq 'empty?'` finds a Ruby predicate.
 
 ```sh
 rq perform -k method app/services --json

@@ -7,7 +7,7 @@ rq — Reference Query
 rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
 rq perform       # → the perform you actually meant, ranked first
 rq usr           # → User              app/models/user.rb:1  (fuzzy, abbreviation-aware)
-rq refund*proc   # → explicit gaps: `*` any run, `?` one char (`.` too, when it isn't a scope)
+rq refund*proc   # → explicit gaps: `*` any run, `?` one char (`.` too, when it isn't a scope; a lone trailing `?` is a Ruby predicate's name)
 rq Account::save # → the save defined inside Account (scope-aware; also Account::Refund)
 rq Account.new   # → Account's constructor (initialize, __init__, constructor)
 rq class Widget  # → a leading kind keyword is shorthand for -k class

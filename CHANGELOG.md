@@ -9,6 +9,12 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Fixed
+- **Ruby predicates are found by their full name.** `rq only_uploads?` read the
+  `?` as a one-char wildcard and missed `only_uploads?`; a lone trailing `?` is
+  now part of the name. Wildcards also step over `_` in names the way they
+  already ignored it in the query, so `rq 'only_up*s'` finds `only_uploads`.
+
 ### Changed
 - **The first search in a repo that isn't indexed yet finds its answer sooner.**
   Files that contain the name you searched for are indexed before the rest.
