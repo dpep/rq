@@ -32,6 +32,11 @@ and aren't listed; see `git log` for those.
   fuzzy match here from being looked for at all (`rq wdgt` missing your
   `Widget` because another repo defines `wdgt`). With eight repos indexed,
   fuzzy searches are also 15–35% faster.
+- **Uncommitted edits no longer make every miss say "still warming".** Any
+  dirty tracked file counted as "changed since indexed", so while you had
+  uncommitted work each search started a background re-index and each miss
+  exited 2 (`warming`) instead of 1 — indefinitely. Now an edit counts only
+  until it's indexed.
 
 ## 0.51.1 — 2026-09-25
 

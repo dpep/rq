@@ -1068,20 +1068,74 @@ pub(crate) fn git_head(root: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Whether the work tree has uncommitted changes to *tracked* files (staged or
-/// unstaged). `--untracked-files=no` skips the work-tree-wide untracked-file
-/// scan — the expensive, cold-cache-sensitive part of `git status` on a large
-/// repo (it walks to classify every path against `.gitignore`). This runs on
-/// every search to gate warming, so the scan dominated query-time variance.
+/// Repo-relative *tracked* files with uncommitted changes (staged or unstaged),
+/// both sides of a rename. `--untracked-files=no` skips the work-tree-wide
+/// untracked-file scan — the expensive, cold-cache-sensitive part of `git
+/// status` on a large repo (it walks to classify every path against
+/// `.gitignore`). This runs on every search to gate warming, so the scan
+/// dominated query-time variance.
 ///
 /// The tradeoff: a brand-new *untracked* file isn't seen as a change here, so it
 /// won't be picked up by the opportunistic warm until it's committed (HEAD moves
 /// → warm) or `rq --index`ed. Tracked edits, the common case, are still caught,
 /// and `git status` still refreshes the index so a touched-but-unchanged file
-/// doesn't read as dirty. Empty stdout (clean) reports as `None` via
-/// `git_output`.
-pub(crate) fn is_dirty(root: &Path) -> bool {
-    git_output(root, &["status", "--porcelain", "--untracked-files=no"]).is_some()
+/// doesn't read as dirty. Empty when git can't say — no evidence of an edit.
+pub(crate) fn dirty_files(root: &Path) -> Vec<String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain", "-z", "--untracked-files=no"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| parse_porcelain_z(&o.stdout))
+        .unwrap_or_default()
+}
+
+/// Paths from `git status --porcelain -z`: one `XY path` entry per file, with
+/// a rename's or copy's source following as an entry of its own. Porcelain
+/// paths are always repo-root-relative, whatever the cwd.
+fn parse_porcelain_z(out: &[u8]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut entries = out.split(|&b| b == 0).filter(|e| e.len() > 3);
+    while let Some(entry) = entries.next() {
+        let (xy, path) = entry.split_at(3);
+        paths.push(String::from_utf8_lossy(path).into_owned());
+        if xy[..2].iter().any(|c| matches!(c, b'R' | b'C'))
+            && let Some(source) = entries.next()
+        {
+            paths.push(String::from_utf8_lossy(source).into_owned());
+        }
+    }
+    paths
+}
+
+/// Whether any of `dirty` differs from what the index holds for it: a source
+/// file whose mtime moved since it was parsed, one indexed but now gone, or
+/// one never indexed. An edit the index already reflects is *not* a change —
+/// the worktree stays dirty until commit, and treating dirty as stale re-warmed
+/// on every query and made every miss read as "still warming".
+pub(crate) fn has_unindexed_edits(
+    store: &Store,
+    repository_id: i64,
+    root: &Path,
+    dirty: &[String],
+) -> bool {
+    dirty.iter().any(|rel| {
+        let ext = Path::new(rel)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        if lang::plugin_for_extension(ext).is_none() {
+            return false; // not something rq indexes
+        }
+        let on_disk = file_mtime(&root.join(rel));
+        match store.file_mtime(repository_id, rel) {
+            Ok(Some(indexed)) => indexed.is_none() || indexed != on_disk,
+            Ok(None) => on_disk.is_some(),
+            Err(_) => true,
+        }
+    })
 }
 
 /// Repo-relative files you're working on this branch: committed changes since
@@ -1368,6 +1422,16 @@ mod tests {
             content_hash("class Foo\nend"),
             content_hash("class Bar\nend")
         );
+    }
+
+    #[test]
+    fn porcelain_z_yields_every_path_including_a_rename_source() {
+        let out = b" M a.rb\0M  lib/b.rb\0R  new.rb\0old.rb\0D  gone.rb\0";
+        assert_eq!(
+            parse_porcelain_z(out),
+            ["a.rb", "lib/b.rb", "new.rb", "old.rb", "gone.rb"]
+        );
+        assert!(parse_porcelain_z(b"").is_empty());
     }
 
     #[test]

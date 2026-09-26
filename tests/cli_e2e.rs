@@ -524,22 +524,61 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
     // the dirty check skips the untracked-file scan for speed: a tracked edit
     // still triggers a warm (so the change is picked up), but a brand-new
     // untracked file is the accepted tradeoff — not seen until committed/indexed
+    // The edit is to a file the search doesn't hit: a top hit is revalidated
+    // before the check runs, so its own edit is already indexed by then.
     let (dir, db) = scratch("dirty-check");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
     git_init_commit(&dir);
     rq(&db, &dir, &["--index"]);
 
-    fs::write(dir.join("a.rb"), "class Widget\n  def go; end\nend\n").unwrap();
+    fs::write(dir.join("c.rb"), "class Gizmo\n  def go; end\nend\n").unwrap();
     assert!(warmed(&db, &dir, "widget"), "tracked edit triggers a warm");
 
     // restore the tracked file to its committed content (tree clean again), then
     // add an untracked file — which the cheaper check intentionally ignores
-    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
     fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
     assert!(
         !warmed(&db, &dir, "widget"),
         "a new untracked file does not trigger a warm (accepted tradeoff)"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
+    // Dirty is not the same as stale: once the edit has been indexed, a search
+    // must neither re-warm on every query nor call a miss "still warming".
+    let (dir, db) = scratch("dirty-indexed");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
+    fs::write(dir.join("README.md"), "docs\n").unwrap();
+    git_init_commit(&dir);
+    fs::write(dir.join("c.rb"), "class Gizmo\n  def go; end\nend\n").unwrap();
+    fs::write(dir.join("README.md"), "edited docs\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    assert!(
+        !warmed(&db, &dir, "widget"),
+        "an indexed edit (and a non-source one) must not re-warm"
+    );
+    let miss = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Nonexistent", "--no-record"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .output()
+        .expect("run rq");
+    assert_eq!(
+        miss.status.code(),
+        Some(1),
+        "a definitive miss, not warming"
+    );
+
+    // a further edit is still seen
+    fs::write(dir.join("c.rb"), "class Gizmo\n  def stop; end\nend\n").unwrap();
+    assert!(warmed(&db, &dir, "widget"), "a new edit still warms");
 
     let _ = fs::remove_dir_all(&dir);
 }

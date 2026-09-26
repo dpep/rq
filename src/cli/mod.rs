@@ -788,7 +788,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let staleness = (!was_warming && warming_ok && !args.batch)
         .then(|| root.clone())
         .flatten()
-        .map(|c| std::thread::spawn(move || worktree_changed(&c, indexed_head.as_deref())));
+        .map(|c| std::thread::spawn(move || worktree_edits(&c, indexed_head.as_deref())));
     // Only a repo that's still warming warms *before* the answer now; a
     // complete-but-edited one is reindexed by `settle_warm` afterwards.
     let want_warm = warming_ok && was_warming && root.is_some();
@@ -1816,18 +1816,37 @@ fn cached_branch_files(
 
 /// Whether the worktree has moved since it was indexed — a different HEAD, or
 /// uncommitted edits. Split out from the store read so this half can run on its
-/// own thread: `is_dirty` forks `git status`, which on a large worktree costs
+/// own thread: `dirty_files` forks `git status`, which on a large worktree costs
 /// more than the search it was gating (measured: 12.6ms of a 16.8ms query on a
 /// 6k-file repo, against 0.1ms on a 54-file one).
 ///
-/// `None` for `indexed_head` means we never recorded one, which counts as
-/// changed — there's nothing to compare against, so assume work is due.
-fn worktree_changed(cwd: &std::path::Path, indexed_head: Option<&str>) -> bool {
-    let Some(head) = indexed_head else {
+/// `None` means HEAD moved — or we never recorded one, so there's nothing to
+/// compare against — and everything counts as changed. Otherwise the dirty
+/// files, for [`changed_since_index`] to check against the index.
+fn worktree_edits(cwd: &std::path::Path, indexed_head: Option<&str>) -> Option<Vec<String>> {
+    let head = indexed_head?;
+    let _span = crate::profile::span("git: worktree changed?");
+    (crate::index::git_head(cwd).as_deref() == Some(head)).then(|| crate::index::dirty_files(cwd))
+}
+
+/// Whether the worktree holds anything the index doesn't yet reflect, given
+/// what [`worktree_edits`] found.
+fn changed_since_index(
+    store: &Store,
+    identity: Option<&str>,
+    root: Option<&std::path::Path>,
+    edits: Option<Vec<String>>,
+) -> bool {
+    let (Some(dirty), Some(root)) = (edits, root) else {
         return true;
     };
-    let _span = crate::profile::span("git: worktree changed?");
-    crate::index::git_head(cwd).as_deref() != Some(head) || crate::index::is_dirty(cwd)
+    if dirty.is_empty() {
+        return false;
+    }
+    match identity.and_then(|id| store.repository_id(id).ok().flatten()) {
+        Some(repo_id) => crate::index::has_unindexed_edits(store, repo_id, root, &dirty),
+        None => true,
+    }
 }
 
 /// Settle warming once the answer is out: collect the staleness check started
@@ -1840,7 +1859,7 @@ fn worktree_changed(cwd: &std::path::Path, indexed_head: Option<&str>) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn settle_warm(
     store: &Store,
-    staleness: Option<std::thread::JoinHandle<bool>>,
+    staleness: Option<std::thread::JoinHandle<Option<Vec<String>>>>,
     was_warming: bool,
     warming_ok: bool,
     root: Option<&std::path::Path>,
@@ -1855,7 +1874,11 @@ fn settle_warm(
     let changed = {
         // the check ran alongside the search; this is only what's left of it
         let mut span = crate::profile::span("after: staleness wait");
-        let changed = staleness.is_some_and(|h| h.join().unwrap_or(true));
+        let changed = staleness.is_some_and(|h| {
+            h.join().map_or(true, |edits| {
+                changed_since_index(store, identity, root, edits)
+            })
+        });
         span.note(|| if changed { "changed" } else { "unchanged" }.to_string());
         changed
     };
@@ -2284,7 +2307,12 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let indexed_head = current.and_then(|id| store.indexed_head(id).ok().flatten());
     let needs_warm = warming_ok
         && (coverage.as_deref() != Some("complete")
-            || worktree_changed(&root, indexed_head.as_deref()));
+            || changed_since_index(
+                &store,
+                Some(&identity),
+                Some(&root),
+                worktree_edits(&root, indexed_head.as_deref()),
+            ));
     if needs_warm {
         // Path-prioritize the warm toward the requested file so it indexes first.
         let budget = answer_warm_budget() + deferred_warm_budget();

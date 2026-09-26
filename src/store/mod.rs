@@ -247,6 +247,15 @@ impl Store {
         Ok(stored.as_deref() == Some(content_hash))
     }
 
+    /// One file's stored mtime: `None` when the file isn't indexed, `Some(None)`
+    /// when it is but was stored without one.
+    pub(crate) fn file_mtime(&self, repository_id: i64, path: &str) -> Result<Option<Option<i64>>> {
+        self.conn
+            .prepare_cached("SELECT mtime FROM files WHERE repository_id = ?1 AND path = ?2")?
+            .query_row(params![repository_id, path], |r| r.get(0))
+            .optional()
+    }
+
     /// Indexed path → stored mtime for a repository. The budgeted warm pass uses
     /// this to skip unchanged files with a cheap `stat` (no read or re-hash).
     pub(crate) fn file_mtimes(&self, repository_id: i64) -> Result<HashMap<String, Option<i64>>> {
