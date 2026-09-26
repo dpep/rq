@@ -10,7 +10,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::core::{RepoIdentity, Symbol, now_unix};
+use crate::core::{Symbol, now_unix};
 
 pub(crate) type Result<T> = rusqlite::Result<T>;
 
@@ -194,7 +194,7 @@ impl Store {
     /// Insert or update a repository, returning its id.
     pub(crate) fn upsert_repository(
         &self,
-        identity: &RepoIdentity,
+        identity: &impl std::fmt::Display,
         default_branch: Option<&str>,
     ) -> Result<i64> {
         let now = now_unix();
@@ -545,6 +545,16 @@ impl Store {
     }
 
     /// Current indexed totals for a repository: (files, symbols).
+    /// Whether a repository has any indexed file — an existence check, where
+    /// [`repo_totals`](Self::repo_totals) would count every symbol to answer it.
+    pub(crate) fn repo_has_files(&self, repository_id: i64) -> Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM files WHERE repository_id = ?1)",
+            params![repository_id],
+            |r| r.get(0),
+        )
+    }
+
     pub(crate) fn repo_totals(&self, repository_id: i64) -> Result<(i64, i64)> {
         self.conn.query_row(
             "SELECT (SELECT COUNT(*) FROM files WHERE repository_id = ?1),
@@ -1199,7 +1209,7 @@ fn trigram_or_query(q: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Kind;
+    use crate::core::{Kind, RepoIdentity};
 
     #[test]
     fn branch_files_round_trip() {

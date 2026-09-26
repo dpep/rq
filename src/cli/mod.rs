@@ -2127,7 +2127,11 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let identity = crate::index::detect_identity(&cwd).to_string();
+    // cache-first: an editor hook calls this on every open, so no `git remote`
+    let identity = resolve_identity(
+        &store,
+        &crate::index::repo_root(&cwd).unwrap_or_else(|| cwd.clone()),
+    );
     let repo_id = store.repository_id(&identity).ok().flatten();
 
     // Store the path repo-relative so the rollup can resolve it against indexed
@@ -2723,10 +2727,10 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
     drop(open_span);
-    let identity_span = crate::profile::span("git: identity");
-    let identity = crate::index::detect_identity(&root).to_string();
-    drop(identity_span);
     let indexed = crate::index::index_under(&mut store, &root, &subdirs);
+    // After the index, which has just recorded this checkout's identity — so
+    // this is a cache hit rather than a second `git remote` fork.
+    let identity = resolve_identity(&store, &root);
     match indexed {
         Ok(stats) => {
             let subtree = !subdirs.is_empty();

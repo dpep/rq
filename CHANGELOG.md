@@ -18,6 +18,12 @@ and aren't listed; see `git log` for those.
 - **Searches return sooner on large repos.** A hit no longer waits for a
   `git status` over the whole worktree before exiting; the background warm
   asks instead. Rails: ~15 ms → ~5 ms; a 14k-file repo: ~32 ms → ~10 ms.
+- **Fewer `git` processes when indexing.** The background warm reuses the
+  repo identity it already knows, the branch is read from `.git/HEAD`, and a
+  non-git directory never asks git for a remote. A no-op `rq --index` on rails
+  is ~56 ms (was ~66); the warm after an edit ~35 ms (was ~47). `rq --index`
+  still asks git for the remote, so it remains how a checkout picks up a newly
+  added one.
 - **`--profile` covers the whole run.** `total` now runs to process exit, a
   `first answer` row marks when results were printed, and the work after it
   (usage rollup, the worktree check) has its own rows. Misses, `--symbols` and

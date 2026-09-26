@@ -464,10 +464,21 @@ fn run_index(
     let profiling = crate::profile::enabled();
     PARSE_US.store(0, std::sync::atomic::Ordering::Relaxed);
     let setup_span = crate::profile::span("index: setup");
-    let identity = detect_identity(root);
-    let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
-    let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
     let root_display = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // A budgeted warm (the background child, run after searches) reads the
+    // identity cached by checkout root, as the search path does. An explicit
+    // index asks git: it's how a checkout relearns who it is after a remote
+    // is added or changed.
+    let identity = budget
+        .and_then(|_| {
+            store
+                .identity_for_root(&root_display.to_string_lossy())
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_else(|| detect_identity(root).to_string());
+    let branch = head_branch(root);
+    let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
     store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
 
     // Registering the current root guarantees a live checkout, so prune any
@@ -693,10 +704,9 @@ fn run_index(
     // Never persist "complete" for an empty index: a zero-file complete is almost
     // by definition wrong (a failed enumeration), and warm-skip would then strand
     // the repo at zero. Keep it "warming" so the next query keeps polling for
-    // files to index. Counts the repo's *total* indexed files, not this run's —
-    // a warm of an already-indexed repo re-parses nothing yet isn't empty.
-    let total_files = store.repo_totals(repo_id).map(|(f, _)| f).unwrap_or(0);
-    let status = if status == "complete" && total_files == 0 {
+    // files to index. Asks about the repo's *total* indexed files, not this
+    // run's — a warm of an already-indexed repo re-parses nothing yet isn't empty.
+    let status = if status == "complete" && !store.repo_has_files(repo_id).unwrap_or(false) {
         "warming"
     } else {
         status
@@ -1213,7 +1223,9 @@ pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
 fn head_branch(root: &Path) -> Option<String> {
     let git_dir = root.join(".git");
     if !git_dir.is_dir() {
-        return git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        return is_git_repo(root)
+            .then(|| git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]))
+            .flatten();
     }
     let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let branch = head.trim().strip_prefix("ref: refs/heads/")?;
@@ -1319,8 +1331,17 @@ pub(crate) fn pushed_head(root: &Path) -> Option<String> {
 }
 
 /// Best-effort repository identity: upstream git remote, else the local path.
+/// Outside a work tree there's no remote to ask about, so no `git` is forked.
 pub(crate) fn detect_identity(root: &Path) -> RepoIdentity {
-    for remote in ["origin", "upstream"] {
+    // `git remote get-url` rather than reading `.git/config`: git applies
+    // `url.*.insteadOf` rewrites, and an identity that disagreed with git's
+    // would re-key an existing index.
+    let remotes = if is_git_repo(root) {
+        &["origin", "upstream"][..]
+    } else {
+        &[]
+    };
+    for remote in remotes {
         if let Some(url) = git_output(root, &["remote", "get-url", remote])
             && let Some(id) = RepoIdentity::from_remote_url(&url)
         {
