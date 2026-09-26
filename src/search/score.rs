@@ -205,12 +205,7 @@ pub(crate) fn score(
     } else {
         // no name match: a path hit only surfaces a file's primary definitions
         match path_match {
-            Some(ps)
-                if matches!(
-                    cand.kind.as_str(),
-                    "class" | "module" | "struct" | "enum" | "trait"
-                ) =>
-            {
+            Some(ps) if is_primary_kind(&cand.kind) => {
                 features.push(Feature {
                     name: "path",
                     value: (ps * 0.6).min(300.0),
@@ -663,6 +658,33 @@ fn contiguous_highlight(positions: Vec<usize>, name: &str) -> Vec<usize> {
         i = j + 1;
     }
     out
+}
+
+/// The kinds a path match alone can surface: a file's primary definitions.
+fn is_primary_kind(kind: &str) -> bool {
+    matches!(kind, "class" | "module" | "struct" | "enum" | "trait")
+}
+
+/// Could [`score`] match this candidate at all? Recall asks before decoding a
+/// row, so this must hold for everything `score` accepts — widen it with any
+/// new way to match. Every branch needs the query's letters in order in the
+/// name (exact, prefix, fuzzy, glob), or in the file name for a primary
+/// definition, or a near miss. `recall` is the leaf recall searched for, with
+/// any wildcards stripped.
+pub(crate) fn could_match(query: &str, recall: &str, name: &str, kind: &str, file: &str) -> bool {
+    in_order(recall, name)
+        || (is_primary_kind(kind) && in_order(recall, path_stem(file)))
+        || near_miss_possible(query, name)
+}
+
+/// [`align`]'s gate: the query's letters and digits, in order, anywhere in `s`.
+fn in_order(query: &str, s: &str) -> bool {
+    let mut hay = s.chars().map(|c| c.to_ascii_lowercase());
+    query
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .all(|q| hay.any(|c| c == q))
 }
 
 /// Score `query` as a subsequence of `name` (the best alignment's score), or

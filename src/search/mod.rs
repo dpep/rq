@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::core::now_unix;
-use crate::store::{Store, SymbolRow};
+use crate::store::{CandidateFilter, Store, SymbolRow};
 
 /// Per-layer cap on candidates pulled from the store before ranking. Exact and
 /// prefix matches are guaranteed in full (see `Store::search_candidates`); this
@@ -263,11 +263,18 @@ fn search_query(
         CANDIDATE_LIMIT,
         score::has_wildcard(leaf),
         only_repo,
+        Some(could_match(query, recall)),
     )?;
     // `Foo.new` runs a constructor the store knows by another name
     if qualifier.is_some() && leaf.eq_ignore_ascii_case("new") {
         for name in crate::lang::constructors() {
-            candidates.extend(store.search_candidates(name, CANDIDATE_LIMIT, false, only_repo)?);
+            candidates.extend(store.search_candidates(
+                name,
+                CANDIDATE_LIMIT,
+                false,
+                only_repo,
+                Some(could_match(name, name)),
+            )?);
         }
     }
     let n_candidates = candidates.len();
@@ -340,6 +347,13 @@ fn search_query(
         );
     }
     Ok(Matches { hits, total })
+}
+
+/// Recall's filter for `query`: [`score::could_match`], owning its strings so
+/// the store can hand it to SQLite.
+fn could_match(query: &str, recall: &str) -> CandidateFilter {
+    let (query, recall) = (query.to_string(), recall.to_string());
+    Box::new(move |name, kind, file| score::could_match(&query, &recall, name, kind, file))
 }
 
 /// Where the *unqualified* name lives, when a query named a scope and nothing
@@ -664,6 +678,91 @@ mod tests {
             .replace_file_symbols(repo, "app/x.rb", "ruby", None, "h", symbols)
             .unwrap();
         store
+    }
+
+    #[test]
+    fn the_recall_filter_keeps_everything_the_scorer_would_accept() {
+        // One shape per way `score` can match: letters in order, a primary
+        // definition named only by its file, a transposition, a glob, a scope,
+        // a sigil, non-ASCII.
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/x"), None)
+            .unwrap();
+        let files = [
+            (
+                "lib/connection_pool.rb",
+                vec![
+                    sym("ConnectionPool", Kind::Class),
+                    sym("Base", Kind::Module),
+                    sym("checkout", Kind::Method),
+                ],
+            ),
+            (
+                "lib/widget_controller.rb",
+                vec![sym("Widgets", Kind::Class), sym("render", Kind::Method)],
+            ),
+            (
+                "lib/user.rb",
+                vec![
+                    sym("User", Kind::Class),
+                    sym("_private_user", Kind::Method),
+                    sym("Überuser", Kind::Class),
+                    sym("select", Kind::Method),
+                    sym("Scheduler", Kind::Class),
+                    sym("consolidate_all", Kind::Method),
+                ],
+            ),
+        ];
+        for (file, syms) in &files {
+            store
+                .replace_file_symbols(repo, file, "ruby", None, "h", syms)
+                .unwrap();
+        }
+        let boosts = || Boosts {
+            recency: 0.0,
+            branch: 0.0,
+        };
+        let queries = [
+            "conpool",
+            "usr",
+            "sleect",
+            "widgetcontroller",
+            "con*pool",
+            "Base::chckout",
+            "Über",
+            "privuser",
+            "zzz",
+        ];
+        for query in queries {
+            let leaf = score::parse_qualified(query).0;
+            let recall = score::strip_wildcards(leaf);
+            // forced, so the fuzzy layers run even where a prefix matched
+            let all = store
+                .search_candidates(&recall, 1000, true, None, None)
+                .unwrap();
+            let kept = store
+                .search_candidates(&recall, 1000, true, None, Some(could_match(query, &recall)))
+                .unwrap();
+            for near_miss in [false, true] {
+                let accepted =
+                    |cands: &[SymbolRow]| -> std::collections::BTreeSet<(String, String)> {
+                        cands
+                            .iter()
+                            .filter(|c| score::score(query, c, None, boosts(), near_miss).is_some())
+                            .map(|c| (c.file.clone(), c.name.clone()))
+                            .collect()
+                    };
+                assert_eq!(
+                    accepted(&all),
+                    accepted(&kept),
+                    "{query} (near miss: {near_miss})"
+                );
+            }
+            if query == "conpool" {
+                assert!(kept.len() < all.len(), "the filter narrows recall");
+            }
+        }
     }
 
     fn names(hits: &[Hit]) -> Vec<&str> {

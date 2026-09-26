@@ -49,6 +49,10 @@ const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
 
+/// Given a candidate row's name, kind and file, could it match at all? Recall
+/// runs this inside SQLite so the rows that can't are never decoded.
+pub(crate) type CandidateFilter = Box<dyn Fn(&str, &str, &str) -> bool + Send>;
+
 /// A handle to the rq database.
 pub(crate) struct Store {
     conn: Connection,
@@ -815,6 +819,12 @@ impl Store {
     /// trigram FTS, path). Ranking happens in `crate::search`; this only narrows
     /// the field.
     ///
+    /// `filter` narrows the broad fuzzy layers. They are loose nets — a shared
+    /// first letter, a shared trigram — and most of what they catch can't
+    /// match; rejecting those inside SQLite means they're never decoded. It
+    /// runs within the rows each net's cap takes, so it changes what recall
+    /// costs, never what it returns to the scorer.
+    ///
     /// When `force_fuzzy` is false and exact/prefix already matched, the broad
     /// fuzzy layers are skipped: the relevance gate drops every fuzzy candidate
     /// once a strong (exact/prefix) hit exists, so fetching and scoring them is
@@ -831,22 +841,25 @@ impl Store {
         limit: usize,
         force_fuzzy: bool,
         repo: Option<i64>,
+        filter: Option<CandidateFilter>,
     ) -> Result<Vec<SymbolRow>> {
         use rusqlite::types::Value;
         let q = query.to_ascii_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
         let limit = Value::Integer(limit as i64);
-        // Run one layer. `filter` holds the layer's own placeholders; the repo
-        // scope is bound after them, as the next numbered one.
+        // The repo scope, bound after a layer's own placeholders as the next
+        // numbered one.
+        let scope = |args: &mut Vec<Value>| match repo {
+            Some(id) => {
+                args.push(Value::Integer(id));
+                format!(" AND s.repository_id = ?{}", args.len())
+            }
+            None => String::new(),
+        };
+        // Run one layer. `filter` holds the layer's own placeholders.
         let fetch =
             |from: &str, filter: &str, mut args: Vec<Value>| -> Result<Vec<(i64, SymbolRow)>> {
-                let scope = match repo {
-                    Some(id) => {
-                        args.push(Value::Integer(id));
-                        format!(" AND s.repository_id = ?{}", args.len())
-                    }
-                    None => String::new(),
-                };
+                let scope = scope(&mut args);
                 args.push(limit.clone());
                 let sql = format!(
                     "SELECT {CANDIDATE_COLS} {from} WHERE {filter}{scope} LIMIT ?{}",
@@ -884,6 +897,44 @@ impl Store {
             return Ok(found.into_values().collect());
         }
 
+        // Registered per search: the filter closes over this query. Redefining
+        // a function expires the statements that use it, so the cached ones
+        // re-prepare — cheap next to the rows it saves decoding.
+        let keep = match filter {
+            Some(filter) => {
+                use rusqlite::functions::FunctionFlags;
+                self.conn.create_scalar_function(
+                    "rq_keep",
+                    3,
+                    FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+                    move |ctx| {
+                        let text = |i| ctx.get_raw(i).as_str().unwrap_or_default();
+                        Ok(filter(text(0), text(1), text(2)))
+                    },
+                )?;
+                " WHERE rq_keep(s.name, s.kind, fi.path)"
+            }
+            None => "",
+        };
+        // Run one broad net. The subquery takes the rows the cap always took;
+        // `keep` then decides which of those are worth decoding.
+        let fetch_net =
+            |net: &str, filter: &str, mut args: Vec<Value>| -> Result<Vec<(i64, SymbolRow)>> {
+                let scope = scope(&mut args);
+                args.push(limit.clone());
+                let sql = format!(
+                    "SELECT {CANDIDATE_COLS} FROM \
+                       (SELECT s.id FROM {net} WHERE {filter}{scope} LIMIT ?{}) w \
+                     JOIN symbols s ON s.id = w.id \
+                     JOIN files fi ON fi.id = s.file_id \
+                     JOIN repositories r ON r.id = s.repository_id{keep}",
+                    args.len()
+                );
+                let mut stmt = self.conn.prepare_cached(&sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(args), row_to_candidate)?;
+                rows.collect()
+            };
+
         // fuzzy recall (a): first-character anchor (index-backed scan) for short
         // skip-abbreviations like `usr → user` that prefix matching can't reach;
         // the scorer filters and ranks. Best-effort under the cap — exact and
@@ -899,8 +950,8 @@ impl Store {
             .filter(|_| q.chars().count() <= FIRST_CHAR_ANCHOR_MAX)
         {
             let anchor = first.to_string();
-            for (id, cand) in fetch(
-                CANDIDATE_FROM,
+            for (id, cand) in fetch_net(
+                "symbols s",
                 "s.name_lower >= ?1 AND s.name_lower < ?2",
                 vec![text(&anchor), text(&prefix_upper_bound(&anchor))],
             )? {
@@ -910,11 +961,11 @@ impl Store {
 
         // fuzzy recall (b): trigram FTS (OR of the query's trigrams).
         if let Some(match_expr) = trigram_or_query(&q) {
-            let from = "FROM symbols_fts f \
-                 JOIN symbols s ON s.id = f.rowid \
-                 JOIN files fi ON fi.id = s.file_id \
-                 JOIN repositories r ON r.id = s.repository_id";
-            for (id, cand) in fetch(from, "symbols_fts MATCH ?1", vec![text(&match_expr)])? {
+            for (id, cand) in fetch_net(
+                "symbols_fts f JOIN symbols s ON s.id = f.rowid",
+                "symbols_fts MATCH ?1",
+                vec![text(&match_expr)],
+            )? {
                 found.entry(id).or_insert(cand);
             }
         }
@@ -1201,7 +1252,9 @@ mod tests {
         let times = HashMap::from([("a.rb".to_string(), 1_700_000_000_i64)]);
         store.set_file_git_ts(repo, &times).unwrap();
 
-        let cands = store.search_candidates("foo", 10, false, None).unwrap();
+        let cands = store
+            .search_candidates("foo", 10, false, None, None)
+            .unwrap();
         assert_eq!(cands[0].git_ts, Some(1_700_000_000));
     }
 

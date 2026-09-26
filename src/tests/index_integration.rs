@@ -78,7 +78,7 @@ fn commit_times_capture_survives_incremental_reindex() {
 
     let ts_of = |name: &str| {
         store
-            .search_candidates(name, 10, false, None)
+            .search_candidates(name, 10, false, None, None)
             .unwrap()
             .into_iter()
             .find(|c| c.name.to_lowercase() == name)

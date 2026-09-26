@@ -33,7 +33,9 @@ fn exact_match_survives_a_flooded_first_char_bucket() {
         .replace_file_symbols(repo, "a.rs", "rust", None, "h", &syms)
         .unwrap();
 
-    let cands = store.search_candidates("mango", 5, false, None).unwrap();
+    let cands = store
+        .search_candidates("mango", 5, false, None, None)
+        .unwrap();
     assert!(
         cands.iter().any(|c| c.name == "mango"),
         "exact match dropped by the cap; got {:?}",
@@ -63,14 +65,18 @@ fn a_strong_match_short_circuits_the_broad_fuzzy_layers() {
         )
         .unwrap();
 
-    let strong_only = store.search_candidates("user", 50, false, None).unwrap();
+    let strong_only = store
+        .search_candidates("user", 50, false, None, None)
+        .unwrap();
     assert!(strong_only.iter().any(|c| c.name == "User"), "prefix kept");
     assert!(
         !strong_only.iter().any(|c| c.name == "Peruser"),
         "fuzzy-only candidate skipped when a strong match exists"
     );
 
-    let forced = store.search_candidates("user", 50, true, None).unwrap();
+    let forced = store
+        .search_candidates("user", 50, true, None, None)
+        .unwrap();
     assert!(
         forced.iter().any(|c| c.name == "Peruser"),
         "force_fuzzy still recalls the fuzzy candidate"
@@ -100,7 +106,7 @@ fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
         .unwrap();
 
     let cands = store
-        .search_candidates("widget", 5, false, Some(here))
+        .search_candidates("widget", 5, false, Some(here), None)
         .unwrap();
     let names: Vec<&str> = cands.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(

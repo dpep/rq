@@ -364,3 +364,94 @@ medians +10 to +110 ms. Explicit `rq --index` is unchanged (discourse 2.40 → 2
 read, not the order, is the cost, and a persisted content index or `git grep` is the
 lever; or fuzzy-query waits on a cold huge repo draw complaints, which interleaving the
 two tiers would address.
+
+## D12 — Fuzzy recall filter: adopted inside the cap. Widening the cap: not yet
+
+**Adopted**, 2026-09-26. Rails (51k symbols) and discourse (73k) in one index, searched
+repo-scoped; release build, shared machine (load 5–15, so every number is interleaved
+against the baseline in the same run).
+
+*Harness.* 2,372 fuzzy queries: 58 hand-picked, the rest derived from 440 randomly
+sampled real names (word-prefix abbreviations, dropped vowels, adjacent transpositions,
+globs), kept only if nothing matches by exact or prefix, so every one reaches the fuzzy
+layers. The oracle is today's top 10. Each derived query also has a ground truth, the
+name it came from.
+
+*Where the time went.* The two broad nets (first-letter range, trigram OR) hand the
+scorer everything they catch, up to the 8,000 cap: a median of 3,784 rows, of which
+`align`'s first check rejects nearly all. Walking the net is cheap (FTS postings plus a
+symbols seek are ~3 ms for `conpool`). The cost is decoding each row, joining its file
+and repo, and allocating it (D2's ~1 µs a row).
+
+*What was built.* `score::could_match(name, kind, file)` is a necessary condition for
+`score` to accept a row: the query's letters in order in the name, or in the file stem
+for a primary kind, or a possible near miss. Recall registers it as a SQLite function
+and applies it to the rows each net's cap already takes, so rejects are never decoded.
+It is spelled once, next to the match chain. A test checks that the filter keeps
+everything `score` accepts, on both passes, and it fails if either route is dropped.
+
+| 35 queries, 21 reps | today | filtered |
+|---|---|---|
+| query phase (recall+score+sort), median | 10.3 ms | 6.9 ms |
+| query phase, p90 | 16.6 | 10.7 |
+| score | 1.8 | 0.4 |
+| first answer, median | 12.3 | 9.2 |
+| candidates scored | 3,784 | 322 |
+
+Output is byte-identical on all 2,372 queries, both the top 10 and `--limit 0`. The
+largest nets are faster too (`tescon`, `testag`: first answer −20 to −35%). The exact
+path never reaches the filter and is unchanged. Cold cache was not measured, since
+purging the page cache needs root. The filter reads the same symbol pages, so a cold
+run should gain less.
+
+*Measured, not adopted: widening the cap.* The cap truncates in the net's own order
+(rowid for FTS, name for the first letter), before anything is scored. Net sizes are a
+median of 5.9k rows, p90 22.8k and max 40.5k; 913 of the 2,372 queries (38%) exceed
+8,000. With the filter in place, a wider window costs a fraction of what it used to:
+
+| window | source ranks #1 | in top 10 | found at all |
+|---|---|---|---|
+| 8k (today) | 39.6% | 58.2% | 67.8% |
+| 16k | 45.2 | 64.8 | 76.5 |
+| 24k | 48.5 | 68.4 | 80.3 |
+| 32k (= unbounded here) | 48.8 | 68.7 | 80.6 |
+
+At 32k, 254 queries that answer nothing today find a match, often the obvious one:
+`test_floa_tlimits` → `test_float_limits`, and `newconnection` reaches the
+separator-exact `new_connection`. Held back for three reasons:
+- About a fifth of fuzzy top-10s change, which makes it a ranking decision.
+- The source falls out of the top 10 for 3 queries and off #1 for 4, against ~218 that
+  newly rank it first.
+- The largest nets cost more (`tescon` first answer +47% at load ~13; worst-case set
+  +15%), though still under a constant ceiling.
+
+A complete net also exposes two ranking weaknesses. The typo retry fires only when
+every first-pass hit scores ≤ 0, so `sleect` → `Select` worked today only because the
+truncated net held nothing positive. And scattered cross-word fuzzy matches rank
+(`testag` → `ActiveStorage`).
+
+*Rejected:*
+- **First letter as the only net** (the anchor already takes a letter range for ≤ 6
+  chars). 8% of queries have a top-1 that starts elsewhere, and 28% have one in the top
+  10: `aicreator` → `PostActionCreator`, `iman` → `SiteIconManager`. Names led by a
+  sigil are rare (9 of ~10k top-10 hits).
+- **A standalone subsequence scan** (`name LIKE '%u%s%r%'` over the repo). ~7 ms on
+  discourse, ~95 ns a row, linear in repo size, which gives up D3's constant ceiling. A
+  char-set bitmask column has the same shape, plus a migration.
+- **`LIKE` in SQL instead of the scorer's gate.** Strict, it drops path-only hits (131
+  top-10 hits across 83 queries come from a class named only by its file). With a
+  primary-kind hatch it keeps every class in the net (1,320 against 304 candidates for
+  `conpool`), which gives back half the win. It also spells the gate twice.
+- **Filtering in Rust on borrowed columns.** Each rejected row still pays SQLite's
+  joins and column reads: `twdl` recall 14 → 24 ms.
+- **A stem-in-order path layer plus a dedicated near-miss net.** These reach candidates
+  no net reaches today. `sleect` found `IsolatedExecutionState` by its file name, which
+  suppressed the retry that finds `Select`, and displaced top-10s doubled.
+
+*Lead, not chased:* since every search now records usage (0.52.0), about 9% of
+searches in both builds spend 5–15 ms in `record usage`, before the first answer.
+
+*Reverses if:* a new way to match can't be decided from name, kind and file (then the
+filter can't be a necessary condition); or per-search function registration shows up
+in a profile. The window widening is worth revisiting once the retry trigger and
+scattered-match ranking are addressed, since that would make it a pure relevance win.

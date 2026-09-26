@@ -87,9 +87,12 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       demand-first tier above, then walk order. The heap, git-recency and
       neighbor-expansion signals are not planned — see D11 for the numbers, and
       [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md) for the original design
-- [ ] cheaper fuzzy pre-filter — the substring pre-filter is blind to
-      abbreviations (`usr`↛`user`). A loose, recall-preserving narrowing (even
-      ~50%) would speed cold fuzzy scans without the full unfiltered fallback
+- [x] cheaper fuzzy pre-filter — the scorer's in-order/stem/near-miss gate
+      runs inside SQLite on each capped net, scoring ~10× fewer rows with
+      identical results (D12)
+- [ ] widen the fuzzy nets' cap — the 8k cap truncates 38% of fuzzy queries'
+      nets before scoring; a 32k window lifts "source ranks #1" from 40% to 49%.
+      Waits on the typo-retry trigger and scattered-match ranking (D12)
 
 Exit criteria met: search works at 0%, partial, and 100% coverage; the user
 doesn't have to know which layer answered.

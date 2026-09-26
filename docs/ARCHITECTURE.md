@@ -185,6 +185,9 @@ Decisions worth calling out:
 
 - **Trigram FTS5** narrows millions of symbols to a small candidate set before
   any expensive scoring runs — the answer to "fuzzy + millions + 50 ms".
+  Within each capped net, the scorer's own necessary condition
+  (`score::could_match`, registered as a SQLite function) drops rows that
+  can't match before they're decoded (D12).
 - **`content_hash`** detects staleness so partial/old indexes don't silently
   point at moved lines.
 - **`coverage`** lets search know its own confidence and decide whether to
