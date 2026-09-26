@@ -10,7 +10,7 @@ pub(crate) const VERSION: i64 = 12;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
-/// bulk index drops and recreates it around a rebuild) and is applied alongside
+/// bulk index drops it and recreates it once its rows are indexed) and is applied alongside
 /// this on a fresh database.
 pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE repositories (
@@ -284,8 +284,8 @@ pub(crate) const MIGRATIONS: [(i64, &str); 11] = [
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]
 /// on a fresh database. A cold bulk index drops this trigger, inserts symbols
-/// without per-row FTS maintenance, rebuilds the FTS index in one pass, then
-/// recreates it from here.
+/// without per-row FTS maintenance, indexes the rows FTS is missing in one
+/// pass, then recreates it from here.
 pub(crate) const FTS_INSERT_TRIGGER: &str = r#"
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);

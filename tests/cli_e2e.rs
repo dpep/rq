@@ -208,9 +208,9 @@ fn a_wildcard_bridges_an_explicit_gap() {
 
 #[test]
 fn cold_index_builds_a_working_fuzzy_index() {
-    // a cold `--index` defers per-row FTS and rebuilds the trigram index in bulk;
-    // a mid-word substring (not a prefix of the name) only resolves through that
-    // FTS recall, so this proves the bulk rebuild produced a usable index
+    // a cold `--index` defers per-row FTS and indexes its rows in bulk at the
+    // end; a mid-word substring (not a prefix of the name) only resolves
+    // through that FTS recall, so this proves the bulk pass produced a usable index
     let (dir, db) = scratch("coldfts");
     fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
     let (ok, out) = rq(&db, &dir, &["--index"]);

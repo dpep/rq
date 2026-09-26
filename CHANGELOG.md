@@ -24,6 +24,10 @@ and aren't listed; see `git log` for those.
   is ~56 ms (was ~66); the warm after an edit ~35 ms (was ~47). `rq --index`
   still asks git for the remote, so it remains how a checkout picks up a newly
   added one.
+- **Indexing a new repo no longer re-indexes every other repo's names.** The
+  first `rq --index` of a repo rebuilt the fuzzy-search index for the whole
+  database; now it adds only what's missing. A 2k-symbol repo into a 176k-symbol
+  database: ~313 ms → ~109 ms.
 - **`--profile` covers the whole run.** `total` now runs to process exit, a
   `first answer` row marks when results were printed, and the work after it
   (usage rollup, the worktree check) has its own rows. Misses, `--symbols` and

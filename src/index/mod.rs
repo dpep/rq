@@ -497,8 +497,8 @@ fn run_index(
     let mut seen: HashSet<String> = HashSet::new();
 
     // A cold, unbounded index (no prior coverage, the explicit `rq --index`)
-    // suspends per-row FTS maintenance and rebuilds the trigram index in one bulk
-    // pass at the end — the per-row trigger is ~70% of the write cost. Scoped to
+    // suspends per-row FTS maintenance and indexes its rows in one bulk pass at
+    // the end — the per-row trigger is ~70% of the write cost. Scoped to
     // the cold full path so incremental re-index and budgeted warming (which may
     // run concurrently and only touch a few files) keep the per-row trigger.
     let bulk_fts = budget.is_none() && stored.is_empty();
@@ -506,11 +506,11 @@ fn run_index(
         store.defer_fts_insert()?;
     } else if store.fts_trigger_missing().unwrap_or(false) {
         // A cold bulk index elsewhere dropped the trigger — either it crashed
-        // before its rebuild, or it's still running. Heal before writing more
-        // rows: the rebuild re-syncs FTS from the symbols table and restores
-        // the trigger (a live bulk then pays per-row cost for its remainder —
-        // rare overlap, and its own rebuild at the end is a harmless no-op).
-        let _ = store.rebuild_fts();
+        // before its sync, or it's still running. Heal before writing more
+        // rows: the sync indexes what the trigger missed and restores it (a
+        // live bulk then pays per-row cost for its remainder — rare overlap,
+        // and its own sync at the end finds nothing left to add).
+        let _ = store.sync_fts();
     }
 
     // Active (branch) files first: always parsed and written, so the working set
@@ -632,9 +632,9 @@ fn run_index(
         );
     }
     if bulk_fts {
-        let t = crate::trace::Timer::start("fts bulk rebuild");
-        let _span = crate::profile::span("index: fts rebuild");
-        store.rebuild_fts()?;
+        let t = crate::trace::Timer::start("fts bulk sync");
+        let _span = crate::profile::span("index: fts sync");
+        store.sync_fts()?;
         drop(t);
     }
     files_indexed += walk_files;
