@@ -366,7 +366,7 @@ read, not the order, is the cost, and a persisted content index or `git grep` is
 lever; or fuzzy-query waits on a cold huge repo draw complaints, which interleaving the
 two tiers would address.
 
-## D12 — Fuzzy recall filter: adopted inside the cap. Widening the cap: not yet
+## D12 — Fuzzy recall filter: adopted, then a 4× window for the filtered nets
 
 **Adopted**, 2026-09-26. Rails (51k symbols) and discourse (73k) in one index, searched
 repo-scoped; release build, shared machine (load 5–15, so every number is interleaved
@@ -405,7 +405,7 @@ path never reaches the filter and is unchanged. Cold cache was not measured, sin
 purging the page cache needs root. The filter reads the same symbol pages, so a cold
 run should gain less.
 
-*Measured, not adopted: widening the cap.* The cap truncates in the net's own order
+*Widening the cap: adopted as its own change.* The cap truncates in the net's own order
 (rowid for FTS, name for the first letter), before anything is scored. Net sizes are a
 median of 5.9k rows, p90 22.8k and max 40.5k; 913 of the 2,372 queries (38%) exceed
 8,000. With the filter in place, a wider window costs a fraction of what it used to:
@@ -419,17 +419,37 @@ median of 5.9k rows, p90 22.8k and max 40.5k; 913 of the 2,372 queries (38%) exc
 
 At 32k, 254 queries that answer nothing today find a match, often the obvious one:
 `test_floa_tlimits` → `test_float_limits`, and `newconnection` reaches the
-separator-exact `new_connection`. Held back for three reasons:
-- About a fifth of fuzzy top-10s change, which makes it a ranking decision.
-- The source falls out of the top 10 for 3 queries and off #1 for 4, against ~218 that
-  newly rank it first.
-- The largest nets cost more (`tescon` first answer +47% at load ~13; worst-case set
-  +15%), though still under a constant ceiling.
+separator-exact `new_connection`. The filtered nets now read `NET_WINDOW` (4×) past
+the cap.
 
-A complete net also exposes two ranking weaknesses. The typo retry fires only when
-every first-pass hit scores ≤ 0, so `sleect` → `Select` worked today only because the
-truncated net held nothing positive. And scattered cross-word fuzzy matches rank
-(`testag` → `ActiveStorage`).
+A complete net exposed two ranking weaknesses that the truncated one had hidden, so
+the window waited for their fixes: the typo retry's trigger (D14) and letters
+matched before a word start (D15). With both in, against today:
+
+| | source #1 | top 10 | found |
+|---|---|---|---|
+| today | 39.6% | 58.2% | 67.8% |
+| D14 + D15 + window | 49.0% | 69.3% | 81.5% |
+
+Of 2,314 sources, 379 move up and 84 down. Six lose #1 and three the top 10. They
+are either genuinely ambiguous or decided by a deliberate rule:
+- **Ambiguous.** `teswri` has `test_write` and `test_writer`. `scorse_for` and
+  `twedele` are covered in D14. For `loatest`, `load_tests` (fuzzy 161) edges
+  `LoadingTest` (154). For `tesm`, `TestMailer` is a fair reading of four letters.
+  For `causch`, `canUseChat` and `CreateUserChat…` are both two-letter
+  abbreviations of three words.
+- **The test-path rule.** For `dectest`, `tes*red` and `tes*und`, the source lives
+  in a test file. Once the net holds any non-test match, the −400 test-path penalty
+  ranks it first, as that penalty intends. A truncated net used to hold only test
+  candidates. *Rejected:* making the penalty a share of the match (0.4 × the match
+  value, still 400 at exact). The aggregate rose (#1 49.8%), but test definitions
+  flooded fuzzy results: 10 queries lost #1 and 10 the top 10. The flat cliff is
+  doing real work.
+
+Cost, at load ~7 over 15 reps: the typical query keeps most of the filter's win
+(query phase median 10.3 → 7.7 ms, p90 24.7 → 13.8; 7.1 ms without the window). The
+largest nets pay: the worst-case set's query phase is +25% against today, with p90
+32 → 49 ms. It stays a constant ceiling, which keeps D3's property.
 
 *Rejected:*
 - **First letter as the only net** (the anchor already takes a letter range for ≤ 6
@@ -456,8 +476,8 @@ wrong.
 
 *Reverses if:* a new way to match can't be decided from name, kind and file (then the
 filter can't be a necessary condition); or per-search function registration shows up
-in a profile. The window widening is worth revisiting once the retry trigger and
-scattered-match ranking are addressed, since that would make it a pure relevance win.
+in a profile. The window reverses if the largest nets' cost starts to matter more
+than their recall: first answers near the 50 ms budget on real use.
 
 ## D13 — The usage write after the answer: adopted. The lock was never contended
 

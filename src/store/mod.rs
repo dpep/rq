@@ -49,6 +49,12 @@ const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
 
+/// How many rows a filtered fuzzy net reads for each one its cap can keep. A
+/// rejected row costs little once the filter runs in SQLite, so the net looks
+/// further before the cap cuts it off; 4× covered the largest nets measured
+/// (D12).
+const NET_WINDOW: usize = 4;
+
 /// Given a candidate row's name, kind and file, could it match at all? Recall
 /// runs this inside SQLite so the rows that can't are never decoded.
 pub(crate) type CandidateFilter = Box<dyn Fn(&str, &str, &str) -> bool + Send>;
@@ -821,9 +827,10 @@ impl Store {
     ///
     /// `filter` narrows the broad fuzzy layers. They are loose nets — a shared
     /// first letter, a shared trigram — and most of what they catch can't
-    /// match; rejecting those inside SQLite means they're never decoded. It
-    /// runs within the rows each net's cap takes, so it changes what recall
-    /// costs, never what it returns to the scorer.
+    /// match; rejecting those inside SQLite means they're never decoded. That
+    /// makes a read row cheap enough for the net to read [`NET_WINDOW`] times
+    /// past its cap, so the cap falls on rows that could match rather than on
+    /// whichever the net met first.
     ///
     /// When `force_fuzzy` is false and exact/prefix already matched, the broad
     /// fuzzy layers are skipped: the relevance gate drops every fuzzy candidate
@@ -846,6 +853,7 @@ impl Store {
         use rusqlite::types::Value;
         let q = query.to_ascii_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
+        let window = Value::Integer((limit * if filter.is_some() { NET_WINDOW } else { 1 }) as i64);
         let limit = Value::Integer(limit as i64);
         // The repo scope, bound after a layer's own placeholders as the next
         // numbered one.
@@ -916,18 +924,20 @@ impl Store {
             }
             None => "",
         };
-        // Run one broad net. The subquery takes the rows the cap always took;
-        // `keep` then decides which of those are worth decoding.
+        // Run one broad net: read up to `window` of its rows, decode the ones
+        // `keep` passes, and cap those.
         let fetch_net =
             |net: &str, filter: &str, mut args: Vec<Value>| -> Result<Vec<(i64, SymbolRow)>> {
                 let scope = scope(&mut args);
+                args.push(window.clone());
+                let w = args.len();
                 args.push(limit.clone());
                 let sql = format!(
                     "SELECT {CANDIDATE_COLS} FROM \
-                       (SELECT s.id FROM {net} WHERE {filter}{scope} LIMIT ?{}) w \
+                       (SELECT s.id FROM {net} WHERE {filter}{scope} LIMIT ?{w}) w \
                      JOIN symbols s ON s.id = w.id \
                      JOIN files fi ON fi.id = s.file_id \
-                     JOIN repositories r ON r.id = s.repository_id{keep}",
+                     JOIN repositories r ON r.id = s.repository_id{keep} LIMIT ?{}",
                     args.len()
                 );
                 let mut stmt = self.conn.prepare_cached(&sql)?;

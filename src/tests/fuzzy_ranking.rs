@@ -73,6 +73,35 @@ fn letters_picked_from_inside_a_word_are_not_an_abbreviation() {
 }
 
 #[test]
+fn a_match_past_the_cap_of_names_that_cannot_match_is_still_found() {
+    // More trigram-sharing names than the cap, none holding the query's
+    // letters in order, all met before the one that does
+    let mut store = Store::open_in_memory().unwrap();
+    let repo = store
+        .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
+        .unwrap();
+    let decoys: Vec<Symbol> = (0..8_100)
+        .map(|i| {
+            def(
+                &format!("zz_connection_{i:05}"),
+                Kind::Method,
+                "lib/a.rb",
+                1,
+            )
+            .1
+        })
+        .collect();
+    store
+        .replace_file_symbols(repo, "lib/a.rb", "ruby", None, "h", &decoys)
+        .unwrap();
+    let (file, target) = def("new_connection", Kind::Method, "lib/pool.rb", 5);
+    store
+        .replace_file_symbols(repo, &file, "ruby", None, "h", &[target])
+        .unwrap();
+    assert_eq!(first(&store, "newconnection"), "new_connection");
+}
+
+#[test]
 fn a_weak_guess_does_not_beat_a_real_abbreviation() {
     // `cli` is two edits from `cmlz` and keeps two of its letters; `camelize`
     // holds all four in order

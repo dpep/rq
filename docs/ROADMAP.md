@@ -90,9 +90,9 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
 - [x] cheaper fuzzy pre-filter — the scorer's in-order/stem/near-miss gate
       runs inside SQLite on each capped net, scoring ~10× fewer rows with
       identical results (D12)
-- [ ] widen the fuzzy nets' cap — the 8k cap truncates 38% of fuzzy queries'
-      nets before scoring; a 32k window lifts "source ranks #1" from 40% to 49%.
-      Waits on the typo-retry trigger and scattered-match ranking (D12)
+- [x] widen the fuzzy nets' cap — the 8k cap truncated 38% of fuzzy
+      queries' nets before scoring; filtered nets now read 4× past it, lifting
+      "source ranks #1" from 40% to 49% (D12)
 
 Exit criteria met: search works at 0%, partial, and 100% coverage; the user
 doesn't have to know which layer answered.

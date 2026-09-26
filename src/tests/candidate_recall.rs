@@ -115,3 +115,34 @@ fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
         "only this repo's rows, and its match fits"
     );
 }
+
+#[test]
+fn a_filtered_net_reaches_past_rows_that_cannot_match() {
+    let mut store = Store::open_in_memory().unwrap();
+    let repo = store
+        .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
+        .unwrap();
+
+    // "maa" names fill the start of the `m` range; none holds "mgo" in order.
+    // Unfiltered, a cap of 5 stops inside them; filtered, the net reads on.
+    let mut syms: Vec<Symbol> = (1..=10).map(|i| sym(&format!("maa{i:03}"))).collect();
+    syms.push(sym("mongo"));
+    store
+        .replace_file_symbols(repo, "a.rs", "rust", None, "h", &syms)
+        .unwrap();
+
+    let names = |filter: Option<crate::store::CandidateFilter>| -> Vec<String> {
+        store
+            .search_candidates("mgo", 5, false, None, filter)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect()
+    };
+    assert!(
+        !names(None).contains(&"mongo".to_string()),
+        "the cap binds unfiltered"
+    );
+    let in_order = Box::new(|name: &str, _: &str, _: &str| name.contains('o'));
+    assert_eq!(names(Some(in_order)), vec!["mongo".to_string()]);
+}

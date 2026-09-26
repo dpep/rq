@@ -26,6 +26,16 @@ and aren't listed; see `git log` for those.
   write could hold the first result back by 5–15 ms; it now runs after the
   output. `--usage` counts are unchanged.
 
+### Fixed
+- **Fuzzy searches on large repos find matches they used to miss.** A fuzzy
+  search scored at most 8,000 of the names sharing a letter or trigram with
+  the query, taken in index order, so on a big repo the answer could be cut
+  off unseen: `test_floa_tlimits` found nothing on Rails. With the cheaper
+  filter above, a search now reads four times as far. With the two ranking
+  fixes above, the searched-for name ranks first ~49% of the time instead of
+  ~40% on a 2,300-query benchmark. The most ambiguous short queries on the
+  largest repos can take up to ~50% longer.
+
 ## 0.52.1 — 2026-09-26
 
 ### Fixed
