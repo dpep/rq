@@ -38,17 +38,6 @@ pub(crate) struct SymbolRow {
     pub visibility: Option<String>,
 }
 
-/// A learned selection signal for ranking: how often a `(file, name)` was
-/// chosen for a query, and when it was last chosen.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SelectionStat {
-    pub repository_id: i64,
-    pub file: String,
-    pub name: String,
-    pub selections: i64,
-    pub last_selected_at: i64,
-}
-
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 /// Longest query that still gets the first-character anchor pass.
@@ -747,30 +736,6 @@ impl Store {
         Ok(rows)
     }
 
-    // ----- behavioral learning -----
-
-    /// Learned selections relevant to a query, read by ranking. Matches not just
-    /// the exact query but any *shorter* query the user has selected for — a pick
-    /// for `han` informs `handler` — so typing more keeps the benefit.
-    pub(crate) fn selections_for(&self, query_norm: &str) -> Result<Vec<SelectionStat>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT repository_id, file, name, selections, last_selected_at
-             FROM selection_stats WHERE ?1 LIKE query_norm || '%'",
-        )?;
-        let rows = stmt
-            .query_map(params![query_norm], |r| {
-                Ok(SelectionStat {
-                    repository_id: r.get(0)?,
-                    file: r.get(1)?,
-                    name: r.get(2)?,
-                    selections: r.get(3)?,
-                    last_selected_at: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                })
-            })?
-            .collect::<Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
     /// Roll up to `batch` new `open`/`select` events into `selection_stats`.
     /// Returns how many events were processed. Resolves the chosen symbol from
     /// `(repo, path, line)` at rollup time, turning a selection into a
@@ -1440,40 +1405,6 @@ mod tests {
 
         let cands = store.search_candidates("foo", 10, false, None).unwrap();
         assert_eq!(cands[0].git_ts, Some(1_700_000_000));
-    }
-
-    #[test]
-    fn aggregates_a_selection_and_decays_on_repeat() {
-        let mut store = Store::open_in_memory().unwrap();
-        let repo = store
-            .upsert_repository(&RepoIdentity::local("/x"), None)
-            .unwrap();
-        store
-            .replace_file_symbols(
-                repo,
-                "a.rb",
-                "ruby",
-                None,
-                "h",
-                &[sym("Foo", Kind::Class, 1, None)],
-            )
-            .unwrap();
-
-        // a selection for "foo" rolls up into one learned stat
-        store
-            .record_event(
-                "select",
-                Some("foo"),
-                Some(repo),
-                Some("a.rb"),
-                Some(1),
-                None,
-            )
-            .unwrap();
-        assert_eq!(store.aggregate_events(10).unwrap(), 1);
-        assert_eq!(store.selections_for("foo").unwrap().len(), 1);
-        // ...and a longer query still benefits (prefix learning)
-        assert_eq!(store.selections_for("foobar").unwrap().len(), 1);
     }
 
     #[test]

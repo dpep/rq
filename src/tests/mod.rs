@@ -12,7 +12,6 @@ mod candidate_recall;
 mod git_metadata;
 mod index_integration;
 mod lang_fixtures;
-mod learning;
 mod live_search;
 mod ranking_aspirations;
 mod ranking_dogfood;

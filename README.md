@@ -16,8 +16,8 @@ rq class Widget  # → a leading kind keyword is shorthand for -k class
 ## Why not grep / ctags / an LSP?
 
 - **grep / rg** give every textual mention; rq gives the one place a symbol is *defined*, ranked.
-- **ctags** is static and relevance-blind; rq ranks by match quality, your current repo, recency, and what you've opened before.
-- **an LSP** is heavy — per-language, per-project, slow to warm. rq is one blazingly fast binary across all your repos: in-process search at `rg` speed (sub-millisecond), warms itself on first use, self-heals on edits, and learns from the results you actually open.
+- **ctags** is static and relevance-blind; rq ranks by match quality, your current repo, recency, and the branch you're on.
+- **an LSP** is heavy — per-language, per-project, slow to warm. rq is one blazingly fast binary across all your repos: in-process search at `rg` speed (sub-millisecond), warms itself on first use, and self-heals on edits.
 
 Definitions come from [Tree-sitter](https://tree-sitter.github.io/) for Ruby, Rust, Go, Python,
 TypeScript, and JavaScript.
@@ -172,7 +172,6 @@ query is matched and scored by an additive, explainable sum of signals:
 - **recency** — symbols in recently-edited or recently-committed files
 - **branch** — on a feature branch, files you're changing vs the trunk (and
   their directory neighbors) — where you're most likely working
-- **learned** — results you've opened before for this query (see below)
 
 Returning fewer, better, ranked results is the goal — not completeness.
 

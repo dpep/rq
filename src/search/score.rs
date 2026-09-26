@@ -67,8 +67,6 @@ pub(crate) fn confidence(score: f64, quality: f64, best_other: Option<f64>) -> f
 /// signal can be added without threading more parameters.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Boosts {
-    /// Behavioral signal: results chosen before for this query.
-    pub learned: f64,
     /// Git/filesystem signal: symbols in recently-modified files.
     pub recency: f64,
     /// Branch signal: symbols in files you're changing on this branch (or their
@@ -79,7 +77,7 @@ pub(crate) struct Boosts {
 /// Score `cand` for `query`. Returns `None` when the candidate doesn't match at
 /// all (not even as a subsequence), filtering FTS trigram noise.
 ///
-/// `boosts` carries the dynamic signals (behavioral, recency) computed by
+/// `boosts` carries the dynamic signals (recency, branch) computed by
 /// [`crate::search`], which owns the time math.
 pub(crate) fn score(
     query: &str,
@@ -335,14 +333,6 @@ pub(crate) fn score(
         features.push(Feature {
             name: "current_repo",
             value: 200.0,
-        });
-    }
-
-    // Learned boost — results you've chosen before for this query rank higher.
-    if boosts.learned > 0.0 {
-        features.push(Feature {
-            name: "learned",
-            value: boosts.learned,
         });
     }
 
@@ -1597,27 +1587,6 @@ mod tests {
             .total;
         assert!(in_repo > out_repo);
         assert_eq!(in_repo - out_repo, 200.0);
-    }
-
-    #[test]
-    fn learned_boost_adds_to_the_score() {
-        let cand = row("User", "class", 1);
-        let base = score("user", &cand, None, Boosts::default(), false)
-            .unwrap()
-            .total;
-        let boosted = score(
-            "user",
-            &cand,
-            None,
-            Boosts {
-                learned: 150.0,
-                ..Default::default()
-            },
-            false,
-        )
-        .unwrap();
-        assert_eq!(boosted.total - base, 150.0);
-        assert!(boosted.features.iter().any(|f| f.name == "learned"));
     }
 
     #[test]

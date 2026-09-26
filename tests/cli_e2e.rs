@@ -1,4 +1,4 @@
-//! End-to-end: drive the real `rq` binary through index → search → learn.
+//! End-to-end: drive the real `rq` binary through index → search.
 //!
 //! Hermetic and reproducible — no shell `cd`, no git required. Each run uses an
 //! isolated `RQ_DB`, a fresh temp repo, and sets the subprocess working
@@ -102,8 +102,8 @@ fn git_init_commit(dir: &Path) {
 }
 
 #[test]
-fn index_search_and_learn_through_the_cli() {
-    let (dir, db) = scratch("learn");
+fn index_search_and_status_through_the_cli() {
+    let (dir, db) = scratch("basic");
     fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
     fs::write(dir.join("beta.rb"), "class HandlerB\nend\n").unwrap();
 
@@ -118,22 +118,6 @@ fn index_search_and_learn_through_the_cli() {
     assert!(
         first_line(&out).contains("HandlerA"),
         "search output: {out}"
-    );
-
-    // record that the user opened HandlerB for "handler"
-    let (ok, _) = rq(
-        &db,
-        &dir,
-        &["--record", "--file", "beta.rb", "--line", "1", "handler"],
-    );
-    assert!(ok, "record failed");
-
-    // now HandlerB leads
-    let (ok, out) = rq(&db, &dir, &["handler"]);
-    assert!(ok, "second search failed: {out}");
-    assert!(
-        first_line(&out).contains("HandlerB"),
-        "after learning, expected HandlerB first: {out}"
     );
 
     // status shows the repo
@@ -1486,37 +1470,6 @@ fn no_record_still_returns_results() {
     let (ok, out) = rq(&db, &dir, &["widget", "--no-record", "--ndjson"]);
     assert!(ok, "no-record search failed: {out}");
     assert!(out.contains("\"name\":\"Widget\""), "result present: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn show_records_the_definition_it_printed() {
-    // Printing a confident body *is* a selection — the caller asked for one
-    // definition and consumed exactly this one — so it teaches ranking with no
-    // follow-up --record. That's what makes an agent's traffic a usable signal.
-    let (dir, db) = scratch("show-learn");
-    fs::write(
-        dir.join("beta.rb"),
-        "class HandlerB\n  def go\n    1\n  end\nend\n",
-    )
-    .unwrap();
-    rq(&db, &dir, &["--index"]);
-
-    // --no-record shows the body but teaches nothing (benchmark/CI loops)
-    let (ok, out) = rq(&db, &dir, &["--show", "handlerb", "--no-record"]);
-    assert!(ok && out.contains("def go"), "show printed a body: {out}");
-    let (_, out) = rq(&db, &dir, &["handlerb", "-e", "--no-record"]);
-    assert!(
-        !out.contains("learned"),
-        "--no-record taught nothing: {out}"
-    );
-
-    // without it, the shown definition is recorded and lifts the next search
-    let (ok, out) = rq(&db, &dir, &["--show", "handlerb"]);
-    assert!(ok && out.contains("def go"), "show printed a body: {out}");
-    let (_, out) = rq(&db, &dir, &["handlerb", "-e", "--no-record"]);
-    assert!(out.contains("learned"), "show taught ranking: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }

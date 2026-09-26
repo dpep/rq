@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Removed
+- **Learned ranking is gone.** Results you opened or `--show`ed no longer lift
+  that result for the same query next time. Six weeks of real use left the
+  signal empty, so ranking is now a function of the index, recency, and your
+  branch alone — the `learned` row no longer appears in `--explain`.
+
 ## 0.51.3 — 2026-09-26
 
 ### Fixed

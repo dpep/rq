@@ -9,7 +9,7 @@ mod score;
 
 pub(crate) use score::{Boosts, Feature, confidence, match_positions, match_quality, path_stem};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
@@ -274,7 +274,6 @@ fn search_query(
     let t_recall = t.elapsed();
     let t = std::time::Instant::now();
     let now = now_unix();
-    let learned = learned_boosts(store, query, now)?;
 
     // Borrows rather than consumes, so the retry below can re-rank the same
     // candidates instead of asking the store for them again.
@@ -282,16 +281,7 @@ fn search_query(
         candidates
             .iter()
             .filter_map(|c| {
-                // learned is empty for most queries — skip the per-candidate
-                // String clones the key would cost
-                let learned_boost = if learned.is_empty() {
-                    0.0
-                } else {
-                    let key = (c.repository_id, c.file.clone(), c.name.clone());
-                    learned.get(&key).copied().unwrap_or(0.0)
-                };
                 let boosts = Boosts {
-                    learned: learned_boost,
                     // prefer whichever recency signal is more recent: a recent edit
                     // (mtime, stored in nanoseconds — convert to seconds) or a
                     // recent commit (git_ts, seconds)
@@ -384,44 +374,6 @@ fn recency_boost(mtime: Option<i64>, now: i64) -> f64 {
     let age_days = (now - mtime).max(0) as f64 / 86_400.0;
     let boost = 120.0 * 0.5_f64.powf(age_days / 14.0);
     if boost < 1.0 { 0.0 } else { boost }
-}
-
-/// Decay-weighted learned boosts for a query, keyed by `(repo, file, name)`.
-fn learned_boosts(
-    store: &Store,
-    query: &str,
-    now: i64,
-) -> crate::store::Result<HashMap<(i64, String, String), f64>> {
-    let q = query.to_ascii_lowercase();
-    let mut map: HashMap<(i64, String, String), f64> = HashMap::new();
-    for s in store.selections_for(&q)? {
-        // several stored queries can match (e.g. "han" and "handler"); keep the
-        // strongest boost for each candidate
-        let boost = learned_boost(s.selections, s.last_selected_at, now);
-        let entry = map.entry((s.repository_id, s.file, s.name)).or_insert(0.0);
-        *entry = entry.max(boost);
-    }
-    Ok(map)
-}
-
-/// Turn a selection count + recency into a ranking boost. Evidence ramps over
-/// ~5 selections; recency decays with a ~30-day half-life, all the way down.
-///
-/// No floor: a floor meant a pick could never be forgotten, only diminished, so
-/// a choice made once a year ago kept nudging results forever. Letting the
-/// half-life run to zero is how a wrong pick now expires — which matters more
-/// since nothing else corrects one. (A repeated search used to decay the boost
-/// on the theory that repeating meant the last answer missed; that inference
-/// turned out to fire almost entirely on machine re-runs, so it was removed and
-/// time is the only forgetting left.)
-fn learned_boost(selections: i64, last_selected_at: i64, now: i64) -> f64 {
-    if selections <= 0 {
-        return 0.0;
-    }
-    let strength = (selections.min(5) as f64) / 5.0;
-    let age_days = (now - last_selected_at).max(0) as f64 / 86_400.0;
-    let recency = 0.5_f64.powf(age_days / 30.0);
-    260.0 * strength * recency
 }
 
 /// Layer 4: scan `root` live (no index required) and return ranked hits.

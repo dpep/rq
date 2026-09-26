@@ -373,7 +373,6 @@ why a result ranked where it did:
   by default (a search there answers about *that* repo, never leaking another
   indexed one; `--all-repos` opts into cross-repo), and within it the current
   repo's rows still carry the boost
-- **learned boost** — behavioral signal from `selection_stats` (see below)
 - **recency** — symbols in recently-active files (~14-day half-life), sourced
   from the more recent of file mtime and last git commit time (captured once per
   index, not on the search path)
@@ -386,8 +385,8 @@ why a result ranked where it did:
   warms those files first.
 
 Match quality and the static features live in the pure `score()` function. The
-dynamic, context-dependent signals (`learned`, `recency`) are computed by the
-search layer — which owns the clock and store lookups — and passed in via a
+dynamic, context-dependent signals (`recency`, `branch`) are computed by the
+search layer — which owns the clock and the branch state — and passed in via a
 `Boosts` struct, so a new git signal (recent commit, branch, ownership) is a new
 field, not a new parameter. Prefer understandable scoring over sophisticated
 algorithms; tuning a weight must never require re-indexing.
