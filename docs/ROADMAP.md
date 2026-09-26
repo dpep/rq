@@ -93,6 +93,11 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
 - [x] widen the fuzzy nets' cap — the 8k cap truncated 38% of fuzzy
       queries' nets before scoring; filtered nets now read 4× past it, lifting
       "source ranks #1" from 40% to 49% (D12)
+- [x] recall harness — `make recall [BASE=<ref>]` scores 2,372 fuzzy queries
+      on pinned rails + discourse and lists every source that lost #1 or the
+      top 10 ([RECALL](RECALL.md)); ranking changes cite it
+- [x] skip the background warm while a recent "nothing moved" still holds
+      and git's state matches (D16)
 
 Exit criteria met: search works at 0%, partial, and 100% coverage; the user
 doesn't have to know which layer answered.

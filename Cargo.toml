@@ -5,8 +5,8 @@ edition = "2024"
 description = "Reference Query — find the code you're looking for."
 license = "MIT"
 repository = "https://github.com/dpep/rq"
-# the VS Code extension ships as its own .vsix, not in the crate
-exclude = ["editors/"]
+# the VS Code extension ships as its own .vsix; the recall corpus is dev-only
+exclude = ["editors/", "script/recall/"]
 
 # Published as `reference-query`; binary stays `rq`.
 [[bin]]
