@@ -106,10 +106,10 @@ fn prioritize_by_path(
 /// Opportunistic, time-bounded indexing — warm the index a little per call so no
 /// single query blocks on a full walk of a large repo. `active` (branch) files
 /// are parsed first and ignore the budget (the working set stays fresh); then the
-/// walk streams the rest, honoring `budget`. When `query` is set, files whose
-/// *path* matches it are parsed first (a cheap, in-memory reorder of the
-/// candidate list — no file reads), so a relevant symbol indexes fast. A sweep
-/// that finishes within budget marks coverage `complete`, else `warming`.
+/// walk streams the rest, honoring `budget`. When `query` (a search query) is
+/// set, files containing its leaf name are parsed ahead of the walk, and files
+/// whose *path* resembles it lead the walk, so a relevant symbol indexes fast. A
+/// sweep that finishes within budget marks coverage `complete`, else `warming`.
 pub(crate) fn index_budgeted(
     store: &mut Store,
     root: &Path,
@@ -190,6 +190,11 @@ static PARSE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// size and how much parsed-but-unwritten work a cut-short pass can lose.
 const WRITE_BATCH: usize = 512;
 
+/// Longest a parsed file waits for a commit once more arrive — a warming search
+/// can only see committed files, and a demand scan finds matches too sparsely to
+/// fill a batch quickly.
+const WRITE_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Accumulates parsed files and commits them to the store in `WRITE_BATCH`
 /// chunks, so a long or cut-short index persists incrementally rather than in one
 /// final write. The `stream_walk` sink for `run_index`.
@@ -205,6 +210,7 @@ struct BatchWriter<'a> {
     /// Transactions committed — `write_time` per batch is the number that says
     /// whether batching is sized right.
     batches: usize,
+    last_flush: Option<Instant>,
 }
 
 impl<'a> BatchWriter<'a> {
@@ -217,12 +223,17 @@ impl<'a> BatchWriter<'a> {
             symbols: 0,
             write_time: Duration::ZERO,
             batches: 0,
+            last_flush: None,
         }
     }
 
     fn push(&mut self, fs: crate::store::FileSymbols) -> Result<(), Box<dyn std::error::Error>> {
         self.buf.push(fs);
-        if self.buf.len() >= WRITE_BATCH {
+        if self.buf.len() >= WRITE_BATCH
+            || self
+                .last_flush
+                .is_none_or(|t| t.elapsed() >= WRITE_INTERVAL)
+        {
             self.flush()?;
         }
         Ok(())
@@ -237,6 +248,7 @@ impl<'a> BatchWriter<'a> {
             self.files += f;
             self.symbols += sy;
             self.buf.clear();
+            self.last_flush = Some(Instant::now());
         }
         Ok(())
     }
@@ -448,7 +460,8 @@ fn sweep_outcome(
 /// indexing starts the instant the first file is found (walk and parse overlap).
 ///
 /// `active` files are parsed first and ignore `budget` (the working set stays
-/// fresh); then the walk streams the rest in walk order. `subdirs` (empty = whole
+/// fresh); then, on a budgeted pass with a `query`, the files containing its
+/// leaf name; then the walk streams the rest in walk order. `subdirs` (empty = whole
 /// repo) scope the walk; `budget` bounds it (`None` = unbounded). A whole-repo
 /// sweep that finishes within budget reconciles deletions and is `complete`; a
 /// sweep cut short — or a subtree seed — is `warming`.
@@ -558,11 +571,8 @@ fn run_index(
         None => "filesystem walk (lazy — time lands in walk+parse+write)".to_string(),
     });
     drop(enum_span);
-    let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
-        // parse query-relevant files (by path) first — a cheap in-memory reorder
-        Some(paths) => Box::new(prioritize_by_path(paths, root, query).into_iter()),
-        None => Box::new(fs_walk_candidates(walk_roots)),
-    };
+    // parse query-relevant files (by path) first — a cheap in-memory reorder
+    let git_candidates = git_candidates.map(|paths| prioritize_by_path(paths, root, query));
 
     let deadline = budget.map(|b| Instant::now() + b);
     let cap = budget.map(|_| collect_cap());
@@ -572,22 +582,58 @@ fn run_index(
     // pass keeps what it parsed). Only new or changed files are parsed; every
     // source file seen lands in `seen` for deletion reconcile.
     let stored_ref = &stored;
-    let skipped = std::sync::atomic::AtomicU64::new(0);
-    let skipped_ref = &skipped;
-    let keep = move |rel: &str, path: &Path| {
-        let changed = match stored_ref.get(rel) {
-            Some(&Some(m)) => Some(m) != file_mtime(path),
-            _ => true, // new file, or one stored without an mtime
-        };
-        if profiling && !changed {
-            skipped_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        changed
+    let changed = move |rel: &str, path: &Path| match stored_ref.get(rel) {
+        Some(&Some(m)) => Some(m) != file_mtime(path),
+        _ => true, // new file, or one stored without an mtime
     };
+    let skipped = std::sync::atomic::AtomicU64::new(0);
     let stream_start = Instant::now();
     let mut fused_span = crate::profile::span("index: walk+parse+write");
     let (seen, completed, walk_files, walk_symbols, write_time, batches) = {
         let mut writer = BatchWriter::new(&mut *store, repo_id);
+        // Demand first: a query's exact or prefix match — the only kind a warming
+        // search answers with — lives in a file containing its leaf name, and
+        // reading for that is several times cheaper than parsing. So parse those
+        // files ahead of the walk-order pass below, which skips them. Uncapped:
+        // the cap bounds parsing, and on a repo bigger than one pass it's what
+        // would otherwise leave the answer for a later search.
+        let mut demanded: HashSet<String> = HashSet::new();
+        let needle = query.and_then(crate::search::literal_leaf);
+        if let (Some(paths), Some(needle)) = (&git_candidates, needle) {
+            let mut demand_span = crate::profile::span("index: demand scan");
+            stream_walk(
+                root,
+                paths.iter().cloned(),
+                deadline,
+                None,
+                Some(needle.as_bytes()),
+                seen.clone(),
+                changed,
+                cancel,
+                |fs| {
+                    demanded.insert(fs.path.clone());
+                    writer.push(fs)
+                },
+            )?;
+            writer.flush()?;
+            demand_span.note(|| format!("{} file(s) contain {needle:?}", demanded.len()));
+        }
+        let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
+            Some(paths) => Box::new(paths.into_iter()),
+            None => Box::new(fs_walk_candidates(walk_roots)),
+        };
+        let demanded = &demanded;
+        let skipped = &skipped;
+        let keep = move |rel: &str, path: &Path| {
+            if demanded.contains(rel) {
+                return false;
+            }
+            let changed = changed(rel, path);
+            if profiling && !changed {
+                skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            changed
+        };
         let (seen, completed) = stream_walk(
             root,
             candidates,

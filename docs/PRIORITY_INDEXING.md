@@ -1,10 +1,11 @@
 # Priority-guided indexing (design sketch)
 
-> **Status: design, not built.** The cheap half (path-guided warming) shipped in
-> `index::run_index`; this captures the full best-first scheduler for when we
-> have a large-repo workload to measure it against. Don't build it before there's
-> a repo big enough that the budget can't index everything — that's the only
-> regime where picking *what* to index next beats just indexing fast.
+> **Status: superseded by a smaller shape (D11 in [DECISIONS.md](DECISIONS.md)).**
+> What shipped in `index::run_index` is two tiers, no heap: files containing the
+> query's leaf name are parsed first (uncapped, deadline-bounded), then the walk
+> runs in order with path-resembling files leading. Git recency and neighbor
+> expansion were not built. This sketch is kept as the record of what was
+> considered; D11 has the measurements that cut it down.
 
 ## Problem
 

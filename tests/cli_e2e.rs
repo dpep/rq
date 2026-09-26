@@ -1682,6 +1682,45 @@ fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
 }
 
 #[test]
+fn a_cold_search_finds_a_symbol_beyond_what_one_pass_parses() {
+    // The file naming the query is indexed ahead of walk order, so the first
+    // search answers even when the pass is capped short of it — by a method
+    // whose name is nowhere in its path.
+    let (dir, db) = scratch("demand");
+    for i in 0..20 {
+        fs::write(
+            dir.join(format!("m{i:02}.rb")),
+            format!("class M{i}\nend\n"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        dir.join("m19.rb"),
+        "class M19\n  def render_totals\n  end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["M19#render_totals", "--json"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "0")
+        .env("RQ_COLLECT_CAP", "2")
+        .output()
+        .expect("run rq");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "answered on the first search: {out}"
+    );
+    assert!(out.contains("m19.rb"), "found in the right file: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn no_wait_returns_without_blocking_on_a_rebuild() {
     // `--no-wait` is the agent/script escape hatch: a query issued while the index
     // is (re)building must answer from the committed index *now*, never

@@ -72,19 +72,21 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       eat the whole budget on a huge repo and parse zero. Query relevance is the
       content-scan's job (below), so the walk just streams in walk order — nothing
       is deferred, which is what guarantees progress when the walk can't finish
-- [x] demand-first coverage — a warming repo content-scans for the query up front
-      (and on an empty result), *persists* the matches (`index::scan_for_query` →
-      `replace_files`), and searches; coverage grows toward what's actually
-      searched, not just walk order
+- [x] demand-first coverage — a search's warm parses the files containing the
+      query's leaf name ahead of walk order (the same `stream_walk` with a
+      content needle, persisting what it parses), uncapped by the per-pass file
+      cap; coverage grows toward what's actually searched. The first version (a
+      separate up-front scan) was dropped when warming became one background
+      thread; the in-pipeline tier restored it (D11)
 - [x] subtree index as a *seed* — `--index --path DIR` gets the named subtree in
       first and leaves coverage `warming`, so normal warming continues over the
       rest of the repo through use (it's an accelerator, not a permanent scope;
       the earlier `partial` fence status is retired). Untracked non-git dirs
       merge a bounded live scan instead of replacing index results
-- [ ] best-first indexing scheduler — extend the fused pipeline with content/
-      git-recency signals and a priority heap between walk and parse (so warming
-      orders by relevance, not just walk order). Design:
-      [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md)
+- [x] best-first indexing scheduler — built as two tiers, not a heap: the
+      demand-first tier above, then walk order. The heap, git-recency and
+      neighbor-expansion signals are not planned — see D11 for the numbers, and
+      [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md) for the original design
 - [ ] cheaper fuzzy pre-filter — the substring pre-filter is blind to
       abbreviations (`usr`↛`user`). A loose, recall-preserving narrowing (even
       ~50%) would speed cold fuzzy scans without the full unfiltered fallback

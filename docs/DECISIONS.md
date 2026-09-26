@@ -310,3 +310,57 @@ and the branch.
 *Reverses if:* a source of picks appears that isn't already the top hit — an editor
 integration where people choose from a list, say — at a volume that can outvote noise.
 Rebuild it against that source, and measure before billing it as a feature.
+
+## D11 — Best-first indexing: two tiers, not a priority heap
+
+**Adopted in reduced form**, 2026-09-26. The [PRIORITY_INDEXING.md](PRIORITY_INDEXING.md)
+design (shared heap, content / git-recency / neighbor signals, lazy deletion) was
+measured against what users hit on a cold repo before anything was built.
+
+*The problem is real above a few thousand files.* A warming search blocks until an
+exact or prefix match is committed, and walk order decides when that is. Cold first
+search, fresh DB, programmatic (piped), release build, load 15–60 (a shared machine —
+the absolute ms are noisy, the ratios are not):
+
+| repo | files | full index | first answer, walk order | with demand tier |
+|---|---|---|---|---|
+| rails | 3.3k | ~1.6 s | median 420 ms, max 1.2 s (16 queries) | median 140 ms, max 250 ms |
+| discourse | 14.4k | ~1.8–2.4 s | median 1.4 s, max 7.0 s (20 queries) | median 245 ms, max 570 ms |
+
+Queries were unique method names sampled across walk-order percentiles, none in their
+file's path — path-guided warming already catches class names. Walk-order time tracks
+the file's position almost linearly.
+
+*Above the per-pass cap (`COLLECT_CAP`, 50k files) walk order stops answering at all.*
+Simulated on discourse with `RQ_COLLECT_CAP=2000` (a repo ~7× one pass): 5 of 6
+late-walk queries came back `warming` (exit 2) under walk order, and under a demand
+tier bounded by the same cap; with the tier uncapped all 6 answered in 250–380 ms.
+That is the monorepo case, and why the tier ignores the cap: the deadline bounds its
+reading instead.
+
+*What was built.* A search's warm first streams the candidates through the existing
+`stream_walk` with a content needle — the query's leaf name, which any exact or prefix
+match must contain — parsing and persisting only files that hold it; the walk-order
+pass then skips those. And `BatchWriter` commits at least every 50 ms, since matches
+arrive too sparsely to fill a 512-file batch and the poll only sees committed rows.
+Cost: one read pass over the repo (discourse ~0.34 s at load 23, against ~11 s of parse
+CPU), paid *before* walk order starts, so a query with no literal match — a typo, a
+fuzzy abbreviation — waits for it: rails `usr`/`conpool`/`Middlewear`, 5 reps each,
+medians +10 to +110 ms. Explicit `rq --index` is unchanged (discourse 2.40 → 2.31 s,
+4 reps, within noise).
+
+*Not built:*
+- **The heap.** The two signals known before parsing (content match, then path
+  resemblance) give a total order of two tiers. A heap earns itself only when
+  priorities arrive late and interleave; none do.
+- **Git recency.** `git log` over a big repo is itself seconds, and "recently
+  committed" is a weak proxy for "what this query names" next to the content match,
+  which is exact for every answer a warming search accepts.
+- **Neighbor expansion.** It orders what to index *after* the answer, which the
+  detached warm child covers in walk order anyway.
+
+*Reverses if:* a repo large enough that the demand read itself overruns the wait budget
+(extrapolated at ~40k files/s: ~2M files ≈ 50 s against the 60 s default) — then the
+read, not the order, is the cost, and a persisted content index or `git grep` is the
+lever; or fuzzy-query waits on a cold huge repo draw complaints, which interleaving the
+two tiers would address.

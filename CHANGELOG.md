@@ -9,6 +9,15 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Changed
+- **The first search in a repo that isn't indexed yet finds its answer sooner.**
+  Files that contain the name you searched for are indexed before the rest.
+  On a 14k-file repo the wait dropped from ~1.4 s typical (up to ~7 s) to
+  ~0.25 s (up to ~0.6 s). On a repo too big to index in one pass, a search that
+  used to report `warming` (exit 2) until later searches caught up now answers
+  the first time. A search whose text appears nowhere, such as a typo or an
+  abbreviation, waits for one extra read of the repo.
+
 ### Fixed
 - **`--symbols` outlines its file on a large repo that isn't indexed yet.** The
   file is now indexed first however far the warm gets; a file with a short name

@@ -376,6 +376,16 @@ fn recency_boost(mtime: Option<i64>, now: i64) -> f64 {
     if boost < 1.0 { 0.0 } else { boost }
 }
 
+/// Text that any file holding an exact or prefix match for `query` contains: the
+/// leaf name (`Foo::bar` → `bar`), which indexing uses to parse those files
+/// first. Not a filter — a separator-less `parsefile` still matches `parse_file`
+/// exactly, and those files are indexed later, not skipped. `None` for a
+/// wildcard, whose literal text the user split with gaps.
+pub(crate) fn literal_leaf(query: &str) -> Option<&str> {
+    let (leaf, _) = score::parse_qualified(query);
+    (!leaf.is_empty() && !score::has_wildcard(leaf)).then_some(leaf)
+}
+
 /// Layer 4: scan `root` live (no index required) and return ranked hits.
 /// Results are treated as the current repo, so the current-repo boost applies.
 /// `skip` names already-indexed files to ignore, and `deadline` bounds the scan
