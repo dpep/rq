@@ -1263,12 +1263,22 @@ pub(crate) fn refresh_file(
     rel: &str,
 ) -> Result<Refresh, Box<dyn std::error::Error>> {
     let path = root.join(rel);
+    // Stat before reading: an edit landing mid-read then leaves an mtime newer
+    // than what was hashed, so the next check reads again rather than trusting
+    // it. An unchanged mtime is the same skip the indexer's walk makes.
+    let mtime = file_mtime(&path);
+    if mtime.is_some() && store.file_mtime(repository_id, rel)? == Some(mtime) {
+        return Ok(Refresh::Unchanged);
+    }
     let source = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => return Ok(Refresh::Unchanged), // unreadable now — leave it, don't forget
     };
     let hash = content_hash(&source);
     if store.file_unchanged(repository_id, rel, &hash)? {
+        // touched, not edited: remember the new mtime so the next check stats
+        // instead of reading it again
+        store.set_file_mtime(repository_id, rel, mtime)?;
         return Ok(Refresh::Unchanged);
     }
     let ext = path
@@ -1282,7 +1292,6 @@ pub(crate) fn refresh_file(
     };
     // the plugin knows its language even when a file parses to zero symbols
     let language = plugin.map_or("unknown", |p| p.language());
-    let mtime = file_mtime(&path);
     store.replace_file_symbols(repository_id, rel, language, mtime, &hash, &symbols)?;
     Ok(Refresh::Updated)
 }

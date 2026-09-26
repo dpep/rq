@@ -256,6 +256,20 @@ impl Store {
             .optional()
     }
 
+    /// Record a file's current mtime without touching its symbols — for a file
+    /// whose content was confirmed unchanged.
+    pub(crate) fn set_file_mtime(
+        &self,
+        repository_id: i64,
+        path: &str,
+        mtime: Option<i64>,
+    ) -> Result<()> {
+        self.conn
+            .prepare_cached("UPDATE files SET mtime = ?3 WHERE repository_id = ?1 AND path = ?2")?
+            .execute(params![repository_id, path, mtime])?;
+        Ok(())
+    }
+
     /// Indexed path → stored mtime for a repository. The budgeted warm pass uses
     /// this to skip unchanged files with a cheap `stat` (no read or re-hash).
     pub(crate) fn file_mtimes(&self, repository_id: i64) -> Result<HashMap<String, Option<i64>>> {

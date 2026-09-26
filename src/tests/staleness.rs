@@ -158,3 +158,53 @@ fn racy_mtime_edit_is_reindexed() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+/// A touch without an edit is unchanged, and its new mtime is remembered so
+/// later checks can skip the read; a real edit after it is still picked up.
+#[test]
+fn refresh_remembers_a_touch_and_still_sees_the_next_edit() {
+    let dir = std::env::temp_dir().join(format!("rq-touch-{}", std::process::id()));
+    fs::remove_dir_all(&dir).ok();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.rb");
+    let pin = |at: std::time::SystemTime| {
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    };
+    let base = std::time::SystemTime::now() + std::time::Duration::from_secs(300);
+
+    fs::write(&path, "class Alpha\nend\n").unwrap();
+    pin(base);
+    let mut store = Store::open_in_memory().unwrap();
+    index::index_path(&mut store, &dir).unwrap();
+    let repo = store
+        .repository_id(&index::detect_identity(&dir).to_string())
+        .unwrap()
+        .unwrap();
+
+    let touched = base + std::time::Duration::from_secs(1);
+    pin(touched);
+    assert_eq!(
+        index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
+        Refresh::Unchanged
+    );
+    let stored = store.file_mtime(repo, "a.rb").unwrap().flatten();
+    let expected = touched
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64;
+    assert_eq!(stored, Some(expected), "the touch's mtime is recorded");
+
+    fs::write(&path, "class Beta\nend\n").unwrap();
+    pin(touched + std::time::Duration::from_millis(1));
+    assert_eq!(
+        index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
+        Refresh::Updated
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
