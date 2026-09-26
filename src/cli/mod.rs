@@ -2208,11 +2208,13 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
             }
         }
         // Not fully indexed yet: warm synchronously — there's no answer to get
-        // out of the way of here — path-prioritized so this file goes first.
+        // out of the way of here — with this file as an active one, so it's
+        // indexed first whatever the budget.
         _ if warming_ok => {
             let budget = answer_warm_budget() + deferred_warm_budget();
             let _span = crate::profile::span("symbols: warm");
-            let _ = crate::index::index_budgeted(&mut store, &root, &[], budget, Some(&rel));
+            let active = [rel.clone()];
+            let _ = crate::index::index_budgeted(&mut store, &root, &active, budget, None);
         }
         _ => {}
     }

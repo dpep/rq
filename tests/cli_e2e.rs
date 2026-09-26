@@ -1812,6 +1812,37 @@ fn symbols_reflects_the_file_as_it_is_on_disk_now() {
 }
 
 #[test]
+fn symbols_outlines_its_file_on_a_cold_repo_too_big_for_one_pass() {
+    // The named file is indexed first however far the pass gets — including a
+    // short name that looks nothing like its own path.
+    let (dir, db) = scratch("symbols-cold");
+    for i in 0..20 {
+        fs::write(
+            dir.join(format!("m{i:02}.rb")),
+            format!("class M{i}\nend\n"),
+        )
+        .unwrap();
+    }
+    git_init_commit(&dir);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["--symbols", "m19.rb", "--ndjson"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "0")
+        .env("RQ_COLLECT_CAP", "2")
+        .output()
+        .expect("run rq");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && text.contains("\"name\":\"M19\""),
+        "the file is outlined: {text}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);

@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **`--symbols` outlines its file on a large repo that isn't indexed yet.** The
+  file is now indexed first however far the warm gets; a file with a short name
+  (`m19.rb`) used to come back empty until the rest of the repo caught up.
+
 ## 0.52.0 — 2026-09-26
 
 ### Removed
