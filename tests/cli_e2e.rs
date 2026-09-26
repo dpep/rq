@@ -225,6 +225,24 @@ fn cold_index_builds_a_working_fuzzy_index() {
 }
 
 #[test]
+fn a_search_that_warms_a_cold_repo_leaves_a_working_fuzzy_index() {
+    // the same, when the first contact is a search rather than `--index`: the
+    // budgeted warm it runs must leave FTS in step, both for this answer and
+    // for the next query
+    let (dir, db) = scratch("coldwarmfts");
+    fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class BetaGadget\nend\n").unwrap();
+    git_init_commit(&dir);
+
+    let (ok, out) = rq(&db, &dir, &["widget", "--no-record"]);
+    assert!(ok && out.contains("AlphaWidgetController"), "warm: {out}");
+    let (ok, out) = rq(&db, &dir, &["gadget", "--no-record"]);
+    assert!(ok && out.contains("BetaGadget"), "next query: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
     // `class A::B::EmployeesController` must be found by `employeescontroller`
     // (its leaf), and must survive next to a top-level EmployeesController — the

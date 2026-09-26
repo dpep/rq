@@ -25,6 +25,10 @@ and aren't listed; see `git log` for those.
   still asks git for the remote, so it remains how a checkout picks up a newly
   added one.
 - **Fuzzy searches are ~15–20% faster** — the index is read memory-mapped.
+- **The first search in a new repo answers about twice as fast.** The warm it
+  runs now indexes names for fuzzy search in one step instead of row by row,
+  as `rq --index` already did. Rails, from nothing: ~0.9 s → ~0.35 s for a
+  class, ~1.4 s → ~0.7 s for a fuzzy query or a miss.
 - **Indexing a new repo no longer re-indexes every other repo's names.** The
   first `rq --index` of a repo rebuilt the fuzzy-search index for the whole
   database; now it adds only what's missing. A 2k-symbol repo into a 176k-symbol

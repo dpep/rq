@@ -496,12 +496,14 @@ fn run_index(
     drop(setup_span);
     let mut seen: HashSet<String> = HashSet::new();
 
-    // A cold, unbounded index (no prior coverage, the explicit `rq --index`)
-    // suspends per-row FTS maintenance and indexes its rows in one bulk pass at
-    // the end — the per-row trigger is ~70% of the write cost. Scoped to
-    // the cold full path so incremental re-index and budgeted warming (which may
-    // run concurrently and only touch a few files) keep the per-row trigger.
-    let bulk_fts = budget.is_none() && stored.is_empty();
+    // A cold repo (nothing indexed yet) suspends per-row FTS maintenance and
+    // indexes its rows in one bulk pass at the end — with the per-row trigger
+    // the writer, not parsing, bounds a cold pass. That includes the budgeted
+    // warm a first search runs: while warming, a search accepts only an exact
+    // or prefix match, which the name index serves without FTS, and the pass
+    // syncs FTS before it records coverage. Incremental passes touch a few
+    // files and keep the trigger.
+    let bulk_fts = stored.is_empty();
     if bulk_fts {
         store.defer_fts_insert()?;
     } else if store.fts_trigger_missing().unwrap_or(false) {

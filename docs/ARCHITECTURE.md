@@ -253,6 +253,12 @@ search only reads.
 - **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
   fans out across CPUs; the parsed files are written in **one** transaction (one
   `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.
+  A pass over a cold repo (explicit or a first search's warm) suspends the
+  per-row FTS trigger and indexes the new names in one step at the end of the
+  pass, before coverage is recorded — per-row, the writer rather than parsing
+  bounds the pass. Fuzzy recall can't see that pass's rows until then, which a
+  warming search never needs: it accepts only exact/prefix matches, served by
+  the name index.
 - **Opportunistic + time-bounded** (`index_budgeted`) — the first query warms the
   index without blocking on a full walk: a small inline budget indexes the active
   (branch) files first and answers, then the deferred pass warms more per query
