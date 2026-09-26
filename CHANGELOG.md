@@ -35,7 +35,9 @@ and aren't listed; see `git log` for those.
   neighbour could use up the cap, and an exact match elsewhere could stop a
   fuzzy match here from being looked for at all (`rq wdgt` missing your
   `Widget` because another repo defines `wdgt`). With eight repos indexed,
-  fuzzy searches are also 15–35% faster.
+  fuzzy searches are also 15–35% faster, and short ones (`usr`) about 40%
+  faster again via a new per-repo name index. The database upgrades itself on
+  first run (schema v12, a second or so on a large index); nothing to do.
 - **Uncommitted edits no longer make every miss say "still warming".** Any
   dirty tracked file counted as "changed since indexed", so while you had
   uncommitted work each search started a background re-index and each miss

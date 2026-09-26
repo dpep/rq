@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 11;
+pub(crate) const VERSION: i64 = 12;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -57,7 +57,7 @@ CREATE TABLE symbols (
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 CREATE INDEX idx_symbols_file ON symbols(file_id);
-CREATE INDEX idx_symbols_repo ON symbols(repository_id);
+CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
 
 -- fuzzy candidate narrowing: trigram FTS over symbol names
 CREATE VIRTUAL TABLE symbols_fts USING fts5(
@@ -258,9 +258,17 @@ ALTER TABLE usage_daily ADD COLUMN warming INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE usage_daily ADD COLUMN on_complete INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// Migration v11 -> v12: recall filters by repository, so index names within a
+/// repository. The composite leads with `repository_id`, so it also serves
+/// everything the single-column index it replaces did.
+pub(crate) const MIGRATION_V12: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_symbols_repo_name ON symbols(repository_id, name_lower);
+DROP INDEX IF EXISTS idx_symbols_repo;
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, &str); 10] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 11] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -271,6 +279,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 10] = [
     (9, MIGRATION_V9),
     (10, MIGRATION_V10),
     (11, MIGRATION_V11),
+    (12, MIGRATION_V12),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]

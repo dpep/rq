@@ -151,7 +151,9 @@ symbols (
                                      -- unknown (pre-v9 rows backfill lazily)
 );
 CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
-CREATE INDEX idx_symbols_repo ON symbols(repository_id);
+-- repo-scoped recall: a search inside a repo range-scans only its names
+-- (also serves the per-repo counts the old repository_id index did)
+CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
 
 -- fuzzy candidate narrowing: trigram FTS over symbol names
 CREATE VIRTUAL TABLE symbols_fts USING fts5(

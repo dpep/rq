@@ -160,3 +160,34 @@ pass on a 40-file repo shows `index: enumerate 5.9ms  git ls-files, 40 path(s)`.
 per registered extension, and that cost is paid before any parsing starts — a plausible
 suspect for the startup floor monorepo users report, and now directly measurable rather
 than inferred.
+
+## D6 — `symbols(repository_id, name_lower)` index: adopted
+
+**Adopted**, 2026-09-25. Replaces `idx_symbols_repo(repository_id)`, which it subsumes.
+
+Recall is scoped to the current repository in SQL (it used to be filtered afterwards,
+which let other repos crowd out the cap). With only `idx_symbols_name_lower`, a scoped
+prefix or first-character scan still walks every repo's names and discards the others.
+
+Measured on an index of eight Ruby repos (175,935 symbols) searched from inside rails,
+release build, 15 interleaved reps, quiet machine (load ~2.4):
+
+| query | recall before | recall after | first answer before | after |
+|---|---|---|---|---|
+| `usr` (first-char anchor) | 9.4 ms | 4.7 ms | 11.3 ms | 6.9 ms |
+| `Base` | 0.9 | 0.4 | 2.4 | 2.0 |
+| `Foo.new` | 19.9 | 18.5 | 25.5 | 24.2 |
+| `conpool` (FTS-bound) | 13.5 | 13.9 | 17.4 | 17.6 |
+
+A single-repo index is unchanged (every row shares one `repository_id`). Output was
+byte-identical throughout. Cost: store writes on a cold rails index 193 → 235 ms, but
+writes overlap parsing so the index total moved 585 → 606 ms (+3.6%); the migration
+builds the index once (~0.6 s on 176k symbols); the DB grows ~10%.
+
+The trigram FTS layer can't use it: `MATCH` enumerates every repo's postings and the
+scope filters after. Per-repo FTS tables would fix that and are not worth their weight
+at this scale.
+
+*Reverses if:* write cost starts to matter more than recall on the short-query path —
+e.g. a warm that re-indexes large files continuously — or FTS-bound queries come to
+dominate usage so the win lands on too few searches to pay for the writes.

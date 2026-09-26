@@ -1267,7 +1267,7 @@ mod tests {
             store
                 .conn
                 .execute_batch(
-                    "DROP INDEX idx_symbols_repo; DROP INDEX idx_events_repo; \
+                    "DROP INDEX idx_symbols_repo_name; DROP INDEX idx_events_repo; \
                      ALTER TABLE repositories ADD COLUMN display_name TEXT; \
                      ALTER TABLE symbols DROP COLUMN visibility; \
                      ALTER TABLE events DROP COLUMN source; \
@@ -1281,16 +1281,20 @@ mod tests {
                 .unwrap();
         }
         let store = Store::open(&path).unwrap();
-        let n: i64 = store
+        let indexes: Vec<String> = store
             .conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
-                 AND name IN ('idx_symbols_repo','idx_events_repo')",
-                [],
-                |r| r.get(0),
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' \
+                 AND name IN ('idx_symbols_repo','idx_symbols_repo_name','idx_events_repo') \
+                 ORDER BY name",
             )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_>>()
             .unwrap();
-        assert_eq!(n, 2);
+        // v5 added idx_symbols_repo; v12 replaced it with the composite
+        assert_eq!(indexes, ["idx_events_repo", "idx_symbols_repo_name"]);
         // the ladder ran to the top: v10 recreated the usage table and v11
         // added its warming counter
         let usage: i64 = store
