@@ -258,3 +258,31 @@ MB. Search on the 8-repo index moved −0.4 to +0.4 ms (e.g. `actconn` first ans
 (a network filesystem under the DB), or an index large enough that the cap binds and
 needs revisiting. LTO — a profile showing cross-crate inlining matters (tree-sitter's
 C is already compiled separately and doesn't benefit).
+
+## D9 — Indexer micro-work: not pursued; the parser is the cost
+
+**Deferred**, 2026-09-25. Candidates: lowercasing names on the worker threads rather
+than the single writer, dropping per-symbol `file`/`language` `String`s, moving the
+incremental walk's mtime `stat` from the walk thread onto the parse workers, and
+flattening `align`'s DP table.
+
+Sampled (`sample`, 1 ms) over a cold rails index, top-of-stack, busy samples only:
+tree-sitter 80.4%, malloc/free 10.4% (mostly tree-sitter's own trees), filesystem
+syscalls 3.9%, SQLite 2.2%, rq's own Rust 0.4%. The first two items live in that 0.4%,
+and the writer isn't the ceiling anyway (D5). Removing the walk's stats outright took an
+incremental `rq --index` walk from 114 to 88 ms at load ~20, so perhaps ~10 ms of a
+quiet ~46 ms walk. Parallelizing would recover part of that, on paths that are explicit
+or run in the background. `align`'s DP is ~20% of a fuzzy search's samples, so ~1 ms of
+a ~10 ms rails first answer, inside budget and in subtle code.
+
+Adopted instead, from the same investigation: bulk FTS on a cold budgeted warm, where
+the per-row trigger was bounding the pass (writes 1,151 ms against 236 ms; first search
+in a fresh rails 920 → 343 ms).
+
+*Also noted:* `content_hash` uses `DefaultHasher`, which std doesn't promise is stable
+across releases. A toolchain bump changes every stored hash, but hashes are consulted
+only after an mtime mismatch (the walk and `refresh_file` both skip on mtime first), so
+the cost is re-parsing files that were edited anyway. Not worth a hash dependency.
+
+*Reverses if:* a language plugin's extraction (not its grammar) shows up in a profile, or
+an incremental re-index becomes something users wait on interactively.
