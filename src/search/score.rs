@@ -39,11 +39,28 @@ pub(crate) fn match_quality(features: &[Feature]) -> f64 {
             "prefix" => return 0.9,
             "wildcard" => return 0.7,
             // the fuzzy feature value is the alignment score (capped ~600)
-            "fuzzy" => return (0.30 + 0.35 * (f.value / 600.0)).clamp(0.30, 0.65),
+            "fuzzy" | "typo" => return (0.30 + 0.35 * (f.value / 600.0)).clamp(0.30, 0.65),
             _ => {}
         }
     }
     0.25 // path-only, or no name match at all
+}
+
+/// Did the query spell the name outright — exactly, as a prefix, as a glob, or
+/// as the constructor it names — rather than as scattered letters or a typo?
+pub(crate) fn is_literal(features: &[Feature]) -> bool {
+    features
+        .iter()
+        .any(|f| matches!(f.name, "exact" | "prefix" | "wildcard" | "constructor"))
+}
+
+/// How well the name alone answered the query — the fuzzy or near-miss
+/// feature, before anything else is added. Zero for a path-only match.
+pub(crate) fn name_evidence(features: &[Feature]) -> f64 {
+    features
+        .iter()
+        .find(|f| matches!(f.name, "fuzzy" | "typo"))
+        .map_or(0.0, |f| f.value)
 }
 
 /// Presented confidence in [0,1]: match quality scaled by *dominance* — how much
@@ -173,14 +190,14 @@ pub(crate) fn score(
         .then(|| near_miss_distance(&q, &name_lower))
         .flatten()
     {
-        // Last resort, and only on a query that found nothing any other way. A
+        // Only when nothing matched literally (the caller decides). A
         // subsequence match forgives typing too *little* and nothing else, so
         // the two commonest typos — swapping adjacent letters, doubling one —
         // were hard misses: `connectoin_pool` returned nothing while
         // `cnnection_pool` worked fine.
         features.push(Feature {
             name: "typo",
-            value: NEAR_MISS_SCORE - NEAR_MISS_STEP * d as f64,
+            value: near_miss_score(&q, &cand.name, d),
         });
         true
     } else {
@@ -366,12 +383,7 @@ const MAX_NONBOUNDARY_GAP: usize = 2;
 /// ranked differently from a stale one.
 const CASE_MATCH: f64 = 150.0;
 
-/// Ceiling for a near-miss match. Below the weakest real fuzzy match, so a
-/// candidate that genuinely contains the query always wins; this exists to turn
-/// a hard miss into a ranked guess, not to compete.
-const NEAR_MISS_SCORE: f64 = 120.0;
-
-/// Charged per edit between the query and the name.
+/// Charged per edit in a mistyped scope.
 const NEAR_MISS_STEP: f64 = 40.0;
 
 /// How wrong a near miss may be. One edit is a slip; beyond two the "did you
@@ -928,6 +940,51 @@ fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
     }
     let d = prev[b.len()];
     (d > 0 && d <= MAX_NEAR_MISS).then_some(d)
+}
+
+/// A near miss scores as a fuzzy match of the part of the query that was right
+/// — its longest common subsequence with the name — so the letters that agree
+/// count as they would in any other fuzzy match. Each edit then takes back one
+/// letter's share of that evidence: one slip in a long name costs little, two
+/// in a four-letter query leave nothing. The same unmatched-tail charge applies.
+fn near_miss_score(query: &str, name: &str, edits: usize) -> f64 {
+    let right = common_subsequence(query, name);
+    let len = right.chars().count();
+    let aligned = align(&right, name).map_or(0.0, |a| a.score.min(600.0));
+    let kept = len.saturating_sub(edits) as f64 / len.max(1) as f64;
+    let tail = name.chars().count().saturating_sub(len);
+    aligned * kept - (tail as f64).min(100.0)
+}
+
+/// The longest common subsequence of `a` and `b`, compared ASCII-case-blind and
+/// spelled as in `a`. Near misses are short, so the quadratic table is small.
+fn common_subsequence(a: &str, b: &str) -> String {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let eq = |i: usize, j: usize| a[i].to_ascii_lowercase() == b[j];
+    // len[i][j] = LCS length of a[i..] and b[j..]
+    let mut len = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            len[i][j] = if eq(i, j) {
+                len[i + 1][j + 1] + 1
+            } else {
+                len[i + 1][j].max(len[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut out) = (0, 0, String::new());
+    while i < a.len() && j < b.len() {
+        if eq(i, j) {
+            out.push(a[i]);
+            (i, j) = (i + 1, j + 1);
+        } else if len[i + 1][j] >= len[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    out
 }
 
 /// Lowercase without allocating when there's nothing to change. Called once

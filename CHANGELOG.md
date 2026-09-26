@@ -14,6 +14,10 @@ and aren't listed; see `git log` for those.
   `connectoin_pool`) used to hand the scorer thousands of rows it would reject;
   those are now dropped inside the database before being read. Search time
   falls by about a third on Rails and Discourse, with identical results.
+- **A typo can beat a name that merely holds your letters.** `fethc_version`
+  now finds `fetch_version` instead of `fetch_conversations`. A near miss used
+  to be tried only when nothing else matched at all; it now competes whenever
+  nothing matched literally, scored by how many of your letters it keeps.
 - **Results print before the search is counted.** On a busy machine the usage
   write could hold the first result back by 5–15 ms; it now runs after the
   output. `--usage` counts are unchanged.

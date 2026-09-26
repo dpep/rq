@@ -303,24 +303,45 @@ fn search_query(
             })
             .collect()
     };
-    // The typo pass is a retry, not a wider net: running it up front would let
-    // a bounded edit-distance match outrank a candidate that genuinely contains
-    // the query, and would pay for the edit distance on every search.
     let mut hits = rank(&candidates, false);
-    // Nothing above zero means nothing worth showing — `ActiveRecrod` matched
-    // only a test method whose name happens to contain `ActiveRecordRecord`,
-    // scored into the negative by the test-path penalty. A wrong answer blocks
-    // the retry just as surely as no answer, so treat them alike.
-    if typo && hits.iter().all(|h| h.score <= 0.0) {
+    // A near miss competes with fuzzy matches, never with a literal one: once
+    // the query spelled a name outright (exact, prefix, glob) the typo reading
+    // is moot. Short of that, `sleect` means `Select` more surely than
+    // `IsolatedExecutionState` merely holding those letters in order, so a near
+    // miss joins the ranking when its name evidence is at least the best
+    // in-order match's — compared before kind, extent and recency, which every
+    // candidate carries and which would otherwise let a weak guess like `set`
+    // for `shft` ride in on them. With nothing above zero it's the fallback it
+    // always was, and every near miss joins. Candidates that already matched
+    // keep the score they had.
+    let literal = hits
+        .iter()
+        .any(|h| h.score > 0.0 && score::is_literal(&h.features));
+    if typo && qualifier.is_none() && !literal {
+        let bar = if hits.iter().all(|h| h.score <= 0.0) {
+            f64::NEG_INFINITY
+        } else {
+            hits.iter()
+                .map(|h| score::name_evidence(&h.features))
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let near: Vec<SymbolRow> = candidates
+            .iter()
+            .filter(|c| score::near_miss_possible(query, &c.name))
+            .cloned()
+            .collect();
+        hits.extend(rank(&near, true).into_iter().filter(|h| {
+            h.features.iter().any(|f| f.name == "typo") && score::name_evidence(&h.features) >= bar
+        }));
+    }
+    // A named scope that answered nothing may itself be the slip. That is a
+    // guess about the question, not the name, so it stays a last resort:
+    // only when nothing above zero turned up.
+    if typo && qualifier.is_some() && hits.iter().all(|h| h.score <= 0.0) {
         // Only candidates that could *be* a near miss are worth re-scoring —
         // the alternative is paying the whole name-match chain a second time
         // for ten thousand rows to serve a few hundred.
-        let near: Vec<SymbolRow> = candidates
-            .into_iter()
-            // a qualified query may have slipped in the scope, not the name
-            .filter(|c| qualifier.is_some() || score::near_miss_possible(query, &c.name))
-            .collect();
-        let retried = rank(&near, true);
+        let retried = rank(&candidates, true);
         // keep the first pass's answer if the retry turns up nothing
         if !retried.is_empty() {
             hits = retried;

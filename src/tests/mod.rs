@@ -9,6 +9,7 @@
 mod bench;
 mod budgeted_index;
 mod candidate_recall;
+mod fuzzy_ranking;
 mod git_metadata;
 mod index_integration;
 mod lang_fixtures;

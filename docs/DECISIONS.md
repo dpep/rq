@@ -451,6 +451,8 @@ truncated net held nothing positive. And scattered cross-word fuzzy matches rank
 
 *Lead, not chased:* since every search now records usage (0.52.0), about 9% of
 searches in both builds spend 5–15 ms in `record usage`, before the first answer.
+D13 found the cause and moved the write after the output; the lock suspicion was
+wrong.
 
 *Reverses if:* a new way to match can't be decided from name, kind and file (then the
 filter can't be a necessary condition); or per-search function registration shows up
@@ -519,3 +521,46 @@ stream.
 
 *Reverses if:* a search must read back something it wrote, or the usage write grows past
 bookkeeping.
+
+## D14 — Near misses compete with fuzzy matches, scored by the letters that agree
+
+**Adopted**, 2026-09-26. Same harness and index as D12: 2,372 fuzzy queries, 417 of
+them adjacent transpositions of real names, each with the name it came from.
+
+*The trigger.* The typo pass ran only when every first-pass hit scored ≤ 0. So any
+name that merely held the query's letters in order hid the typo reading:
+`fethc_version` → `fetch_conversations`, and `iteraet!` → `register_range_type`.
+It went unnoticed because the capped nets rarely held such a name; D12's complete
+nets would have made it routine. A typo now competes with fuzzy matches but never
+with literal ones. Without a positive exact, prefix, glob or constructor hit, near
+misses join the ranking, provided the name evidence (the `typo` value) is at least
+the best first-pass `fuzzy` value. That gate compares names before kind, extent
+and recency, which every candidate carries: without it, `shft` → `Sheet`,
+`updget` → `Update` and `cmlz` → `Cli` rode in on those. With nothing above zero,
+every near miss joins, as before. A scope typo (`Widgit.new`) stays last-resort.
+
+*The score.* The flat 120 − 40·edits became evidence. A near miss scores as the
+fuzzy alignment of its longest common subsequence with the query, times the share
+of those letters not undone by an edit, less the usual unmatched-tail charge.
+`sleect` → `Select` is 89, against 48 for a scattered in-order `IsolatedExecutionState`.
+
+*Tried first:*
+- The name's self-alignment × (1 − edits / query length). It credits contiguity the
+  user never typed: 21 queries lost their source from #1, 22 from the top 10.
+- The common subsequence alone, with no per-edit charge. A 2-letter overlap scored
+  like a 4-letter abbreviation, and `windows` (2 edits) tied `Window` (1): 30 lost
+  #1.
+- Per-edit discount without the evidence gate. Weak guesses won on side features: 4
+  lost #1, 12 lost the top 10.
+
+*Result against today.* Source at #1 is 916 → 916, top 10 1,347 → 1,358, found
+1,568 → 1,588. 21 sources move up and 4 down, and top-10s change in 13 of 2,372
+queries. Two lose #1. Both are genuinely ambiguous: `scorse_for`, where
+`score_for` and `scores_for` are each one edit away (166 vs 163); and `twedele`,
+where `tweedle_deedle` holds every letter in order and outranks the one-edit
+`tweedle`, whereas the old retry used to discard first-pass hits wholesale. Cost:
+query phase median 7.1 → 7.3 ms, since near misses are now scored on every fuzzy
+query.
+
+*Reverses if:* typo candidates start winning on queries whose in-order reading was
+right. The gate is the lever: it compares evidence, not totals.
