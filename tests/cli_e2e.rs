@@ -324,6 +324,39 @@ fn foo_dot_new_finds_the_constructor() {
 }
 
 #[test]
+fn foo_dot_new_without_its_own_constructor_finds_the_class() {
+    // Widget inherits `initialize`; rq doesn't track inheritance, so the class
+    // is the answer — never a similarly named class's constructor.
+    let (dir, db) = scratch("inherited-constructor");
+    fs::write(
+        dir.join("a.rb"),
+        "class Base\n  def initialize; end\nend\nclass Widget < Base\n  def run; end\nend\nclass Widgey\n  def initialize; end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.py"),
+        "class Gadget(Base):\n    def run(self):\n        pass\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["Widget.new", "--no-record", "--ndjson"]);
+    assert!(ok, "Widget.new should resolve: {out}");
+    assert_eq!(out.lines().count(), 1, "just the class: {out}");
+    assert!(
+        out.contains("\"class\"") && out.contains("\"line\":4"),
+        "Widget: {out}"
+    );
+    assert!(out.contains("constructor_owner"), "flagged: {out}");
+    assert!(out.contains("\"confidence\":0.75"), "not certain: {out}");
+
+    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--no-record", "--ndjson"]);
+    assert!(ok && out.contains("\"Gadget\""), "python too: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
     // `Foo::Bar#baz` must find the `baz` defined inside `Foo::Bar` and, since a
     // scope match exists, suppress the same-named `baz` in another scope.

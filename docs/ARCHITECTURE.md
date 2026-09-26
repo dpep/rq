@@ -363,7 +363,9 @@ why a result ranked where it did:
   requires a `parent` ending with the named scope chain (`Bar` inside `Foo`) —
   a candidate outside it drops out. `Foo.new` also matches the constructor a
   plugin names via `LanguagePlugin::constructor` (Ruby `initialize`, Python
-  `__init__`, JS/TS `constructor`). The typo retry forgives up to two edits in
+  `__init__`, JS/TS `constructor`); when `Foo` declares none (inherited or
+  implicit — rq doesn't track inheritance), the class itself answers, flagged
+  `constructor_owner` at 0.75 confidence. The typo retry forgives up to two edits in
   the scope too (a `scope_typo` feature, typo-level confidence). A `.` query
   that no scope answers tries `.` as a one-char wildcard before any typo retry
 - **path** — query also matches the file's name (Layer 3)

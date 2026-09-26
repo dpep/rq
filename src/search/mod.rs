@@ -192,11 +192,39 @@ pub(crate) fn search(
     if found(&m) {
         return Ok(m);
     }
+    // `Foo.new` where Foo declares no constructor (inherited, or implicit):
+    // answer with Foo itself — one hop from the real one — rather than letting
+    // the typo retry pick a similarly named class's constructor.
+    if let (leaf, Some(owner)) = score::parse_qualified(query)
+        && leaf.eq_ignore_ascii_case("new")
+    {
+        let m = constructor_owner(run(owner, false)?);
+        if found(&m) {
+            return Ok(m);
+        }
+    }
     let glob = run(&query.replace('.', "?"), false)?;
     if found(&glob) {
         return Ok(glob);
     }
     run(query, true)
+}
+
+/// Keep only exact class/struct matches from an owner search, flagged so
+/// `--explain` and confidence show they stand in for a constructor.
+fn constructor_owner(mut m: Matches) -> Matches {
+    m.hits.retain(|h| {
+        matches!(h.kind.as_str(), "class" | "struct")
+            && h.features.iter().any(|f| f.name == "exact")
+    });
+    for h in &mut m.hits {
+        h.features.push(score::Feature {
+            name: "constructor_owner",
+            value: 0.0,
+        });
+    }
+    m.total = m.hits.len();
+    m
 }
 
 /// Anything above zero is worth showing; below it, only a wrong answer.

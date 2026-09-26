@@ -89,7 +89,7 @@ get results.
   `.perform`) for a method inside a class — rq keeps only the definitions in that
   scope, so use it when you know the enclosing module/class from the surrounding
   code. `rq RefundProcessor.new` finds its constructor (`initialize`, `__init__`,
-  `constructor`).
+  `constructor`), or the class itself when the constructor is inherited.
 - Kind: `rq save -k method`, or the shorthand `rq method save`. Kinds are
   `class`/`module`/`method`/`function`/`struct`/`enum`/`trait` (shortcuts
   `c`/`mod`/`m`/`f`/`s`/`e`/`t`, comma-separable: `-k m,f`).

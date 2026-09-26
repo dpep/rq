@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **`Foo.new` on a class that inherits its constructor finds the class.** It
+  used to fall through to the typo retry and answer with a similarly named
+  class's constructor (`Widget.new` → `Widgey#initialize`). The class is now
+  the answer, flagged `constructor_owner` in `--explain`, at 0.75 confidence.
+
 ## 0.51.2 — 2026-09-26
 
 ### Added

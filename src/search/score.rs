@@ -29,6 +29,10 @@ pub(crate) fn match_quality(features: &[Feature]) -> f64 {
     if features.iter().any(|f| f.name == "scope_typo") {
         return 0.25;
     }
+    // the right class, but where its constructor is inherited or implicit
+    if features.iter().any(|f| f.name == "constructor_owner") {
+        return 0.75;
+    }
     for f in features {
         match f.name {
             "exact" | "constructor" => return 1.0,
