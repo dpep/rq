@@ -613,6 +613,69 @@ fn open_launches_and_records_the_pick() {
 }
 
 #[test]
+fn web_links_the_newest_pushed_commit() {
+    let (dir, db) = scratch("web");
+    fs::write(dir.join("user.rb"), "\nclass User\nend\n").unwrap();
+    git_init_commit(&dir);
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("run git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // BROWSER=echo stands in for the browser, so the URL lands on stdout
+    let web = || {
+        let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .args(["-w", "user", "--no-record"])
+            .current_dir(&dir)
+            .env("RQ_DB", &db)
+            .env("RQ_WARM_DETACH", "0")
+            .env("BROWSER", "echo")
+            .output()
+            .expect("run rq");
+        (
+            run.status.success(),
+            String::from_utf8_lossy(&run.stdout).trim().to_string(),
+        )
+    };
+
+    // no remote → nothing to link to
+    rq(&db, &dir, &["--index"]);
+    assert!(!web().0, "a local-only repo has no URL");
+
+    git(&["remote", "add", "origin", "git@github.com:org/app.git"]);
+    rq(&db, &dir, &["--drop"]);
+    rq(&db, &dir, &["--index"]);
+
+    // nothing pushed yet: fall back to the host's default branch
+    let (ok, url) = web();
+    assert!(ok, "web should exit 0 via the launcher");
+    assert_eq!(url, "https://github.com/org/app/blob/HEAD/user.rb#L2");
+
+    // pushed, then committed past: link the pushed sha, not the unpushed HEAD
+    let pushed = git(&["rev-parse", "HEAD"]);
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(&[
+        "-c",
+        "user.email=t@e.st",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-qm",
+        "local",
+        "--allow-empty",
+    ]);
+    assert_eq!(
+        web().1,
+        format!("https://github.com/org/app/blob/{pushed}/user.rb#L2")
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn drop_honors_json_output() {
     // --drop --json/-J report what was removed, so a script can act on it
     let (dir, db) = scratch("drop-json");

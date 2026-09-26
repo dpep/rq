@@ -106,10 +106,17 @@ struct Cli {
     #[arg(short = 'o', long, conflicts_with_all = ["index", "status", "record", "json", "ndjson"])]
     open: bool,
 
+    /// Like --open, but in the browser: the match on its git host (GitHub-style
+    /// `blob/<sha>/<file>#L<line>` URL), pinned to the newest pushed commit in
+    /// HEAD's history so the link resolves and stays accurate. Launcher: `$BROWSER`, else `open`/`xdg-open`, else
+    /// prints the URL.
+    #[arg(short = 'w', long, conflicts_with_all = ["open", "index", "status", "record", "json", "ndjson"])]
+    web: bool,
+
     /// Print the definition's source, not just its location — but only when the
     /// top match is confident; otherwise falls back to the ranked list. Pipe to a
     /// pager (`rq --show foo | less`). JSON adds a `body` field.
-    #[arg(long, conflicts_with_all = ["open", "index", "status", "record", "symbols", "drop"])]
+    #[arg(long, conflicts_with_all = ["open", "web", "index", "status", "record", "symbols", "drop"])]
     show: bool,
 
     /// Emit results as a JSON array (for editors and scripts).
@@ -159,13 +166,13 @@ struct Cli {
 
     /// List the symbols defined in FILE, in line order — a structural outline,
     /// not a ranked search. Honors -k/-x to filter by kind/language.
-    #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "record", "drop", "open"])]
+    #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "record", "drop", "open", "web"])]
     symbols: Option<String>,
 
     /// Drop a repository's index — the opposite of --index. Removes its symbols,
     /// files, coverage, and learned ranking. TARGET is the repo's path (or the
     /// current repo); a known identity string (as shown by --status) also works.
-    #[arg(long, conflicts_with_all = ["index", "status", "record", "open"])]
+    #[arg(long, conflicts_with_all = ["index", "status", "record", "open", "web"])]
     drop: bool,
 
     /// Record an interaction (editor/shell hook): the result opened for a query.
@@ -188,7 +195,7 @@ struct Cli {
     /// Finish warming a repository's index in the background — the target a
     /// search re-execs after printing results, detached, so the shell never
     /// waits on it. Single-flighted per repo; safe to run by hand.
-    #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "record", "drop", "symbols", "open", "show"])]
+    #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "record", "drop", "symbols", "open", "web", "show"])]
     warm: Option<Option<String>>,
 
     /// Print a shell completion script (bash, zsh, fish, elvish, powershell).
@@ -321,6 +328,7 @@ pub fn run() -> ExitCode {
                     no_wait: cli.no_wait,
                     wait: cli.wait,
                     open: cli.open,
+                    web: cli.web,
                     all_repos: cli.all_repos,
                     show: cli.show,
                     batch: false,
@@ -408,6 +416,7 @@ fn flag_summary(args: &SearchArgs) -> String {
         (args.explain, "explain"),
         (args.show, "show"),
         (args.open, "open"),
+        (args.web, "web"),
         (args.all_repos, "all-repos"),
         (args.no_wait, "no-wait"),
         (args.batch, "batch"),
@@ -458,6 +467,7 @@ struct SearchArgs<'a> {
     /// default/`RQ_WAIT_BUDGET_MS` budget.
     wait: Option<Duration>,
     open: bool,
+    web: bool,
     all_repos: bool,
     /// One of several queries sharing a run, so each row says which query it
     /// answers — a single stream serving many questions is otherwise
@@ -582,9 +592,9 @@ fn cmd_batch(
              where each line carries the query it answers"
         ));
     }
-    if cli.open || cli.show {
+    if cli.open || cli.web || cli.show {
         return fail(format_args!(
-            "rq: --open and --show act on a single result, not a stream of queries"
+            "rq: --open, --web and --show act on a single result, not a stream of queries"
         ));
     }
 
@@ -651,6 +661,7 @@ fn cmd_batch(
                 no_wait: true,
                 wait: cli.wait,
                 open: false,
+                web: false,
                 all_repos: cli.all_repos,
                 show: false,
                 batch: true,
@@ -676,6 +687,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         no_wait,
         wait,
         open,
+        web,
         all_repos,
         show,
         ..
@@ -1058,11 +1070,20 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         return code;
     }
 
-    // --open: pick the best match (prompting on a TTY with several), record the
-    // pick so ranking learns, and hand off to the editor. Returns before the
-    // normal print / warm-join — opening should be snappy, and a launcher `exec`s.
-    if open {
-        return finish_open(store, &hits, query, current, root.as_deref(), no_record);
+    // --open/--web: pick the best match (prompting on a TTY with several),
+    // record the pick so ranking learns, and hand off to the editor or browser.
+    // Returns before the normal print / warm-join — opening should be snappy,
+    // and a launcher `exec`s.
+    if open || web {
+        return finish_open(
+            store,
+            &hits,
+            query,
+            current,
+            root.as_deref(),
+            no_record,
+            web,
+        );
     }
 
     if let Some(code) = render_hits(args, &hits) {
@@ -1509,9 +1530,9 @@ fn parse_choice(input: &str, n: usize) -> Option<usize> {
     (i < n).then_some(i)
 }
 
-/// `--open`: choose a hit, record it as a selection so ranking learns, then hand
-/// off to the editor. The launcher `exec`s (replacing this process), so the shell
-/// waits on the editor — not on rq's background warm.
+/// `--open`/`--web`: choose a hit, record it as a selection so ranking learns,
+/// then hand off to the editor or browser. The launcher `exec`s (replacing this
+/// process), so the shell waits on it — not on rq's background warm.
 fn finish_open(
     store: &mut Store,
     hits: &[crate::search::Hit],
@@ -1519,6 +1540,7 @@ fn finish_open(
     current: Option<i64>,
     root: Option<&std::path::Path>,
     no_record: bool,
+    web: bool,
 ) -> ExitCode {
     let Some(hit) = choose_hit(hits) else {
         return ExitCode::SUCCESS; // aborted at the prompt
@@ -1536,6 +1558,10 @@ fn finish_open(
             None,
         );
         deferred_maintenance(store);
+    }
+
+    if web {
+        return open_web(store, hit, current, root);
     }
 
     // Results are repo-root-relative, so resolve against the root — the bare path
@@ -1602,6 +1628,68 @@ fn open_command(file: &std::path::Path, line: i64, loc: &str) -> Option<(String,
     }
 
     None
+}
+
+/// `--web`: open `hit` on its git host. Pinned to the newest pushed sha in HEAD's
+/// history when the hit is in the repo we're standing in — an unpushed sha would
+/// 404. Another repo's checkout state is unknown, so its link follows the host's
+/// default branch instead.
+fn open_web(
+    store: &Store,
+    hit: &crate::search::Hit,
+    current: Option<i64>,
+    root: Option<&std::path::Path>,
+) -> ExitCode {
+    if hit.repo_identity.starts_with("local:") {
+        return fail(format_args!(
+            "rq --web: {} has no git remote to link to",
+            hit.repo_identity
+        ));
+    }
+    let here =
+        current.is_some() && store.repository_id(&hit.repo_identity).ok().flatten() == current;
+    let rev = root
+        .filter(|_| here)
+        .and_then(crate::index::pushed_head)
+        .unwrap_or_else(|| "HEAD".into());
+    let url = web_url(&hit.repo_identity, &rev, &hit.file, hit.line);
+
+    use std::os::unix::process::CommandExt;
+    let browser = std::env::var("BROWSER")
+        .ok()
+        .filter(|b| !b.is_empty())
+        .or_else(|| {
+            ["open", "xdg-open"]
+                .into_iter()
+                .find(|p| on_path(p))
+                .map(str::to_string)
+        });
+    match browser {
+        Some(prog) => {
+            // exec returns only on failure
+            let err = std::process::Command::new(&prog).arg(&url).exec();
+            fail(format_args!("rq --web: cannot run {prog}: {err}"))
+        }
+        None => {
+            println!("{url}");
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// A GitHub-style permalink: `https://<host/org/repo>/blob/<rev>/<file>#L<line>`.
+/// GitLab redirects the same shape, so it isn't GitHub-only.
+fn web_url(identity: &str, rev: &str, file: &str, line: i64) -> String {
+    let path: String = file
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    format!("https://{identity}/blob/{rev}/{path}#L{line}")
 }
 
 /// Whether `prog` resolves on `PATH` (a regular file; symlinks followed).
@@ -2790,6 +2878,14 @@ mod tests {
         assert_eq!(parse_choice("6", 5), None);
         assert_eq!(parse_choice("0", 5), None);
         assert_eq!(parse_choice("q", 5), None);
+    }
+
+    #[test]
+    fn web_url_shape() {
+        assert_eq!(
+            web_url("github.com/org/repo", "abc123", "src/a b#.rs", 42),
+            "https://github.com/org/repo/blob/abc123/src/a%20b%23.rs#L42"
+        );
     }
 
     #[test]

@@ -50,6 +50,7 @@ rq <query> -l/--limit N     # cap the number of results (default 10; 0 = every m
 rq <query> -a/--all-repos   # search every indexed repo (default: just the current one)
 rq <query> --show           # print the definition's source (confident match only; pipe to less)
 rq <query> -o/--open        # open the best match in your editor + record the pick
+rq <query> -w/--web         # open the best match on GitHub, pinned to a pushed sha
 rq --symbols FILE           # outline a file's definitions, in line order
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # seed the index with a subtree first (big monorepos)
@@ -71,6 +72,14 @@ and failing all that it just prints the resolved `path:line`.
 rq -o refund                          # open the top match, record it
 RQ_OPEN='vim +{line} {file}' rq -o x  # force a specific launcher
 ```
+
+`rq -w <query>` does the same in the browser: it opens the match on the repo's
+git host (`https://<remote>/blob/<sha>/<file>#L<line>`), pinned to a commit so
+the link stays accurate as the branch moves — HEAD, or if HEAD isn't pushed yet,
+the newest commit in its history that is, so the link always resolves. A result from another repo
+(`-a`) links to that host's default branch, since rq doesn't know what's checked
+out there. The launcher is `$BROWSER`, then `open`/`xdg-open`, else the URL is
+printed.
 
 For an interactive fzf picker (or to wire a custom flow), `script/rq-open` is a
 small reference wrapper around `rq` + `rq --record`.

@@ -1233,6 +1233,28 @@ pub(crate) fn refresh_file(
     Ok(Refresh::Updated)
 }
 
+/// The newest commit in HEAD's history that a remote has — HEAD itself once
+/// it's pushed — so a git host can serve it. `None` when nothing is pushed.
+pub(crate) fn pushed_head(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-list", "--boundary", "HEAD", "--not", "--remotes", "--"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    if text.trim().is_empty() {
+        return git_head(root);
+    }
+    // unpushed commits, then `-<sha>` boundaries where they meet pushed history
+    text.lines()
+        .find_map(|l| l.strip_prefix('-'))
+        .map(str::to_string)
+}
+
 /// Best-effort repository identity: upstream git remote, else the local path.
 pub(crate) fn detect_identity(root: &Path) -> RepoIdentity {
     for remote in ["origin", "upstream"] {

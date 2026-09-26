@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Added
+- **`-w`/`--web` opens a result on GitHub.** Like `-o`, but the browser gets a
+  permalink (`blob/<sha>/<file>#L<line>`) pinned to your checked-out commit, or
+  the newest pushed one before it, so the link always resolves.
+
 ## 0.51.1 — 2026-09-25
 
 ### Changed
