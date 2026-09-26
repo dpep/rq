@@ -756,6 +756,30 @@ impl Store {
         Ok(())
     }
 
+    /// When a warm child last found the worktree unchanged since indexing, and
+    /// the git-state stamp it saw: `(stamp, checked_at)`.
+    pub(crate) fn warm_verified(&self, identity: &str) -> Result<Option<(String, i64)>> {
+        Ok(self
+            .meta_get(&format!("warm_verified:{identity}"))?
+            .and_then(|v| {
+                let (at, stamp) = v.split_once('\n')?;
+                Some((stamp.to_string(), at.parse().ok()?))
+            }))
+    }
+
+    /// Record that the worktree matched the index as of `checked_at`.
+    pub(crate) fn set_warm_verified(
+        &self,
+        identity: &str,
+        stamp: &str,
+        checked_at: i64,
+    ) -> Result<()> {
+        self.meta_set(
+            &format!("warm_verified:{identity}"),
+            &format!("{checked_at}\n{stamp}"),
+        )
+    }
+
     /// The cached branch-changed file list for a repo: `(stamp, computed_at,
     /// files)`. Stored rather than recomputed because the git diff behind it is
     /// O(tracked files) and runs on the search path.

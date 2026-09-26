@@ -1135,6 +1135,37 @@ fn spawn_detached_warm(root: &std::path::Path) {
 /// stamp is a crashed warmer's leftover and a new child takes over.
 const WARM_LOCK_TTL_SECS: i64 = 600;
 
+/// How long a warm child's "nothing moved" verdict spares later hits the spawn,
+/// while git's own state still matches it. Only an unstaged edit to a tracked
+/// file can hide inside this window (it touches nothing in `.git`); a miss still
+/// checks inline and a top hit's file is revalidated on read, so what's left is
+/// a changed file that isn't among the hits, picked up by the first hit after.
+fn warm_recheck_window() -> Duration {
+    env_budget("RQ_WARM_RECHECK_MS", 10_000)
+}
+
+/// Whether a warm child found this worktree unchanged recently enough, with
+/// git's state untouched since, that spawning another would find nothing.
+fn recently_verified(
+    store: &Store,
+    identity: Option<&str>,
+    root: &std::path::Path,
+    indexed_head: Option<&str>,
+) -> bool {
+    let _span = crate::profile::span("after: warm recently verified?");
+    let (Some(id), Some(stamp)) = (
+        identity,
+        indexed_head.and_then(|h| crate::index::git_state_stamp(root, h)),
+    ) else {
+        return false;
+    };
+    let Ok(Some((seen, at))) = store.warm_verified(id) else {
+        return false;
+    };
+    let age = now_unix().saturating_sub(at);
+    seen == stamp && (0..warm_recheck_window().as_secs() as i64).contains(&age)
+}
+
 /// `rq --warm [PATH]`: the detached child a search re-execs after printing —
 /// finishes warming the repo's index in the background. Niced so it stays out
 /// of the foreground's way; single-flighted per repo so a burst of queries
@@ -1187,9 +1218,19 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
             .ok()
             .flatten()
             .and_then(|id| store.indexed_head(id).ok().flatten());
+        // The window runs from before `git status`, so an edit made during it
+        // still falls inside. The stamp is read after: status may rewrite
+        // `.git/index` itself, and a HEAD that moved meanwhile yields none.
+        let checked_at = now_unix();
         let edits = worktree_edits(&root, head.as_deref());
         if !changed_since_index(&store, Some(&identity), Some(&root), edits) {
             crate::trace!("warm: unchanged since indexed, nothing to do");
+            if let Some(stamp) = head
+                .as_deref()
+                .and_then(|h| crate::index::git_state_stamp(&root, h))
+            {
+                let _ = store.set_warm_verified(&identity, &stamp, checked_at);
+            }
             let _ = store.clear_warm_lock(&identity);
             return ExitCode::SUCCESS;
         }
@@ -1817,9 +1858,11 @@ fn settle_warm(
         None => false,
         // The answer is out and didn't depend on this: the warm child asks git
         // and reindexes only if something moved (see `cmd_warm`).
-        Some(Staleness::Deferred(..)) if hit => {
-            if let Some(r) = root {
-                spawn_detached_warm(r);
+        Some(Staleness::Deferred(r, head)) if hit => {
+            if recently_verified(store, identity, &r, head.as_deref()) {
+                crate::trace!("warm: verified unchanged within the recheck window, not spawning");
+            } else {
+                spawn_detached_warm(&r);
             }
             return false;
         }

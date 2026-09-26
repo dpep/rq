@@ -177,7 +177,7 @@ usage_daily (
   PRIMARY KEY (day, source, flags)
 );
 
--- small key/value store (indexed HEAD, warm lock, branch-file cache)
+-- small key/value store (indexed HEAD, warm lock, warm verdict, branch-file cache)
 meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 ```
 
@@ -287,7 +287,11 @@ search only reads.
   warm child rather than wait on it, so a hit on an indexed repo forks no `git`.
   A miss still asks inline, since its exit code (absent vs. still warming)
   depends on the answer. "Moved" means a new HEAD or a dirty source file whose
-  mtime differs from the indexed one — dirty-but-indexed is unchanged.
+  mtime differs from the indexed one — dirty-but-indexed is unchanged. A child
+  that finds nothing moved records the verdict with a git-state stamp (HEAD
+  commit + `.git/index` mtime), and for 10 s (`RQ_WARM_RECHECK_MS`) a hit whose
+  stamp still matches skips the spawn too. Staging, commits, checkouts and pulls
+  change the stamp; an unstaged edit doesn't, so it waits out the window (D16).
 - **Language-isolated** — the indexer is blind to language; plugins emit the
   common symbol model.
 
@@ -426,8 +430,9 @@ child runs niced (and with throttled disk I/O on macOS) on a seconds-scale
 budget (`RQ_WARM_BUDGET_MS`), sweeping until coverage completes, and is
 single-flighted per repo via a pid-stamped lock in `meta`, so a burst of
 queries runs at most one warmer. On a complete repo the child is spawned after
-every hit and first asks whether anything moved; usually nothing has, and it
-exits after one `git status`. Still no daemon: the child does one job and
+a hit and first asks whether anything moved; usually nothing has, and it
+exits after one `git status`, recording that verdict so hits over the next few
+seconds don't spawn at all (D16). Still no daemon: the child does one job and
 exits. `RQ_WARM_DETACH=0` reverts to finishing the (small) warm in-process —
 the hermetic mode tests and debugging use.
 

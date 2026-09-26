@@ -21,6 +21,13 @@ and aren't listed; see `git log` for those.
   Not on the Marketplace — build the `.vsix` and install it; see
   `docs/EDITORS.md`. The rq binary is unchanged.
 
+### Changed
+- **Back-to-back searches exit sooner.** After a search confirms nothing changed
+  since indexing, searches over the next 10 seconds skip that check, as long as
+  git's state still matches. Commits, checkouts, pulls and `git add` are noticed
+  immediately. An unstaged edit is noticed by the first search after that
+  window. On a large repo, a burst of searches finishes about a third faster.
+
 ## 0.52.2 — 2026-09-26
 
 ### Changed

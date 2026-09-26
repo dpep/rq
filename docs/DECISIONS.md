@@ -607,3 +607,72 @@ alignment that starts at a boundary is untouched. There is no threshold.
 1,361, found 1,568 → 1,588. 83 sources move up and 5 down; no source leaves the top
 10 and none loses #1 beyond D14's two ambiguous cases. The two-state table left
 the query phase flat (7.0 → 7.1 ms median).
+
+## D16 — A warm child's "nothing moved" spares the next hits the spawn
+
+**Adopted**, 2026-09-26. Release build, rails (3.3k indexed files) and discourse
+(14.4k), isolated DB. Each run is bursts of 20 back-to-back exact searches, with
+the two builds interleaved burst by burst. Between bursts the harness waited for
+every `--warm` child to exit. Other work kept the machine loaded throughout
+(load average 20–45), so absolute walls are inflated and vary between runs. The
+direction held in every run.
+
+*The cost.* Since b7678d6 every hit on a complete repo spawns `rq --warm`, which runs
+`git status` and usually exits having found nothing. The parent pays for the spawn.
+A burst's searches also compete for CPU with the children's `git status`, which grows
+with the worktree.
+
+*What was built.* When the child finds nothing moved, it records the verdict in `meta`
+with a stamp: checkout root, HEAD commit (which must still be the indexed one) and the
+`.git/index` mtime in nanoseconds. A hit reads the stamp back and skips the spawn when
+it matches and the verdict is under 10 s old (`RQ_WARM_RECHECK_MS`). The read is two
+small file reads, a stat and a meta read, 0.1 ms in `--profile`. The window starts
+*before* the child's `git status`. The stamp is read *after* it, because status can
+rewrite `.git/index` itself. Unchanged:
+- A miss still checks inline.
+- The single-flight lock and the dirty-worktree rule (a101921) work as before.
+- A sweep writes no verdict, so the hit after a real change still spawns a child to
+  confirm.
+
+| wall to exit, 20-search bursts | before p50 / p90 | after p50 / p90 |
+|---|---|---|
+| rails, clean (3 runs) | 9.6–12.8 / 16.7–46.6 ms | 9.3–12.5 / 15.7–42.7 |
+| rails, dirty but indexed (2 runs) | 6.9–20.3 / 9.9–57.9 | 5.9–17.1 / 8.0–49.7 |
+| discourse, clean (3 runs) | 12.0–18.5 / 29.2–37.1 | 8.5–12.1 / 14.8–21.1 |
+| discourse, dirty but indexed (2 runs) | 22.0–24.1 / 39.8–46.7 | 14.7–16.0 / 24.4–33.2 |
+| burst to quiet (last child exits), median | 30–76 ms | 21–41 ms |
+
+On rails the paired median drops 0.3–0.5 ms clean and 1.0–3.2 ms dirty. Each
+discourse child's `git status` is heavier, and there the median drops by about a
+third and p90 by about half. Output and exit codes are identical.
+
+*What the window allows.* Every git operation changes the stamp, so the next hit
+spawns. Commit, checkout, reset and pull move HEAD. Merge, stash and `git add`
+rewrite `.git/index`. An unstaged edit to a tracked file touches nothing in `.git`,
+so the window is what catches it: the first hit more than 10 s after the verdict
+spawns the child. Until then the edit can only hide a symbol in a file that isn't
+among the hits, because a miss checks inline and a top hit's file is revalidated on
+read. New untracked files were never seen by the child (`git status
+--untracked-files=no`), so they are no worse off. The only usage evidence is a small
+sample from local agent transcripts:
+- 12 of 23 gaps between consecutive searches were under 10 s.
+- 1 of 25 searches came within 10 s of an edit.
+
+*Why this isn't D7's rejected pre-lock check.* D7 moved the child's `git status` ahead
+of the lock, so children ran it concurrently. Here the parent reads a stored verdict and
+forks nothing. Fewer children run, not more, and the lock still serializes the ones that
+do.
+
+*Rejected:*
+- **Catching bare edits without a window.** Only a stat of every tracked file sees
+  them. That is the work `git status` does, and it would move the child's cost into
+  the parent.
+- **Stamping before `git status`.** On a freshly written tree (the e2e fixture),
+  status's racy-entry refresh rewrote `.git/index` after the stamp was taken, so the
+  next hit spawned anyway.
+- **Reusing the branch-files stamp.** It holds whole-second mtimes of `.git/HEAD` and
+  `.git/index`. A commit updates the branch ref, not `.git/HEAD`. A whole second is
+  also coarse next to a burst of searches.
+
+*Reverses if:* staleness from an unstaged edit shows up in real use (shrink the
+window first), or spawning gets cheap enough that the stamp isn't worth its window.

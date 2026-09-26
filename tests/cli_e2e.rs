@@ -658,6 +658,79 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Run a `-v` hit with detach on (and optional extra env), and report whether
+/// it spawned the detached warm child.
+fn spawned_warm(db: &Path, cwd: &Path, env: &[(&str, &str)]) -> bool {
+    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["-v", "Widget"])
+        .current_dir(cwd)
+        .env("RQ_DB", db)
+        .env("RQ_WARM_DETACH", "1")
+        .envs(env.iter().copied())
+        .output()
+        .expect("run rq");
+    assert!(out.status.success(), "a hit");
+    String::from_utf8_lossy(&out.stderr).contains("background warm (detached)")
+}
+
+/// Run `rq --warm` to completion, as the detached child would.
+fn warm_now(db: &Path, cwd: &Path) {
+    Command::new(env!("CARGO_BIN_EXE_rq"))
+        .arg("--warm")
+        .current_dir(cwd)
+        .env("RQ_DB", db)
+        .output()
+        .expect("run rq --warm");
+}
+
+#[test]
+fn a_hit_skips_the_warm_spawn_once_a_warm_found_nothing_moved() {
+    let (dir, db) = scratch("warm-verified");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    warm_now(&db, &dir);
+    assert!(!spawned_warm(&db, &dir, &[]), "verified clean: no spawn");
+    assert!(!spawned_warm(&db, &dir, &[]), "and again, back to back");
+
+    // last: the child this hit spawns may outlive the test
+    assert!(
+        spawned_warm(&db, &dir, &[("RQ_WARM_RECHECK_MS", "0")]),
+        "an expired verdict spawns"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn staging_or_committing_voids_the_verdict_but_a_bare_edit_waits() {
+    let (dir, db) = scratch("warm-moved");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    warm_now(&db, &dir);
+
+    // An unstaged edit touches nothing in .git, so only the window catches it.
+    fs::write(dir.join("c.rb"), "class Gizmo\n  def go; end\nend\n").unwrap();
+    assert!(
+        !spawned_warm(&db, &dir, &[]),
+        "a bare edit waits out the recheck window"
+    );
+
+    let _ = Command::new("git")
+        .args(["add", "c.rb"])
+        .current_dir(&dir)
+        .output();
+    assert!(spawned_warm(&db, &dir, &[]), "staging spawns");
+
+    git_init_commit(&dir);
+    assert!(spawned_warm(&db, &dir, &[]), "a commit spawns");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
     // Dirty is not the same as stale: once the edit has been indexed, a search

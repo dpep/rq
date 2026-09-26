@@ -1264,6 +1264,26 @@ pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
     Some(format!("{}:{}", stamp("HEAD"), stamp("index")))
 }
 
+/// A fingerprint of the git state a worktree check depends on, short of the
+/// working files themselves: the checkout, its HEAD commit and the `.git/index`
+/// mtime to the nanosecond. A commit, checkout, reset, pull, merge, stash or
+/// `git add` moves one of them; an unstaged edit to a tracked file moves
+/// neither, so a caller must pair this with a time window. `None` unless HEAD
+/// is still `head`, or when `.git` isn't a plain directory, since resolving
+/// HEAD there means forking git.
+pub(crate) fn git_state_stamp(root: &Path, head: &str) -> Option<String> {
+    let git_dir = root.join(".git");
+    if !git_dir.is_dir() || git_head(root)? != head {
+        return None;
+    }
+    let index = std::fs::metadata(git_dir.join("index"))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    Some(format!("{}\n{head}\n{index}", root.display()))
+}
+
 /// The checked-out branch, read from `.git/HEAD` rather than forked out to
 /// `git rev-parse`. `None` for a detached HEAD (no branch to compare), or when
 /// `.git` isn't a plain directory — a worktree or submodule points elsewhere,
