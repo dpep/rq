@@ -943,9 +943,13 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Captured before we self-cancel below, so it reflects only a *user's* Ctrl-C.
     let interrupted = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
 
+    let here = identity
+        .as_deref()
+        .zip(root.as_deref())
+        .map(|(identity, root)| Here { identity, root });
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
     if !hits.is_empty()
-        && revalidate_top(store, &hits)
+        && revalidate_top(store, &hits, here)
         && let Ok(m) = crate::search::search(store, query, current, only_repo, &active, rank_limit)
     {
         total = m.total;
@@ -1063,28 +1067,15 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // in text output and carried in JSON. Cheap: only the displayed results.
     let _signatures_span = crate::profile::span("signatures");
     for hit in &mut hits {
-        hit.signature = read_signature(
-            store,
-            &hit.repo_identity,
-            &hit.file,
-            hit.line,
-            cwd.as_deref(),
-        );
+        hit.signature = read_signature(store, &hit.repo_identity, &hit.file, hit.line, here);
     }
     drop(_signatures_span);
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
     if show
-        && let Some(code) = show_top_definition(
-            store,
-            &mut hits,
-            query,
-            out,
-            cwd.as_deref(),
-            current,
-            no_record,
-        )
+        && let Some(code) =
+            show_top_definition(store, &mut hits, query, out, here, current, no_record)
     {
         return code;
     }
@@ -2140,9 +2131,18 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
     let repo_id = store.repository_id(&identity).ok().flatten();
 
     // Store the path repo-relative so the rollup can resolve it against indexed
-    // files.
-    let rel = match repo_id.and_then(|id| store.checkout_root(id).ok().flatten()) {
-        Some(root) => repo_relative(std::path::Path::new(&root), &cwd, file),
+    // files — relative to the checkout we're in, not another clone's root.
+    let root = crate::index::repo_root(&cwd).or_else(|| {
+        let id = repo_id?;
+        store
+            .checkout_roots(id)
+            .ok()?
+            .into_iter()
+            .next()
+            .map(PathBuf::from)
+    });
+    let rel = match root {
+        Some(root) => repo_relative(&root, &cwd, file),
         None => file.to_string(),
     };
     let query_norm = query.map(|q| q.to_ascii_lowercase());
@@ -2155,29 +2155,33 @@ fn cmd_record(kind: &str, query: Option<&str>, file: &str, line: Option<i64>) ->
     ExitCode::SUCCESS
 }
 
-/// Candidate on-disk roots that may hold a hit's file, most-current first: every
-/// checkout root recorded for the repo (newest first), then the cwd (for live
-/// results, and as a fallback when the stored root is stale — a moved repo keeps
-/// its old checkout row, and reading from that path fails). Callers read from the
-/// first candidate that actually has the file.
-fn hit_file_roots(
-    store: &Store,
-    repo_identity: &str,
-    cwd: Option<&std::path::Path>,
-) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = store
+/// The checkout a command runs in: its repo identity and root.
+#[derive(Clone, Copy)]
+struct Here<'a> {
+    identity: &'a str,
+    root: &'a std::path::Path,
+}
+
+/// Candidate on-disk roots that may hold a hit's file, most-current first: the
+/// checkout you're in, when the hit is from its repo — another clone of the
+/// same remote shares the rows but not necessarily the content — then every
+/// recorded checkout root, newest first (a moved repo keeps its old row, and
+/// reading from that path fails). Callers read from the first that has the file.
+fn hit_file_roots(store: &Store, repo_identity: &str, here: Option<Here>) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = here
+        .filter(|h| h.identity == repo_identity)
+        .map(|h| h.root.to_path_buf())
+        .into_iter()
+        .collect();
+    let recorded = store
         .repository_id(repo_identity)
         .ok()
         .flatten()
         .map(|id| store.checkout_roots(id).unwrap_or_default())
-        .unwrap_or_default()
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-    if let Some(c) = cwd {
-        let c = c.to_path_buf();
-        if !roots.contains(&c) {
-            roots.push(c);
+        .unwrap_or_default();
+    for root in recorded.into_iter().map(PathBuf::from) {
+        if !roots.contains(&root) {
+            roots.push(root);
         }
     }
     roots
@@ -2190,9 +2194,9 @@ fn read_signature(
     repo_identity: &str,
     file: &str,
     line: i64,
-    cwd: Option<&std::path::Path>,
+    here: Option<Here>,
 ) -> Option<String> {
-    hit_file_roots(store, repo_identity, cwd)
+    hit_file_roots(store, repo_identity, here)
         .into_iter()
         .find_map(|root| {
             let src = std::fs::read_to_string(root.join(file)).ok()?;
@@ -2218,7 +2222,7 @@ fn show_top_definition(
     hits: &mut [crate::search::Hit],
     query: &str,
     out: Output,
-    cwd: Option<&std::path::Path>,
+    here: Option<Here>,
     current: Option<i64>,
     no_record: bool,
 ) -> Option<ExitCode> {
@@ -2227,7 +2231,7 @@ fn show_top_definition(
         return None; // ambiguous / weak — let the caller list candidates
     }
     let end = top.end_line.unwrap_or(top.line);
-    let body = read_span(store, &top.repo_identity, &top.file, top.line, end, cwd);
+    let body = read_span(store, &top.repo_identity, &top.file, top.line, end, here);
     hits[0].body = body;
     let top = &hits[0];
     let shown = (top.file.clone(), top.line);
@@ -2285,9 +2289,9 @@ fn read_span(
     file: &str,
     start: i64,
     end: i64,
-    cwd: Option<&std::path::Path>,
+    here: Option<Here>,
 ) -> Option<String> {
-    hit_file_roots(store, repo_identity, cwd)
+    hit_file_roots(store, repo_identity, here)
         .into_iter()
         .find_map(|root| span_in(&std::fs::read_to_string(root.join(file)).ok()?, start, end))
 }
@@ -2401,12 +2405,9 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     }
 
     // Read the source once for signatures (every row is the same file), from
-    // the first root that actually has it (see `hit_file_roots` — a moved repo
-    // keeps a stale checkout row, so the first-recorded root can be dead).
+    // the checkout we're in — it's the one the outline was refreshed from.
     let signatures_span = crate::profile::span("symbols: signatures");
-    let content = hit_file_roots(&store, &identity, Some(&root))
-        .iter()
-        .find_map(|r| std::fs::read_to_string(r.join(&rel)).ok());
+    let content = std::fs::read_to_string(&path).ok();
     let lines: Vec<&str> = content
         .as_deref()
         .map_or_else(Vec::new, |c| c.lines().collect());
@@ -2650,25 +2651,27 @@ fn repo_relative(root: &std::path::Path, cwd: &std::path::Path, file: &str) -> S
         .unwrap_or_else(|_| file.to_string())
 }
 
-/// Revalidate the files behind the top hits against disk, refreshing any that
-/// changed and forgetting any that were deleted. Returns true if anything
-/// changed (so the caller re-runs the search).
-fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
+/// Revalidate the files behind the top hits against disk — read from the same
+/// checkout their signatures will be (see [`hit_file_roots`]) — refreshing any
+/// that changed. Returns true if anything changed (so the caller re-runs the
+/// search).
+fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit], here: Option<Here>) -> bool {
     use std::collections::HashSet;
     let mut seen = HashSet::new();
     let mut changed = false;
     for hit in hits {
-        if !seen.insert((hit.repo_identity.clone(), hit.file.clone())) {
+        if !seen.insert((hit.repo_identity.as_str(), hit.file.as_str())) {
             continue;
         }
         let Some(repo_id) = store.repository_id(&hit.repo_identity).ok().flatten() else {
             continue;
         };
-        let Some(root) = store.checkout_root(repo_id).ok().flatten() else {
+        let roots = hit_file_roots(store, &hit.repo_identity, here);
+        let Some(root) = roots.iter().find(|r| r.join(&hit.file).is_file()) else {
             continue;
         };
         if let Ok(crate::index::Refresh::Updated) =
-            crate::index::refresh_file(store, repo_id, std::path::Path::new(&root), &hit.file)
+            crate::index::refresh_file(store, repo_id, root, &hit.file)
         {
             changed = true;
         }

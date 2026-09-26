@@ -46,6 +46,11 @@ and aren't listed; see `git log` for those.
   uncommitted work each search started a background re-index and each miss
   exited 2 (`warming`) instead of 1 — indefinitely. Now an edit counts only
   until it's indexed.
+- **Two clones of one repo each read their own files.** Clones of the same
+  remote share one set of index rows, but revalidation read from the
+  first-recorded clone and signatures/`--show` from the newest, so a search in
+  one clone could show the other's source lines. Both now read from the
+  checkout you're in.
 
 ## 0.51.1 — 2026-09-25
 

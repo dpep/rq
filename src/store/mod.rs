@@ -557,18 +557,6 @@ impl Store {
         Ok(out)
     }
 
-    /// The on-disk root of a repository's checkout, used to resolve relative
-    /// paths when validating staleness.
-    pub(crate) fn checkout_root(&self, repository_id: i64) -> Result<Option<String>> {
-        self.conn
-            .query_row(
-                "SELECT root_path FROM checkouts WHERE repository_id = ?1 ORDER BY id LIMIT 1",
-                params![repository_id],
-                |r| r.get(0),
-            )
-            .optional()
-    }
-
     /// Every checkout root recorded for a repository, newest first. A repo can
     /// have more than one (it was moved or cloned twice, both under the same
     /// remote identity), and an old row may be stale — so callers that read files

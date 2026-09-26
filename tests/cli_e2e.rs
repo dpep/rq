@@ -550,6 +550,44 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
 }
 
 #[test]
+fn two_clones_of_one_repo_each_read_their_own_files() {
+    // Two checkouts share one identity (same remote), so one set of rows. A
+    // search from either must revalidate and read source from *that* checkout
+    // — not whichever was recorded first or last.
+    let (dir_a, db) = scratch("clone-a");
+    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-clone-b", std::process::id()));
+    let _ = fs::remove_dir_all(&dir_b);
+    fs::create_dir_all(&dir_b).unwrap();
+    for (dir, tag) in [(&dir_a, "a"), (&dir_b, "b")] {
+        fs::write(dir.join("w.rb"), format!("class Widget # {tag}\nend\n")).unwrap();
+        git_init_commit(dir);
+        let _ = Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widgets.git",
+            ])
+            .current_dir(dir)
+            .output();
+    }
+    rq(&db, &dir_a, &["--index"]);
+    rq(&db, &dir_b, &["--index"]);
+
+    for (dir, tag) in [(&dir_a, "a"), (&dir_b, "b"), (&dir_a, "a")] {
+        let (ok, out) = rq(&db, dir, &["Widget", "--no-record", "--ndjson"]);
+        assert!(ok, "hit: {out}");
+        assert!(
+            out.contains(&format!("\"signature\":\"class Widget # {tag}\"")),
+            "clone {tag} reads its own source: {out}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir_a);
+    let _ = fs::remove_dir_all(&dir_b);
+}
+
+#[test]
 fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
     // A hit on a complete repo must not wait on `git status`: it hands the
     // check to `rq --warm`, which bows out when nothing moved and sweeps when
