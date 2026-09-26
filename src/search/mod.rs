@@ -198,7 +198,9 @@ pub(crate) fn search(
     if let (leaf, Some(owner)) = score::parse_qualified(query)
         && leaf.eq_ignore_ascii_case("new")
     {
-        let m = constructor_owner(run(owner, false)?);
+        let mut m = run(owner, false)?;
+        constructor_owner(&mut m.hits);
+        m.total = m.hits.len();
         if found(&m) {
             return Ok(m);
         }
@@ -212,19 +214,17 @@ pub(crate) fn search(
 
 /// Keep only exact class/struct matches from an owner search, flagged so
 /// `--explain` and confidence show they stand in for a constructor.
-fn constructor_owner(mut m: Matches) -> Matches {
-    m.hits.retain(|h| {
+fn constructor_owner(hits: &mut Vec<Hit>) {
+    hits.retain(|h| {
         matches!(h.kind.as_str(), "class" | "struct")
             && h.features.iter().any(|f| f.name == "exact")
     });
-    for h in &mut m.hits {
+    for h in hits {
         h.features.push(score::Feature {
             name: "constructor_owner",
             value: 0.0,
         });
     }
-    m.total = m.hits.len();
-    m
 }
 
 /// Anything above zero is worth showing; below it, only a wrong answer.
@@ -438,27 +438,38 @@ pub(crate) fn live_search(
 ) -> Vec<Hit> {
     let needle = prefilter.then_some(query.as_bytes());
     let identity = crate::index::detect_identity(root).to_string();
-    let mut hits: Vec<Hit> = crate::index::scan(root, skip, deadline, needle)
+    let rows: Vec<SymbolRow> = crate::index::scan(root, skip, deadline, needle)
         .into_iter()
         .flat_map(|fs| fs.symbols)
-        .filter_map(|s| {
-            let row = SymbolRow {
-                name: s.name,
-                kind: s.kind.as_str().to_string(),
-                language: s.language,
-                file: s.file,
-                line: s.line as i64,
-                end_line: Some(s.end_line as i64),
-                parent: s.parent,
-                repository_id: LIVE_REPO_ID,
-                repo_identity: identity.clone(),
-                mtime: None,
-                git_ts: None,
-                visibility: s.visibility.map(str::to_string),
-            };
-            rank_one(query, &row, Some(LIVE_REPO_ID), Boosts::default(), false)
+        .map(|s| SymbolRow {
+            name: s.name,
+            kind: s.kind.as_str().to_string(),
+            language: s.language,
+            file: s.file,
+            line: s.line as i64,
+            end_line: Some(s.end_line as i64),
+            parent: s.parent,
+            repository_id: LIVE_REPO_ID,
+            repo_identity: identity.clone(),
+            mtime: None,
+            git_ts: None,
+            visibility: s.visibility.map(str::to_string),
         })
         .collect();
+    let rank = |q: &str| -> Vec<Hit> {
+        rows.iter()
+            .filter_map(|row| rank_one(q, row, Some(LIVE_REPO_ID), Boosts::default(), false))
+            .collect()
+    };
+    let mut hits = rank(query);
+    // `Foo.new` with no constructor in Foo: the class answers, as in `search`
+    if hits.is_empty()
+        && let (leaf, Some(owner)) = score::parse_qualified(query)
+        && leaf.eq_ignore_ascii_case("new")
+    {
+        hits = rank(owner);
+        constructor_owner(&mut hits);
+    }
     sort_and_truncate(&mut hits, limit);
     hits
 }

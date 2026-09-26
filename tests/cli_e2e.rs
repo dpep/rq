@@ -2186,3 +2186,24 @@ fn a_ruby_predicate_is_found_by_its_full_name() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn foo_dot_new_finds_the_class_outside_git_too() {
+    // an untracked dir answers from a live scan, which must fall back to the
+    // class like the index does when the constructor is implicit
+    let (dir, db) = scratch("constructor-live");
+    fs::write(
+        dir.join("account.rb"),
+        "module Account\n  class Ledger\n    def self.open\n      new\n    end\n  end\nend\n",
+    )
+    .unwrap();
+    for q in ["Ledger.new", "Account::Ledger.new"] {
+        let (ok, out) = rq(&db, &dir, &[q, "--ndjson"]);
+        assert!(
+            ok && out.contains("\"class\"") && out.contains("\"line\":2"),
+            "{q}: {out}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

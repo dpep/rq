@@ -9,6 +9,11 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Fixed
+- **`Foo.new` finds the class outside a git repo too.** A directory rq scans
+  live (not indexed) missed the class when its constructor was inherited or
+  implicit; it now falls back to the class as an indexed repo does.
+
 ### Added
 - **A VS Code extension** in `editors/vscode/`: Cmd/Ctrl-click, F12 and Peek
   Definition answered by rq, plus Cmd-T workspace symbols and an `rq: Search
