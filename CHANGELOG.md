@@ -25,6 +25,14 @@ and aren't listed; see `git log` for those.
   top for every symbol's signature line; a 5,000-line file went from ~41 ms to
   ~16 ms.
 
+### Fixed
+- **Other indexed repos no longer crowd out the one you're in.** Recall capped
+  each layer across *every* repo and filtered to yours afterwards, so a big
+  neighbour could use up the cap, and an exact match elsewhere could stop a
+  fuzzy match here from being looked for at all (`rq wdgt` missing your
+  `Widget` because another repo defines `wdgt`). With eight repos indexed,
+  fuzzy searches are also 15–35% faster.
+
 ## 0.51.1 — 2026-09-25
 
 ### Changed

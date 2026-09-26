@@ -999,47 +999,60 @@ impl Store {
     /// once a strong (exact/prefix) hit exists, so fetching and scoring them is
     /// wasted. A wildcard query passes `force_fuzzy = true` — it isn't gated and
     /// always needs the trigram recall.
+    ///
+    /// `repo` scopes every layer to one repository. It has to be applied here,
+    /// not after: each layer's `limit` is otherwise shared with every other
+    /// indexed repo, and another repo's exact match would trip the fast path
+    /// below and skip the fuzzy layers this repo needed.
     pub(crate) fn search_candidates(
         &self,
         query: &str,
         limit: usize,
         force_fuzzy: bool,
+        repo: Option<i64>,
     ) -> Result<Vec<SymbolRow>> {
+        use rusqlite::types::Value;
         let q = query.to_ascii_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
+        let limit = Value::Integer(limit as i64);
+        // Run one layer. `filter` holds the layer's own placeholders; the repo
+        // scope is bound after them, as the next numbered one.
+        let fetch =
+            |from: &str, filter: &str, mut args: Vec<Value>| -> Result<Vec<(i64, SymbolRow)>> {
+                let scope = match repo {
+                    Some(id) => {
+                        args.push(Value::Integer(id));
+                        format!(" AND s.repository_id = ?{}", args.len())
+                    }
+                    None => String::new(),
+                };
+                args.push(limit.clone());
+                let sql = format!(
+                    "SELECT {CANDIDATE_COLS} {from} WHERE {filter}{scope} LIMIT ?{}",
+                    args.len()
+                );
+                let mut stmt = self.conn.prepare_cached(&sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(args), row_to_candidate)?;
+                rows.collect()
+            };
+        let text = |s: &str| Value::Text(s.to_string());
 
         // exact name — always included, never subject to the cap. The
         // match we most want must reach the scorer no matter how large the index
         // is (a broad capped scan could otherwise truncate it away).
-        {
-            let sql = format!(
-                "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} WHERE s.name_lower = ?1 LIMIT ?2"
-            );
-            let mut stmt = self.conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![q, limit as i64], row_to_candidate)?;
-            for row in rows {
-                let (id, cand) = row?;
-                found.insert(id, cand);
-            }
+        for (id, cand) in fetch(CANDIDATE_FROM, "s.name_lower = ?1", vec![text(&q)])? {
+            found.insert(id, cand);
         }
 
         // query as a prefix — selective, so prefix matches always
         // surface even on a huge repo (unlike the broad first-char anchor below,
         // which the cap can truncate).
-        {
-            let sql = format!(
-                "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-                 WHERE s.name_lower >= ?1 AND s.name_lower < ?2 LIMIT ?3"
-            );
-            let mut stmt = self.conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(
-                params![q, prefix_upper_bound(&q), limit as i64],
-                row_to_candidate,
-            )?;
-            for row in rows {
-                let (id, cand) = row?;
-                found.entry(id).or_insert(cand);
-            }
+        for (id, cand) in fetch(
+            CANDIDATE_FROM,
+            "s.name_lower >= ?1 AND s.name_lower < ?2",
+            vec![text(&q), text(&prefix_upper_bound(&q))],
+        )? {
+            found.entry(id).or_insert(cand);
         }
 
         // Fast path: a strong (exact/prefix) match exists, so the relevance gate
@@ -1065,34 +1078,22 @@ impl Store {
             .filter(|_| q.chars().count() <= FIRST_CHAR_ANCHOR_MAX)
         {
             let anchor = first.to_string();
-            let sql = format!(
-                "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-                 WHERE s.name_lower >= ?1 AND s.name_lower < ?2 LIMIT ?3"
-            );
-            let mut stmt = self.conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(
-                params![anchor, prefix_upper_bound(&anchor), limit as i64],
-                row_to_candidate,
-            )?;
-            for row in rows {
-                let (id, cand) = row?;
+            for (id, cand) in fetch(
+                CANDIDATE_FROM,
+                "s.name_lower >= ?1 AND s.name_lower < ?2",
+                vec![text(&anchor), text(&prefix_upper_bound(&anchor))],
+            )? {
                 found.entry(id).or_insert(cand);
             }
         }
 
         // fuzzy recall (b): trigram FTS (OR of the query's trigrams).
         if let Some(match_expr) = trigram_or_query(&q) {
-            let sql = format!(
-                "SELECT {CANDIDATE_COLS} FROM symbols_fts f \
+            let from = "FROM symbols_fts f \
                  JOIN symbols s ON s.id = f.rowid \
                  JOIN files fi ON fi.id = s.file_id \
-                 JOIN repositories r ON r.id = s.repository_id \
-                 WHERE symbols_fts MATCH ?1 LIMIT ?2"
-            );
-            let mut stmt = self.conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![match_expr, limit as i64], row_to_candidate)?;
-            for row in rows {
-                let (id, cand) = row?;
+                 JOIN repositories r ON r.id = s.repository_id";
+            for (id, cand) in fetch(from, "symbols_fts MATCH ?1", vec![text(&match_expr)])? {
                 found.entry(id).or_insert(cand);
             }
         }
@@ -1104,18 +1105,13 @@ impl Store {
         // but scanning 3k file rows and then seeking their symbols beats
         // scanning 49k symbol rows to test a column on the joined table —
         // measured at 29 ms against 0.4 ms on rq's own Rails index.
-        let sql = format!(
-            "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE s.file_id IN (SELECT id FROM files WHERE path LIKE ?1 ESCAPE '\\') \
-             AND s.kind IN ('class', 'module') LIMIT ?2"
-        );
-        {
-            let mut stmt = self.conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![path_like, limit as i64], row_to_candidate)?;
-            for row in rows {
-                let (id, cand) = row?;
-                found.entry(id).or_insert(cand);
-            }
+        for (id, cand) in fetch(
+            CANDIDATE_FROM,
+            "s.file_id IN (SELECT id FROM files WHERE path LIKE ?1 ESCAPE '\\') \
+             AND s.kind IN ('class', 'module')",
+            vec![text(&path_like)],
+        )? {
+            found.entry(id).or_insert(cand);
         }
 
         Ok(found.into_values().collect())
@@ -1404,7 +1400,7 @@ mod tests {
         let times = HashMap::from([("a.rb".to_string(), 1_700_000_000_i64)]);
         store.set_file_git_ts(repo, &times).unwrap();
 
-        let cands = store.search_candidates("foo", 10, false).unwrap();
+        let cands = store.search_candidates("foo", 10, false, None).unwrap();
         assert_eq!(cands[0].git_ts, Some(1_700_000_000));
     }
 

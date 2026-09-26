@@ -228,12 +228,18 @@ fn search_query(
     };
     let trace_on = crate::trace::enabled();
     let t = std::time::Instant::now();
-    let mut candidates =
-        store.search_candidates(recall, CANDIDATE_LIMIT, score::has_wildcard(leaf))?;
+    // Repo scope: outside `--all-repos`, a search inside a repo returns only
+    // that repo's definitions — never another indexed repo's.
+    let mut candidates = store.search_candidates(
+        recall,
+        CANDIDATE_LIMIT,
+        score::has_wildcard(leaf),
+        only_repo,
+    )?;
     // `Foo.new` runs a constructor the store knows by another name
     if qualifier.is_some() && leaf.eq_ignore_ascii_case("new") {
         for name in crate::lang::constructors() {
-            candidates.extend(store.search_candidates(name, CANDIDATE_LIMIT, false)?);
+            candidates.extend(store.search_candidates(name, CANDIDATE_LIMIT, false, only_repo)?);
         }
     }
     let n_candidates = candidates.len();
@@ -248,11 +254,6 @@ fn search_query(
         candidates
             .iter()
             .filter_map(|c| {
-                // Repo scope: outside `--all-repos`, a search inside a repo returns
-                // only that repo's definitions — never another indexed repo's.
-                if only_repo.is_some_and(|r| r != c.repository_id) {
-                    return None;
-                }
                 // learned is empty for most queries — skip the per-candidate
                 // String clones the key would cost
                 let learned_boost = if learned.is_empty() {

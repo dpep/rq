@@ -479,6 +479,29 @@ fn a_search_does_not_leak_another_indexed_repo() {
 }
 
 #[test]
+fn another_repos_exact_match_does_not_hide_a_fuzzy_one_here() {
+    // Repo B defines `wdgt` exactly; repo A only has `Widget`, an abbreviation
+    // match. Searching from A must still find Widget — B's exact hit is out of
+    // scope, so it can't be what lets recall skip the fuzzy layers.
+    let (dir_a, db) = scratch("fuzzy-a");
+    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-fuzzy-b", std::process::id()));
+    let _ = fs::remove_dir_all(&dir_b);
+    fs::create_dir_all(&dir_b).unwrap();
+    fs::write(dir_a.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir_b.join("b.rb"), "def wdgt\nend\n").unwrap();
+    rq(&db, &dir_a, &["--index"]);
+    rq(&db, &dir_b, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir_a, &["wdgt", "--no-record", "--ndjson"]);
+    assert!(ok, "Widget in repo A should answer `wdgt`: {out}");
+    assert!(out.contains("a.rb"), "finds this repo's Widget: {out}");
+    assert!(!out.contains("b.rb"), "must not leak repo B: {out}");
+
+    let _ = fs::remove_dir_all(&dir_a);
+    let _ = fs::remove_dir_all(&dir_b);
+}
+
+#[test]
 fn a_clean_complete_repo_does_not_re_warm_on_search() {
     // a fully-indexed, clean git repo is provably unchanged (HEAD matches, no
     // dirty files), so a search must skip the background warm entirely rather

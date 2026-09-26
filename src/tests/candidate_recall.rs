@@ -33,7 +33,7 @@ fn exact_match_survives_a_flooded_first_char_bucket() {
         .replace_file_symbols(repo, "a.rs", "rust", None, "h", &syms)
         .unwrap();
 
-    let cands = store.search_candidates("mango", 5, false).unwrap();
+    let cands = store.search_candidates("mango", 5, false, None).unwrap();
     assert!(
         cands.iter().any(|c| c.name == "mango"),
         "exact match dropped by the cap; got {:?}",
@@ -63,16 +63,49 @@ fn a_strong_match_short_circuits_the_broad_fuzzy_layers() {
         )
         .unwrap();
 
-    let strong_only = store.search_candidates("user", 50, false).unwrap();
+    let strong_only = store.search_candidates("user", 50, false, None).unwrap();
     assert!(strong_only.iter().any(|c| c.name == "User"), "prefix kept");
     assert!(
         !strong_only.iter().any(|c| c.name == "Peruser"),
         "fuzzy-only candidate skipped when a strong match exists"
     );
 
-    let forced = store.search_candidates("user", 50, true).unwrap();
+    let forced = store.search_candidates("user", 50, true, None).unwrap();
     assert!(
         forced.iter().any(|c| c.name == "Peruser"),
         "force_fuzzy still recalls the fuzzy candidate"
+    );
+}
+
+#[test]
+fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
+    let mut store = Store::open_in_memory().unwrap();
+    let here = store
+        .upsert_repository(&RepoIdentity::local("/tmp/here"), None)
+        .unwrap();
+    let other = store
+        .upsert_repository(&RepoIdentity::local("/tmp/other"), None)
+        .unwrap();
+
+    // The other repo floods every layer with names that sort first; with the
+    // cap shared across repos, this repo's fuzzy match would never be reached.
+    let flood: Vec<Symbol> = (1..=50)
+        .map(|i| sym(&format!("aaa_widget{i:03}")))
+        .collect();
+    store
+        .replace_file_symbols(other, "a.rs", "rust", None, "h", &flood)
+        .unwrap();
+    store
+        .replace_file_symbols(here, "a.rs", "rust", None, "h", &[sym("MyWidget")])
+        .unwrap();
+
+    let cands = store
+        .search_candidates("widget", 5, false, Some(here))
+        .unwrap();
+    let names: Vec<&str> = cands.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["MyWidget"],
+        "only this repo's rows, and its match fits"
     );
 }
