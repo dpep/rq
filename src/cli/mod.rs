@@ -2302,22 +2302,33 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let coverage = store.coverage_status(&identity).ok().flatten();
     let warming_ok = crate::index::is_git_repo(&root) || coverage.is_some();
     let current = store.repository_id(&identity).ok().flatten();
-    // Listing a file's symbols warms synchronously — there's no answer to get
-    // out of the way of here, so the staleness fork is paid inline as before.
-    let indexed_head = current.and_then(|id| store.indexed_head(id).ok().flatten());
-    let needs_warm = warming_ok
-        && (coverage.as_deref() != Some("complete")
-            || changed_since_index(
-                &store,
-                Some(&identity),
-                Some(&root),
-                worktree_edits(&root, indexed_head.as_deref()),
-            ));
-    if needs_warm {
-        // Path-prioritize the warm toward the requested file so it indexes first.
-        let budget = answer_warm_budget() + deferred_warm_budget();
-        let _span = crate::profile::span("symbols: warm");
-        let _ = crate::index::index_budgeted(&mut store, &root, &[], budget, Some(&rel));
+    let path = root.join(&rel);
+    // An index can outlive the file; a deleted file has no outline.
+    if !path.is_file() {
+        return emit_symbols(out, &[]);
+    }
+    let indexable = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| crate::lang::plugin_for_extension(e).is_some());
+    match current {
+        // An outline depends on this one file, so on a complete index freshness
+        // is just re-extracting it if it moved — no `git status` over the whole
+        // worktree, and a new untracked file is picked up too.
+        Some(repo_id) if coverage.as_deref() == Some("complete") => {
+            if indexable {
+                let _span = crate::profile::span("symbols: refresh");
+                let _ = crate::index::refresh_file(&mut store, repo_id, &root, &rel);
+            }
+        }
+        // Not fully indexed yet: warm synchronously — there's no answer to get
+        // out of the way of here — path-prioritized so this file goes first.
+        _ if warming_ok => {
+            let budget = answer_warm_budget() + deferred_warm_budget();
+            let _span = crate::profile::span("symbols: warm");
+            let _ = crate::index::index_budgeted(&mut store, &root, &[], budget, Some(&rel));
+        }
+        _ => {}
     }
 
     let Some(repo_id) = store.repository_id(&identity).ok().flatten() else {

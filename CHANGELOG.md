@@ -21,9 +21,13 @@ and aren't listed; see `git log` for those.
   `--open`/`--web` report too; before, they printed nothing. A stored
   `total_ms` baseline from an earlier version measured less and isn't
   comparable.
-- **`--symbols` is faster on large files** — it re-scanned the file from the
-  top for every symbol's signature line; a 5,000-line file went from ~41 ms to
-  ~16 ms.
+- **`--symbols` is faster** — ~4 ms on a fully indexed repo, from ~15 ms,
+  and ~5 ms from ~41 ms on a 5,000-line file. It re-scanned the file from the
+  top for every symbol's signature line, and asked git about the whole
+  worktree when only the one file matters.
+- **`--symbols` sees a new untracked file, and a deleted one has no
+  outline.** Before, a file git didn't track yet listed nothing until
+  committed or `--index`ed, and a deleted file could list stale symbols.
 
 ### Fixed
 - **Other indexed repos no longer crowd out the one you're in.** Recall capped

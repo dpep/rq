@@ -1733,6 +1733,44 @@ fn symbols_outlines_a_file_in_line_order() {
 }
 
 #[test]
+fn symbols_reflects_the_file_as_it_is_on_disk_now() {
+    // On a complete index the outline must track the file itself — an edit, a
+    // brand-new untracked file, a deletion — without a repo-wide re-index.
+    let (dir, db) = scratch("symbols-fresh");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    fs::write(
+        dir.join("widget.rb"),
+        "class Widget\n  def added\n  end\nend\n",
+    )
+    .unwrap();
+    let (ok, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
+    assert!(
+        ok && out.contains("\"name\":\"added\""),
+        "edit shows: {out}"
+    );
+
+    fs::write(dir.join("fresh.rb"), "class Fresh\nend\n").unwrap();
+    let (ok, out) = rq(&db, &dir, &["--symbols", "fresh.rb", "--ndjson"]);
+    assert!(
+        ok && out.contains("\"name\":\"Fresh\""),
+        "new file shows: {out}"
+    );
+
+    fs::remove_file(dir.join("widget.rb")).unwrap();
+    let (ok, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
+    assert!(!ok, "a deleted file has no outline: {out}");
+    assert!(!out.contains("Widget"), "no stale rows: {out}");
+
+    let (ok, out) = rq(&db, &dir, &["--symbols", "notes.txt", "--ndjson"]);
+    assert!(!ok, "an unsupported file has no outline: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
     let (ok, out) = rq(&db, &dir, &[]);
