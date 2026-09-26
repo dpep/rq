@@ -123,8 +123,8 @@ struct Cli {
     limit: usize,
 
     /// Restrict to symbol kinds: class, module, method, function, struct, enum,
-    /// trait (shortcuts: c, mod, m, f, s, e, t; `interface` = trait, `type` =
-    /// struct). Repeatable or comma-separated.
+    /// trait, constant (shortcuts: c, mod, m, f, s, e, t, const; `interface` =
+    /// trait, `type` = struct). Repeatable or comma-separated.
     #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
     kind: Vec<String>,
 
@@ -237,7 +237,7 @@ fn dispatch(cli: Cli) -> ExitCode {
             Some(c) => kinds.push(c.to_string()),
             None => {
                 return fail(format_args!(
-                    "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait)"
+                    "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant)"
                 ));
             }
         }

@@ -26,6 +26,8 @@ and aren't listed; see `git log` for those.
   members stay out. They land as Go's do (above).
 
 ### Changed
+- **`--help` and the unknown-`--kind` error list `constant`.** `-k constant`
+  (or `const`) has worked since 0.50.1; it just wasn't listed.
 - **The VS Code extension (0.2.0) answers for every rq language without
   duplicating a language server.** In the new default `rq.mode: fallback`, rq
   answers Go to Definition only where the other providers find nothing, so

@@ -189,8 +189,8 @@ model, not leaking a language into `index`/`search`/scoring.
 - `-j/--json`, `-J/--ndjson` — structured output for editors, scripts, agents;
   each result carries a `signature` (the definition's source line)
 - path filters — trailing positionals (rg-style `rq query dir…`) or `-p/--path`
-- `-k/--kind` — restrict to kind: class/module/method/function/struct/enum/trait
-  (`interface`=trait, `type`=struct)
+- `-k/--kind` — restrict to kind: class/module/method/function/struct/enum/trait/
+  constant (`interface`=trait, `type`=struct, `const`=constant)
 - `-x/--lang` — restrict to language: ruby/rust/go/python/typescript/javascript
   (prefix-matched; `r`=ruby+rust; aliases rb/rs/golang/ts/tsx/js/jsx)
 - `-l/--limit N` — cap the number of results

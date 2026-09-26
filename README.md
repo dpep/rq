@@ -41,7 +41,7 @@ rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
-rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait
+rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait|constant
 rq KIND <query>             # a leading kind keyword is shorthand for -k (rq class Widget)
 rq Scope::name              # scope-aware: prefer the name defined inside Scope (or Scope::Type#method)
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
