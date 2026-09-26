@@ -140,5 +140,3 @@ To update to the latest: `brew upgrade dpep/tools/rq` (or re-run the
   Rust, Go, Python, TypeScript and JavaScript are supported.
 - Run from inside the target repo (or set the subprocess working directory) —
   rq resolves the repo from its cwd.
-- Pass `--no-record` when the same query repeats mechanically — a benchmark, a
-  test harness, a loop over a list — so one query doesn't dominate the signal.

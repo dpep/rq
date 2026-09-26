@@ -175,7 +175,6 @@ model, not leaking a language into `index`/`search`/scoring.
 - `-x/--lang` — restrict to language: ruby/rust/go/python/typescript/javascript
   (prefix-matched; `r`=ruby+rust; aliases rb/rs/golang/ts/tsx/js/jsx)
 - `-l/--limit N` — cap the number of results
-- `--no-record` — search without recording a behavioral signal (for agents)
 - `-o/--open` — open the best match in your editor; prompts
   to choose on a TTY with several. Launcher: `RQ_OPEN` → `code` → `$VISUAL`/`$EDITOR`
 - `-e/--explain` — per-result score breakdown

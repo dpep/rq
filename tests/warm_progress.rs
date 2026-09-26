@@ -51,7 +51,7 @@ fn scratch() -> (PathBuf, PathBuf) {
 /// Detached warming is off so no child races the next assertion.
 fn warm_pass(db: &Path, dir: &Path) {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["Nonexistent", "--no-record"])
+        .args(["Nonexistent"])
         .current_dir(dir)
         .env("RQ_DB", db)
         .env("RQ_WARM_DETACH", "0")

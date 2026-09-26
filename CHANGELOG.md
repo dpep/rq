@@ -18,6 +18,10 @@ and aren't listed; see `git log` for those.
   hook or script that calls `rq --record` will now fail with an unknown-flag
   error — delete that call. `--open`, `--web`, and `--show` no longer record
   anything, and `script/rq-open` no longer calls it.
+- **`--no-record` is gone.** Every search now counts toward `--usage`; there
+  was nothing left for it to keep out of ranking. A script or benchmark that
+  passes it will now fail with an unknown-flag error — drop the flag. To keep
+  a benchmark out of your real counts, point it at a scratch `RQ_DB`.
 - **The database drops its learning tables.** The first run of this version
   migrates the DB, deleting `selection_stats` and the raw `events` log; nothing
   to do. `--usage` keeps every count it had.

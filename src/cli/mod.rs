@@ -30,7 +30,6 @@ your current repo, recently-active files, and the files your branch changes. Run
 rq thing                  search for a definition named or like \"thing\"\n  \
 rq wibble --explain       same, plus the score behind each result\n  \
 rq thing --json           machine-readable results (for editors/agents)\n  \
-rq thing --no-record      search without recording it (speculative/agent queries)\n  \
 rq thing --no-wait        answer now from the committed index; don't block on a rebuild\n  \
 rq thing --wait 2s        ...or wait up to a bounded time for the index to warm\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
@@ -71,13 +70,6 @@ struct Cli {
     /// Show the score breakdown for each result.
     #[arg(short = 'e', long)]
     explain: bool,
-
-    /// Don't let this invocation teach ranking or count as usage — suppresses
-    /// recording the result you open, select, or `--show`, and keeps the call
-    /// out of `--usage`. For benchmark and CI loops, whose repeated queries
-    /// would otherwise dominate both.
-    #[arg(long)]
-    no_record: bool,
 
     /// Answer immediately from the committed index — never block waiting on a
     /// background (re)index. For agents/scripts: a query issued mid-rebuild
@@ -296,7 +288,6 @@ fn dispatch(cli: Cli) -> ExitCode {
                     kinds: &kinds,
                     langs: &langs,
                     want: requested_limit(cli.limit),
-                    no_record: cli.no_record,
                     no_wait: cli.no_wait,
                     wait: cli.wait,
                     open: cli.open,
@@ -352,9 +343,6 @@ fn requested_limit(limit: usize) -> usize {
 /// Count one search for `--usage`. Observability only: nothing reads it back
 /// into ranking.
 fn record_usage(store: &Store, args: &SearchArgs, status: &str, coverage: Option<&str>) {
-    if args.no_record {
-        return;
-    }
     let _ = store.record_search(&crate::store::SearchRecord {
         source: &crate::origin::detect(),
         flags: &flag_summary(args),
@@ -422,7 +410,6 @@ struct SearchArgs<'a> {
     langs: &'a [String],
     /// Number of results to show (`--limit`).
     want: usize,
-    no_record: bool,
     /// Answer from the committed index without blocking on a (re)index (`--no-wait`).
     no_wait: bool,
     /// Cap on how long to wait for the index to warm (`--wait`); `None` = the
@@ -616,7 +603,6 @@ fn cmd_batch(
                 kinds,
                 langs,
                 want: requested_limit(cli.limit),
-                no_record: cli.no_record,
                 // The warm happened above, once. Per-query warming would undo
                 // the point of batching, and block-until-answered is meaningless
                 // when the queries were all read up front.

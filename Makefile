@@ -66,7 +66,7 @@ REPO     ?= .
 
 # Dogfood rq on real source. Reproducible and self-contained: builds, fully
 # indexes REPO into a throwaway DB under target/ (never your real index), then
-# runs the query. --no-record keeps it side-effect free.
+# runs the query.
 #   make dogfood Q=Store
 #   make dogfood Q=index ARGS="--explain --limit 5"
 #   make dogfood REPO=~/code/lib/ruby/rails Q=Middleware
@@ -79,7 +79,7 @@ DOGFOOD_DB := $(CURDIR)/target/dogfood.db
 dogfood: build
 	@rm -f "$(DOGFOOD_DB)" "$(DOGFOOD_DB)-wal" "$(DOGFOOD_DB)-shm"
 	@RQ_DB="$(DOGFOOD_DB)" ./target/debug/$(BIN) --index "$(REPO)" >/dev/null
-	@cd "$(REPO)" && RQ_DB="$(DOGFOOD_DB)" $(CURDIR)/target/debug/$(BIN) $(Q) --no-record $(ARGS)
+	@cd "$(REPO)" && RQ_DB="$(DOGFOOD_DB)" $(CURDIR)/target/debug/$(BIN) $(Q) $(ARGS)
 
 # The benchmark is an #[ignore]d test inside the lib, not an example: an example
 # is a separate crate, and reaching index/search/store from one meant publishing

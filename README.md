@@ -128,9 +128,6 @@ rq RefundProcessor --json                 # jump to the definition
 rq perform app/services --json            # ...scoped to a subtree (rg-style)
 ```
 
-Pass `--no-record` for speculative/agent searches so they don't perturb the
-learned ranking (which is meant to reflect deliberate, human picks).
-
 ## File outline
 
 `rq --symbols <file>` lists every definition in a file, in line order — a

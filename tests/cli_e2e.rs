@@ -64,7 +64,7 @@ fn first_line(s: &str) -> &str {
 /// same check to a child (`rq --warm`), which would race the assert.
 fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["-v", query, "--no-record"])
+        .args(["-v", query])
         .current_dir(cwd)
         .env("RQ_DB", db)
         .env("RQ_WARM_DETACH", "0")
@@ -146,11 +146,7 @@ fn a_strong_match_suppresses_the_scattered_tail() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (_, out) = rq(
-        &db,
-        &dir,
-        &["employeescontroller", "--no-record", "--ndjson"],
-    );
+    let (_, out) = rq(&db, &dir, &["employeescontroller", "--ndjson"]);
     assert!(out.contains("EmployeesController"), "exact kept: {out}");
     assert!(
         !out.contains("EmployeeStatusController"),
@@ -175,7 +171,7 @@ fn a_wildcard_bridges_an_explicit_gap() {
     fs::write(dir.join("gadget_service.rb"), "class GadgetService\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["widget*controller", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["widget*controller", "--ndjson"]);
     assert!(ok, "wildcard search should match: {out}");
     assert!(
         out.contains("WidgetAlphaBravoController"),
@@ -184,7 +180,7 @@ fn a_wildcard_bridges_an_explicit_gap() {
     assert!(!out.contains("GadgetService"), "non-match excluded: {out}");
 
     // the same query without the star is too scattered for the fuzzy matcher
-    let (matched, _) = rq(&db, &dir, &["widgetcontroller", "--no-record"]);
+    let (matched, _) = rq(&db, &dir, &["widgetcontroller"]);
     assert!(!matched, "plain fuzzy won't skip whole words");
 
     let _ = fs::remove_dir_all(&dir);
@@ -201,7 +197,7 @@ fn cold_index_builds_a_working_fuzzy_index() {
     assert!(ok, "index failed: {out}");
 
     // "widget" is mid-word in AlphaWidgetController — exact/prefix can't reach it
-    let (ok, out) = rq(&db, &dir, &["widget", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["widget"]);
     assert!(ok, "fuzzy recall should find it: {out}");
     assert!(out.contains("AlphaWidgetController"), "fts recall: {out}");
 
@@ -218,9 +214,9 @@ fn a_search_that_warms_a_cold_repo_leaves_a_working_fuzzy_index() {
     fs::write(dir.join("b.rb"), "class BetaGadget\nend\n").unwrap();
     git_init_commit(&dir);
 
-    let (ok, out) = rq(&db, &dir, &["widget", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["widget"]);
     assert!(ok && out.contains("AlphaWidgetController"), "warm: {out}");
-    let (ok, out) = rq(&db, &dir, &["gadget", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["gadget"]);
     assert!(ok && out.contains("BetaGadget"), "next query: {out}");
 
     let _ = fs::remove_dir_all(&dir);
@@ -244,11 +240,7 @@ fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(
-        &db,
-        &dir,
-        &["employeescontroller", "--no-record", "--ndjson"],
-    );
+    let (ok, out) = rq(&db, &dir, &["employeescontroller", "--ndjson"]);
     assert!(ok, "search failed: {out}");
     // both files surface — the namespaced one isn't pruned
     assert!(out.contains("a.rb"), "namespaced class kept: {out}");
@@ -274,21 +266,21 @@ fn foo_dot_new_finds_the_constructor() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Widget.new", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Widget.new", "--ndjson"]);
     assert!(ok, "Widget.new should resolve: {out}");
     assert!(out.contains("\"initialize\""), "finds initialize: {out}");
     assert!(out.contains("\"line\":2"), "the one in Widget: {out}");
     assert!(!out.contains("\"line\":6"), "not Other's: {out}");
 
-    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--ndjson"]);
     assert!(ok && out.contains("__init__"), "python too: {out}");
 
     // `.` is a scope separator generally, not only for `new`
-    let (ok, out) = rq(&db, &dir, &["Widget.build", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Widget.build", "--ndjson"]);
     assert!(ok && out.contains("\"build\""), "class method: {out}");
 
     // a slip in the scope recovers on the typo retry, flagged as a guess
-    let (ok, out) = rq(&db, &dir, &["Widgit.new", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Widgit.new", "--ndjson"]);
     assert!(
         ok && out.contains("\"line\":2"),
         "scope typo recovers: {out}"
@@ -298,7 +290,7 @@ fn foo_dot_new_finds_the_constructor() {
     // no scope answers `Widget.Builder`, so `.` falls back to a one-char wildcard
     fs::write(dir.join("c.rb"), "class Widget2Builder\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
-    let (ok, out) = rq(&db, &dir, &["Widget.Builder", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Widget.Builder", "--ndjson"]);
     assert!(
         ok && out.contains("Widget2Builder"),
         "wildcard fallback: {out}"
@@ -324,7 +316,7 @@ fn foo_dot_new_without_its_own_constructor_finds_the_class() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Widget.new", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Widget.new", "--ndjson"]);
     assert!(ok, "Widget.new should resolve: {out}");
     assert_eq!(out.lines().count(), 1, "just the class: {out}");
     assert!(
@@ -334,7 +326,7 @@ fn foo_dot_new_without_its_own_constructor_finds_the_class() {
     assert!(out.contains("constructor_owner"), "flagged: {out}");
     assert!(out.contains("\"confidence\":0.75"), "not certain: {out}");
 
-    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--ndjson"]);
     assert!(ok && out.contains("\"Gadget\""), "python too: {out}");
 
     let _ = fs::remove_dir_all(&dir);
@@ -357,7 +349,7 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Foo::Bar#baz", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Foo::Bar#baz", "--ndjson"]);
     assert!(ok, "search failed: {out}");
     assert!(out.contains("a.rb"), "in-scope baz surfaces: {out}");
     assert!(
@@ -368,7 +360,7 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
     // A scope nothing lives in is a miss, not a fallback to every candidate.
     // It used to fall back, which made a made-up owner indistinguishable from
     // the real one whenever the leaf name was unique.
-    let (ok, out) = rq(&db, &dir, &["Nope::Bar#baz", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["Nope::Bar#baz", "--ndjson"]);
     assert!(!ok, "an unmatched scope must not succeed: {out}");
     assert!(out.contains("scope_not_found"), "and says why: {out}");
     // reported as "not there, but here" — the useful half of the answer
@@ -415,7 +407,7 @@ fn show_prints_the_body_when_confident_and_lists_when_not() {
     rq(&db, &dir, &["--index"]);
 
     // confident (exact, dominant): --show prints the full source span as `body`
-    let (ok, out) = rq(&db, &dir, &["--show", "Widget", "-j", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["--show", "Widget", "-j"]);
     assert!(ok, "show failed: {out}");
     assert!(
         out.contains("\"body\""),
@@ -429,7 +421,7 @@ fn show_prints_the_body_when_confident_and_lists_when_not() {
     assert!(out.contains("\"confidence\""), "confidence present: {out}");
 
     // ambiguous (two fuzzy `Th*` matches): no body, falls back to the list
-    let (_ok, out) = rq(&db, &dir, &["--show", "Th", "-j", "--no-record"]);
+    let (_ok, out) = rq(&db, &dir, &["--show", "Th", "-j"]);
     assert!(
         !out.contains("\"body\""),
         "ambiguous show prints no body: {out}"
@@ -451,7 +443,7 @@ fn a_leading_kind_keyword_filters_like_dash_k() {
     rq(&db, &dir, &["--index"]);
 
     // unquoted keyword restricts to the class, dropping the module of the same name
-    let (ok, out) = rq(&db, &dir, &["class", "Widget", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["class", "Widget", "--ndjson"]);
     assert!(ok, "keyword search failed: {out}");
     assert!(out.contains("\"kind\":\"class\""), "class kept: {out}");
     assert!(
@@ -460,12 +452,12 @@ fn a_leading_kind_keyword_filters_like_dash_k() {
     );
 
     // the method keyword finds the def; equivalent to -k method
-    let (ok, out) = rq(&db, &dir, &["method", "go", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["method", "go", "--ndjson"]);
     assert!(ok, "method keyword failed: {out}");
     assert!(out.contains("\"kind\":\"method\""), "method found: {out}");
 
     // constants are indexed and reachable via the keyword form too
-    let (ok, out) = rq(&db, &dir, &["constant", "SIZE", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["constant", "SIZE", "--ndjson"]);
     assert!(ok, "constant keyword failed: {out}");
     assert!(
         out.contains("\"kind\":\"constant\""),
@@ -489,7 +481,7 @@ fn a_search_does_not_leak_another_indexed_repo() {
     rq(&db, &dir_b, &["--index"]);
 
     // Gadget lives only in repo B; from repo A it's a definitive miss, not B's hit
-    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--ndjson"]);
     assert!(!ok, "no Gadget in repo A — should miss");
     assert!(!out.contains("b.rb"), "must not leak repo B: {out}");
     assert!(
@@ -498,16 +490,12 @@ fn a_search_does_not_leak_another_indexed_repo() {
     );
 
     // --all-repos opts into the cross-repo search and finds it
-    let (ok, out) = rq(
-        &db,
-        &dir_a,
-        &["Gadget", "--all-repos", "--no-record", "--ndjson"],
-    );
+    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--all-repos", "--ndjson"]);
     assert!(ok, "--all-repos should find Gadget in repo B: {out}");
     assert!(out.contains("b.rb"), "cross-repo hit surfaces: {out}");
 
     // -a is the short form of the same flag
-    let (ok, out) = rq(&db, &dir_a, &["Gadget", "-a", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir_a, &["Gadget", "-a", "--ndjson"]);
     assert!(ok, "-a should find Gadget in repo B: {out}");
     assert!(out.contains("b.rb"), "cross-repo hit surfaces: {out}");
 
@@ -529,7 +517,7 @@ fn another_repos_exact_match_does_not_hide_a_fuzzy_one_here() {
     rq(&db, &dir_a, &["--index"]);
     rq(&db, &dir_b, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir_a, &["wdgt", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir_a, &["wdgt", "--ndjson"]);
     assert!(ok, "Widget in repo A should answer `wdgt`: {out}");
     assert!(out.contains("a.rb"), "finds this repo's Widget: {out}");
     assert!(!out.contains("b.rb"), "must not leak repo B: {out}");
@@ -610,7 +598,7 @@ fn two_clones_of_one_repo_each_read_their_own_files() {
     rq(&db, &dir_b, &["--index"]);
 
     for (dir, tag) in [(&dir_a, "a"), (&dir_b, "b"), (&dir_a, "a")] {
-        let (ok, out) = rq(&db, dir, &["Widget", "--no-record", "--ndjson"]);
+        let (ok, out) = rq(&db, dir, &["Widget", "--ndjson"]);
         assert!(ok, "hit: {out}");
         assert!(
             out.contains(&format!("\"signature\":\"class Widget # {tag}\"")),
@@ -655,7 +643,7 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
 
     // last: the child this hit spawns holds the single-flight lock a while
     let hit = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["Widget", "--no-record", "--profile", "--json"])
+        .args(["Widget", "--profile", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
         .output()
@@ -688,7 +676,7 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
         "an indexed edit (and a non-source one) must not re-warm"
     );
     let miss = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["Nonexistent", "--no-record"])
+        .args(["Nonexistent"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
         .output()
@@ -726,7 +714,7 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
     );
 
     // the seeded class is found, at a repo-root-relative path
-    let (ok, out) = rq(&db, &dir, &["inscope", "--no-record", "--ndjson"]);
+    let (ok, out) = rq(&db, &dir, &["inscope", "--ndjson"]);
     assert!(ok, "search failed: {out}");
     assert!(out.contains("InScope"), "in-scope class indexed: {out}");
     assert!(
@@ -736,7 +724,7 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
 
     // the seed is not a fence: searching warms the rest of the repo, so the
     // out-of-scope class is found — and persisted
-    let (found, out) = rq(&db, &dir, &["outofscope", "--no-record", "--ndjson"]);
+    let (found, out) = rq(&db, &dir, &["outofscope", "--ndjson"]);
     assert!(found, "warming finds the out-of-scope class: {out}");
     assert!(out.contains("\"file\":\"other/b.rb\""), "warm hit: {out}");
     let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
@@ -780,7 +768,7 @@ fn open_launches_the_top_hit() {
 
     // with no launcher and no editor, --open prints the resolved path:line
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["--open", "user", "--no-record"])
+        .args(["--open", "user"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
         .env_remove("EDITOR")
@@ -813,7 +801,7 @@ fn web_links_the_newest_pushed_commit() {
     // BROWSER=echo stands in for the browser, so the URL lands on stdout
     let web = || {
         let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-            .args(["-w", "user", "--no-record"])
+            .args(["-w", "user"])
             .current_dir(&dir)
             .env("RQ_DB", &db)
             .env("RQ_WARM_DETACH", "0")
@@ -1132,22 +1120,14 @@ fn a_scope_that_matches_nothing_is_a_miss_not_the_top_hit() {
     rq(&db, &dir, &["--index"]);
 
     // the real owner resolves
-    let (ok, out) = rq(
-        &db,
-        &dir,
-        &["Cart#recalculate_totals", "--ndjson", "--no-record"],
-    );
+    let (ok, out) = rq(&db, &dir, &["Cart#recalculate_totals", "--ndjson"]);
     assert!(ok, "real owner should resolve: {out}");
     assert!(out.contains("recalculate_totals"), "found it: {out}");
 
     // a made-up owner must not return that same definition. It used to, at
     // confidence 1.0 — the strongest signal available, on the one query whose
     // constraint had been thrown away.
-    let (ok, out) = rq(
-        &db,
-        &dir,
-        &["NoSuchClass#recalculate_totals", "--ndjson", "--no-record"],
-    );
+    let (ok, out) = rq(&db, &dir, &["NoSuchClass#recalculate_totals", "--ndjson"]);
     assert!(!ok, "a bogus owner must not succeed: {out}");
     assert!(
         !out.contains("\"confidence\":1.0"),
@@ -1161,11 +1141,7 @@ fn a_scope_that_matches_nothing_is_a_miss_not_the_top_hit() {
     );
     assert!(out.contains("Shop::Cart"), "says where it does live: {out}");
 
-    let (_, out) = rq(
-        &db,
-        &dir,
-        &["Cart#no_such_method_at_all", "--ndjson", "--no-record"],
-    );
+    let (_, out) = rq(&db, &dir, &["Cart#no_such_method_at_all", "--ndjson"]);
     assert!(
         out.contains("no_match"),
         "an absent name is still a plain miss: {out}"
@@ -1185,7 +1161,7 @@ fn a_class_is_reachable_by_the_name_of_its_file() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["billing", "--ndjson", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["billing", "--ndjson"]);
     assert!(ok, "path recall should find it: {out}");
     assert!(out.contains("Invoicer"), "the class in billing.rb: {out}");
 
@@ -1204,7 +1180,7 @@ fn a_short_abbreviation_still_reaches_a_longer_name() {
 
     // `usr` skips letters, so neither an exact nor a prefix match reaches it —
     // this is what the first-character anchor pass exists for
-    let (ok, out) = rq(&db, &dir, &["usr", "--ndjson", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["usr", "--ndjson"]);
     assert!(ok, "short abbreviation should resolve: {out}");
     assert!(
         out.contains("UserAccount"),
@@ -1228,7 +1204,7 @@ fn one_name_declared_in_several_files_is_one_result() {
     fs::write(dir.join("c.rb"), "module Shop\n  module Cart\n  end\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Cart", "--ndjson", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["Cart", "--ndjson"]);
     assert!(ok, "search failed: {out}");
     assert_eq!(out.lines().count(), 1, "one result for one name: {out}");
     // and the fold is lossless — the other declarations are still reported
@@ -1254,12 +1230,12 @@ fn a_typo_still_finds_the_definition() {
     // swapped letters and a doubled one both used to be hard misses: every
     // query character has to appear in order for a subsequence match
     for typo in ["connectoin_pool", "connection_poool"] {
-        let (ok, out) = rq(&db, &dir, &[typo, "--ndjson", "--no-record"]);
+        let (ok, out) = rq(&db, &dir, &[typo, "--ndjson"]);
         assert!(ok, "{typo} should find something: {out}");
         assert!(out.contains("ConnectionPool"), "{typo} finds it: {out}");
     }
     // a real word that simply isn't there is still a definitive miss
-    let (ok, _) = rq(&db, &dir, &["WidgetFactory", "--ndjson", "--no-record"]);
+    let (ok, _) = rq(&db, &dir, &["WidgetFactory", "--ndjson"]);
     assert!(!ok, "an absent symbol is still a miss");
 
     let _ = fs::remove_dir_all(&dir);
@@ -1276,7 +1252,7 @@ fn confidence_and_total_do_not_depend_on_the_limit() {
     // the returned window made `-l 1` unconditionally certain — and that
     // reading is what gates --show
     let conf = |n: &str| {
-        let (_, out) = rq(&db, &dir, &["Widget", "--ndjson", "--no-record", "-l", n]);
+        let (_, out) = rq(&db, &dir, &["Widget", "--ndjson", "-l", n]);
         out.lines().next().unwrap_or_default().to_string()
     };
     let one = conf("1");
@@ -1291,11 +1267,7 @@ fn confidence_and_total_do_not_depend_on_the_limit() {
     );
 
     // --explain reaches structured output instead of being silently dropped
-    let (_, out) = rq(
-        &db,
-        &dir,
-        &["Widget", "--ndjson", "--no-record", "-e", "-l", "1"],
-    );
+    let (_, out) = rq(&db, &dir, &["Widget", "--ndjson", "-e", "-l", "1"]);
     assert!(
         out.contains("\"explain\""),
         "explain is carried in JSON: {out}"
@@ -1312,20 +1284,20 @@ fn an_unknown_kind_or_lang_is_an_error_not_a_miss() {
 
     // a typo used to come back as a definitive no_match — the one exit code a
     // script is supposed to trust as "this symbol does not exist"
-    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "banana", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "banana"]);
     assert!(!ok, "unknown kind should fail: {out}");
     assert!(
         !out.contains("no_match"),
         "reported as an error, not a miss: {out}"
     );
-    let (ok, out) = rq(&db, &dir, &["Widget", "-x", "cobol", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["Widget", "-x", "cobol"]);
     assert!(!ok, "unknown lang should fail: {out}");
     assert!(
         !out.contains("no_match"),
         "reported as an error, not a miss: {out}"
     );
     // a real one still works
-    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "class", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "class"]);
     assert!(ok, "known kind still searches: {out}");
 
     let _ = fs::remove_dir_all(&dir);
@@ -1371,16 +1343,6 @@ fn usage_counts_searches_by_caller_and_flags() {
     assert!(
         out.contains("\"on_complete\":2"),
         "queries against a complete index are counted: {out}"
-    );
-
-    // --no-record keeps benchmark loops out of the counts
-    let before = out.lines().count();
-    rq(&db, &dir, &["Widget", "--no-record", "--ndjson"]);
-    let (_, after) = rq(&db, &dir, &["--usage", "--ndjson"]);
-    assert_eq!(
-        after.lines().count(),
-        before,
-        "no-record adds no row: {after}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -1457,19 +1419,6 @@ fn positional_paths_filter_like_rg() {
         !out.contains("app/models/widget.rb"),
         "models hit filtered out: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn no_record_still_returns_results() {
-    let (dir, db) = scratch("norec");
-    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
-    rq(&db, &dir, &["--index"]);
-
-    let (ok, out) = rq(&db, &dir, &["widget", "--no-record", "--ndjson"]);
-    assert!(ok, "no-record search failed: {out}");
-    assert!(out.contains("\"name\":\"Widget\""), "result present: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1597,13 +1546,13 @@ fn searching_from_a_subdirectory_uses_the_repo_root() {
     // index the whole repo from its root — paths are repo-root-relative
     let (ok, _) = rq(&db, &dir, &["--index"]);
     assert!(ok);
-    let (_, out) = rq(&db, &dir, &["DeepWidget", "--no-record"]);
+    let (_, out) = rq(&db, &dir, &["DeepWidget"]);
     assert!(out.contains("nested/deep.rb"), "root-relative path: {out}");
 
     // searching from the subdirectory must reuse the same repo, not fork a new
     // one keyed at the subdir — the top-level symbol stays found, and there's
     // still exactly one repository with both files.
-    let (_, out) = rq(&db, &sub, &["TopWidget", "--no-record"]);
+    let (_, out) = rq(&db, &sub, &["TopWidget"]);
     assert!(
         out.contains("TopWidget"),
         "top symbol found from subdir: {out}"
@@ -1631,7 +1580,7 @@ fn warming_a_committed_repo_indexes_tracked_source() {
     fs::write(dir.join("README.md"), "# docs, not source\n").unwrap();
     git_init_commit(&dir);
 
-    let (ok, out) = rq(&db, &dir, &["Widget", "--no-record"]);
+    let (ok, out) = rq(&db, &dir, &["Widget"]);
     assert!(ok, "warmed search failed: {out}");
     assert!(
         out.contains("lib/widget.rb"),
@@ -1654,7 +1603,7 @@ fn a_cold_repo_blocks_to_an_answer_instead_of_a_false_miss() {
     git_init_commit(&dir);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["Widget", "--no-record", "--json"])
+        .args(["Widget", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
         .env("RQ_ANSWER_BUDGET_MS", "1") // bounded path would give up immediately
@@ -1681,7 +1630,7 @@ fn an_interactive_cold_repo_shows_progress_and_finds_the_answer() {
     git_init_commit(&dir);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["Widget", "--no-record"])
+        .args(["Widget"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
         .env("RQ_ANSWER_BUDGET_MS", "1")
@@ -1712,7 +1661,7 @@ fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
     git_init_commit(&dir);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["Nonexistent", "--no-record", "--json"])
+        .args(["Nonexistent", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
         .env("RQ_COLLECT_CAP", "5") // one pass can't finish → stays "warming"
@@ -1750,7 +1699,7 @@ fn no_wait_returns_without_blocking_on_a_rebuild() {
     // duration form `--wait 0`. RQ_WAIT_BUDGET_MS is 10 minutes throughout, so a
     // block on either would hang the test.
     for flags in [["--no-wait"].as_slice(), ["--wait", "0"].as_slice()] {
-        let mut args = vec!["Nonexistent", "--no-record", "--json"];
+        let mut args = vec!["Nonexistent", "--json"];
         args.extend_from_slice(flags);
         let run = Command::new(env!("CARGO_BIN_EXE_rq"))
             .args(&args)
@@ -1893,7 +1842,7 @@ fn detached_warm_finishes_coverage_in_the_background() {
     // child inherits the cap, so it needs several passes — exercising its
     // sweep-until-complete loop too.
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .args(["K00", "--no-record"])
+        .args(["K00"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
         .env("RQ_WARM_DETACH", "1")
