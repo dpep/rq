@@ -2119,7 +2119,10 @@ fn read_signature(
 ) -> Option<String> {
     hit_file_roots(store, repo_identity, cwd)
         .into_iter()
-        .find_map(|root| signature_in(&std::fs::read_to_string(root.join(file)).ok()?, line))
+        .find_map(|root| {
+            let src = std::fs::read_to_string(root.join(file)).ok()?;
+            signature_in(&src.lines().collect::<Vec<_>>(), line)
+        })
 }
 
 /// Confidence at or above which `--show` prints a body instead of a list. Exact
@@ -2226,12 +2229,13 @@ fn span_in(content: &str, start: i64, end: i64) -> Option<String> {
     Some(lines[s..e].join("\n"))
 }
 
-/// The trimmed source line `line` (1-based) of already-read `content`, if
-/// non-empty — a symbol's definition line. Splitting this out lets `--symbols`
-/// read one file once instead of re-reading it per symbol.
-fn signature_in(content: &str, line: i64) -> Option<String> {
+/// The trimmed source line `line` (1-based) of a file already split into
+/// `lines`, if non-empty — a symbol's definition line. Takes the split rather
+/// than the text so `--symbols` splits once: re-scanning from the top per
+/// symbol is quadratic in a large file.
+fn signature_in(lines: &[&str], line: i64) -> Option<String> {
     let idx = usize::try_from(line).ok()?.checked_sub(1)?;
-    let l = content.lines().nth(idx)?.trim();
+    let l = lines.get(idx)?.trim();
     (!l.is_empty()).then(|| l.to_string())
 }
 
@@ -2312,10 +2316,13 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let content = hit_file_roots(&store, &identity, Some(&root))
         .iter()
         .find_map(|r| std::fs::read_to_string(r.join(&rel)).ok());
+    let lines: Vec<&str> = content
+        .as_deref()
+        .map_or_else(Vec::new, |c| c.lines().collect());
     let syms: Vec<SymbolOut> = rows
         .into_iter()
         .map(|r| SymbolOut {
-            signature: content.as_deref().and_then(|c| signature_in(c, r.line)),
+            signature: signature_in(&lines, r.line),
             name: r.name,
             kind: r.kind,
             language: r.language,
@@ -3042,6 +3049,16 @@ mod tests {
 
         // not a terminal (a script/agent/pipe) — block, but without the UI
         assert!(!show_progress(Output::Text, false));
+    }
+
+    #[test]
+    fn signature_in_reads_one_based_trimmed_nonblank_lines() {
+        let lines = ["class Widget", "", "  def go"];
+        assert_eq!(signature_in(&lines, 1).as_deref(), Some("class Widget"));
+        assert_eq!(signature_in(&lines, 3).as_deref(), Some("def go"));
+        assert_eq!(signature_in(&lines, 2), None, "blank line");
+        assert_eq!(signature_in(&lines, 0), None, "lines are 1-based");
+        assert_eq!(signature_in(&lines, 4), None, "past the end");
     }
 
     #[test]

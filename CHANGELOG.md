@@ -21,6 +21,9 @@ and aren't listed; see `git log` for those.
   `--open`/`--web` report too; before, they printed nothing. A stored
   `total_ms` baseline from an earlier version measured less and isn't
   comparable.
+- **`--symbols` is faster on large files** — it re-scanned the file from the
+  top for every symbol's signature line; a 5,000-line file went from ~41 ms to
+  ~16 ms.
 
 ## 0.51.1 — 2026-09-25
 
