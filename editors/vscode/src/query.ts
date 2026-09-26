@@ -185,6 +185,11 @@ const RQ_LANG: Record<string, string> = {
   javascriptreact: "javascript",
 };
 
+/** VS Code language ids an `rq.languages` entry covers: TS/JS include their JSX variants. */
+export function editorLanguages(setting: string[]): string[] {
+  return setting.flatMap((l) => (l === "typescript" || l === "javascript" ? [l, `${l}react`] : [l]));
+}
+
 /**
  * `--lang` value for a set of VS Code language ids. A definition referenced
  * from TypeScript may live in JavaScript and vice versa, so the two travel together.

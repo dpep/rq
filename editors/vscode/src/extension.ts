@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { buildLookup, findRepoRoot, Hit, hitPath, pickHits, rqLangs } from "./query";
+import { buildLookup, editorLanguages, findRepoRoot, Hit, hitPath, pickHits, rqLangs } from "./query";
 import { runRq, RunResult } from "./rq";
 
 let log: vscode.OutputChannel;
@@ -17,7 +17,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   let definitions: vscode.Disposable | undefined;
   const registerDefinitions = () => {
     definitions?.dispose();
-    const selector = languages().map((language) => ({ language, scheme: "file" }));
+    const selector = editorLanguages(languages()).map((language) => ({ language, scheme: "file" }));
     definitions = vscode.languages.registerDefinitionProvider(selector, { provideDefinition });
   };
   registerDefinitions();

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { buildLookup, findRepoRoot, Hit, hitPath, parseResult, pickHits, rqLangs } from "../../src/query";
+import { Hit, buildLookup, editorLanguages, findRepoRoot, hitPath, parseResult, pickHits, rqLangs } from "../../src/query";
 
 // The cursor goes where `|` is; returns the queries tried, in order.
 function queries(text: string, lang = "ruby"): string[] | undefined {
@@ -151,6 +151,18 @@ describe("findRepoRoot", () => {
 
   it("resolves hits against the root", () => {
     assert.equal(hitPath("/repo", hit("save", 1, "lib/a.rb")), path.resolve("/repo/lib/a.rb"));
+  });
+});
+
+describe("editorLanguages", () => {
+  it("covers the JSX variants under typescript and javascript", () => {
+    assert.deepEqual(editorLanguages(["ruby", "typescript", "javascript"]), [
+      "ruby",
+      "typescript",
+      "typescriptreact",
+      "javascript",
+      "javascriptreact",
+    ]);
   });
 });
 

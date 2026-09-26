@@ -1,8 +1,8 @@
 {
   "name": "rq",
-  "displayName": "rq — Go to Definition",
-  "description": "Go to Definition, Peek and workspace symbols backed by the rq code-navigation CLI. Strongest for Ruby.",
-  "version": "0.2.0",
+  "displayName": "rq — Reference Query",
+  "description": "Go to definition, backed by the rq CLI.",
+  "version": "0.2.1",
   "publisher": "dpep",
   "license": "MIT",
   "repository": {
@@ -29,9 +29,7 @@
     "onLanguage:go",
     "onLanguage:python",
     "onLanguage:typescript",
-    "onLanguage:typescriptreact",
-    "onLanguage:javascript",
-    "onLanguage:javascriptreact"
+    "onLanguage:javascript"
   ],
   "contributes": {
     "commands": [
@@ -58,9 +56,7 @@
               "go",
               "python",
               "typescript",
-              "typescriptreact",
-              "javascript",
-              "javascriptreact"
+              "javascript"
             ]
           },
           "uniqueItems": true,
@@ -70,11 +66,9 @@
             "go",
             "python",
             "typescript",
-            "typescriptreact",
-            "javascript",
-            "javascriptreact"
+            "javascript"
           ],
-          "markdownDescription": "Languages rq answers Go to Definition for. With `rq.mode` set to `fallback`, rq only answers where the language's own server finds nothing, so it's safe to leave on alongside rust-analyzer, gopls, Pylance or TypeScript."
+          "markdownDescription": "Languages rq answers Go to Definition for (`typescript`/`javascript` include `.tsx`/`.jsx`). With `rq.mode` set to `fallback`, rq only answers where the language's own server finds nothing, so it's safe to leave on alongside rust-analyzer, gopls, Pylance or TypeScript."
         },
         "rq.mode": {
           "type": "string",
