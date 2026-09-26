@@ -3,13 +3,13 @@
 Phased plan. Each phase is independently useful and ends in something you can
 actually run. Earlier phases must not assume later ones exist.
 
-## Phase 0 — Design (current)
+## Phase 0 — Design
 
 - [x] Product vision and priorities ([README](../README.md))
 - [x] Architecture: symbol model, repo identity, schema, indexing, search,
       partial indexing ([ARCHITECTURE](ARCHITECTURE.md))
 - [x] Implementation language decided: Rust
-- [ ] Crate scaffold (`cargo init`, module skeleton, CI)
+- [x] Crate scaffold (`cargo init`, module skeleton, CI)
 
 ## Phase 1 — MVP: index + search Ruby definitions
 
@@ -52,8 +52,8 @@ Make `rq` useful before indexing finishes or when it never ran.
 
 No daemon — instead of a resident process, deferred work is amortized across
 interactions: each `rq` invocation prints results, then does a small bounded
-chunk of background work (event rollup, opportunistic index warming) before
-exiting. See "No daemon — amortized post-interaction work" in ARCHITECTURE.
+chunk of work (the usage count, handing staleness checks and warming to a
+detached child) before exiting. See "No daemon — amortized post-interaction work" in ARCHITECTURE.
 
 Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
 
@@ -138,6 +138,8 @@ signal slots into the scorer without threading new parameters.
       on a TTY with several) and `exec`s the launcher
       (`RQ_OPEN` template → `code` → `$VISUAL`/`$EDITOR` → print). Bare `rq` stays
       a `path:line` printer
+- [x] browser open — `rq -w/--web` opens the match on its git host, pinned to
+      the newest pushed commit in HEAD's history so the link resolves
 - [x] reference shell wrapper — `script/rq-open` (search → pick → open),
       now for interactive fzf picking / custom flows; `rq -o` covers the default
 - [x] integration guide — docs/EDITORS.md (VS Code task + extension sketch, Neovim)
@@ -180,8 +182,14 @@ model, not leaking a language into `index`/`search`/scoring.
 - `-x/--lang` — restrict to language: ruby/rust/go/python/typescript/javascript
   (prefix-matched; `r`=ruby+rust; aliases rb/rs/golang/ts/tsx/js/jsx)
 - `-l/--limit N` — cap the number of results
+- scoped queries — `Foo::Bar`, `Foo#bar`, `Foo.bar` keep only definitions in
+  that scope; `Foo.new` finds the constructor (or the class, when inherited)
+- `-a/--all-repos` — search every indexed repo, not just the current one
 - `-o/--open` — open the best match in your editor; prompts
   to choose on a TTY with several. Launcher: `RQ_OPEN` → `code` → `$VISUAL`/`$EDITOR`
+- `-w/--web` — open the best match on its git host (`$BROWSER` → `open`/`xdg-open`)
+- `--show` — print the definition's source when the top match is confident
+- `--usage` — searches per day, by caller and flags
 - `-e/--explain` — per-result score breakdown
 - match highlighting — text results color the matched chars (TTY-only; honors
   `NO_COLOR` and `GREP_COLORS`)
