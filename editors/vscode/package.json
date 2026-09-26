@@ -2,7 +2,7 @@
   "name": "rq",
   "displayName": "rq — Go to Definition",
   "description": "Go to Definition, Peek and workspace symbols backed by the rq code-navigation CLI. Strongest for Ruby.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "dpep",
   "license": "MIT",
   "repository": {
@@ -65,9 +65,29 @@
           },
           "uniqueItems": true,
           "default": [
-            "ruby"
+            "ruby",
+            "rust",
+            "go",
+            "python",
+            "typescript",
+            "typescriptreact",
+            "javascript",
+            "javascriptreact"
           ],
-          "markdownDescription": "Languages rq answers Go to Definition and workspace symbols for. VS Code merges every provider's answers, so a language that already has a precise language server (rust-analyzer, gopls, Pylance, the built-in TypeScript server) would show each definition twice — add it here only if you don't run one."
+          "markdownDescription": "Languages rq answers Go to Definition for. With `rq.mode` set to `fallback`, rq only answers where the language's own server finds nothing, so it's safe to leave on alongside rust-analyzer, gopls, Pylance or TypeScript."
+        },
+        "rq.mode": {
+          "type": "string",
+          "enum": [
+            "fallback",
+            "always"
+          ],
+          "enumDescriptions": [
+            "Answer only when no other definition provider (a language server) finds anything — no duplicate results.",
+            "Always answer, alongside any language server. Expect duplicates and a peek list where both answer."
+          ],
+          "default": "fallback",
+          "markdownDescription": "When rq answers Go to Definition."
         }
       }
     }

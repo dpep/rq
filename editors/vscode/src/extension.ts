@@ -6,6 +6,9 @@ import { runRq, RunResult } from "./rq";
 
 let log: vscode.OutputChannel;
 let missingReported = false;
+// Positions whose definition we're asking the other providers for; the ask
+// re-enters our own provider, which must stay out of its answer.
+const asking = new Set<string>();
 
 export function activate(ctx: vscode.ExtensionContext) {
   log = vscode.window.createOutputChannel("rq");
@@ -40,6 +43,7 @@ async function provideDefinition(
 ): Promise<vscode.LocationLink[] | undefined> {
   const lookup = buildLookup(doc.lineAt(pos.line).text, pos.character, doc.languageId);
   if (!lookup) return;
+  if (mode() === "fallback" && (await othersAnswer(doc, pos))) return;
   const cwd = rootFor(doc.uri);
   const origin = new vscode.Range(pos.line, lookup.start, pos.line, lookup.end);
 
@@ -55,6 +59,19 @@ async function provideDefinition(
       vscode.window.setStatusBarMessage("rq: still indexing this repo — try again in a moment", 4000);
       return;
     }
+  }
+}
+
+/** Whether another definition provider (a language server) has an answer here. */
+async function othersAnswer(doc: vscode.TextDocument, pos: vscode.Position): Promise<boolean> {
+  const key = `${doc.uri}:${pos.line}:${pos.character}`;
+  if (asking.has(key)) return true; // the re-entrant call: defer to the outer one
+  asking.add(key);
+  try {
+    const defs = await vscode.commands.executeCommand<unknown[]>("vscode.executeDefinitionProvider", doc.uri, pos);
+    return (defs?.length ?? 0) > 0;
+  } finally {
+    asking.delete(key);
   }
 }
 
@@ -166,7 +183,11 @@ function workspaceRoot(): string | undefined {
 }
 
 function languages(): string[] {
-  return vscode.workspace.getConfiguration("rq").get<string[]>("languages") ?? ["ruby"];
+  return vscode.workspace.getConfiguration("rq").get<string[]>("languages") ?? [];
+}
+
+function mode(): "fallback" | "always" {
+  return vscode.workspace.getConfiguration("rq").get<"fallback" | "always">("mode") ?? "fallback";
 }
 
 function symbolKind(kind: string): vscode.SymbolKind {

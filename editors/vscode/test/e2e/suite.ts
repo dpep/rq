@@ -46,6 +46,17 @@ export async function run() {
   // A name rq doesn't know → nothing, not a fuzzy neighbour
   assert.deepEqual(await definitions(doc, "wid.sav", "wid.".length + 1), []);
 
+  // fallback mode: a language server's answer wins, and rq adds nothing
+  const server = vscode.languages.registerDefinitionProvider("ruby", {
+    provideDefinition: (d, p) => new vscode.Location(d.uri, p),
+  });
+  try {
+    const defs = await definitions(doc, "Account::Ledger", "Account::".length + 1);
+    assert.ok(defs.length === 1 && defs[0].startsWith("app.rb:"), `only the server's: ${defs}`);
+  } finally {
+    server.dispose();
+  }
+
   // Cmd-T: rq's ranked hits, as workspace symbols
   const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
     "vscode.executeWorkspaceSymbolProvider",

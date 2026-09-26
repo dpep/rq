@@ -24,12 +24,12 @@ methods `attr_accessor`, `delegate`, `has_many` and friends define.
 
 ## Settings
 
-| Setting        | Default    | Meaning                                                    |
-| -------------- | ---------- | ---------------------------------------------------------- |
-| `rq.path`      | `"rq"`     | The rq binary.                                             |
-| `rq.languages` | `["ruby"]` | Languages rq answers Go to Definition and Cmd-T for.       |
+| Setting        | Default           | Meaning                                                |
+| -------------- | ----------------- | ------------------------------------------------------ |
+| `rq.path`      | `"rq"`            | The rq binary.                                         |
+| `rq.languages` | every rq language | Languages rq answers Go to Definition and Cmd-T for.   |
+| `rq.mode`      | `"fallback"`      | `fallback`: answer only where no other provider does. `always`: answer alongside them. |
 
-VS Code shows every definition provider's answers together, so a language with a
-precise language server (rust-analyzer, gopls, Pylance, the built-in TypeScript
-server) would list each definition twice. Add a language to `rq.languages` only
-where you don't run one. See [docs/EDITORS.md](https://github.com/dpep/rq/blob/main/docs/EDITORS.md).
+VS Code shows every definition provider's answers together, so where a language
+server also answers, each definition would appear twice. In the default
+`fallback` mode rq answers only where the language server finds nothing. See [docs/EDITORS.md](https://github.com/dpep/rq/blob/main/docs/EDITORS.md).

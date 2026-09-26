@@ -72,21 +72,21 @@ than an error. A request VS Code cancels kills its rq process.
 
 **Settings.**
 
-| Setting        | Default    | Meaning                                              |
-| -------------- | ---------- | ---------------------------------------------------- |
-| `rq.path`      | `"rq"`     | The rq binary.                                       |
-| `rq.languages` | `["ruby"]` | Languages rq answers Go to Definition and Cmd-T for. |
+| Setting        | Default         | Meaning                                                  |
+| -------------- | --------------- | -------------------------------------------------------- |
+| `rq.path`      | `"rq"`          | The rq binary.                                           |
+| `rq.languages` | every rq language | Languages rq answers Go to Definition and Cmd-T for.   |
+| `rq.mode`      | `"fallback"`    | `fallback`: answer only where no other provider does. `always`: answer alongside them. |
 
 **Living with language servers.** VS Code merges every definition provider's
 answers, and rq's ranges (the whole definition) never match a language server's
-(the name), so where both answer, every definition appears twice and a
-Cmd-click opens a peek list instead of jumping. rust-analyzer, gopls, Pylance
-and the built-in TypeScript server are type-aware and precise, so rq has little
-to add there. Ruby is the opposite: without types, its language servers miss
-much of what metaprogramming defines (`delegate`, `has_many`, `scope`), which rq
-indexes, and often aren't installed at all — which is why the default is Ruby
-only. Add another language when you
-don't run a server for it.
+(the name), so where both answer, every definition appears twice and a click
+opens a peek list instead of jumping. So by default rq asks the other providers
+first and answers only when they find nothing: a precise server (rust-analyzer,
+gopls, Pylance, TypeScript, Ruby LSP) keeps its answer, and rq fills the gaps —
+Ruby metaprogramming (`delegate`, `has_many`, `scope`), a file the server hasn't
+loaded, untyped code. The cost is waiting on the server first. Set `rq.mode` to
+`always` to have rq answer every time.
 
 **Also included.** Go to Symbol in Workspace (Cmd/Ctrl-T) from rq's ranked
 index, for the same languages, and **rq: Search Definitions** in the command

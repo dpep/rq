@@ -7,6 +7,16 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **The VS Code extension (0.2.0) answers for every rq language without
+  duplicating a language server.** In the new default `rq.mode: fallback`, rq
+  answers Go to Definition only where the other providers find nothing, so
+  it's on for Ruby, Rust, Go, Python and TypeScript/JavaScript alongside Ruby
+  LSP, rust-analyzer, gopls, Pylance and TypeScript. `always` restores the old
+  behavior. The rq binary is unchanged.
+
 ## 0.52.3 — 2026-09-26
 
 ### Fixed
