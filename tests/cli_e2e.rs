@@ -59,13 +59,15 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// Run a `-v` search and report whether it spawned a background warm (traced to
-/// stderr). Lets tests assert on the warm decision without timing flakiness.
+/// Run a `-v` search and report whether it decided to warm (traced to stderr).
+/// Detach is off so the decision runs in-process: with it on, a hit hands the
+/// same check to a child (`rq --warm`), which would race the assert.
 fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
         .args(["-v", query, "--no-record"])
         .current_dir(cwd)
         .env("RQ_DB", db)
+        .env("RQ_WARM_DETACH", "0")
         .output()
         .expect("run rq");
     String::from_utf8_lossy(&run.stderr).contains("background warm")
@@ -542,6 +544,54 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
     assert!(
         !warmed(&db, &dir, "widget"),
         "a new untracked file does not trigger a warm (accepted tradeoff)"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
+    // A hit on a complete repo must not wait on `git status`: it hands the
+    // check to `rq --warm`, which bows out when nothing moved and sweeps when
+    // something did.
+    let (dir, db) = scratch("warm-child");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let warm = |dir: &Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .args(["-v", "--warm"])
+            .current_dir(dir)
+            .env("RQ_DB", &db)
+            .output()
+            .expect("run rq --warm");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let idle = warm(&dir);
+    assert!(idle.contains("nothing to do"), "clean: {idle}");
+    assert!(
+        !idle.contains("(budget"),
+        "clean repo must not sweep: {idle}"
+    );
+
+    fs::write(dir.join("c.rb"), "class Gizmo\n  def go; end\nend\n").unwrap();
+    let busy = warm(&dir);
+    assert!(busy.contains("(budget"), "an edit is swept: {busy}");
+
+    // last: the child this hit spawns holds the single-flight lock a while
+    let hit = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Widget", "--no-record", "--profile", "--json"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .output()
+        .expect("run rq");
+    let profile = String::from_utf8_lossy(&hit.stderr);
+    assert!(hit.status.success(), "hit: {profile}");
+    assert!(
+        !profile.contains("worktree changed?") && !profile.contains("staleness"),
+        "a hit must not run the check itself: {profile}"
     );
 
     let _ = fs::remove_dir_all(&dir);

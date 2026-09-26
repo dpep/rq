@@ -788,7 +788,15 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let staleness = (!was_warming && warming_ok && !args.batch)
         .then(|| root.clone())
         .flatten()
-        .map(|c| std::thread::spawn(move || worktree_edits(&c, indexed_head.as_deref())));
+        .map(|c| {
+            if warm_detach_enabled() {
+                Staleness::Deferred(c, indexed_head)
+            } else {
+                Staleness::Running(std::thread::spawn(move || {
+                    worktree_edits(&c, indexed_head.as_deref())
+                }))
+            }
+        });
     // Only a repo that's still warming warms *before* the answer now; a
     // complete-but-edited one is reindexed by `settle_warm` afterwards.
     let want_warm = warming_ok && was_warming && root.is_some();
@@ -997,6 +1005,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         incomplete |= settle_warm(
             store,
             staleness,
+            false,
             was_warming,
             warming_ok,
             root.as_deref(),
@@ -1137,6 +1146,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let _ = settle_warm(
         store,
         staleness,
+        true,
         was_warming,
         warming_ok,
         root.as_deref(),
@@ -1246,6 +1256,22 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let _ = store.set_warm_lock(&identity, std::process::id());
+
+    // A search on a complete repo hands us the staleness check rather than
+    // wait on `git status` itself, so most runs end here: nothing moved.
+    if store.coverage_status(&identity).ok().flatten().as_deref() == Some("complete") {
+        let head = store
+            .repository_id(&identity)
+            .ok()
+            .flatten()
+            .and_then(|id| store.indexed_head(id).ok().flatten());
+        let edits = worktree_edits(&root, head.as_deref());
+        if !changed_since_index(&store, Some(&identity), Some(&root), edits) {
+            crate::trace!("warm: unchanged since indexed, nothing to do");
+            let _ = store.clear_warm_lock(&identity);
+            return ExitCode::SUCCESS;
+        }
+    }
 
     // Sweep until coverage completes, the budget runs out, or a pass stops
     // making progress (each pass converges — mtime-skips what's done).
@@ -1849,17 +1875,30 @@ fn changed_since_index(
     }
 }
 
-/// Settle warming once the answer is out: collect the staleness check started
-/// back at setup, reindex if the worktree moved, and hand any remainder to a
-/// detached child.
+/// The "has the worktree moved since it was indexed?" check on a complete
+/// repo. It forks `git status`, which grows with the worktree (~12 ms on
+/// rails, ~27 ms on a 14k-file repo) and decides nothing a hit depends on.
+enum Staleness {
+    /// Running alongside the search, collected after the answer — the
+    /// no-detach mode, where the reindex it may trigger runs in-process.
+    Running(std::thread::JoinHandle<Option<Vec<String>>>),
+    /// Not started: a hit hands it to the detached warm child, so the process
+    /// exits without waiting on git; a miss, whose exit code depends on it,
+    /// runs it inline. Holds the root and the HEAD the index reflects.
+    Deferred(PathBuf, Option<String>),
+}
+
+/// Settle warming once the answer is out: resolve the staleness check,
+/// reindex if the worktree moved, and hand any remainder to a detached child.
 ///
 /// Called from *both* exits. The miss path matters as much as the render one —
 /// a symbol added a moment ago is precisely a miss, and reindexing before we
-/// exit is what makes the immediate retry hit.
+/// exit is what makes the immediate retry hit. `hit` says which exit this is.
 #[allow(clippy::too_many_arguments)]
 fn settle_warm(
     store: &Store,
-    staleness: Option<std::thread::JoinHandle<Option<Vec<String>>>>,
+    staleness: Option<Staleness>,
+    hit: bool,
     was_warming: bool,
     warming_ok: bool,
     root: Option<&std::path::Path>,
@@ -1869,18 +1908,31 @@ fn settle_warm(
     no_wait: bool,
     identity: Option<&str>,
 ) -> bool {
-    // A panicked check counts as changed: warming needlessly costs a little
-    // time, skipping it wrongly serves a stale index.
-    let changed = {
-        // the check ran alongside the search; this is only what's left of it
-        let mut span = crate::profile::span("after: staleness wait");
-        let changed = staleness.is_some_and(|h| {
-            h.join().map_or(true, |edits| {
+    let changed = match staleness {
+        None => false,
+        // The answer is out and didn't depend on this: the warm child asks git
+        // and reindexes only if something moved (see `cmd_warm`).
+        Some(Staleness::Deferred(..)) if hit => {
+            if let Some(r) = root {
+                spawn_detached_warm(r);
+            }
+            return false;
+        }
+        Some(Staleness::Deferred(r, head)) => {
+            let _span = crate::profile::span("after: staleness check");
+            changed_since_index(store, identity, root, worktree_edits(&r, head.as_deref()))
+        }
+        Some(Staleness::Running(h)) => {
+            // the check ran alongside the search; this is only what's left of it
+            let mut span = crate::profile::span("after: staleness wait");
+            // A panicked check counts as changed: warming needlessly costs a
+            // little time, skipping it wrongly serves a stale index.
+            let changed = h.join().map_or(true, |edits| {
                 changed_since_index(store, identity, root, edits)
-            })
-        });
-        span.note(|| if changed { "changed" } else { "unchanged" }.to_string());
-        changed
+            });
+            span.note(|| if changed { "changed" } else { "unchanged" }.to_string());
+            changed
+        }
     };
     // Reindexing an edited worktree means sweeping every file to find the few
     // that moved — ~32ms on a 3000-file repo, and it was paid on *every* query

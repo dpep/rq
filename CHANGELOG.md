@@ -15,6 +15,9 @@ and aren't listed; see `git log` for those.
   the newest pushed one before it, so the link always resolves.
 
 ### Changed
+- **Searches return sooner on large repos.** A hit no longer waits for a
+  `git status` over the whole worktree before exiting; the background warm
+  asks instead. Rails: ~15 ms → ~5 ms; a 14k-file repo: ~32 ms → ~10 ms.
 - **`--profile` covers the whole run.** `total` now runs to process exit, a
   `first answer` row marks when results were printed, and the work after it
   (usage rollup, the worktree check) has its own rows. Misses, `--symbols` and
