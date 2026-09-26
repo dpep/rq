@@ -483,21 +483,33 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
         bnd_prefix[i + 1] = bnd_prefix[i] + boundary[i] as usize;
     }
 
-    // table[qi][i] = best (score, backpointer) for aligning q[0..=qi] with q[qi]
-    // landing on name position `i`; `None` if q[qi] can't end there. The
-    // backpointer is the position where q[qi-1] matched (self for qi == 0).
-    let mut table: Vec<Vec<Option<(f64, usize)>>> = vec![vec![None; n]; q.len()];
+    // Letters matched before the alignment first reaches a word start earn no
+    // credit of their own: the `t…e` of `testag` inside `acTivE` is coincidence
+    // until a word boundary confirms the reading. Only the first word can be
+    // entered mid-way (every later one must be entered at its start, below), so
+    // this charges exactly the query's leading letters spent inside a word it
+    // didn't begin — the more of them, the less the match is worth.
+    let credit = |anchored: bool, i: usize| {
+        if anchored {
+            10.0 + if boundary[i] { 15.0 } else { 0.0 }
+        } else {
+            0.0
+        }
+    };
+
+    // table[qi][i][a] = best (score, backpointer) for aligning q[0..=qi] with
+    // q[qi] landing on name position `i`, where `a` is 1 once the alignment has
+    // matched a word start. The backpointer is where q[qi-1] matched, and in
+    // which state (self for qi == 0).
+    type Cell = Option<(f64, (usize, usize))>;
+    let mut table: Vec<Vec<[Cell; 2]>> = vec![vec![[None; 2]; n]; q.len()];
 
     for (i, &c) in lower.iter().enumerate() {
         if c == q[0] {
-            let mut s = 10.0;
-            if boundary[i] {
-                s += 15.0;
-            }
-            if i == 0 {
-                s += 20.0; // anchored at the very start
-            }
-            table[0][i] = Some((s, i));
+            let a = usize::from(boundary[i]);
+            // anchored at the very start
+            let s = credit(a == 1, i) + if i == 0 { 20.0 } else { 0.0 };
+            table[0][i][a] = Some((s, (i, a)));
         }
     }
 
@@ -506,7 +518,6 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
             if lower[i] != q[qi] {
                 continue;
             }
-            let base = 10.0 + if boundary[i] { 15.0 } else { 0.0 };
             // a non-boundary char can only follow within MAX_NONBOUNDARY_GAP;
             // a boundary char may follow from the previous word (scan back further)
             let j_start = if boundary[i] {
@@ -514,12 +525,9 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
             } else {
                 (qi - 1).max(i.saturating_sub(MAX_NONBOUNDARY_GAP + 1))
             };
-            let mut best: Option<(f64, usize)> = None;
+            let mut best: [Cell; 2] = [None; 2];
             let prev_row = &table[qi - 1];
-            for (j, cell) in prev_row.iter().enumerate().take(i).skip(j_start) {
-                let Some((pscore, _)) = cell else {
-                    continue;
-                };
+            for (j, cells) in prev_row.iter().enumerate().take(i).skip(j_start) {
                 let trans = if j + 1 == i {
                     10.0 // contiguous run
                 } else {
@@ -541,26 +549,37 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
                     }
                     -(gap as f64) * GAP_PENALTY
                 };
-                let cand = pscore + trans;
-                if best.is_none_or(|(b, _)| cand > b) {
-                    best = Some((cand, j));
+                for (pa, cell) in cells.iter().enumerate() {
+                    let Some((pscore, _)) = cell else {
+                        continue;
+                    };
+                    let a = usize::from(pa == 1 || boundary[i]);
+                    let cand = pscore + trans;
+                    if best[a].is_none_or(|(b, _)| cand > b) {
+                        best[a] = Some((cand, (j, pa)));
+                    }
                 }
             }
-            if let Some((bscore, j)) = best {
-                table[qi][i] = Some((bscore + base, j));
+            for (a, cell) in best.into_iter().enumerate() {
+                if let Some((bscore, back)) = cell {
+                    table[qi][i][a] = Some((bscore + credit(a == 1, i), back));
+                }
             }
         }
     }
 
     // best end position for the final query char, then backtrack to collect indices
     let last = q.len() - 1;
-    let (mut pos, score) = (0..n)
-        .filter_map(|i| table[last][i].map(|(s, _)| (i, s)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (mut pos, mut state, score) = (0..n)
+        .flat_map(|i| (0..2).map(move |a| (i, a)))
+        .filter_map(|(i, a)| table[last][i][a].map(|(s, _)| (i, a, s)))
+        .max_by(|x, y| x.2.total_cmp(&y.2))?;
     let mut positions = Vec::with_capacity(q.len());
     for qi in (0..q.len()).rev() {
         positions.push(pos);
-        pos = table[qi][pos].expect("backtrack hits a filled cell").1;
+        (pos, state) = table[qi][pos][state]
+            .expect("backtrack hits a filled cell")
+            .1;
     }
     positions.reverse();
     Some(Alignment {

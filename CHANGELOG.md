@@ -18,6 +18,10 @@ and aren't listed; see `git log` for those.
   now finds `fetch_version` instead of `fetch_conversations`. A near miss used
   to be tried only when nothing else matched at all; it now competes whenever
   nothing matched literally, scored by how many of your letters it keeps.
+- **Letters picked from inside a word count for less.** `testag` no longer
+  prefers `ActiveStorage` (whose `t` and `e` sit mid-word in "Active") over
+  names that read as the query. A match now earns credit from the first word
+  start it reaches.
 - **Results print before the search is counted.** On a busy machine the usage
   write could hold the first result back by 5–15 ms; it now runs after the
   output. `--usage` counts are unchanged.

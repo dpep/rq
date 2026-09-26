@@ -564,3 +564,26 @@ query.
 
 *Reverses if:* typo candidates start winning on queries whose in-order reading was
 right. The gate is the lever: it compares evidence, not totals.
+
+## D15 — Letters matched before a word start earn no credit
+
+**Adopted**, 2026-09-26. Same harness as D12 and D14.
+
+*The weakness.* `align` requires every word after the first to be entered at its
+start, but the first matched letter may land anywhere. So the only scattered match
+it allows is one that begins inside a word and picks letters there before reaching
+a boundary: `testag` → `ac[t]iv[e]Storage`. Those letters earned the same base
+credit as letters at word starts, and a large module's kind and extent then
+carried it past names that actually read as the query.
+
+*The rule.* The DP tracks whether the alignment has matched a word start yet.
+Letters before that earn no base credit, and neither do their boundary bonuses;
+gap and contiguity scoring are unchanged, so a contiguous run inside a word
+(`cache` in `Precache`) still counts for something. The penalty is graded by the
+alignment itself: one stray leading letter costs little, several cost more, and an
+alignment that starts at a boundary is untouched. There is no threshold.
+
+*Result, on top of D14, against today.* Source at #1 916 → 920, top 10 1,347 →
+1,361, found 1,568 → 1,588. 83 sources move up and 5 down; no source leaves the top
+10 and none loses #1 beyond D14's two ambiguous cases. The two-state table left
+the query phase flat (7.0 → 7.1 ms median).

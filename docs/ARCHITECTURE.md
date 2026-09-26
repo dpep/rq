@@ -370,7 +370,8 @@ algorithms; tuning a weight must never require re-indexing.
 1. Tokenize the candidate on camel-case / underscore boundaries
    (`RefundProcessor` and `refund_processor` both → `[refund, processor]`).
 2. Greedily match the query against token prefixes and initials.
-3. Score by contiguity and token-boundary alignment.
+3. Score by contiguity and token-boundary alignment. Letters matched before
+   the alignment reaches its first word start earn no credit (D15).
 
 Intra-token fuzz (`paymnt → Payments`) falls back to subsequence matching with
 a penalty. A near miss (`sleect → Select`, up to two edits) competes with those

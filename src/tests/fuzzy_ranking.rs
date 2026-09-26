@@ -61,6 +61,18 @@ fn a_transposed_name_beats_a_name_that_merely_holds_the_letters() {
 }
 
 #[test]
+fn letters_picked_from_inside_a_word_are_not_an_abbreviation() {
+    // `t…e` sits inside `naTivE` before the match reaches a word start; the
+    // module's size and kind used to carry it past the name that reads as the
+    // query
+    let store = store_with(vec![
+        def("NativeStorage", Kind::Module, "lib/native_storage.rb", 400),
+        def("test_tag", Kind::Method, "lib/tags.rb", 2),
+    ]);
+    assert_eq!(first(&store, "testag"), "test_tag");
+}
+
+#[test]
 fn a_weak_guess_does_not_beat_a_real_abbreviation() {
     // `cli` is two edits from `cmlz` and keeps two of its letters; `camelize`
     // holds all four in order
