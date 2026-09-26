@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.51.2 — 2026-09-26
 
 ### Added
 - **`-w`/`--web` opens a result on GitHub.** Like `-o`, but the browser gets a
