@@ -9,6 +9,7 @@
 #   make check      - the pre-push gate: fmt + clippy + tests, stop on failure
 #   make dogfood    - run rq on its own source (Q=<query>); reproducible
 #   make bench      - search-latency benchmark over REPO (default: .)
+#   make recall     - fuzzy-ranking recall on pinned rails + discourse (BASE=<ref>)
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
 #   make fmt        - cargo fmt
 #   make clean      - cargo clean
@@ -21,7 +22,7 @@ CARGO ?= cargo
 BIN   := rq
 
 .DEFAULT_GOAL := help
-.PHONY: help build release install uninstall test check dogfood bench lint fmt clean
+.PHONY: help build release install uninstall test check dogfood bench recall lint fmt clean
 
 help:
 	@echo "rq targets:"
@@ -33,6 +34,7 @@ help:
 	@echo "  make check      pre-push gate: fmt + clippy + tests"
 	@echo "  make dogfood    run rq on real source (Q=<query>, REPO=<path>, ARGS=<flags>)"
 	@echo "  make bench      search-latency benchmark (REPO=. by default)"
+	@echo "  make recall     fuzzy-ranking recall on pinned corpora (BASE=<ref>, ARGS=<flags>)"
 	@echo "  make lint       cargo fmt --check && cargo clippy"
 	@echo "  make fmt        cargo fmt"
 	@echo "  make clean      cargo clean"
@@ -86,6 +88,18 @@ dogfood: build
 # all three. --nocapture because its output *is* the result.
 bench:
 	RQ_BENCH_REPO="$(REPO)" $(CARGO) test --release search_latency -- --ignored --nocapture
+
+# Fuzzy-ranking recall: where the name each query was derived from ranks, over
+# rails and discourse at pinned commits (docs/RECALL.md). BASE builds a git ref
+# and lists the sources that lost #1 or the top 10 against it. Not part of
+# `check` or CI: the corpora are fetched once into ~/.cache/rq-recall, and each
+# binary takes about a minute.
+#   make recall
+#   make recall BASE=main
+#   make recall BASE=HEAD~1 ARGS="--fail-on-loss"
+BASE ?=
+recall: release
+	@CARGO="$(CARGO)" script/recall.py $(if $(BASE),--base $(BASE)) $(ARGS)
 
 lint:
 	$(CARGO) fmt --check

@@ -1,0 +1,10 @@
+{
+  "rails": {
+    "url": "https://github.com/rails/rails.git",
+    "sha": "dfd1e951aa1aeef06c39fffb2994db8a8fa1914f"
+  },
+  "discourse": {
+    "url": "https://github.com/discourse/discourse.git",
+    "sha": "d55f1dcce56f9a08f8c78ef56ff641b7d7820035"
+  }
+}

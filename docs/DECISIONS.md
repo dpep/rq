@@ -376,7 +376,9 @@ against the baseline in the same run).
 sampled real names (word-prefix abbreviations, dropped vowels, adjacent transpositions,
 globs), kept only if nothing matches by exact or prefix, so every one reaches the fuzzy
 layers. The oracle is today's top 10. Each derived query also has a ground truth, the
-name it came from.
+name it came from. The ground-truth half is committed as `make recall`
+([RECALL.md](RECALL.md)), over the same commits of both repos; it reproduces the
+"today" and "D14 + D15 + window" rows below to within two queries per cell.
 
 *Where the time went.* The two broad nets (first-letter range, trigram OR) hand the
 scorer everything they catch, up to the 8,000 cap: a median of 3,784 rows, of which

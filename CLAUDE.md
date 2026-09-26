@@ -112,6 +112,11 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
   ad-hoc `rq …` invocations to confirm a change. Logic that would otherwise
   need a manual run (e.g. git-log parsing) is factored into a pure function with
   its own unit test.
+- **Ranking changes also run `make recall BASE=main`** — fuzzy recall over
+  2,372 queries on pinned rails + discourse, listing every source that lost #1
+  or the top 10 ([docs/RECALL.md](docs/RECALL.md)). It is outside `cargo test`
+  and CI (network, minutes), so run it by hand and cite its numbers in the
+  decision.
 
 ## Adding a language plugin
 
