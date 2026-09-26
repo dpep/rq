@@ -228,3 +228,33 @@ worked on without moving any seam.
 *Reverses if:* scoring becomes the dominant share of a fuzzy search, or a signal needs
 query-derived state expensive enough that computing it per candidate shows up on its
 own.
+
+## D8 — `PRAGMA mmap_size`: adopted. Fat LTO + one codegen unit: rejected
+
+**Decided**, 2026-09-25. Release build, 15–25 interleaved reps, load ~3.7.
+
+*mmap (256 MB cap).* Recall materializes thousands of rows on a fuzzy query (D2/D3),
+and mmap reads pages in place instead of copying them through `read()`. Byte-identical
+output throughout.
+
+| query | index | recall before | after | first answer before | after |
+|---|---|---|---|---|---|
+| `conpool` | 8 repos, 176k symbols | 12.6 ms | 10.0 | 16.5 | 13.6 |
+| `actconn` | 8 repos | 15.8 | 12.3 | 20.2 | 17.0 |
+| `Foo.new` | 8 repos | 17.6 | 14.3 | 23.1 | 19.9 |
+| `conpool` | rails only | 5.7 | 4.8 | 9.3 | 8.5 |
+| `Middleware` (exact) | either | 0.2 | 0.2 | 1.5 | 1.5 |
+
+The exact path is flat within ±0.1 ms. The mapping is shared page cache, not
+per-process memory, and the 256 MB cap is above any index measured here (46 MB for 176k
+symbols).
+
+*Fat LTO + `codegen-units = 1`.* Clean release build 18–20 s → 48 s; binary 13.1 → 11.9
+MB. Search on the 8-repo index moved −0.4 to +0.4 ms (e.g. `actconn` first answer 20.6
+→ 20.2, `usr` 6.5 → 6.6); startup (`--version`) 6.5 → 6.6 ms. Nothing to buy with
+2.4× the build time.
+
+*Reverses if:* mmap — a platform where mmap I/O errors surface as SIGBUS in practice
+(a network filesystem under the DB), or an index large enough that the cap binds and
+needs revisiting. LTO — a profile showing cross-crate inlining matters (tree-sitter's
+C is already compiled separately and doesn't benefit).

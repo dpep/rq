@@ -167,10 +167,13 @@ impl Store {
     fn init(conn: Connection) -> Result<Store> {
         // WAL lets one writer and many readers coexist; busy_timeout makes a
         // second writer (e.g. two `rq` processes in two terminals, both warming)
-        // wait briefly instead of erroring with "database is locked".
+        // wait briefly instead of erroring with "database is locked". mmap reads
+        // pages in place rather than copying them through read(): fuzzy recall
+        // materializes thousands of rows (see DECISIONS D8).
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000; \
-             PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16384;",
+             PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16384; \
+             PRAGMA mmap_size=268435456;",
         )?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version == 0 {

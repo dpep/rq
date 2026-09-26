@@ -24,6 +24,7 @@ and aren't listed; see `git log` for those.
   is ~56 ms (was ~66); the warm after an edit ~35 ms (was ~47). `rq --index`
   still asks git for the remote, so it remains how a checkout picks up a newly
   added one.
+- **Fuzzy searches are ~15–20% faster** — the index is read memory-mapped.
 - **Indexing a new repo no longer re-indexes every other repo's names.** The
   first `rq --index` of a repo rebuilt the fuzzy-search index for the whole
   database; now it adds only what's missing. A 2k-symbol repo into a 176k-symbol
