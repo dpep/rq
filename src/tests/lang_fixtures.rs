@@ -85,6 +85,16 @@ fn typescript_definitions_rank_and_classify() {
     // an arrow assigned to a const is a function like any other
     assert_eq!(top(&store, "defaultWidget").kind, "function");
 
+    // the constant outranks a function whose name only starts with it
+    let max = top(&store, "MAX_RETRIES");
+    assert_eq!(
+        (max.name.as_str(), max.kind.as_str()),
+        ("MAX_RETRIES", "constant")
+    );
+    let width = top(&store, "DEFAULT_WIDTH");
+    assert_eq!(width.kind, "constant");
+    assert_eq!(width.parent.as_deref(), Some("Widget"));
+
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -104,6 +114,13 @@ fn javascript_definitions_rank_and_classify() {
     assert_eq!(top(&store, "buildAccount").kind, "function");
     // a JSX-returning component in a `.jsx` file still parses
     assert_eq!(top(&store, "AccountBadge").kind, "function");
+
+    // a camelCase const is a constant too, and outranks a longer function
+    let default = top(&store, "defaultAccount");
+    assert_eq!(
+        (default.name.as_str(), default.kind.as_str()),
+        ("defaultAccount", "constant")
+    );
 
     fs::remove_dir_all(&dir).ok();
 }

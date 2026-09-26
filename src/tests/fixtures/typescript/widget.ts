@@ -1,6 +1,8 @@
 // Fixture: a small, domain-neutral TypeScript file exercising the kinds the
 // plugin extracts (class, interface→trait, type→struct, enum, method, function,
-// and an arrow assigned to a const).
+// an arrow assigned to a const, and constants).
+
+export const MAX_RETRIES = 3;
 
 export interface Renderer {
   render(): string;
@@ -17,6 +19,8 @@ export enum WidgetColor {
 }
 
 export class Widget implements Renderer {
+  static readonly DEFAULT_WIDTH = 1;
+
   constructor(private size: WidgetSize) {}
 
   render(): string {
@@ -33,3 +37,7 @@ export function buildWidget(): Widget {
 }
 
 export const defaultWidget = () => buildWidget();
+
+export function maxRetriesFor(widget: Widget): number {
+  return MAX_RETRIES;
+}

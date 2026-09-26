@@ -18,6 +18,12 @@ and aren't listed; see `git log` for those.
   class level (`MAX_RETRIES = 3`, `TIMEOUT: float = 1.5`, `A, B = …`) is a
   `constant`, qualified by its class when it has one. Lowercase variables and
   anything inside a function stay out. They land as Go's do (above).
+- **TypeScript and JavaScript constants are indexed.** A module- or
+  namespace-level `const` that isn't a function (those are already functions)
+  or a `require(…)` import is a `constant`, whatever its casing — `const
+  router = createRouter()` is as much a definition as `MAX_RETRIES`. So is a
+  class's `static readonly` field. `let`, `var`, destructuring and enum
+  members stay out. They land as Go's do (above).
 
 ### Changed
 - **The VS Code extension (0.2.0) answers for every rq language without

@@ -1547,9 +1547,18 @@ fn kind_constant_selects_constants_across_languages() {
         "MAX_RETRIES = 3\n\ndef max_retries_for():\n    return MAX_RETRIES\n",
     )
     .unwrap();
+    fs::write(
+        dir.join("limits.ts"),
+        "export const retryLimit = 3;\n\nexport function retryLimitFor() {\n  return retryLimit;\n}\n",
+    )
+    .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    for (query, lang) in [("MaxRetries", "go"), ("MAX_RETRIES", "python")] {
+    for (query, lang) in [
+        ("MaxRetries", "go"),
+        ("MAX_RETRIES", "python"),
+        ("retryLimit", "typescript"),
+    ] {
         let (ok, out) = rq(&db, &dir, &[query, "-k", "constant", "--ndjson"]);
         assert!(ok, "{lang} constant search failed: {out}");
         assert!(

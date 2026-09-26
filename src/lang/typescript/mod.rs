@@ -7,8 +7,12 @@
 //! `function` → function, and the members a class, interface, or object type
 //! declares → method. A
 //! `const f = () => …` is a function too — in modern JS that *is* how functions
-//! are declared. `parent` is `.`-joined, so a method renders as `deposit ·
-//! Account`.
+//! are declared. Any other module- or namespace-level `const` → constant: the
+//! keyword is the declaration of intent, whatever the casing, and a camelCase
+//! `const router = createRouter()` is as much a jump target as `MAX_RETRIES`. A
+//! `require(…)` binding is an import, not a definition; `let`/`var` are mutable.
+//! A class's `static readonly` field → constant of the class. `parent` is
+//! `.`-joined, so a method renders as `deposit · Account`.
 //!
 //! Visibility: a class member takes its `private`/`protected` modifier (or `#`
 //! prefix); anything module-level reads public when `export`ed and private when
@@ -137,20 +141,24 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
                 // bodies hold locals and callbacks, not navigation targets
             }
 
-            // `const handler = () => …` — the modern function declaration
+            // `const handler = () => …` — the modern function declaration —
+            // and, at module level, `const LIMIT = …`
             "lexical_declaration" | "variable_declaration" => {
-                declared_functions(ctx, child, parent, module_visibility(exported), out);
+                declarations(ctx, child, parent, module_visibility(exported), out);
             }
 
             // class and interface members
             "method_definition" | "abstract_method_signature" | "method_signature" => {
-                push_member(ctx, out, child, parent);
+                push_member(ctx, out, child, Kind::Method, parent);
             }
 
-            // `handleClick = () => …` in a class body: a method but for syntax
+            // `handleClick = () => …` in a class body: a method but for syntax;
+            // `static readonly LIMIT = …`: the class's constant
             "public_field_definition" | "field_definition" => {
                 if is_function(child.child_by_field_name("value")) {
-                    push_member(ctx, out, child, parent);
+                    push_member(ctx, out, child, Kind::Method, parent);
+                } else if has_token(child, "static") && has_token(child, "readonly") {
+                    push_member(ctx, out, child, Kind::Constant, parent);
                 }
             }
 
@@ -163,34 +171,87 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
     }
 }
 
-/// Emit a member of a type as a method. An ES private name (`#tally`) is
-/// indexed without its `#`, so it's found by the name you'd think to search.
-fn push_member(ctx: &Ctx, out: &mut Vec<Symbol>, node: Node, parent: Option<&str>) {
+/// Emit a member of a type. An ES private name (`#tally`) is indexed without
+/// its `#`, so it's found by the name you'd think to search.
+fn push_member(ctx: &Ctx, out: &mut Vec<Symbol>, node: Node, kind: Kind, parent: Option<&str>) {
     if let Some(raw) = ctx.field_text(node, "name") {
         let vis = member_visibility(ctx, node, &raw);
         let name = raw.trim_start_matches('#');
-        push(ctx, out, name, Kind::Method, node, parent, vis);
+        push(ctx, out, name, kind, node, parent, vis);
     }
 }
 
-/// Emit the function-valued declarators of a `const`/`let`/`var` statement.
-fn declared_functions(
+/// Emit the definitions a `const`/`let`/`var` statement makes: each
+/// function-valued declarator as a function, and — for a module-level `const`
+/// only — every other simply-named, non-`require` one as a constant.
+fn declarations(
     ctx: &Ctx,
     node: Node,
     parent: Option<&str>,
     visibility: &'static str,
     out: &mut Vec<Symbol>,
 ) {
+    let constants = node.child(0).is_some_and(|k| k.kind() == "const") && at_module_level(node);
     let mut cursor = node.walk();
     for d in node.children(&mut cursor) {
-        if d.kind() != "variable_declarator" || !is_function(d.child_by_field_name("value")) {
+        if d.kind() != "variable_declarator" {
             continue;
         }
-        if let Some(name) = ctx.field_text(d, "name") {
+        let value = d.child_by_field_name("value");
+        let kind = if is_function(value) {
+            Kind::Function
+        } else if constants && !is_require(ctx, value) {
+            Kind::Constant
+        } else {
+            continue;
+        };
+        // a destructuring pattern binds names, but defines nothing to jump to
+        if let Some(name) = d.child_by_field_name("name")
+            && name.kind() == "identifier"
+            && let Some(name) = ctx.node_text(name)
+        {
             // span the whole statement, so `end_line` covers the closing brace
-            push(ctx, out, &name, Kind::Function, node, parent, visibility);
+            push(ctx, out, &name, kind, node, parent, visibility);
         }
     }
+}
+
+/// Whether a declaration statement sits directly in a module or a namespace
+/// body (through an `export`), not in a block, callback, or static block.
+fn at_module_level(stmt: Node) -> bool {
+    let mut up = stmt.parent();
+    if up.is_some_and(|n| n.kind() == "export_statement") {
+        up = up.and_then(|n| n.parent());
+    }
+    up.is_some_and(|n| match n.kind() {
+        "program" => true,
+        "statement_block" => n.parent().is_some_and(|m| m.kind() == "internal_module"),
+        _ => false,
+    })
+}
+
+/// Whether a declarator's value is a CommonJS import: `require(…)`, or a
+/// member read off one (`require("x").Widget`).
+fn is_require(ctx: &Ctx, mut value: Option<Node>) -> bool {
+    while let Some(v) = value {
+        match v.kind() {
+            "member_expression" => value = v.child_by_field_name("object"),
+            "call_expression" => {
+                return v
+                    .child_by_field_name("function")
+                    .and_then(|f| ctx.node_text(f))
+                    .is_some_and(|f| f == "require");
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `node` carries the keyword token `kw` (`static`, `readonly`).
+fn has_token(node: Node, kw: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|c| c.kind() == kw)
 }
 
 /// Whether a declarator's value is a function in some spelling.
@@ -379,6 +440,101 @@ export class Account {
         // a `.ts` file reads `<T>` as a type parameter, not a JSX tag
         let generic = TypeScript.extract("id.ts", "export const id = <T>(x: T): T => x;\n");
         assert_eq!(find(&generic, "id").kind, Kind::Function);
+    }
+
+    #[test]
+    fn module_level_consts_are_constants() {
+        let src = r#"
+export const MAX_RETRIES = 3;
+const router = createRouter();
+export const handler = () => 1;
+const fs = require("fs");
+const { Widget } = require("./widget");
+const Gadget = require("./gadget").Gadget;
+const { width, height } = defaults;
+let counter = 0;
+var legacy = 1;
+
+namespace Limits {
+  export const CEILING = 9;
+}
+
+function build() {
+  const localLimit = 5;
+}
+
+if (ready) {
+  const inBlock = 1;
+}
+
+describe("widget", () => {
+  const inCallback = 1;
+});
+"#;
+        let syms = extract(src);
+
+        let max = find(&syms, "MAX_RETRIES");
+        assert_eq!(max.kind, Kind::Constant);
+        assert_eq!(max.parent, None);
+        assert_eq!(max.visibility, Some("public"));
+
+        // the keyword decides, not the casing
+        let router = find(&syms, "router");
+        assert_eq!(router.kind, Kind::Constant);
+        assert_eq!(router.visibility, Some("private"));
+
+        let ceiling = find(&syms, "CEILING");
+        assert_eq!(ceiling.kind, Kind::Constant);
+        assert_eq!(ceiling.parent.as_deref(), Some("Limits"));
+
+        // an arrow const is a function, once — not a constant too
+        let handlers: Vec<_> = syms.iter().filter(|s| s.name == "handler").collect();
+        assert_eq!(handlers.len(), 1, "{syms:?}");
+        assert_eq!(handlers[0].kind, Kind::Function);
+
+        // not definitions: imports, destructuring, mutable bindings, and
+        // anything below module level
+        for absent in [
+            "fs",
+            "Widget",
+            "Gadget",
+            "width",
+            "counter",
+            "legacy",
+            "localLimit",
+            "inBlock",
+            "inCallback",
+        ] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
+    }
+
+    #[test]
+    fn static_readonly_fields_are_class_constants() {
+        let src = r#"
+enum Color {
+  Red,
+}
+
+class Widget {
+  static readonly DEFAULT_SIZE = 3;
+  private static readonly SECRET = "x";
+  static count = 0;
+  readonly id = 1;
+}
+"#;
+        let syms = extract(src);
+
+        let size = find(&syms, "DEFAULT_SIZE");
+        assert_eq!(size.kind, Kind::Constant);
+        assert_eq!(size.parent.as_deref(), Some("Widget"));
+        assert_eq!(size.visibility, Some("public"));
+        assert_eq!(find(&syms, "SECRET").visibility, Some("private"));
+
+        // mutable statics, instance fields, and enum members stay out
+        for absent in ["count", "id", "Red"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
     }
 
     #[test]

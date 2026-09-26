@@ -678,3 +678,54 @@ do.
 
 *Reverses if:* staleness from an unstaged edit shows up in real use (shrink the
 window first), or spawning gets cheap enough that the stamp isn't worth its window.
+
+## D17 — Constants in Go, Python and TS/JS: what counts, per language
+
+**Adopted**, 2026-09-26. Recall harness (D12) against main, release builds.
+
+Ruby and Rust already emitted `constant`. Each of the other plugins now does too,
+with the rule each language's own syntax supports:
+
+- **Go:** package-level `const` (single, grouped, `iota`), one symbol per bound
+  name at its spec's line. **Package-level `var` is out.** It is mutable state,
+  and `constant` would mislabel it. The cost is the `var ErrFoo = errors.New(…)`
+  sentinels, which are constant in all but name and are real jump targets.
+- **Python:** an `UPPER_SNAKE` assignment at module or class level (annotated,
+  tuple and chained forms too), parented by its class. Python has no `const`, so
+  the naming convention is the only declaration of intent. Lowercase module
+  variables are state. A single capital (`T = TypeVar("T")`) is not a constant.
+- **TS/JS:** every module- or namespace-level `const` that is not a function
+  (already emitted as one) and not a `require(…)` binding, **whatever its
+  casing**. Plus a class's `static readonly` field. Out: `let`/`var` (mutable,
+  as in Go), destructuring (binds names, defines nothing), anything below module
+  level, and enum members (the enum is the target; Rust doesn't index variants
+  either, and `Red`/`None`/`Default` would collide everywhere).
+
+*Why all `const`s in JS, not just `UPPER_SNAKE`.* In JS the keyword is the
+declaration. `export const router = createRouter()`, `const Button =
+styled.button`, `export const store = configureStore(…)` are definitions people
+jump to, and their casing says nothing about that. Measured against an
+`UPPER_SNAKE`-only build of the same change:
+
+| vs main | sources down | lost #1 | lost top 10 |
+|---|---|---|---|
+| all module-level `const` (adopted) | 45 | 2 | 2 |
+| `UPPER_SNAKE` only | 39 | 1 | 1 |
+
+Of 2,314 sources. Both runs gained nothing: every source was sampled from main's
+index, so a new definition can only push one down. Every loss is in discourse's
+JS and each is ambiguous rather than wrong: `boo*met` now finds
+`BOOLEAN_METHODS` over `bookmark_metadata`, `logchannel` finds `LOG_CHANNEL`
+over `LOGS_CHANNEL`, and the camelCase increment is `tes*pag` → `themeTestPages`
+and `rnscrp` (`run_script` #10 → #11). Discourse gains 1,413 JS/TS constants
+(1.9% of its symbols; 436 not upper-case). The camelCase rule costs 6 slips and
+one ambiguous #1.
+
+*Indexing throughput* is unchanged within noise (median of 5 fresh indexes each,
+interleaved, load average about 20): django 1.08 → 1.09 s (+5% symbols), twirp's
+vendored Go 0.12 → 0.13 s (+30%, mostly generated protobuf consts), discourse
+4.39 → 4.20 s.
+
+*Reverses if:* camelCase consts crowd real answers in use (drop to
+`UPPER_SNAKE` for JS; the table is the price), or a `variable` kind joins the
+model, which would be the honest home for Go's `var` sentinels.

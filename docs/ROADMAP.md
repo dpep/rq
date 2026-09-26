@@ -179,7 +179,8 @@ model, not leaking a language into `index`/`search`/scoring.
       module/class-level `UPPER_SNAKE =`→constant)
 - [x] TypeScript / JavaScript — `lang/typescript/` (`class`, `interface`→trait,
       `type`→struct, `enum`, `namespace`→module, `function` and `const f = () =>`,
-      class/interface members→method). Two tags off one grammar family, so
+      class/interface members→method, module-level `const` and `static
+      readonly`→constant). Two tags off one grammar family, so
       `-x ts` and `-x js` each mean what they say; `.tsx`/`.jsx` parse as JSX
 - [ ] Java
 
