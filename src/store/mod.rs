@@ -1225,6 +1225,52 @@ mod tests {
     }
 
     #[test]
+    fn v14_queues_constant_languages_for_re_extraction() {
+        let path = std::env::temp_dir().join(format!("rq-migrate-v14-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let file = |path: &str, language: &str| FileSymbols {
+            path: path.into(),
+            language: language.into(),
+            mtime: Some(1),
+            content_hash: "h".into(),
+            symbols: Vec::new(),
+        };
+        {
+            // a v13 index: one repo with Go beside Ruby, one Ruby-only
+            let mut store = Store::open(&path).unwrap();
+            let mixed = store.upsert_repository(&"local:/mixed", None).unwrap();
+            let ruby = store.upsert_repository(&"local:/ruby", None).unwrap();
+            store
+                .replace_files(mixed, &[file("a.go", "go"), file("b.rb", "ruby")])
+                .unwrap();
+            store.replace_files(ruby, &[file("c.rb", "ruby")]).unwrap();
+            store.set_coverage(mixed, 2, 2, "complete").unwrap();
+            store.set_coverage(ruby, 1, 1, "complete").unwrap();
+            store.conn.execute_batch("PRAGMA user_version=13;").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let stat = |p: &str| -> (Option<i64>, Option<String>) {
+            store
+                .conn
+                .query_row(
+                    "SELECT mtime, content_hash FROM files WHERE path = ?1",
+                    [p],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        // both skips forgotten for the Go file, so the next warm re-parses it
+        assert_eq!(stat("a.go"), (None, Some(String::new())));
+        assert_eq!(stat("b.rb"), (Some(1), Some("h".into())));
+        // only the repo holding such files is swept again
+        let status = |id: &str| store.coverage_status(id).unwrap().unwrap();
+        assert_eq!(status("local:/mixed"), "warming");
+        assert_eq!(status("local:/ruby"), "complete");
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn a_prefix_range_covers_the_prefix_and_stops_after_it() {
         let upper = prefix_upper_bound("conn");
         let inside = |name: &str| name < upper.as_str();

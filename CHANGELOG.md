@@ -12,18 +12,20 @@ and aren't listed; see `git log` for those.
 ### Added
 - **Go constants are indexed.** Package-level `const` declarations, grouped
   blocks and `iota` enumerations included, are found as `constant` (and by
-  `-k constant`). They land as files reindex on edit; `rq --drop` then
-  `rq --index` picks them up across a repo at once.
+  `-k constant`). They appear automatically after upgrading: the first
+  search in each repo re-indexes its Go, Python and TypeScript/JavaScript files
+  in the background. Until that finishes, a search there that finds nothing
+  waits on it, as on a first index, rather than reporting "no match".
 - **Python constants are indexed.** An `UPPER_SNAKE` assignment at module or
   class level (`MAX_RETRIES = 3`, `TIMEOUT: float = 1.5`, `A, B = …`) is a
   `constant`, qualified by its class when it has one. Lowercase variables and
-  anything inside a function stay out. They land as Go's do (above).
+  anything inside a function stay out. They appear as Go's do (above).
 - **TypeScript and JavaScript constants are indexed.** A module- or
   namespace-level `const` that isn't a function (those are already functions)
   or a `require(…)` import is a `constant`, whatever its casing — `const
   router = createRouter()` is as much a definition as `MAX_RETRIES`. So is a
   class's `static readonly` field. `let`, `var`, destructuring and enum
-  members stay out. They land as Go's do (above).
+  members stay out. They appear as Go's do (above).
 
 ### Changed
 - **`--help` and the unknown-`--kind` error list `constant`.** `-k constant`

@@ -1575,6 +1575,44 @@ fn kind_constant_selects_constants_across_languages() {
 }
 
 #[test]
+fn an_index_from_before_constants_gains_them_on_the_next_search() {
+    let (dir, db) = scratch("v14");
+    fs::write(
+        dir.join("limits.go"),
+        "package limits\n\nconst MaxRetries = 3\n\nfunc Build() {}\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    // rewind to what a v13 binary left behind: the same file, no constant
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "DELETE FROM symbols WHERE kind = 'constant'; PRAGMA user_version = 13;",
+        )
+        .unwrap();
+    }
+
+    // Opening migrates, which demotes the repo to warming. A search that the
+    // old rows can't answer then holds for the in-process warm (detach is off
+    // here), which re-parses the file the migration un-stamped.
+    let (ok, out) = rq(&db, &dir, &["MaxRetries", "--ndjson"]);
+    assert!(ok, "constant found after the upgrade: {out}");
+    assert!(
+        first_line(&out).contains("\"kind\":\"constant\""),
+        "constant ranks first: {out}"
+    );
+    let (_, status) = rq(&db, &dir, &["--status", "--json"]);
+    assert!(
+        status.contains("\"status\": \"complete\""),
+        "the sweep completed: {status}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn first_query_warms_the_index_without_an_explicit_reindex() {
     // A git repo that was never explicitly indexed: the first query opportunistically
     // warms the index (time-bounded) and still answers.

@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 13;
+pub(crate) const VERSION: i64 = 14;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -244,9 +244,27 @@ DROP TABLE IF EXISTS events;
 DELETE FROM meta WHERE key = 'events_hwm';
 "#;
 
+/// Migration v13 -> v14: the Go, Python and TypeScript/JavaScript plugins now
+/// extract constants, which files indexed before them lack. Forget those files'
+/// stat and hash, since both the mtime skip and the write path's hash skip would
+/// keep the old rows. The hash becomes `''`, not NULL: the write path reads it
+/// as a `String`, and no real hash is empty. Then demote their repos' coverage
+/// from `complete`, which is only ever staleness-checked against git, never
+/// swept. Old symbols stay until each file is rewritten, so searches answer as
+/// before in the meantime.
+pub(crate) const MIGRATION_V14: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND repository_id IN (
+      SELECT repository_id FROM files
+      WHERE language IN ('go', 'python', 'typescript', 'javascript'));
+UPDATE files SET mtime = NULL, content_hash = ''
+  WHERE language IN ('go', 'python', 'typescript', 'javascript');
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -259,6 +277,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
     (11, MIGRATION_V11),
     (12, MIGRATION_V12),
     (13, MIGRATION_V13),
+    (14, MIGRATION_V14),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]

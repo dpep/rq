@@ -190,6 +190,13 @@ Decisions worth calling out:
   can't match before they're decoded (D12).
 - **`content_hash`** detects staleness so partial/old indexes don't silently
   point at moved lines.
+- **An extraction change re-extracts by migration.** When a plugin starts
+  emitting something new, a schema step clears the language's `mtime` and
+  `content_hash` so neither skip keeps the old rows (the hash to `''`, not
+  NULL, which the write path can't read), and demotes its repos' coverage to
+  `warming` so the next search sweeps them. v14 did this for the Go, Python and
+  TS/JS constants: users upgrade and the symbols appear, with no `--drop`. Old
+  symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to
   append a live-scan tail.
 - **A miss and a not-yet are counted apart.** rq already separates them in its
