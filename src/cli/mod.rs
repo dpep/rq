@@ -225,7 +225,13 @@ pub fn run() -> ExitCode {
     crate::trace::enable_from(cli.verbose);
     crate::profile::enable_from(cli.profile);
     crate::index::set_parse_jobs(cli.jobs);
+    let json_out = output_format(&cli) != Output::Text;
+    let code = dispatch(cli);
+    crate::profile::emit(json_out);
+    code
+}
 
+fn dispatch(cli: Cli) -> ExitCode {
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
         return ExitCode::SUCCESS;
@@ -704,7 +710,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         want.saturating_mul(20).max(PATH_HEADROOM)
     };
     let _timer = crate::trace::Timer::start("search done");
-    let profile_started = std::time::Instant::now();
     let t_setup = std::time::Instant::now();
     // Brackets the warm decision as well as the session, so it outlives both.
     let setup_span = crate::profile::span("setup");
@@ -1022,7 +1027,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
 
     // The hit path's single count, above the --show/--open/list forks so it
     // covers all three.
-    record_usage(store, args, current, hits.len(), "hit", coverage.as_deref());
+    {
+        let _span = crate::profile::span("record usage");
+        record_usage(store, args, current, hits.len(), "hit", coverage.as_deref());
+    }
 
     // Confidence first, while the runner-up is still in hand, then cut to the
     // window the caller asked for — `--show`'s gate reads this, so measuring it
@@ -1044,6 +1052,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
 
     // Attach each result's definition line (e.g. `def perform(refund)`) — shown
     // in text output and carried in JSON. Cheap: only the displayed results.
+    let _signatures_span = crate::profile::span("signatures");
     for hit in &mut hits {
         hit.signature = read_signature(
             store,
@@ -1053,6 +1062,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             cwd.as_deref(),
         );
     }
+    drop(_signatures_span);
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
@@ -1090,20 +1100,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         return code;
     }
 
-    // Report before the deferred maintenance below, so the total covers
-    // getting answers out rather than the bookkeeping that follows them.
-    if crate::profile::enabled() {
-        let total = profile_started.elapsed();
-        if args.out == Output::Text {
-            for line in crate::profile::report(total) {
-                eprintln!("{line}");
-            }
-        } else {
-            // stdout stays exactly the results, so the profile can be captured
-            // separately and diffed.
-            eprintln!("{}", crate::profile::json(total));
-        }
-    }
+    // The budget's number. `total` adds the bookkeeping below, which runs
+    // after results are out but still before the process exits.
+    crate::profile::mark("first answer");
 
     // Collect the refresh started back at setup. It ran alongside the search
     // rather than after it, so by now it has usually finished — and it only
@@ -1112,6 +1111,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Taken, not borrowed: the refresh is one-shot, and a session answering
     // several queries must not re-store a result it already consumed.
     if let Some(refresh) = branch_refresh.take() {
+        let _span = crate::profile::span("after: branch refresh");
         refresh.store(store);
     }
 
@@ -1119,7 +1119,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // interactions: roll the `open`/`select` picks that teach ranking into
     // `selection_stats`, and prune the raw log. The `search` row written above
     // is skipped by the rollup — it counts usage, it doesn't teach.
-    deferred_maintenance(store);
+    {
+        let _span = crate::profile::span("after: rollup + prune");
+        deferred_maintenance(store);
+    }
 
     // Results are out; stop the in-process warm (it persists as it goes, so a
     // cut pass keeps everything parsed) and join it — then hand whatever's left
@@ -1581,6 +1584,8 @@ fn launch_editor(file: &std::path::Path, line: i64) -> ExitCode {
     let loc = format!("{}:{}", file.display(), line);
     match open_command(file, line, &loc) {
         Some((prog, args)) => {
+            // exec replaces this process, so the run's profile goes out now
+            crate::profile::emit(false);
             // exec returns only on failure
             let err = std::process::Command::new(&prog).args(&args).exec();
             fail(format_args!("rq --open: cannot run {prog}: {err}"))
@@ -1666,6 +1671,8 @@ fn open_web(
         });
     match browser {
         Some(prog) => {
+            // exec replaces this process, so the run's profile goes out now
+            crate::profile::emit(false);
             // exec returns only on failure
             let err = std::process::Command::new(&prog).arg(&url).exec();
             fail(format_args!("rq --web: cannot run {prog}: {err}"))
@@ -1819,6 +1826,7 @@ fn worktree_changed(cwd: &std::path::Path, indexed_head: Option<&str>) -> bool {
     let Some(head) = indexed_head else {
         return true;
     };
+    let _span = crate::profile::span("git: worktree changed?");
     crate::index::git_head(cwd).as_deref() != Some(head) || crate::index::is_dirty(cwd)
 }
 
@@ -1844,7 +1852,13 @@ fn settle_warm(
 ) -> bool {
     // A panicked check counts as changed: warming needlessly costs a little
     // time, skipping it wrongly serves a stale index.
-    let changed = staleness.is_some_and(|h| h.join().unwrap_or(true));
+    let changed = {
+        // the check ran alongside the search; this is only what's left of it
+        let mut span = crate::profile::span("after: staleness wait");
+        let changed = staleness.is_some_and(|h| h.join().unwrap_or(true));
+        span.note(|| if changed { "changed" } else { "unchanged" }.to_string());
+        changed
+    };
     // Reindexing an edited worktree means sweeping every file to find the few
     // that moved — ~32ms on a 3000-file repo, and it was paid on *every* query
     // for as long as anything stayed uncommitted, which is exactly while you're
@@ -2247,10 +2261,12 @@ struct SymbolOut {
 /// changed (same gate as search), then reads straight from the index. Honors
 /// --kind/--lang filters and --json/--ndjson.
 fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) -> ExitCode {
+    let open_span = crate::profile::span("store open");
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
+    drop(open_span);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let root = crate::index::repo_root(&cwd).unwrap_or_else(|| cwd.clone());
     let rel = repo_relative(&root, &cwd, file_arg);
@@ -2268,16 +2284,20 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     if needs_warm {
         // Path-prioritize the warm toward the requested file so it indexes first.
         let budget = answer_warm_budget() + deferred_warm_budget();
+        let _span = crate::profile::span("symbols: warm");
         let _ = crate::index::index_budgeted(&mut store, &root, &[], budget, Some(&rel));
     }
 
     let Some(repo_id) = store.repository_id(&identity).ok().flatten() else {
         return emit_symbols(out, &[]); // unknown / un-indexed repo → nothing
     };
+    let mut query_span = crate::profile::span("symbols: query");
     let mut rows = match store.symbols_in_file(repo_id, &rel) {
         Ok(r) => r,
         Err(e) => return fail(format_args!("rq: {e}")),
     };
+    query_span.note(|| format!("{} rows", rows.len()));
+    drop(query_span);
     if !kinds.is_empty() {
         rows.retain(|r| kinds.iter().any(|k| k == &r.kind));
     }
@@ -2288,6 +2308,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     // Read the source once for signatures (every row is the same file), from
     // the first root that actually has it (see `hit_file_roots` — a moved repo
     // keeps a stale checkout row, so the first-recorded root can be dead).
+    let signatures_span = crate::profile::span("symbols: signatures");
     let content = hit_file_roots(&store, &identity, Some(&root))
         .iter()
         .find_map(|r| std::fs::read_to_string(r.join(&rel)).ok());
@@ -2306,6 +2327,8 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
             repo: r.repo_identity,
         })
         .collect();
+    drop(signatures_span);
+    let _span = crate::profile::span("render");
     emit_symbols(out, &syms)
 }
 
@@ -2593,26 +2616,16 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
     {
         subdirs.push(rel.to_string_lossy().into_owned());
     }
+    let open_span = crate::profile::span("store open");
     let mut store = match open_store() {
         Ok(s) => s,
         Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
     };
+    drop(open_span);
+    let identity_span = crate::profile::span("git: identity");
     let identity = crate::index::detect_identity(&root).to_string();
-    let started = std::time::Instant::now();
+    drop(identity_span);
     let indexed = crate::index::index_under(&mut store, &root, &subdirs);
-    // Phases before the result: the profile describes the indexing run, so it
-    // is reported even when the run failed part-way. Always stderr, so stdout
-    // stays exactly the machine-readable result.
-    if crate::profile::enabled() {
-        let total = started.elapsed();
-        if out == Output::Text {
-            for line in crate::profile::report(total) {
-                eprintln!("{line}");
-            }
-        } else {
-            eprintln!("{}", crate::profile::json(total));
-        }
-    }
     match indexed {
         Ok(stats) => {
             let subtree = !subdirs.is_empty();

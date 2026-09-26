@@ -13,11 +13,14 @@
 //! is the number the sub-50 ms budget is about, and a change that improves the
 //! total while delaying the first answer is a regression here.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// When profiling was switched on — the start of the run, so `total` covers
+/// everything the caller waits for, including work after the answer is out.
+static STARTED: OnceLock<Instant> = OnceLock::new();
 static PHASES: Mutex<Vec<Phase>> = Mutex::new(Vec::new());
 static COUNTERS: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
 static SLOWEST: Mutex<Vec<(Duration, String)>> = Mutex::new(Vec::new());
@@ -46,6 +49,39 @@ pub(crate) struct Phase {
 pub(crate) fn enable_from(flag: bool) {
     let on = flag || std::env::var_os("RQ_PROFILE").is_some();
     ENABLED.store(on, Ordering::Relaxed);
+    if on {
+        STARTED.get_or_init(Instant::now);
+    }
+}
+
+fn since_start() -> Duration {
+    STARTED.get().map(Instant::elapsed).unwrap_or_default()
+}
+
+/// Record a milestone as time since the run started. `first answer` is the
+/// one the latency budget is about; it differs from `total` by whatever the
+/// process still does after printing, which the caller waits on too.
+pub(crate) fn mark(name: &'static str) {
+    if enabled() {
+        record(name, since_start(), || "since start".to_string());
+    }
+}
+
+/// Print the run's profile to stderr — a table, or JSON alongside `--json` /
+/// `--ndjson` so stdout stays exactly the results. Called once, as the run
+/// ends, so no exit path goes unreported.
+pub(crate) fn emit(json_out: bool) {
+    if !enabled() {
+        return;
+    }
+    let total = since_start();
+    if json_out {
+        eprintln!("{}", json(total));
+    } else {
+        for line in report(total) {
+            eprintln!("{line}");
+        }
+    }
 }
 
 pub(crate) fn enabled() -> bool {

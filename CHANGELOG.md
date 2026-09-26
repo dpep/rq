@@ -14,6 +14,14 @@ and aren't listed; see `git log` for those.
   permalink (`blob/<sha>/<file>#L<line>`) pinned to your checked-out commit, or
   the newest pushed one before it, so the link always resolves.
 
+### Changed
+- **`--profile` covers the whole run.** `total` now runs to process exit, a
+  `first answer` row marks when results were printed, and the work after it
+  (usage rollup, the worktree check) has its own rows. Misses, `--symbols` and
+  `--open`/`--web` report too; before, they printed nothing. A stored
+  `total_ms` baseline from an earlier version measured less and isn't
+  comparable.
+
 ## 0.51.1 — 2026-09-25
 
 ### Changed

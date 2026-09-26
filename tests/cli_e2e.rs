@@ -1880,3 +1880,55 @@ fn index_profile_reports_phases_and_counters() {
     assert_eq!(slowest.len(), 1, "one file parsed → one slowest entry");
     assert_eq!(slowest[0]["file"], "alpha.rb");
 }
+
+/// A search's profile covers the whole run: the time to the first answer is
+/// marked, `total` includes the work after it, and a miss reports too.
+#[test]
+fn search_profile_covers_the_whole_run() {
+    let (dir, db) = scratch("search-profile");
+    fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
+    let (ok, out, _) = rq_both(&db, &dir, &["--index"]);
+    assert!(ok, "index failed: {out}");
+
+    let phases = |args: &[&str]| {
+        let (_, _, err) = rq_both(&db, &dir, args);
+        let profile: serde_json::Value = serde_json::from_str(err.trim())
+            .unwrap_or_else(|e| panic!("profile not json ({e}): {err}"));
+        let total = profile["total_ms"].as_f64().expect("total_ms");
+        let phases: Vec<(String, f64)> = profile["phases"]
+            .as_array()
+            .expect("phases array")
+            .iter()
+            .map(|p| {
+                (
+                    p["name"].as_str().unwrap_or_default().to_string(),
+                    p["ms"].as_f64().unwrap_or(0.0),
+                )
+            })
+            .collect();
+        (total, phases)
+    };
+
+    let (total, hit) = phases(&["HandlerA", "--profile", "--json"]);
+    let answer = hit
+        .iter()
+        .find(|(n, _)| n == "first answer")
+        .unwrap_or_else(|| panic!("no first answer: {hit:?}"));
+    assert!(answer.1 <= total, "first answer after total: {hit:?}");
+    assert!(
+        hit.iter().any(|(n, _)| n == "after: rollup + prune"),
+        "{hit:?}"
+    );
+
+    let (_, miss) = phases(&["Nonexistent", "--profile", "--json"]);
+    assert!(
+        miss.iter().any(|(n, _)| n == "query"),
+        "miss unreported: {miss:?}"
+    );
+
+    let (_, symbols) = phases(&["--symbols", "alpha.rb", "--profile", "--json"]);
+    assert!(
+        symbols.iter().any(|(n, _)| n == "symbols: query"),
+        "{symbols:?}"
+    );
+}
