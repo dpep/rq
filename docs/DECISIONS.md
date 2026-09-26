@@ -191,3 +191,40 @@ at this scale.
 *Reverses if:* write cost starts to matter more than recall on the short-query path —
 e.g. a warm that re-indexes large files continuously — or FTS-bound queries come to
 dominate usage so the win lands on too few searches to pay for the writes.
+
+## D7 — Per-search write batching, pre-decode dedup, `PreparedQuery`: rejected
+
+**Rejected**, 2026-09-25. Rails, release build, back-to-back runs.
+
+*Merging the per-search writes into one transaction.* A search writes its usage row
+(`events` + `usage_daily`, one transaction) before printing, then rolls up and prunes
+after. The usage write is 0.4–0.5 ms at the median; rollup + prune together 0.1 ms.
+Merging saves at most the post-answer ~0.1 ms. Moving the usage write after the output
+would take ~0.45 ms off `first answer` (≈2.0 ms) and nothing off the process's wall
+time. It would also split one count across the three exits (`--show`, `--open`,
+list). That's imperceptible, and a toll on every future exit path.
+
+*The warm child checking "did anything move?" before taking its lock*, so the common
+case writes nothing. The search's `record usage` p90 was 2.2–2.6 ms back-to-back with
+detached children against 0.5 ms without them, which looked like lock-write contention.
+It isn't: with the check ahead of the lock, children stop single-flighting and run
+`git status` concurrently. p90 got worse (2.6–2.9 ms) and a 20-search burst took
+204 ms to go quiet against 165–174 ms. The tail is CPU contention, which the lock
+limits.
+
+*Decoding a recall row only after checking its id against rows already found* (the
+layers overlap on paper: exact ⊂ prefix ⊂ first-char). Counted on an 8-repo index:
+duplicates are 0% of fetched rows for `usr`, `conpool` and `actconn`, and 14% for
+`Foo.new` (constructor lookups). No measurable win.
+
+*A `PreparedQuery` built once per search instead of per candidate.* Sampled over 300
+`actconn` searches (6,186 candidates each): of 2,065 samples in `cmd_search`, recall
+is ~1,300 and `score` ~590. Query-side work inside `score` (`parse_qualified`,
+lowercasing the leaf, `align`'s query `Vec<char>`) is ~45 samples, about 2% or ~0.2 ms.
+It would change `score`'s signature, the edit D1 protects, for that. The real cost
+inside `score` is `align`'s DP (411 samples), which is candidate-side and can be
+worked on without moving any seam.
+
+*Reverses if:* scoring becomes the dominant share of a fuzzy search, or a signal needs
+query-derived state expensive enough that computing it per candidate shows up on its
+own.
