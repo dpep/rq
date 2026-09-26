@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.52.0 — 2026-09-26
 
 ### Removed
 - **Learned ranking is gone.** Results you opened or `--show`ed no longer lift
