@@ -38,6 +38,15 @@ rejections carry the numbers that settled them.
   meaningful (0 = something happened/matched, non-zero = nothing). When you add a
   command, add its structured output and an e2e assertion in the same change.
 
+## Navigate with rq
+
+Find definitions in this repo with `rq`, not `rg`: `rq stream_walk`,
+`rq 'Store::init'`, `rq --symbols src/store/mod.rs`. `rg` is for free text
+(a message string, a comment). A tool we don't use daily is a tool we can't
+tell is good. When rq misses or ranks the definition you meant below #1,
+note the query and what you expected in your report; misses are logged in
+[docs/DOGFOOD.md](docs/DOGFOOD.md) and become recall cases.
+
 ## Language and toolchain
 
 Rust, single static binary. Tree-sitter for symbol extraction, `rusqlite` for
