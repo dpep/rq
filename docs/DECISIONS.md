@@ -1328,6 +1328,11 @@ queries (every sixth), 3–5 reps. Sizes from `dbstat` on a fresh rails + discou
   committed, where the FTS fallback saw none of the pass's rows (their FTS sync is deferred
   too). It costs 55–59 ms at full rails size and 81–120 at discourse, only while the pass
   runs; the warming poll mostly waits for an exact or prefix match or the pass's end anyway.
+  *Amended in 0.55.1:* "only while the pass runs" wasn't so for a pass killed before its
+  end: the marker stayed, and every `-a` search paid the row read (252 ms at discourse,
+  against ~2) until a pass inside the repo rebuilt it. The marker now records the pass's
+  pid, and recall rebuilds an index whose pass is gone, as it does a missing one. The warm
+  lock couldn't say this: an explicit `--index` doesn't take it.
 
 The FTS nets now run only if the rebuild fails (a writer held the lock past the busy
 timeout), or under `RQ_RECALL=fts`.

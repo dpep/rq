@@ -19,6 +19,11 @@ and aren't listed; see `git log` for those.
   an `rq --index` had written while it ran, so with nothing left indexing, a
   miss exited 2 (warming) instead of 1. A pass that didn't finish now leaves a
   `complete` recorded during it alone.
+- **An index killed on its first pass no longer slows every `-a` search.** A
+  cold `--index` or warm stopped before its end left the repo's name index
+  suspended, so fuzzy `--all-repos` searches from outside the repo read its
+  rows directly (about 250 ms on a large repo, against ~2) until a pass inside
+  it finished. A search now rebuilds an index whose pass is gone.
 
 ### Documented
 - **Exit codes of the non-search commands.** `--status`, `--index` and `--drop`

@@ -165,7 +165,8 @@ name_sigs (
 
 -- a repo's name index is read only while current: built under this format
 -- (score::NAME_INDEX_FORMAT) and maintained since. Missing or another format
--- is rebuilt before recall reads it; -1 while a cold pass suspends it.
+-- is rebuilt before recall reads it; -1 while a cold pass suspends it (built
+-- then holds the pass's pid: recall rebuilds one whose pass has died).
 name_index (
   repository_id INTEGER PRIMARY KEY,
   format INTEGER NOT NULL,
@@ -212,7 +213,7 @@ Decisions worth calling out:
   since D24 fixed the ranking weaknesses complete recall exposed, and the only
   fuzzy recall since D26 removed the trigram FTS nets it replaced. A repo whose
   index is missing or from another format is rebuilt before recall reads it,
-  and one suspended by a cold pass is verified from its rows (D25), as is one
+  and one suspended by a live cold pass is verified from its rows (D25), as is one
   whose rebuild finds another writer holding the lock past the busy timeout
   (D26).
 - **`content_hash`** detects staleness so partial/old indexes don't silently

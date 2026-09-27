@@ -76,8 +76,22 @@ fn decode(keys: &[u8], n: usize) -> Vec<&str> {
 
 /// `name_index.format` while a cold pass writes the repo: it appends nothing,
 /// and recall verifies the repo's committed names directly until the pass
-/// rebuilds the index at its end.
+/// rebuilds the index at its end. `built` holds the pass's pid meanwhile.
 const SUSPENDED: i64 = -1;
+
+/// Is the process that suspended an index still running? A pid of 0 is a
+/// marker from before the pid was kept: its pass can't be told from a killed
+/// one. A pid on another machine sharing the database reads as dead, which
+/// costs that pass speed, not correctness.
+fn suspender_alive(pid: i64) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // EPERM: alive, but another user's
+    pid > 0
+        && (unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+}
 
 /// Did another connection hold the lock past the busy timeout?
 fn is_busy(e: &rusqlite::Error) -> bool {
@@ -184,22 +198,23 @@ impl Store {
     /// format: once per repo after an upgrade. Returns the repos to read from
     /// their rows instead: those suspended, left to the cold pass writing
     /// them, and any whose rebuild found another writer holding the lock past
-    /// the busy timeout (DECISIONS D26).
+    /// the busy timeout (DECISIONS D26). A suspended index whose pass is gone
+    /// — killed before its end rebuilt it — is rebuilt like a missing one.
     pub(crate) fn ensure_name_index(&self, repo: Option<i64>) -> Result<Vec<i64>> {
-        let behind: Vec<(i64, Option<i64>)> = self
+        let behind: Vec<(i64, Option<i64>, Option<i64>)> = self
             .conn
             .prepare_cached(
-                "SELECT r.id, n.format FROM repositories r \
+                "SELECT r.id, n.format, n.built FROM repositories r \
                    LEFT JOIN name_index n ON n.repository_id = r.id \
                    WHERE n.format IS NOT ?1 AND (?2 IS NULL OR r.id = ?2)",
             )?
             .query_map(params![i64::from(NAME_INDEX_FORMAT), repo], |r| {
-                Ok((r.get(0)?, r.get(1)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })?
             .collect::<Result<_>>()?;
         let mut suspended = Vec::new();
-        for (id, format) in behind {
-            if format == Some(SUSPENDED) {
+        for (id, format, holder) in behind {
+            if format == Some(SUSPENDED) && suspender_alive(holder.unwrap_or(0)) {
                 suspended.push(id);
                 continue;
             }
@@ -223,8 +238,8 @@ impl Store {
             params![repository_id],
         )?;
         tx.execute(
-            "INSERT OR REPLACE INTO name_index (repository_id, format, built) VALUES (?1, ?2, 0)",
-            params![repository_id, SUSPENDED],
+            "INSERT OR REPLACE INTO name_index (repository_id, format, built) VALUES (?1, ?2, ?3)",
+            params![repository_id, SUSPENDED, std::process::id()],
         )?;
         tx.commit()
     }
@@ -601,6 +616,25 @@ mod tests {
         assert!(store.maintain_name_index(r).unwrap());
         assert!(current(&store.conn, r).unwrap());
         assert_eq!(names("wdgfac", Some(r)), ["WidgetFactory"]);
+    }
+
+    #[test]
+    fn a_suspended_index_whose_pass_died_is_rebuilt_by_recall() {
+        let mut store = Store::open_in_memory().unwrap();
+        let r = repo(&store, "/tmp/a");
+        store.suspend_name_index(r).unwrap();
+        write(&mut store, r, "a.rs", &["WidgetFactory"]);
+        assert_eq!(store.ensure_name_index(None).unwrap(), [r], "its pass runs");
+
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        store
+            .conn
+            .execute("UPDATE name_index SET built = ?1", [child.id()])
+            .unwrap();
+        assert!(store.ensure_name_index(None).unwrap().is_empty());
+        assert!(current(&store.conn, r).unwrap());
+        assert_eq!(held(&store, r, Keys::Names), ["WidgetFactory"]);
     }
 
     #[test]
