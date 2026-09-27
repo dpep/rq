@@ -1731,6 +1731,19 @@ fn confidence_and_total_do_not_depend_on_the_limit() {
         out.contains("\"explain\""),
         "explain is carried in JSON: {out}"
     );
+    // in whole points, as the text shows them — not the float the sum is made of
+    let row: serde_json::Value = serde_json::from_str(first_line(&out)).expect("ndjson");
+    let explain = row["explain"].as_object().expect("explain map");
+    assert!(
+        explain.contains_key("extent"),
+        "a fractional feature: {out}"
+    );
+    let (_, text) = rq(&db, &dir, &["Widget", "-e", "-l", "1"]);
+    for (name, value) in explain {
+        let v = value.as_f64().unwrap();
+        assert_eq!(v, v.round(), "{name} is whole: {out}");
+        assert!(text.contains(&format!("{name} {v}")), "{name} {v}: {text}");
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

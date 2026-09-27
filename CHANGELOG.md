@@ -53,6 +53,9 @@ and aren't listed; see `git log` for those.
   counted after the list was cut to the limit, so `rq class Base -l 1` reported
   `"total": 2`. It now counts the filtered matches before `--limit`, as it does
   without a filter.
+- **`--explain` JSON reports whole points, as the text does.** Its values
+  carried every float digit (`"extent": 33.67295829986474`). They are now rounded
+  to the whole number the text shows. Ranking still sums the exact values.
 
 ### Changed
 - **Errors under `--json`/`--ndjson` are JSON.** A failed structured run used to

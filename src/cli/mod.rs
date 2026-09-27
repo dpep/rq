@@ -1118,7 +1118,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             hit.explain = Some(
                 hit.features
                     .iter()
-                    .map(|f| (f.name.to_string(), f.value))
+                    .map(|f| (f.name.to_string(), f.reported()))
                     .collect(),
             );
         }
@@ -1600,7 +1600,7 @@ fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCod
             let parts: Vec<String> = hit
                 .features
                 .iter()
-                .map(|f| format!("{} {:.0}", f.name, f.value))
+                .map(|f| format!("{} {}", f.name, f.reported()))
                 .collect();
             println!(
                 "    confidence {:.2} · score {:.0} = {}",

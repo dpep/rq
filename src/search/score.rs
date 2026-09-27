@@ -13,6 +13,16 @@ pub(crate) struct Feature {
     pub value: f64,
 }
 
+impl Feature {
+    /// The value `--explain` reports, in text and JSON alike: whole points,
+    /// which is all a weight means to a reader. Ranking sums the unrounded
+    /// values — rounding each term first turns near-ties into ties and moved
+    /// 304 of 2372 recall top-10s.
+    pub(crate) fn reported(&self) -> f64 {
+        self.value.round() + 0.0 // `+ 0.0` turns -0 into 0
+    }
+}
+
 /// A scored candidate: total plus the per-feature breakdown.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Scored {

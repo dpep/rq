@@ -147,7 +147,7 @@ that doesn't apply is **omitted**, never `null`.
 | `declarations` | when more than one | How many places declare this name (a reopened module, `impl` blocks across files), folded into one result. |
 | `also_in` | with `declarations` | `file:line` of the other declarations. |
 | `total` | search | Matches the window was drawn from, before `--limit`. |
-| `explain` | `--explain` | Feature name → score contribution. |
+| `explain` | `--explain` | Feature name → score contribution, in whole points. |
 | `query` | batch mode | The stdin line this row answers. |
 
 ### Misses and exit codes
