@@ -846,3 +846,56 @@ the prefix tier.
 *Reverses if:* separator-less prefixes are taken up on their own merits (the rejected row
 is their price), or a language has names where a non-joiner punctuation character is
 routinely left off when typing.
+
+## D20 — Storage audit: trigram positions dropped; durability and page size left alone
+
+**Decided**, 2026-09-26. Release builds, cold and incremental rails indexes plus searches
+from inside rails, 5 reps interleaved build by build on a shared machine (load 10–15).
+Sizes are from `dbstat`, on a rails + discourse index (126k symbols, 34.7 MB) and one of
+nine repos (171k symbols, 43.2 MB).
+
+*Where the bytes are* (rails + discourse, before):
+
+| object | MB | share | rows | avg payload |
+|---|---|---|---|---|
+| `symbols` | 12.1 | 37% | 126k | 89 B |
+| `symbols_fts_data` (trigram postings) | 6.3 | 19% | | |
+| `idx_symbols_repo_name` | 3.9 | 12% | 126k | 25 B |
+| `idx_symbols_name_lower` | 3.7 | 11% | 126k | 23 B |
+| `files` + its `(repository_id, path)` key | 3.7 | 11% | 18k | 102 B |
+| `idx_symbols_file` | 1.5 | 5% | | |
+| `symbols_fts_docsize` | 1.2 | 4% | | |
+| everything else (`usage_daily`, `meta`, …) | < 0.1 | | | |
+
+*Adopted: `detail=none` on the trigram table.* Recall's `MATCH` is an OR of single
+quoted trigrams, which never reads token positions, and positions were most of the
+postings. Candidates come back in the same rowid order, so output can't move; checked
+byte-identical on the benchmark queries and on the full recall set (`make recall`, no
+source moved). The cost is a constraint, not a regression: a `MATCH` on anything longer
+than one trigram is a phrase query, which `detail=none` refuses (one test used one).
+
+| rails, cold index | before | after |
+|---|---|---|
+| database | 15.1 MB | 12.3 MB (−19%) |
+| FTS sync (serial, after the parse) | 94 ms | 68 ms |
+| cold index total | 658 ms | 631 ms (inside the noise) |
+| one-file refresh, writes | 0.5 ms | 0.6 ms |
+| fuzzy query phase (`conpool`, `actconn`, `sleect`) | 4.4 / 6.2 / 12.4 ms | 4.4 / 6.1 / 11.9 |
+
+On the nine-repo index the postings go 7.7 → 3.0 MB. Schema v15 recreates the table and
+rebuilds it from `symbols` (0.25 s at 171k symbols); nothing is re-parsed. SQLite
+doesn't shrink the file, and later writes reuse the freed pages.
+
+*Rejected, measured flat:*
+- **`synchronous=OFF`.** In WAL with `NORMAL`, a commit doesn't `fsync`; only a
+  checkpoint does. Cold total 638 vs 658 ms (control), one-file writes 0.5 ms both, the
+  per-search usage write 0.5 vs 0.6 ms. Nothing to buy with the durability, even though
+  every byte can be rebuilt. D13 already found the usage write's tail is CPU, not I/O.
+- **8 KB or 16 KB pages.** Size within 0.5%, FTS sync −14 ms at 16 KB, queries within
+  ±0.3 ms. Not worth a setting that only a fresh database can take.
+- **`temp_store`, checkpoint policy.** Already `MEMORY` and the default auto-checkpoint;
+  the last connection checkpoints and removes the WAL at close, and nothing in the
+  profile waits on either.
+
+*Reverses if:* a query needs a real substring or phrase `MATCH` (then `detail=column`
+buys nothing either: it measured 6.1 MB against 6.2).

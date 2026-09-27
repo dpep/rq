@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 14;
+pub(crate) const VERSION: i64 = 15;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -59,12 +59,15 @@ CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
 
--- fuzzy candidate narrowing: trigram FTS over symbol names
+-- fuzzy candidate narrowing: trigram FTS over symbol names. detail=none drops
+-- positions, which an OR of single trigrams never reads; a MATCH on a longer
+-- substring is a phrase query, and fails.
 CREATE VIRTUAL TABLE symbols_fts USING fts5(
   name,
   content='symbols',
   content_rowid='id',
-  tokenize='trigram'
+  tokenize='trigram',
+  detail=none
 );
 
 -- keep the external-content FTS index in sync with symbols
@@ -262,9 +265,25 @@ UPDATE files SET mtime = NULL, content_hash = ''
   WHERE language IN ('go', 'python', 'typescript', 'javascript');
 "#;
 
+/// Migration v14 -> v15: the trigram table drops token positions
+/// (`detail=none`). Recall only ever asks whether a name holds a trigram, and
+/// positions were most of the table. FTS5 can't change `detail` in place, so
+/// the table is recreated and rebuilt from `symbols`; no file is re-parsed.
+pub(crate) const MIGRATION_V15: &str = r#"
+DROP TABLE IF EXISTS symbols_fts;
+CREATE VIRTUAL TABLE symbols_fts USING fts5(
+  name,
+  content='symbols',
+  content_rowid='id',
+  tokenize='trigram',
+  detail=none
+);
+INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild');
+"#;
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 14] = [
     (2, MIGRATION_V2),
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
@@ -278,6 +297,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
     (12, MIGRATION_V12),
     (13, MIGRATION_V13),
     (14, MIGRATION_V14),
+    (15, MIGRATION_V15),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]

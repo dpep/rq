@@ -1318,6 +1318,51 @@ mod tests {
     }
 
     #[test]
+    fn v15_rebuilds_the_trigram_table_without_positions() {
+        let path = std::env::temp_dir().join(format!("rq-migrate-v15-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            // a v14 index: positional trigram table, one indexed symbol
+            let mut store = Store::open(&path).unwrap();
+            let repo = store.upsert_repository(&"local:/r", None).unwrap();
+            store
+                .conn
+                .execute_batch(
+                    "DROP TABLE symbols_fts; \
+                     CREATE VIRTUAL TABLE symbols_fts USING fts5(name, content='symbols', \
+                       content_rowid='id', tokenize='trigram'); \
+                     PRAGMA user_version=14;",
+                )
+                .unwrap();
+            let widget = [sym("AlphaWidget", Kind::Class, 1, None)];
+            store
+                .replace_file_symbols(repo, "a.rb", "ruby", None, "h", &widget)
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let sql: String = store
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'symbols_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("detail=none"), "{sql}");
+        let hits: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'idg'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "existing names stay searchable without a re-index");
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn a_prefix_range_covers_the_prefix_and_stops_after_it() {
         let upper = prefix_upper_bound("conn");
         let inside = |name: &str| name < upper.as_str();
@@ -1490,14 +1535,14 @@ mod tests {
 
         let count = |sql: &str| -> i64 { store.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(
-            count("SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'widget'"),
+            count("SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'dge'"),
             2,
             "both repos searchable, neither indexed twice"
         );
         assert!(!store.fts_trigger_missing().unwrap(), "trigger restored");
         store.sync_fts().unwrap();
         assert_eq!(
-            count("SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'widget'"),
+            count("SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'dge'"),
             2,
             "a second sync finds nothing left to add"
         );

@@ -60,6 +60,13 @@ and aren't listed; see `git log` for those.
   With `rq.workspaceSymbols: dedupe` (the default), rq adds only the symbols no
   language server already returned — e.g. beside trekr for Ruby — and `off`
   leaves workspace symbols to the servers entirely. The rq binary is unchanged.
+- **The index is about a fifth smaller.** The fuzzy (trigram) table no longer
+  stores token positions, which recall never read: a fresh rails index is
+  12.3 MB instead of 15.1 MB, and a cold index spends less time making names
+  fuzzy-searchable. Results are unchanged. The first run after upgrading
+  rebuilds that table from what's already indexed (a quarter second at 170k
+  symbols); nothing is re-parsed and there is nothing to do. An existing
+  database file keeps its size, and new writes reuse the freed space.
 
 ## 0.52.4 — 2026-09-26
 

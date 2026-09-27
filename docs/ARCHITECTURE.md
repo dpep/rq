@@ -149,9 +149,11 @@ CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 -- (also serves the per-repo counts the old repository_id index did)
 CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
 
--- fuzzy candidate narrowing: trigram FTS over symbol names
+-- fuzzy candidate narrowing: trigram FTS over symbol names. detail=none:
+-- recall ORs single trigrams and never reads positions (D20)
 CREATE VIRTUAL TABLE symbols_fts USING fts5(
-  name, content='symbols', content_rowid='id', tokenize='trigram'
+  name, content='symbols', content_rowid='id', tokenize='trigram',
+  detail=none
 );
 
 -- partial-indexing state, per repo (or directory scope)
