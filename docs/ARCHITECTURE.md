@@ -385,6 +385,11 @@ why a result ranked where it did:
   query about equally well. Each is scaled by the match quality, so they keep
   full weight between two exact matches and shrink to about a third on a fuzzy
   one, where they used to outweigh the name itself (D24)
+- **test path** — a definition under `test/`, `spec/` and the like, or in a
+  `_test`/`_spec` file, takes −400 on a literal match, enough to cross from exact
+  to prefix. A fuzzy or typo match gives up 0.4 × its name evidence instead, so a
+  test definition that reads as the query clearly better still outranks a weak
+  match elsewhere (D24)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:

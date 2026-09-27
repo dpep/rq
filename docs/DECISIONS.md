@@ -446,7 +446,8 @@ are either genuinely ambiguous or decided by a deliberate rule:
   candidates. *Rejected:* making the penalty a share of the match (0.4 × the match
   value, still 400 at exact). The aggregate rose (#1 49.8%), but test definitions
   flooded fuzzy results: 10 queries lost #1 and 10 the top 10. The flat cliff is
-  doing real work.
+  doing real work. *Adopted in D24* for fuzzy and typo matches, once side features stopped
+  deciding among the compressed test matches.
 
 Cost, at load ~7 over 15 reps: the typical query keeps most of the filter's win
 (query phase median 10.3 → 7.7 ms, p90 24.7 → 13.8; 7.1 ms without the window). The
@@ -1182,3 +1183,36 @@ evidence, which side features still decide. FTS loses the same queries plus `dea
   and a cap is a kink where the scale is a line.
 - **Dropping `path` on a name match** (it restates a class's name): 1,228 #1, 37 lost
   top 10s. The file still helps.
+
+### 2. An approximate match in a test gives up a share of its evidence
+
+*The weakness.* A definition under a test path took a flat −400, sized to clear the gap
+between an exact and a prefix match. Complete recall almost always holds some non-test
+name with the query's letters in order, however weak, so the cliff put it first:
+`coclfi` answered `delete_action_cable_files_skipping_action_cable` (fuzzy 15) over
+`ConditionalClassFilter` (103), `tefofo` `protect_from_forgery` (58) over `test_form_for`
+(130). D23 counted 22 such losses.
+
+*The rule.* A fuzzy or typo match in a test loses 0.4 × its name evidence, capped at 400;
+a literal match (exact, prefix, glob, constructor) and a path-only hit keep the cliff. To
+outrank a match outside tests, a test definition must read as the query 1.67× better.
+
+This is D12's rejected formula, and it now works because of part 1. D12 found it flooded
+fuzzy results with test definitions: scaling a test match's evidence by 0.6 compresses the
+name differences among tests, and full-weight side features then decided between them.
+Screened offline, without part 1 the share gives 1,232 #1 and 35 lost top 10s; with it,
+1,303 and 7. A smaller flat penalty for fuzzy matches (40–100) scored about the same, but
+isn't graded: it treats a test match that reads as the query perfectly and one that barely
+does alike.
+
+| 2,314 sourced | scan #1 | top 10 | found | FTS #1 | top 10 | found |
+|---|---|---|---|---|---|---|
+| before (part 1) | 1,280 | 1,716 | 1,991 | 1,190 | 1,624 | 1,886 |
+| share | 1,303 | 1,741 | 1,990 | 1,207 | 1,640 | 1,885 |
+
+Scan: 134 up, 33 down; one lost #1 and two lost top 10s. `ststmico` and `tstcrr` are
+near-ties among test definitions (168 against 164, 97 against 96), where the share's
+compression lets extent decide. `twedele` loses `tweedle` from its results: every
+first-pass hit used to score ≤ 0 under the cliff, which let every near miss join (D14's
+fallback); now `tweedle_deedle` scores above zero and sets the bar. Part 3 is that gate.
+FTS: no lost #1, the same two top 10s. Anchored unchanged: their truths are exact matches.

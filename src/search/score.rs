@@ -269,10 +269,19 @@ pub(crate) fn score(
     // scores. Without this the tie falls through to alphabetical path order.
     // A penalty, never a filter — when the test *is* what you're after, every
     // candidate takes it equally and the order among them is unchanged.
+    //
+    // A match the query only approximates (fuzzy or typo) gives up a share of
+    // its name evidence instead of the flat cliff: a test definition that reads
+    // as the query clearly better still ranks above a weak match outside tests.
     if in_test_path(&cand.file) {
+        let value = if features.iter().any(|f| matches!(f.name, "fuzzy" | "typo")) {
+            (TEST_PATH_SHARE * name_evidence(&features).max(0.0)).min(TEST_PATH_PENALTY)
+        } else {
+            TEST_PATH_PENALTY
+        };
         features.push(Feature {
             name: "test_path",
-            value: -TEST_PATH_PENALTY,
+            value: -value,
         });
     }
 
@@ -454,6 +463,12 @@ const MAX_DEPTH_PENALTY: f64 = 60.0;
 /// no other feature can cross that cliff. A name that only lives in tests is
 /// unaffected — every candidate takes the same penalty.
 const TEST_PATH_PENALTY: f64 = 400.0;
+
+/// The share of an approximate match's name evidence a test definition gives
+/// up: to outrank a match outside tests it must read as the query 1/(1 − share)
+/// times better. The flat cliff let any weak match outside tests bury a strong
+/// one inside them once recall was complete (DECISIONS D24).
+const TEST_PATH_SHARE: f64 = 0.4;
 
 /// Penalty per skipped char between two matched chars. Strong enough that a
 /// closer match wins over a farther one — so the query's trailing chars don't
@@ -1413,6 +1428,34 @@ mod tests {
         // penalized uniformly, so the ordering among those is untouched
         assert!(fixture > 0.0);
         assert_eq!(fixture, at("spec/models/widget_spec.rb"));
+    }
+
+    #[test]
+    fn a_strong_fuzzy_match_in_a_test_outranks_a_weak_one_outside() {
+        let at = |name: &str, file: &str| {
+            let mut r = row(name, "method", 1);
+            r.file = file.into();
+            score("coclfi", &r, None, Boosts::default(), false).unwrap()
+        };
+        let strong = at("conditional_class_filter", "test/filters_test.rb");
+        let weak = at("remove_scoped_cable_files_if_skipped", "lib/generator.rb");
+        assert!(
+            strong.total > weak.total,
+            "{} > {}",
+            strong.total,
+            weak.total
+        );
+        // an equally good match outside tests still wins
+        let lib = at("conditional_class_filter", "lib/filters.rb");
+        assert!(lib.total > strong.total);
+        // and a literal match keeps the full cliff
+        let exact = |file: &str| {
+            let mut r = row("save", "method", 1);
+            r.file = file.into();
+            score("save", &r, None, Boosts::default(), false).unwrap()
+        };
+        let lib = exact("lib/persistence.rb").total;
+        assert_eq!(lib - exact("test/fake_models.rb").total, TEST_PATH_PENALTY);
     }
 
     #[test]

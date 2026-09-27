@@ -26,6 +26,10 @@ and aren't listed; see `git log` for those.
   file name, nesting and visibility now count in proportion to how surely its
   name matched, so a big class that merely holds the query's letters no longer
   outranks a method that reads as the query (DECISIONS D24).
+- **A strong fuzzy match in a test outranks a weak one elsewhere.** A test
+  definition matched approximately gives up a share of its match instead of a
+  flat 400 points, so it still ranks below an equally good match outside tests,
+  but no longer below any match outside tests at all.
 
 ## 0.54.1 — 2026-09-27
 
