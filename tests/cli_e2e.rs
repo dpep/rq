@@ -1130,6 +1130,25 @@ fn open_launches_the_top_hit() {
         .expect("run rq");
     assert!(run.status.success(), "open should exit 0 via the launcher");
 
+    // a launcher with no placeholder is handed path:line as its last argument;
+    // one with a placeholder gets exactly what it asked for
+    let launched = |template: &str| {
+        let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .args(["--open", "user"])
+            .current_dir(&dir)
+            .env("RQ_DB", &db)
+            .env("RQ_OPEN", template)
+            .output()
+            .expect("run rq");
+        String::from_utf8_lossy(&run.stdout).trim().to_string()
+    };
+    let bare = launched("echo --wait");
+    assert!(
+        bare.starts_with("--wait ") && bare.ends_with("user.rb:1"),
+        "{bare}"
+    );
+    assert_eq!(launched("echo line={line}"), "line=1");
+
     // with no launcher and no editor, --open prints the resolved path:line
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
         .args(["--open", "user"])

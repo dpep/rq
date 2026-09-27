@@ -25,6 +25,9 @@ and aren't listed; see `git log` for those.
   release is a minor one.
 
 ### Fixed
+- **`RQ_OPEN` without a placeholder opens the match.** `RQ_OPEN=subl rq -o x`
+  used to run `subl` with no file and exit 0. A template with no `{file}`,
+  `{line}` or `{}` now gets `path:line` as its last argument.
 - **`save` no longer reads `save!` as an exact match.** A trailing `!`, `?` or `=`
   is part of a name, not a separator, so `rq save` ranks `save!`, `save?` and
   `save=` as prefix matches, well below `save`. `rq 'Foo#save' --show` used to fall back to

@@ -89,8 +89,9 @@ struct Cli {
 
     /// Open the best match in your editor.
     /// On a terminal with several matches, prompts to choose. Launcher: `RQ_OPEN`
-    /// (a template with `{file}`/`{line}`/`{}` = path:line), else VS Code
-    /// (`code`), else `$VISUAL`/`$EDITOR`, else prints the resolved path:line.
+    /// (a template with `{file}`/`{line}`/`{}` = path:line; with none of them,
+    /// path:line is appended), else VS Code (`code`), else `$VISUAL`/`$EDITOR`,
+    /// else prints the resolved path:line.
     #[arg(short = 'o', long, conflicts_with_all = ["index", "status", "json", "ndjson"])]
     open: bool,
 
@@ -1696,19 +1697,26 @@ fn launch_editor(file: &std::path::Path, line: i64) -> ExitCode {
 
 /// Resolve the editor command + args. `None` → no launcher configured (the
 /// caller prints the location). `RQ_OPEN` is split on whitespace (no shell) with
-/// `{file}` / `{line}` / `{}` (= `path:line`) substituted per token.
+/// `{file}` / `{line}` / `{}` (= `path:line`) substituted per token; a template
+/// with none of them gets `path:line` as its last argument, so `RQ_OPEN=subl`
+/// opens the match rather than a bare editor.
 fn open_command(file: &std::path::Path, line: i64, loc: &str) -> Option<(String, Vec<String>)> {
     let fstr = file.to_string_lossy().into_owned();
 
     if let Some(t) = std::env::var_os("RQ_OPEN") {
         let t = t.to_string_lossy();
+        let placeholder = ["{file}", "{line}", "{}"].iter().any(|p| t.contains(p));
         let mut parts = t.split_whitespace().map(|p| {
             p.replace("{file}", &fstr)
                 .replace("{line}", &line.to_string())
                 .replace("{}", loc)
         });
         if let Some(prog) = parts.next() {
-            return Some((prog, parts.collect()));
+            let mut args: Vec<String> = parts.collect();
+            if !placeholder {
+                args.push(loc.to_string());
+            }
+            return Some((prog, args));
         }
     }
 

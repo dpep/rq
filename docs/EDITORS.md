@@ -8,7 +8,8 @@ Everything below is a thin wrapper around it.
 
 `rq -o/--open <query>` opens the best match for you (prompting to choose on a
 TTY with several). The launcher resolves
-`RQ_OPEN` (a template with `{file}`/`{line}`/`{}` = `path:line`) → `code` →
+`RQ_OPEN` (a template with `{file}`/`{line}`/`{}` = `path:line`; with none,
+`path:line` is appended) → `code` →
 `$VISUAL`/`$EDITOR` → printing the location. Simplest integration: bind a key to
 `rq -o`. The wrappers below remain useful for an interactive fzf picker or a
 custom flow.

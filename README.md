@@ -66,11 +66,13 @@ rq --usage                  # searches per day, by caller and flags
 with several matches it prompts you to choose; otherwise it takes the top hit. The
 launcher is resolved in order: `RQ_OPEN` (a command template with `{file}`,
 `{line}`, or `{}` = `path:line`), then VS Code (`code`), then `$VISUAL`/`$EDITOR`,
-and failing all that it just prints the resolved `path:line`.
+and failing all that it just prints the resolved `path:line`. A template with
+none of those placeholders gets `path:line` appended as its last argument.
 
 ```sh
 rq -o refund                          # open the top match
 RQ_OPEN='vim +{line} {file}' rq -o x  # force a specific launcher
+RQ_OPEN=subl rq -o x                  # runs `subl path:line`
 ```
 
 `rq -w <query>` does the same in the browser: it opens the match on the repo's
