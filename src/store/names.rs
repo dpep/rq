@@ -9,7 +9,9 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::{CANDIDATE_COLS, CANDIDATE_FROM, Result, Store, SymbolRow, row_to_candidate};
-use crate::search::{NAME_INDEX_FORMAT, PRIMARY_KINDS, Probe, SIG_BYTES, Signature, path_stem};
+use crate::search::{
+    NAME_INDEX_FORMAT, PRIMARY_KINDS, Probe, SIG_BYTES, Signature, joiners_eq, path_stem,
+};
 
 /// Keys per chunk. An append rewrites the last chunk, and a scan reads one row
 /// per chunk.
@@ -409,6 +411,41 @@ impl Store {
             rows = fetch(&keys)?.0;
         }
         rows.truncate(limit);
+        Ok(rows)
+    }
+
+    /// The rows of every name that is the query in another case convention:
+    /// `AbortHandle` for `abort_handle`, `buf_writer` for `bufWriter`. They
+    /// score as exact matches but share no prefix with the query, so the
+    /// literal layers never fetch them. `lower` is the lowercased query.
+    pub(super) fn respelled_candidates(
+        &self,
+        repo: Option<i64>,
+        suspended: &[i64],
+        probe: &Probe,
+        lower: &str,
+    ) -> Result<Vec<(i64, SymbolRow)>> {
+        let names = self.scan(
+            repo,
+            suspended,
+            Keys::Names,
+            |sig| probe.screen(sig),
+            |name, _| joiners_eq(&name.to_lowercase(), lower),
+        )?;
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
+             WHERE s.repository_id = ?1 AND s.name_lower = ?2"
+        ))?;
+        let mut rows = Vec::new();
+        for (r, name) in names {
+            let lower_name = name.to_lowercase();
+            if lower_name == lower {
+                continue; // the exact layer has it
+            }
+            for row in stmt.query_map(params![r, lower_name], row_to_candidate)? {
+                rows.push(row?);
+            }
+        }
         Ok(rows)
     }
 

@@ -10,8 +10,8 @@ mod score;
 
 pub(crate) use names::{Probe, SIG_BYTES, Signature};
 pub(crate) use score::{
-    Boosts, Feature, NAME_INDEX_FORMAT, PRIMARY_KINDS, confidence, match_positions, match_quality,
-    path_stem,
+    Boosts, Feature, NAME_INDEX_FORMAT, PRIMARY_KINDS, confidence, joiners_eq, match_positions,
+    match_quality, path_stem,
 };
 
 use std::collections::HashSet;
@@ -987,6 +987,22 @@ mod tests {
         ]);
         let hits = search(&store, "user", None, None, &Context::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
+    }
+
+    #[test]
+    fn the_other_case_convention_surfaces_beside_a_literal_match() {
+        // a literal `widget_handle` (and a prefix match) used to hide the type
+        let store = store_with(&[
+            sym("widget_handle", Kind::Method),
+            sym("widget_handles", Kind::Method),
+            sym("WidgetHandle", Kind::Struct),
+            sym("WidgetHandler", Kind::Struct),
+        ]);
+        let hits = search(&store, "widget_handle", None, None, &Context::default(), 10).unwrap();
+        assert_eq!(names(&hits)[..2], ["widget_handle", "WidgetHandle"]);
+        // and the other way round
+        let hits = search(&store, "WidgetHandle", None, None, &Context::default(), 10).unwrap();
+        assert_eq!(names(&hits)[..2], ["WidgetHandle", "widget_handle"]);
     }
 
     #[test]

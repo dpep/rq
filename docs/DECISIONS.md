@@ -1660,3 +1660,38 @@ class sits.
 
 *Reverses if:* anchored use from tests shows the in-file fakes winning over library calls
 more often than the in-file helpers they were meant to find.
+
+## D32 — A literal match no longer hides the other case convention
+
+**Adopted**, 2026-09-27. Recall's fast path skips the name index once an exact or
+prefix match exists, since the relevance gate would drop every fuzzy candidate anyway.
+It also dropped the one non-literal candidate that scores as exact: the same identifier
+in the other case convention. `joiners_eq` scores `AbortHandle` as `exact` −
+`separators` for `abort_handle`, but only if something fetches it, and `name_lower`
+has no row `abort_handle`. So on tokio `abort_handle`, `join_handle` and `async_read`
+never showed the type, and in rq `active_files` never showed `ActiveFiles`. The fast
+path now also scans the name index for names `joiners_eq` accepts and fetches only
+those rows.
+
+`make recall` against the commit before it: 31 sources up and 2 down. Rust goes
+81.0 → 81.1% #1, 88.7 → 89.4% top 10 and 89.3 → 90.0% found. The `case` type goes
+88.4 → 90.1% #1 and 88.9 → 95.1% top 10. Ruby didn't move (56.4 / 75.6 / 86.4) and
+nothing lost the top 10. The two that lost #1 are tokio's `chunks_timeout` and
+`buf_writer`, now #2 behind `ChunksTimeout` and `BufWriter`. Each struct sits in a
+file named after the query, and that path bonus (50) plus kind and extent outweighs
+`separators` (−50).
+
+*Considered and dropped:* doubling `separators` when the query typed a separator the
+name lacks, on the grounds that `chunks_timeout` asks for the fn. It wins back those
+two on tokio but not in general: path, extent and kind together are worth up to 115, so
+only a penalty that large makes the literal spelling always win. That is a rule for one
+case rather than a graded signal. The struct is a real answer, #2 is where the Rust
+tester asked for it, and the literal fn wins whenever the evidence is even.
+
+Latency: the fast path now pays one name-index scan. Literal queries on rails
+(`save`, `find_by`, `render`, `ActiveRecord`, single runs) went from 0.3–2.2 ms to
+0.7–1.9 ms in recall. The hand-picked bench (5 reps) shows a query-phase median of
+2.0 ms for both, with p90 10.6 → 12.5 ms.
+
+*Reverses if:* the scan shows up in first-answer latency on a large repo. A
+`name_joined` column indexed like `name_lower` would then make this a seek.

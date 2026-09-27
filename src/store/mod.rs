@@ -1067,7 +1067,14 @@ impl Store {
         // Fast path: a strong (exact/prefix) match exists, so the relevance gate
         // will discard everything fuzzy recall would add. (Wildcard queries force
         // it; they aren't gated.)
+        // Except for the same identifier in another case convention
+        // (`AbortHandle` for `abort_handle`): that scores as exact too, and no
+        // literal layer can fetch it.
         if !force_fuzzy && !found.is_empty() {
+            let suspended = self.ensure_name_index(repo)?;
+            for (id, cand) in self.respelled_candidates(repo, &suspended, probe, &q)? {
+                found.entry(id).or_insert(cand);
+            }
             return Ok(found.into_values().collect());
         }
 

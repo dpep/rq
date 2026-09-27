@@ -62,6 +62,10 @@ search in each repo starts it, and answers from the old index meanwhile.
 - **Rust trait methods take the trait's visibility.** A `pub trait` method
   used to count as private and rank below public API. A trait impl's methods
   now carry no visibility at all.
+- **A literal match no longer hides the other case convention.**
+  `rq abort_handle` used to list only the `abort_handle` methods. It now also
+  shows the `AbortHandle` struct, and `rq ThreadId` also shows `thread_id`. The
+  spelling you typed still wins when the evidence is otherwise even.
 
 ## 0.55.1 — 2026-09-27
 

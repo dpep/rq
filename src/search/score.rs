@@ -1292,7 +1292,7 @@ pub(super) fn lower(s: &str) -> std::borrow::Cow<'_, str> {
 /// `.` are all word joiners across the languages rq indexes, and a query that
 /// omits them is spelling the same name. Any other character is part of the
 /// name: `save!` and `name=` are different methods from `save` and `name`.
-pub(super) fn joiners_eq(a: &str, b: &str) -> bool {
+pub(crate) fn joiners_eq(a: &str, b: &str) -> bool {
     // Compared in lockstep rather than by building two squashed Strings: this
     // runs against every candidate, and on a query that recalls thousands the
     // allocations cost more than everything else in scoring put together.
