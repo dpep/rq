@@ -1,7 +1,9 @@
-//! Candidate retrieval must not drop an exact match when its first-character
-//! bucket overflows the per-layer cap — the failure mode on a huge repo.
+//! Candidate retrieval's layers: exact and prefix matches always reach the
+//! scorer, and fuzzy recall is scoped and skipped where it can't change the
+//! answer.
 
 use crate::core::{Kind, RepoIdentity, Symbol};
+use crate::search::Probe;
 use crate::store::Store;
 
 fn sym(name: &str) -> Symbol {
@@ -18,23 +20,23 @@ fn sym(name: &str) -> Symbol {
 }
 
 #[test]
-fn exact_match_survives_a_flooded_first_char_bucket() {
+fn an_exact_match_survives_a_fuzzy_recall_that_fills_the_cap() {
     let mut store = Store::open_in_memory().unwrap();
     let repo = store
         .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
         .unwrap();
 
-    // 50 names that all share "mango"'s first char AND sort before it, plus the
-    // exact target. With a tiny cap, a broad first-char scan would truncate
-    // "mango" away; the dedicated exact layer must still return it.
-    let mut syms: Vec<Symbol> = (1..=50).map(|i| sym(&format!("manaa{i:03}"))).collect();
+    // 50 fuzzy matches for "mango", plus the exact target. With a tiny cap,
+    // fuzzy recall alone would keep 5 of the 51; the exact layer must still
+    // return it.
+    let mut syms: Vec<Symbol> = (1..=50).map(|i| sym(&format!("ma_n_go{i:03}"))).collect();
     syms.push(sym("mango"));
     store
         .replace_file_symbols(repo, "a.rs", "rust", None, "h", &syms)
         .unwrap();
 
     let cands = store
-        .search_candidates("mango", 5, false, None, None, None)
+        .search_candidates("mango", 5, true, None, &Probe::new("mango"))
         .unwrap();
     assert!(
         cands.iter().any(|c| c.name == "mango"),
@@ -44,16 +46,16 @@ fn exact_match_survives_a_flooded_first_char_bucket() {
 }
 
 #[test]
-fn a_strong_match_short_circuits_the_broad_fuzzy_layers() {
+fn a_strong_match_short_circuits_fuzzy_recall() {
     let mut store = Store::open_in_memory().unwrap();
     let repo = store
         .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
         .unwrap();
 
-    // "User" is a prefix match for "user"; "Peruser" matches only via trigram FTS
-    // (it contains "user" but isn't a prefix). When a strong match exists the
-    // broad fuzzy layers are skipped — the relevance gate would drop their hits —
-    // so "Peruser" doesn't come back. A wildcard query forces them on.
+    // "User" is a prefix match for "user"; "Peruser" matches only fuzzily.
+    // When a strong match exists fuzzy recall is skipped — the relevance gate
+    // would drop its hits — so "Peruser" doesn't come back. A wildcard query
+    // forces it on.
     store
         .replace_file_symbols(
             repo,
@@ -65,8 +67,9 @@ fn a_strong_match_short_circuits_the_broad_fuzzy_layers() {
         )
         .unwrap();
 
+    let probe = Probe::new("user");
     let strong_only = store
-        .search_candidates("user", 50, false, None, None, None)
+        .search_candidates("user", 50, false, None, &probe)
         .unwrap();
     assert!(strong_only.iter().any(|c| c.name == "User"), "prefix kept");
     assert!(
@@ -75,7 +78,7 @@ fn a_strong_match_short_circuits_the_broad_fuzzy_layers() {
     );
 
     let forced = store
-        .search_candidates("user", 50, true, None, None, None)
+        .search_candidates("user", 50, true, None, &probe)
         .unwrap();
     assert!(
         forced.iter().any(|c| c.name == "Peruser"),
@@ -93,8 +96,8 @@ fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
         .upsert_repository(&RepoIdentity::local("/tmp/other"), None)
         .unwrap();
 
-    // The other repo floods every layer with names that sort first; with the
-    // cap shared across repos, this repo's fuzzy match would never be reached.
+    // The other repo floods every layer; with the cap shared across repos,
+    // this repo's fuzzy match would never be reached.
     let flood: Vec<Symbol> = (1..=50)
         .map(|i| sym(&format!("aaa_widget{i:03}")))
         .collect();
@@ -106,7 +109,7 @@ fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
         .unwrap();
 
     let cands = store
-        .search_candidates("widget", 5, false, Some(here), None, None)
+        .search_candidates("widget", 5, false, Some(here), &Probe::new("widget"))
         .unwrap();
     let names: Vec<&str> = cands.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
@@ -114,35 +117,4 @@ fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
         ["MyWidget"],
         "only this repo's rows, and its match fits"
     );
-}
-
-#[test]
-fn a_filtered_net_reaches_past_rows_that_cannot_match() {
-    let mut store = Store::open_in_memory().unwrap();
-    let repo = store
-        .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
-        .unwrap();
-
-    // "maa" names fill the start of the `m` range; none holds "mgo" in order.
-    // Unfiltered, a cap of 5 stops inside them; filtered, the net reads on.
-    let mut syms: Vec<Symbol> = (1..=10).map(|i| sym(&format!("maa{i:03}"))).collect();
-    syms.push(sym("mongo"));
-    store
-        .replace_file_symbols(repo, "a.rs", "rust", None, "h", &syms)
-        .unwrap();
-
-    let names = |filter: Option<crate::store::CandidateFilter>| -> Vec<String> {
-        store
-            .search_candidates("mgo", 5, false, None, filter, None)
-            .unwrap()
-            .into_iter()
-            .map(|c| c.name)
-            .collect()
-    };
-    assert!(
-        !names(None).contains(&"mongo".to_string()),
-        "the cap binds unfiltered"
-    );
-    let in_order = Box::new(|name: &str, _: &str, _: &str| name.contains('o'));
-    assert_eq!(names(Some(in_order)), vec!["mongo".to_string()]);
 }

@@ -79,6 +79,14 @@ fn decode(keys: &[u8], n: usize) -> Vec<&str> {
 /// rebuilds the index at its end.
 const SUSPENDED: i64 = -1;
 
+/// Did another connection hold the lock past the busy timeout?
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
 /// Is `repository_id`'s index current — built under this format, and kept
 /// since?
 pub(super) fn current(conn: &Connection, repository_id: i64) -> Result<bool> {
@@ -173,8 +181,10 @@ pub(super) fn append(
 impl Store {
     /// Make `repo`'s index — or, unscoped, every repo's — readable before
     /// recall reads it, rebuilding any that are missing or from another
-    /// format: once per repo after an upgrade. Returns the repos whose index
-    /// is suspended, left to the cold pass writing them.
+    /// format: once per repo after an upgrade. Returns the repos to read from
+    /// their rows instead: those suspended, left to the cold pass writing
+    /// them, and any whose rebuild found another writer holding the lock past
+    /// the busy timeout (DECISIONS D26).
     pub(crate) fn ensure_name_index(&self, repo: Option<i64>) -> Result<Vec<i64>> {
         let behind: Vec<(i64, Option<i64>)> = self
             .conn
@@ -191,8 +201,12 @@ impl Store {
         for (id, format) in behind {
             if format == Some(SUSPENDED) {
                 suspended.push(id);
-            } else {
-                self.rebuild_name_index(id)?;
+                continue;
+            }
+            match self.rebuild_name_index(id) {
+                Ok(()) => {}
+                Err(e) if is_busy(&e) => suspended.push(id),
+                Err(e) => return Err(e),
             }
         }
         Ok(suspended)
@@ -540,7 +554,7 @@ mod tests {
         write(&mut store, a, "c.rs", &["WidgetFabric"]);
         let names = |repo| -> Vec<String> {
             let mut names: Vec<String> = store
-                .search_candidates("wdgfa", 100, true, repo, None, Some(&Probe::new("wdgfa")))
+                .search_candidates("wdgfa", 100, true, repo, &Probe::new("wdgfa"))
                 .unwrap()
                 .into_iter()
                 .map(|c| c.name)
@@ -572,7 +586,7 @@ mod tests {
             .unwrap();
         let names = |query: &str, repo| -> Vec<String> {
             let mut names: Vec<String> = store
-                .search_candidates(query, 100, true, repo, None, Some(&Probe::new(query)))
+                .search_candidates(query, 100, true, repo, &Probe::new(query))
                 .unwrap()
                 .into_iter()
                 .map(|c| c.name)
@@ -602,6 +616,36 @@ mod tests {
         assert!(store.maintain_name_index(r).unwrap());
         assert!(current(&store.conn, r).unwrap());
         assert!(!store.maintain_name_index(r).unwrap(), "then left alone");
+    }
+
+    #[test]
+    fn a_rebuild_blocked_by_another_writer_reads_the_repo_from_its_rows() {
+        let path = std::env::temp_dir().join(format!("rq-busy-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut store = Store::open(&path).unwrap();
+        let r = repo(&store, "/tmp/a");
+        write(&mut store, r, "a.rs", &["WidgetFactory"]);
+        store.conn.execute("DELETE FROM name_index", []).unwrap();
+        store.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let names = || -> Vec<String> {
+            store
+                .search_candidates("wdgfac", 100, true, Some(r), &Probe::new("wdgfac"))
+                .unwrap()
+                .into_iter()
+                .map(|c| c.name)
+                .collect()
+        };
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        assert_eq!(names(), ["WidgetFactory"], "answered while locked out");
+        assert!(!current(&store.conn, r).unwrap(), "left to a later search");
+        writer.execute_batch("COMMIT;").unwrap();
+        assert_eq!(names(), ["WidgetFactory"]);
+        assert!(current(&store.conn, r).unwrap(), "rebuilt once it could");
+        drop((store, writer));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
     }
 
     #[test]

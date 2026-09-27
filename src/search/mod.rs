@@ -19,11 +19,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::core::now_unix;
-use crate::store::{CandidateFilter, Store, SymbolRow};
+use crate::store::{Store, SymbolRow};
 
 /// Per-layer cap on candidates pulled from the store before ranking. Exact and
 /// prefix matches are guaranteed in full (see `Store::search_candidates`); this
-/// only bounds the broad first-char-anchor and trigram-fuzzy recall layers.
+/// bounds the rows fuzzy recall fetches from the name index's matches.
 /// Scoring is linear and cheap, so this sits well under the latency budget.
 const CANDIDATE_LIMIT: usize = 8000;
 
@@ -382,8 +382,8 @@ fn search_query(
 ) -> crate::store::Result<Matches> {
     // Recall keys off the leaf name only — a `Foo::Bar` qualifier targets the
     // parent during scoring, and the store indexes `name`, not `parent`. A
-    // wildcard query then keys off its literal chars (the store indexes literal
-    // trigrams); the glob matches precisely during scoring.
+    // wildcard query's exact and prefix layers key off its literal chars; the
+    // name index reads the glob itself, and scoring matches it precisely.
     let (leaf, qualifier) = score::parse_qualified(query);
     let stripped;
     let recall = if score::has_wildcard(leaf) {
@@ -396,14 +396,12 @@ fn search_query(
     let t = std::time::Instant::now();
     // Repo scope: outside `--all-repos`, a search inside a repo returns only
     // that repo's definitions — never another indexed repo's.
-    let probe = name_index_recall().then(|| Probe::new(leaf));
     let mut candidates = store.search_candidates(
         recall,
         CANDIDATE_LIMIT,
         score::has_wildcard(leaf),
         only_repo,
-        Some(could_match(query, recall)),
-        probe.as_ref(),
+        &Probe::new(leaf),
     )?;
     // `Foo.new` runs a constructor the store knows by another name
     if qualifier.is_some() && leaf.eq_ignore_ascii_case("new") {
@@ -413,8 +411,7 @@ fn search_query(
                 CANDIDATE_LIMIT,
                 false,
                 only_repo,
-                Some(could_match(name, name)),
-                name_index_recall().then(|| Probe::new(name)).as_ref(),
+                &Probe::new(name),
             )?);
         }
     }
@@ -496,19 +493,6 @@ fn search_query(
         );
     }
     Ok(Matches { hits, total })
-}
-
-/// Fuzzy recall reads the name index (DECISIONS D23); `RQ_RECALL=fts` falls
-/// back to the trigram nets it replaced.
-fn name_index_recall() -> bool {
-    !std::env::var("RQ_RECALL").is_ok_and(|v| v == "fts")
-}
-
-/// Recall's filter for `query`: [`score::could_match`], owning its strings so
-/// the store can hand it to SQLite.
-fn could_match(query: &str, recall: &str) -> CandidateFilter {
-    let (query, recall) = (query.to_string(), recall.to_string());
-    Box::new(move |name, kind, file| score::could_match(&query, &recall, name, kind, file))
 }
 
 /// Where the *unqualified* name lives, when a query named a scope and nothing
@@ -912,22 +896,9 @@ mod tests {
         for query in queries {
             let leaf = score::parse_qualified(query).0;
             let recall = score::strip_wildcards(leaf);
-            // forced, so the fuzzy layers run even where a prefix matched
-            let all = store
-                .search_candidates(&recall, 1000, true, None, None, None)
-                .unwrap();
-            let kept = store
-                .search_candidates(
-                    &recall,
-                    1000,
-                    true,
-                    None,
-                    Some(could_match(query, &recall)),
-                    None,
-                )
-                .unwrap();
+            // forced, so fuzzy recall runs even where a prefix matched
             let indexed = store
-                .search_candidates(&recall, 1000, true, None, None, Some(&Probe::new(leaf)))
+                .search_candidates(&recall, 1000, true, None, &Probe::new(leaf))
                 .unwrap();
             for near_miss in [false, true] {
                 let accepted =
@@ -939,24 +910,10 @@ mod tests {
                             .collect()
                     };
                 assert_eq!(
-                    accepted(&all),
-                    accepted(&kept),
-                    "{query} (near miss: {near_miss})"
-                );
-                // The nets are capped and can't reach every row; the index
-                // holds exactly what the scorer takes from any of them.
-                assert_eq!(
                     accepted(&every),
                     accepted(&indexed),
-                    "{query} from the name index (near miss: {near_miss})"
+                    "{query} (near miss: {near_miss})"
                 );
-                assert!(
-                    accepted(&indexed).is_superset(&accepted(&all)),
-                    "{query}: the index keeps what the nets found (near miss: {near_miss})"
-                );
-            }
-            if query == "conpool" {
-                assert!(kept.len() < all.len(), "the filter narrows recall");
             }
         }
     }

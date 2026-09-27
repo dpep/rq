@@ -107,7 +107,7 @@ pub(crate) struct Boosts {
 }
 
 /// Score `cand` for `query`. Returns `None` when the candidate doesn't match at
-/// all (not even as a subsequence), filtering FTS trigram noise.
+/// all (not even as a subsequence).
 ///
 /// `boosts` carries the dynamic signals (recency, branch) computed by
 /// [`crate::search`], which owns the time math.
@@ -853,28 +853,6 @@ pub(crate) const PRIMARY_KINDS: [&str; 5] = ["class", "module", "struct", "enum"
 
 fn is_primary_kind(kind: &str) -> bool {
     PRIMARY_KINDS.contains(&kind)
-}
-
-/// Could [`score`] match this candidate at all? Recall asks before decoding a
-/// row, so this must hold for everything `score` accepts — widen it with any
-/// new way to match. Every branch needs the query's letters in order in the
-/// name (exact, prefix, fuzzy, glob), or in the file name for a primary
-/// definition, or a near miss. `recall` is the leaf recall searched for, with
-/// any wildcards stripped.
-pub(crate) fn could_match(query: &str, recall: &str, name: &str, kind: &str, file: &str) -> bool {
-    in_order(recall, name)
-        || (is_primary_kind(kind) && in_order(recall, path_stem(file)))
-        || near_miss_possible(query, name)
-}
-
-/// [`align`]'s gate: the query's letters and digits, in order, anywhere in `s`.
-fn in_order(query: &str, s: &str) -> bool {
-    let mut hay = s.chars().map(|c| c.to_ascii_lowercase());
-    query
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .all(|q| hay.any(|c| c == q))
 }
 
 /// A fuzzy match's value: the best alignment, less the same unmatched-tail

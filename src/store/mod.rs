@@ -63,24 +63,11 @@ impl SymbolRow {
 
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
-/// Longest query that still gets the first-character anchor pass.
-const FIRST_CHAR_ANCHOR_MAX: usize = 6;
-
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
     s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts, s.visibility";
 const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
-
-/// How many rows a filtered fuzzy net reads for each one its cap can keep. A
-/// rejected row costs little once the filter runs in SQLite, so the net looks
-/// further before the cap cuts it off; 4× covered the largest nets measured
-/// (D12).
-const NET_WINDOW: usize = 4;
-
-/// Given a candidate row's name, kind and file, could it match at all? Recall
-/// runs this inside SQLite so the rows that can't are never decoded.
-pub(crate) type CandidateFilter = Box<dyn Fn(&str, &str, &str) -> bool + Send>;
 
 /// A handle to the rq database.
 pub(crate) struct Store {
@@ -948,80 +935,60 @@ impl Store {
         Ok(())
     }
 
-    /// Candidate symbols for a query, drawn from cheap layers and merged:
-    /// exact/prefix on `name_lower`, then broad fuzzy recall (first-char anchor,
-    /// trigram FTS, path). Ranking happens in `crate::search`; this only narrows
+    /// Candidate symbols for a query: exact and prefix matches on
+    /// `name_lower`, then every name and file stem the name index says
+    /// `probe` accepts. Ranking happens in `crate::search`; this only narrows
     /// the field.
     ///
-    /// `filter` narrows the broad fuzzy layers. They are loose nets — a shared
-    /// first letter, a shared trigram — and most of what they catch can't
-    /// match; rejecting those inside SQLite means they're never decoded. That
-    /// makes a read row cheap enough for the net to read [`NET_WINDOW`] times
-    /// past its cap, so the cap falls on rows that could match rather than on
-    /// whichever the net met first.
-    ///
-    /// When `force_fuzzy` is false and exact/prefix already matched, the broad
-    /// fuzzy layers are skipped: the relevance gate drops every fuzzy candidate
-    /// once a strong (exact/prefix) hit exists, so fetching and scoring them is
-    /// wasted. A wildcard query passes `force_fuzzy = true` — it isn't gated and
-    /// always needs the trigram recall.
+    /// When `force_fuzzy` is false and exact/prefix already matched, the name
+    /// index is skipped: the relevance gate drops every fuzzy candidate once a
+    /// strong (exact/prefix) hit exists, so fetching and scoring them is
+    /// wasted. A wildcard query passes `force_fuzzy = true` — it isn't gated.
     ///
     /// `repo` scopes every layer to one repository. It has to be applied here,
     /// not after: each layer's `limit` is otherwise shared with every other
     /// indexed repo, and another repo's exact match would trip the fast path
-    /// below and skip the fuzzy layers this repo needed.
+    /// below and skip the fuzzy recall this repo needed.
     pub(crate) fn search_candidates(
         &self,
         query: &str,
         limit: usize,
         force_fuzzy: bool,
         repo: Option<i64>,
-        filter: Option<CandidateFilter>,
-        names: Option<&Probe>,
+        probe: &Probe,
     ) -> Result<Vec<SymbolRow>> {
         use rusqlite::types::Value;
         // folded as `name_lower` is at index time, or a non-ASCII name misses
         let q = query.to_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
-        let window = Value::Integer((limit * if filter.is_some() { NET_WINDOW } else { 1 }) as i64);
-        let cap = limit;
-        let limit = Value::Integer(limit as i64);
-        // The repo scope, bound after a layer's own placeholders as the next
-        // numbered one.
-        let scope = |args: &mut Vec<Value>| match repo {
-            Some(id) => {
-                args.push(Value::Integer(id));
-                format!(" AND s.repository_id = ?{}", args.len())
-            }
-            None => String::new(),
-        };
-        // Run one layer. `filter` holds the layer's own placeholders.
-        let fetch =
-            |from: &str, filter: &str, mut args: Vec<Value>| -> Result<Vec<(i64, SymbolRow)>> {
-                let scope = scope(&mut args);
-                args.push(limit.clone());
-                let sql = format!(
-                    "SELECT {CANDIDATE_COLS} {from} WHERE {filter}{scope} LIMIT ?{}",
-                    args.len()
-                );
-                let mut stmt = self.conn.prepare_cached(&sql)?;
-                let rows = stmt.query_map(rusqlite::params_from_iter(args), row_to_candidate)?;
-                rows.collect()
+        // Run one layer. `filter` holds the layer's own placeholders; the repo
+        // scope and the cap are bound after them as the next numbered ones.
+        let fetch = |filter: &str, mut args: Vec<Value>| -> Result<Vec<(i64, SymbolRow)>> {
+            let scope = match repo {
+                Some(id) => {
+                    args.push(Value::Integer(id));
+                    format!(" AND s.repository_id = ?{}", args.len())
+                }
+                None => String::new(),
             };
+            args.push(Value::Integer(limit as i64));
+            let sql = format!(
+                "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} WHERE {filter}{scope} LIMIT ?{}",
+                args.len()
+            );
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(args), row_to_candidate)?;
+            rows.collect()
+        };
         let text = |s: &str| Value::Text(s.to_string());
 
-        // exact name — always included, never subject to the cap. The
-        // match we most want must reach the scorer no matter how large the index
-        // is (a broad capped scan could otherwise truncate it away).
-        for (id, cand) in fetch(CANDIDATE_FROM, "s.name_lower = ?1", vec![text(&q)])? {
+        // exact name — always included, never displaced by the fuzzy cap
+        for (id, cand) in fetch("s.name_lower = ?1", vec![text(&q)])? {
             found.insert(id, cand);
         }
 
-        // query as a prefix — selective, so prefix matches always
-        // surface even on a huge repo (unlike the broad first-char anchor below,
-        // which the cap can truncate).
+        // query as a prefix — selective, so prefix matches always surface
         for (id, cand) in fetch(
-            CANDIDATE_FROM,
             "s.name_lower >= ?1 AND s.name_lower < ?2",
             vec![text(&q), text(&prefix_upper_bound(&q))],
         )? {
@@ -1029,119 +996,21 @@ impl Store {
         }
 
         // Fast path: a strong (exact/prefix) match exists, so the relevance gate
-        // will discard everything the broad layers below would add. Skip them —
-        // identical results, no wasted fetch/score. (Wildcard queries force the
-        // fuzzy layers; they aren't gated.)
+        // will discard everything fuzzy recall would add. (Wildcard queries force
+        // it; they aren't gated.)
         if !force_fuzzy && !found.is_empty() {
             return Ok(found.into_values().collect());
         }
 
         // The name index holds exactly the names and file stems the scorer
-        // accepts, so it replaces every net below. The nets run only if it
-        // can't be brought current (a writer held the lock past the timeout).
-        if let Some(probe) = names
-            && let Ok(suspended) = self.ensure_name_index(repo)
-        {
-            for (id, cand) in self.named_candidates(repo, &suspended, probe, cap)? {
-                found.entry(id).or_insert(cand);
-            }
-            for (id, cand) in self.filed_candidates(repo, &suspended, probe, cap)? {
-                found.entry(id).or_insert(cand);
-            }
-            return Ok(found.into_values().collect());
-        }
-
-        // Registered per search: the filter closes over this query. Redefining
-        // a function expires the statements that use it, so the cached ones
-        // re-prepare — cheap next to the rows it saves decoding.
-        let keep = match filter {
-            Some(filter) => {
-                use rusqlite::functions::FunctionFlags;
-                self.conn.create_scalar_function(
-                    "rq_keep",
-                    3,
-                    FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-                    move |ctx| {
-                        let text = |i| ctx.get_raw(i).as_str().unwrap_or_default();
-                        Ok(filter(text(0), text(1), text(2)))
-                    },
-                )?;
-                " WHERE rq_keep(s.name, s.kind, fi.path)"
-            }
-            None => "",
-        };
-        // Run one broad net: read up to `window` of its rows, decode the ones
-        // `keep` passes, and cap those.
-        let fetch_net =
-            |net: &str, filter: &str, mut args: Vec<Value>| -> Result<Vec<(i64, SymbolRow)>> {
-                let scope = scope(&mut args);
-                args.push(window.clone());
-                let w = args.len();
-                args.push(limit.clone());
-                let sql = format!(
-                    "SELECT {CANDIDATE_COLS} FROM \
-                       (SELECT s.id FROM {net} WHERE {filter}{scope} LIMIT ?{w}) w \
-                     JOIN symbols s ON s.id = w.id \
-                     JOIN files fi ON fi.id = s.file_id \
-                     JOIN repositories r ON r.id = s.repository_id{keep} LIMIT ?{}",
-                    args.len()
-                );
-                let mut stmt = self.conn.prepare_cached(&sql)?;
-                let rows = stmt.query_map(rusqlite::params_from_iter(args), row_to_candidate)?;
-                rows.collect()
-            };
-
-        // fuzzy recall (a): first-character anchor (index-backed scan) for short
-        // skip-abbreviations like `usr → user` that prefix matching can't reach;
-        // the scorer filters and ranks. Best-effort under the cap — exact and
-        // prefix are already guaranteed above.
-        // Only for a short query. This exists to reach skip-abbreviations
-        // (`usr` -> `user`) that prefix matching can't, and a short query yields
-        // too few trigrams for the FTS layer below to be much of a net. A long
-        // query gets a good trigram net, so anchoring on one letter just drags
-        // in thousands of rows the scorer will reject.
-        if let Some(first) = q
-            .chars()
-            .next()
-            .filter(|_| q.chars().count() <= FIRST_CHAR_ANCHOR_MAX)
-        {
-            let anchor = first.to_string();
-            for (id, cand) in fetch_net(
-                "symbols s",
-                "s.name_lower >= ?1 AND s.name_lower < ?2",
-                vec![text(&anchor), text(&prefix_upper_bound(&anchor))],
-            )? {
-                found.entry(id).or_insert(cand);
-            }
-        }
-
-        // fuzzy recall (b): trigram FTS (OR of the query's trigrams).
-        if let Some(match_expr) = trigram_or_query(&q) {
-            for (id, cand) in fetch_net(
-                "symbols_fts f JOIN symbols s ON s.id = f.rowid",
-                "symbols_fts MATCH ?1",
-                vec![text(&match_expr)],
-            )? {
-                found.entry(id).or_insert(cand);
-            }
-        }
-
-        // path recall: primary definitions in files whose path matches the query,
-        // so `billing` can surface the class defined in `billing.rb`.
-        let path_like = format!("%{}%", escape_like(&q));
-        // Narrow on `files` first. A leading `%` can't use an index either way,
-        // but scanning 3k file rows and then seeking their symbols beats
-        // scanning 49k symbol rows to test a column on the joined table —
-        // measured at 29 ms against 0.4 ms on rq's own Rails index.
-        for (id, cand) in fetch(
-            CANDIDATE_FROM,
-            "s.file_id IN (SELECT id FROM files WHERE path LIKE ?1 ESCAPE '\\') \
-             AND s.kind IN ('class', 'module')",
-            vec![text(&path_like)],
-        )? {
+        // accepts.
+        let suspended = self.ensure_name_index(repo)?;
+        for (id, cand) in self.named_candidates(repo, &suspended, probe, limit)? {
             found.entry(id).or_insert(cand);
         }
-
+        for (id, cand) in self.filed_candidates(repo, &suspended, probe, limit)? {
+            found.entry(id).or_insert(cand);
+        }
         Ok(found.into_values().collect())
     }
 }
@@ -1182,35 +1051,6 @@ fn prefix_upper_bound(prefix: &str) -> String {
     let mut upper = prefix.to_string();
     upper.push(char::MAX);
     upper
-}
-
-/// Escape LIKE wildcards so identifier characters (`_`) are matched literally.
-fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-/// Build an FTS5 `MATCH` expression that ORs the query's trigrams, giving broad
-/// recall (any shared trigram makes a candidate). `None` if the query is too
-/// short to form a trigram.
-fn trigram_or_query(q: &str) -> Option<String> {
-    let cleaned: Vec<char> = q
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    if cleaned.len() < 3 {
-        return None;
-    }
-    let mut grams: Vec<String> = Vec::new();
-    for w in cleaned.windows(3) {
-        let gram: String = w.iter().collect();
-        let quoted = format!("\"{gram}\"");
-        if !grams.contains(&quoted) {
-            grams.push(quoted);
-        }
-    }
-    Some(grams.join(" OR "))
 }
 
 #[cfg(test)]
@@ -1556,7 +1396,7 @@ mod tests {
         store.set_file_git_ts(repo, &times).unwrap();
 
         let cands = store
-            .search_candidates("foo", 10, false, None, None, None)
+            .search_candidates("foo", 10, false, None, &Probe::new("foo"))
             .unwrap();
         assert_eq!(cands[0].git_ts, Some(1_700_000_000));
     }
