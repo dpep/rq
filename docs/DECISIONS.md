@@ -1300,11 +1300,95 @@ The bar was no lost #1 or top 10 against main unless explained. 14 lose #1 and 6
   it on kind and extent. A class holding a query's letters that scattered shouldn't score 74;
   that is `align`'s value, not a ranking feature, and is left for its own change.
 
-*Not yet done:* the FTS table and triggers stay, as the fallback above. Removing them needs
-recall that stands without them while an index is missing or rebuilding (a cold pass
-suspends it; `--all-repos` needs every repo's to be current).
+*Not yet done:* the FTS table and triggers stay. D25 closed the gaps that fell back to them:
+recall rebuilds a missing or stale index before reading it, and verifies a suspended one's
+rows directly.
 
 *Reverses if:* test definitions start displacing library ones on real use (the share is
 the lever: raise it toward the cliff), or the harness's sampled sources stop resembling
 what people navigate to — it samples test and library names alike, which favours
 anything that softens the test penalty.
+
+## D25 — The name index always answers; its storage audited
+
+**Decided**, 2026-09-27. Release builds, rails and discourse at the recall pins, every
+timing interleaved against main (1ad2e79) on a shared machine (load 5–17): 396 harness
+queries (every sixth), 3–5 reps. Sizes from `dbstat` on a fresh rails + discourse index.
+
+*What.* Recall no longer falls back to the FTS nets when a repo's index isn't current:
+- **Missing or from another format: rebuilt, then read.** One query per search finds the
+  repos in scope that are behind; each is rebuilt before the scan. That is once per repo
+  after an upgrade or a format change: 62 ms for rails, 103–110 for discourse, after which
+  recall is back to ~1 ms. `--all-repos` rebuilds only the repos that need it, where it used
+  to fall back for all of them if any one did.
+- **Suspended by a cold pass: verified from its rows.** Suspension is now a marker in
+  `name_index` (and drops the repo's chunks) rather than a missing row, so it isn't
+  mistaken for an upgrade and rebuilt mid-pass. Recall reads the repo's distinct names and
+  file paths from `symbols` and `files`, signs and verifies each: complete over what's
+  committed, where the FTS fallback saw none of the pass's rows (their FTS sync is deferred
+  too). It costs 55–59 ms at full rails size and 81–120 at discourse, only while the pass
+  runs; the warming poll mostly waits for an exact or prefix match or the pass's end anyway.
+
+The FTS nets now run only if the rebuild fails (a writer held the lock past the busy
+timeout), or under `RQ_RECALL=fts`.
+
+| 396 queries, ms | main | this |
+|---|---|---|
+| recall median / p90 / p99 | 0.88 / 2.25 / 8.51 | 0.89 / 2.25 / 8.08 |
+| first answer median / p90 / p99 | 1.85 / 4.16 / 14.34 | 1.85 / 4.16 / 14.69 |
+
+`make recall BASE=main --anchored`: 0 sources moved, the top 10 changed in 0 of 2,372 queries, anchored unchanged (351 #1, 439 top 10). Database 36.62 → 36.61 MB. Unscoped (`-a`) on a three-repo index (rails, discourse, rq), 198 queries: recall 2.75 /
+5.28 ms median / p90 against 2.76 / 5.32, top 10s identical.
+
+*Rejected: appending through a cold pass instead of suspending.* The obvious fix: a
+cold pass that appends like any other write is always current, with no second path. It
+costs the pass nothing (rails cold index, 7 reps: 790 ms median against 781), but recall's
+median went 0.88 → 1.03 ms on every rerun. Crossing binaries and databases put all of it
+on the database: `name_sigs` sat in 135 runs of contiguous pages against main's 10, because
+each append rewrites the last chunk between batches of symbol pages, and the rebuild at the
+pass's end reuses those scattered pages. Skipping that rebuild left 127 runs and 1.00 ms.
+A rebuild over a contiguous index stays contiguous (10 runs after one), so main's layout
+survives normal use. A first version of this change also cost 0.03 ms of median in extra
+per-search queries (a join against `name_index` in the scan, a separate lookup for
+suspended repos); one query in `ensure_name_index` took it back to flat.
+
+*Where the bytes are* (rails + discourse, 36.6 MB, before this change and unchanged by it):
+
+| object | MB | |
+|---|---|---|
+| `symbols` | 12.4 | |
+| `name_sigs` | 7.1 | signatures 3.8 (names 3.1, files 0.7), keys 3.1 (names 2.0 with 0.3 of offsets, file paths 1.1), page overhead 0.2 |
+| `idx_symbols_repo_name` | 4.0 | |
+| `idx_symbols_name_lower` | 3.8 | read only by the FTS fallback's unscoped first-letter net |
+| `symbols_fts_*` | 3.7 | postings 2.5, docsize 1.3 |
+| `files` + its key | 3.9 | |
+| `idx_symbols_file` | 1.6 | |
+
+*Ready, not done: dropping FTS and `idx_symbols_name_lower`.* With this change nothing
+needs them but `RQ_RECALL=fts` and a rebuild that failed on a lock. Together they are 7.5
+MB, 20% of the database and more than the name index costs. Vacuumed for a like-for-like
+size, the rails + discourse index goes 35.2 → 31.2 MB without FTS and → 27.8 without the
+index too (a migration's drop frees pages for reuse rather than shrinking the file).
+Without the first-letter net nothing reads that index: every other name query joins
+`repositories` and seeks `idx_symbols_repo_name` per repo, and the plans are identical with
+and without it. Removing them is a schema change awaiting a go-ahead.
+
+*Rejected, measured:*
+- **A 128-bit pair Bloom** (24-byte signatures). −1.5 MB (−4.3%), identical answers, but the
+  screen passes 55% more names (1.29M → 2.00M over the harness) and the tail pays for it:
+  recall p90 2.02–2.29 → 2.27–2.88 ms and p99 +0.4–0.9 over two runs, median flat. 64 bits:
+  −2.3 MB, 2.9× the survivors, twice the in-memory scan.
+- **Compressing chunks.** zlib takes the keys from 3.1 to 0.9 MB, but 46% of chunks hold a
+  survivor for the average harness query, ~36 inflates a query against a ~0.9 ms recall.
+  Signatures compress only to 59% and every scan reads all of them.
+- **Front-coding names** (sorted within a chunk): 1.7 → 1.1 MB of name bytes, for a
+  sequential decode of every chunk with a survivor and a chunk order that appends break.
+- **Indexing only files with a primary definition**: 5,908 of 17,720 files hold none and
+  fetch nothing, ~0.6 MB, but a file that gains a class later needs its own append
+  bookkeeping. Storing a file's stem and id instead of its path saves ~0.75 MB and has to
+  guard against ids SQLite reuses.
+
+*Reverses if:* a cold pass's writes stop interleaving with the index's pages (the chunks
+move to their own file or database), which would make appending through it free; or the
+row verify's cost during a cold pass starts to show on real repos, where a rebuild on
+demand before the pass ends is the next step.

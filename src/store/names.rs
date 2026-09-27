@@ -32,6 +32,14 @@ pub(super) enum Keys {
 }
 
 impl Keys {
+    /// Every key of this kind the repo holds, from its rows.
+    fn source(self) -> &'static str {
+        match self {
+            Keys::Names => "SELECT DISTINCT name FROM symbols WHERE repository_id = ?1",
+            Keys::Files => "SELECT path FROM files WHERE repository_id = ?1",
+        }
+    }
+
     fn sign(self, key: &str) -> Signature {
         match self {
             Keys::Names => Signature::of(key),
@@ -65,6 +73,11 @@ fn key(keys: &[u8], n: usize, i: usize) -> &str {
 fn decode(keys: &[u8], n: usize) -> Vec<&str> {
     (0..n).map(|i| key(keys, n, i)).collect()
 }
+
+/// `name_index.format` while a cold pass writes the repo: it appends nothing,
+/// and recall verifies the repo's committed names directly until the pass
+/// rebuilds the index at its end.
+const SUSPENDED: i64 = -1;
 
 /// Is `repository_id`'s index current — built under this format, and kept
 /// since?
@@ -158,30 +171,48 @@ pub(super) fn append(
 }
 
 impl Store {
-    /// Can recall read the name index for `repo` — or, unscoped, for every
-    /// repo? Otherwise it runs the FTS nets.
-    pub(crate) fn name_index_ready(&self, repo: Option<i64>) -> Result<bool> {
-        match repo {
-            Some(id) => current(&self.conn, id),
-            None => self.conn.query_row(
-                "SELECT NOT EXISTS (SELECT 1 FROM repositories r \
+    /// Make `repo`'s index — or, unscoped, every repo's — readable before
+    /// recall reads it, rebuilding any that are missing or from another
+    /// format: once per repo after an upgrade. Returns the repos whose index
+    /// is suspended, left to the cold pass writing them.
+    pub(crate) fn ensure_name_index(&self, repo: Option<i64>) -> Result<Vec<i64>> {
+        let behind: Vec<(i64, Option<i64>)> = self
+            .conn
+            .prepare_cached(
+                "SELECT r.id, n.format FROM repositories r \
                    LEFT JOIN name_index n ON n.repository_id = r.id \
-                   WHERE n.format IS NOT ?1)",
-                params![i64::from(NAME_INDEX_FORMAT)],
-                |r| r.get(0),
-            ),
+                   WHERE n.format IS NOT ?1 AND (?2 IS NULL OR r.id = ?2)",
+            )?
+            .query_map(params![i64::from(NAME_INDEX_FORMAT), repo], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<Result<_>>()?;
+        let mut suspended = Vec::new();
+        for (id, format) in behind {
+            if format == Some(SUSPENDED) {
+                suspended.push(id);
+            } else {
+                self.rebuild_name_index(id)?;
+            }
         }
+        Ok(suspended)
     }
 
-    /// Stop maintaining the repo's index until it's rebuilt: a cold pass
-    /// writes too many names to check one by one, so it skips the appends, and
-    /// recall falls back to FTS meanwhile.
+    /// Stop maintaining the repo's index until the end of a cold pass: the
+    /// pass writes too many names to check one by one, and its end rebuilds
+    /// the chunks into contiguous pages, where appends between its batches
+    /// would scatter them.
     pub(crate) fn suspend_name_index(&self, repository_id: i64) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM name_index WHERE repository_id = ?1",
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM name_sigs WHERE repository_id = ?1",
             params![repository_id],
         )?;
-        Ok(())
+        tx.execute(
+            "INSERT OR REPLACE INTO name_index (repository_id, format, built) VALUES (?1, ?2, 0)",
+            params![repository_id, SUSPENDED],
+        )?;
+        tx.commit()
     }
 
     /// Rebuild the repo's index when it's missing, stale, or carries enough
@@ -220,18 +251,9 @@ impl Store {
             params![repository_id],
         )?;
         let mut built = 0;
-        for (kind, sql) in [
-            (
-                Keys::Names,
-                "SELECT DISTINCT name FROM symbols WHERE repository_id = ?1",
-            ),
-            (
-                Keys::Files,
-                "SELECT path FROM files WHERE repository_id = ?1",
-            ),
-        ] {
+        for kind in [Keys::Names, Keys::Files] {
             let keys: Vec<String> = tx
-                .prepare(sql)?
+                .prepare(kind.source())?
                 .query_map(params![repository_id], |r| r.get(0))?
                 .collect::<Result<_>>()?;
             append(&tx, repository_id, kind, &keys)?;
@@ -245,10 +267,13 @@ impl Store {
     }
 
     /// Every key of `kind` in `repo` (or every repo) that `accepts` takes,
-    /// with its repository, screening each signature with `screen` first.
+    /// with its repository, screening each signature with `screen` first. The
+    /// `suspended` repos have no chunks: their keys are read from their rows
+    /// and signed here instead.
     fn scan(
         &self,
         repo: Option<i64>,
+        suspended: &[i64],
         kind: Keys,
         screen: impl Fn(&Signature) -> bool,
         accepts: impl Fn(&str, &Signature) -> bool,
@@ -291,6 +316,17 @@ impl Store {
                 }
             }
         }
+        for &id in suspended {
+            let mut stmt = self.conn.prepare_cached(kind.source())?;
+            let mut rows = stmt.query(params![id])?;
+            while let Some(row) = rows.next()? {
+                let key = row.get_ref(0)?.as_str()?;
+                let sig = kind.sign(key);
+                if screen(&sig) && accepts(key, &sig) {
+                    out.push((id, key.to_string()));
+                }
+            }
+        }
         Ok(out)
     }
 
@@ -300,11 +336,13 @@ impl Store {
     pub(super) fn named_candidates(
         &self,
         repo: Option<i64>,
+        suspended: &[i64],
         probe: &Probe,
         limit: usize,
     ) -> Result<Vec<(i64, SymbolRow)>> {
         let names = self.scan(
             repo,
+            suspended,
             Keys::Names,
             |sig| probe.screen(sig),
             |name, sig| probe.accepts(name, sig),
@@ -350,11 +388,13 @@ impl Store {
     pub(super) fn filed_candidates(
         &self,
         repo: Option<i64>,
+        suspended: &[i64],
         probe: &Probe,
         limit: usize,
     ) -> Result<Vec<(i64, SymbolRow)>> {
         let files = self.scan(
             repo,
+            suspended,
             Keys::Files,
             |sig| probe.screen_stem(sig),
             |path, _| probe.accepts_stem(path_stem(path)),
@@ -420,7 +460,7 @@ mod tests {
     /// The names fuzzy recall hands on for `query`, from the index alone.
     fn recalled(store: &Store, repo: Option<i64>, query: &str) -> Vec<String> {
         let mut names: Vec<String> = store
-            .named_candidates(repo, &Probe::new(query), 1000)
+            .named_candidates(repo, &[], &Probe::new(query), 1000)
             .unwrap()
             .into_iter()
             .map(|(_, c)| c.name)
@@ -432,7 +472,7 @@ mod tests {
     /// Every key the repo's index holds, of `kind`, in order.
     fn held(store: &Store, repo: i64, kind: Keys) -> Vec<String> {
         store
-            .scan(Some(repo), kind, |_| true, |_, _| true)
+            .scan(Some(repo), &[], kind, |_| true, |_, _| true)
             .unwrap()
             .into_iter()
             .map(|(_, k)| k)
@@ -444,7 +484,7 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let r = repo(&store, "/tmp/a");
         assert!(
-            store.name_index_ready(Some(r)).unwrap(),
+            current(&store.conn, r).unwrap(),
             "a new repo starts current"
         );
         write(&mut store, r, "a.rs", &["WidgetFactory"]);
@@ -479,23 +519,74 @@ mod tests {
     }
 
     #[test]
-    fn a_suspended_index_is_not_read_and_a_rebuild_catches_it_up() {
+    fn recall_rebuilds_a_missing_or_stale_index_before_reading_it() {
+        let mut store = Store::open_in_memory().unwrap();
+        let (a, b) = (repo(&store, "/tmp/a"), repo(&store, "/tmp/b"));
+        write(&mut store, a, "a.rs", &["WidgetFactory"]);
+        write(&mut store, b, "b.rs", &["WidgetFacade"]);
+        // a from another format, b from before the index existed
+        store
+            .conn
+            .execute(
+                "UPDATE name_index SET format = 0 WHERE repository_id = ?1",
+                [a],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute("DELETE FROM name_index WHERE repository_id = ?1", [b])
+            .unwrap();
+        // written while stale, so never appended
+        write(&mut store, a, "c.rs", &["WidgetFabric"]);
+        let names = |repo| -> Vec<String> {
+            let mut names: Vec<String> = store
+                .search_candidates("wdgfa", 100, true, repo, None, Some(&Probe::new("wdgfa")))
+                .unwrap()
+                .into_iter()
+                .map(|c| c.name)
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names(Some(a)), ["WidgetFabric", "WidgetFactory"]);
+        assert!(current(&store.conn, a).unwrap());
+        assert!(!current(&store.conn, b).unwrap(), "scoped to a");
+        assert_eq!(
+            names(None),
+            ["WidgetFabric", "WidgetFacade", "WidgetFactory"]
+        );
+        assert!(current(&store.conn, b).unwrap());
+    }
+
+    #[test]
+    fn a_suspended_index_is_verified_from_rows_until_its_pass_rebuilds_it() {
         let mut store = Store::open_in_memory().unwrap();
         let r = repo(&store, "/tmp/a");
-        write(&mut store, r, "a.rs", &["WidgetFactory"]);
         store.suspend_name_index(r).unwrap();
-        assert!(!store.name_index_ready(Some(r)).unwrap());
-        assert!(
-            !store.name_index_ready(None).unwrap(),
-            "unscoped needs every repo"
-        );
-        write(&mut store, r, "b.rs", &["GadgetFactory"]);
-        assert!(
-            store.maintain_name_index(r).unwrap(),
-            "a missing index is rebuilt"
-        );
-        assert!(store.name_index_ready(Some(r)).unwrap());
-        assert_eq!(recalled(&store, Some(r), "gdgfac"), ["GadgetFactory"]);
+        let syms = [
+            sym("Gadget", Kind::Module),
+            sym("WidgetFactory", Kind::Function),
+        ];
+        store
+            .replace_file_symbols(r, "lib/gadget_factory.rb", "ruby", None, "h", &syms)
+            .unwrap();
+        let names = |query: &str, repo| -> Vec<String> {
+            let mut names: Vec<String> = store
+                .search_candidates(query, 100, true, repo, None, Some(&Probe::new(query)))
+                .unwrap()
+                .into_iter()
+                .map(|c| c.name)
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names("wdgfac", Some(r)), ["WidgetFactory"]);
+        assert_eq!(names("gdgfac", None), ["Gadget"], "by its file's stem");
+        assert!(!current(&store.conn, r).unwrap(), "left to the pass");
+        assert!(held(&store, r, Keys::Names).is_empty(), "read from rows");
+        assert!(store.maintain_name_index(r).unwrap());
+        assert!(current(&store.conn, r).unwrap());
+        assert_eq!(names("wdgfac", Some(r)), ["WidgetFactory"]);
     }
 
     #[test]
@@ -507,9 +598,9 @@ mod tests {
             .conn
             .execute("UPDATE name_index SET format = 0", [])
             .unwrap();
-        assert!(!store.name_index_ready(Some(r)).unwrap());
+        assert!(!current(&store.conn, r).unwrap());
         assert!(store.maintain_name_index(r).unwrap());
-        assert!(store.name_index_ready(Some(r)).unwrap());
+        assert!(current(&store.conn, r).unwrap());
         assert!(!store.maintain_name_index(r).unwrap(), "then left alone");
     }
 
@@ -584,7 +675,7 @@ mod tests {
             &["w_x_i_x_d", "WidgetDetail", "WideIndexDriver", "Widget"],
         );
         let kept: Vec<String> = store
-            .named_candidates(Some(r), &Probe::new("wid"), 2)
+            .named_candidates(Some(r), &[], &Probe::new("wid"), 2)
             .unwrap()
             .into_iter()
             .map(|(_, c)| c.name)
@@ -603,7 +694,7 @@ mod tests {
             .replace_file_symbols(r, "lib/connection_pool.rb", "ruby", None, "h", &syms)
             .unwrap();
         let rows = store
-            .filed_candidates(Some(r), &Probe::new("conpool"), 100)
+            .filed_candidates(Some(r), &[], &Probe::new("conpool"), 100)
             .unwrap();
         let names: Vec<&str> = rows.iter().map(|(_, c)| c.name.as_str()).collect();
         assert_eq!(names, ["Base"]);

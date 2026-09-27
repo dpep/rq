@@ -170,7 +170,8 @@ name_sigs (
 );
 
 -- a repo's name index is read only while current: built under this format
--- (score::NAME_INDEX_FORMAT) and maintained since
+-- (score::NAME_INDEX_FORMAT) and maintained since. Missing or another format
+-- is rebuilt before recall reads it; -1 while a cold pass suspends it.
 name_index (
   repository_id INTEGER PRIMARY KEY,
   format INTEGER NOT NULL,
@@ -214,9 +215,10 @@ Decisions worth calling out:
   signature, verifies the survivors with the scorer's own match chain, and
   fetches rows only for the names it accepts, so its candidates are exactly
   what `score` would take from any row (NAME_INDEX.md, D23). The default
-  since D24 fixed the ranking weaknesses complete recall exposed; FTS below is
-  the fallback while a repo's index is missing or being rebuilt, and
-  `RQ_RECALL=fts` forces it.
+  since D24 fixed the ranking weaknesses complete recall exposed. A repo whose
+  index is missing or from another format is rebuilt before recall reads it,
+  and one suspended by a cold pass is verified from its rows (D25); FTS below
+  runs only if the rebuild fails, or when `RQ_RECALL=fts` forces it.
 - **Trigram FTS5** narrows millions of symbols to a small candidate set before
   any expensive scoring runs — the answer to "fuzzy + millions + 50 ms".
   Within each capped net, the scorer's own necessary condition
@@ -264,12 +266,11 @@ search only reads.
   per-row FTS trigger and indexes the new names in one step at the end of the
   pass, before coverage is recorded — per-row, the writer rather than parsing
   bounds the pass. It suspends the name index the same way and rebuilds it at
-  the end; every other write appends the names and files new to the repo in
+  the end, and meanwhile fuzzy recall verifies the repo's committed names
+  directly. Every other write appends the names and files new to the repo in
   the transaction that writes them, and every pass ends by rebuilding an index
   that is missing, from another format, or holding a quarter more keys than its
-  last rebuild wrote. Fuzzy recall can't see a cold pass's rows until then,
-  which a warming search never needs: it accepts only exact/prefix matches,
-  served by the `name_lower` B-tree.
+  last rebuild wrote.
 - **Opportunistic + time-bounded** (`index_budgeted`) — the first query warms the
   index without blocking on a full walk: a small inline budget indexes the active
   (branch) files first and answers, then the deferred pass warms more per query

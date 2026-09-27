@@ -120,7 +120,8 @@ CREATE TABLE name_sigs (
 );
 
 -- a repo's index is read only while it's current: built under this format,
--- and maintained since. `built` is how many names the last rebuild wrote.
+-- and maintained since; -1 while a cold pass suspends it. `built` is how many
+-- names the last rebuild wrote.
 CREATE TABLE name_index (
   repository_id INTEGER PRIMARY KEY,
   format INTEGER NOT NULL,

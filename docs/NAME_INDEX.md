@@ -85,13 +85,21 @@ bytes. The scan reads a chunk's `keys` only when one of its signatures survives.
   then fetches nothing. It stays until the next rebuild.
 - **Rebuild** writes the repo's chunks from `SELECT DISTINCT name` and its file paths,
   and stamps `name_index`. It runs at the end of any index pass whose repo's index is
-  missing or stamped with another format, at the end of a cold pass (which suspends the
-  index and skips appends, as it skips per-row FTS), and as compaction once the keys
-  appended since the last rebuild pass a quarter of what it wrote (at least 1,000).
-- **Missing or stale means fall back.** Recall reads the index only when `name_index`
-  holds the current format for every repo searched; otherwise it runs the FTS nets. A
-  new repo starts with an empty, current index. The warm child rebuilds a missing one,
-  so an upgraded database gets one after its first hit.
+  missing or stamped with another format, at the end of a cold pass, and as compaction
+  once the keys appended since the last rebuild pass a quarter of what it wrote (at
+  least 1,000).
+- **A cold pass suspends the index.** It marks the repo's `name_index` suspended, drops
+  its chunks and skips appends, as it skips per-row FTS, then rebuilds at its end. The
+  rebuild writes every chunk into contiguous pages; appending between the pass's batches
+  scatters them among the symbols' pages, which costs every later scan (D25). Meanwhile
+  recall reads the suspended repo's distinct names and file paths from its rows and
+  signs and verifies each: complete over what's committed, 55–120 ms at rails and
+  discourse size, and only while the pass runs.
+- **Missing or stale means rebuild, then read.** Before recall reads the index it
+  rebuilds every repo searched whose `name_index` is missing or holds another format:
+  once per repo after an upgrade, 62 ms for rails and 103–110 for discourse. A new repo
+  starts with an empty, current index. The FTS nets run only if that rebuild fails (a
+  writer held the lock past the busy timeout).
 
 A flat file next to the database, mapped per query, measured faster (below), but it
 needs its own cross-process publish protocol, crash reconciliation with SQLite, and a

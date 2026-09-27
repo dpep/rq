@@ -18,8 +18,9 @@ and aren't listed; see `git log` for those.
   top 10 for 75.6% (69.2%), and is found at all for 86.4% (81.5%); the query
   phase's median drops from ~7 ms to ~2 ms (DECISIONS D23, D24). The index
   database gains two tables and grows by about a quarter; it migrates itself,
-  and each repo's index is built on its next index pass or search. Nothing to
-  do. `RQ_RECALL=fts` forces the old nets, for now.
+  and each repo's index is built by the first search or index pass that needs
+  it (a fraction of a second, once). Nothing to do. `RQ_RECALL=fts` forces the
+  old nets, for now.
 
 ### Changed
 - **Fuzzy matches rank by how well the name reads.** A definition's kind, size,

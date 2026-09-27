@@ -1037,14 +1037,15 @@ impl Store {
         }
 
         // The name index holds exactly the names and file stems the scorer
-        // accepts, so when it's current it replaces every net below.
+        // accepts, so it replaces every net below. The nets run only if it
+        // can't be brought current (a writer held the lock past the timeout).
         if let Some(probe) = names
-            && self.name_index_ready(repo)?
+            && let Ok(suspended) = self.ensure_name_index(repo)
         {
-            for (id, cand) in self.named_candidates(repo, probe, cap)? {
+            for (id, cand) in self.named_candidates(repo, &suspended, probe, cap)? {
                 found.entry(id).or_insert(cand);
             }
-            for (id, cand) in self.filed_candidates(repo, probe, cap)? {
+            for (id, cand) in self.filed_candidates(repo, &suspended, probe, cap)? {
                 found.entry(id).or_insert(cand);
             }
             return Ok(found.into_values().collect());
