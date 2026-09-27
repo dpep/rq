@@ -178,7 +178,7 @@ coverage (
   repository_id INTEGER NOT NULL REFERENCES repositories(id),
   scope TEXT NOT NULL DEFAULT 'full',   -- 'full' or a directory prefix
   files_seen INTEGER, files_indexed INTEGER,
-  status TEXT NOT NULL,                  -- never | warming | complete
+  status TEXT NOT NULL,                  -- warming | complete (no row: no pass has finished)
   last_indexed_at INTEGER,
   UNIQUE(repository_id, scope)
 );
@@ -449,9 +449,11 @@ algorithm.
 
 The index is **never assumed complete**.
 
-- `coverage.status` tells search its own confidence (`never | warming |
-  complete`). `warming` is indexing in progress — whether opportunistic or
-  seeded by a subtree `--index --path`.
+- `coverage.status` tells search its own confidence (`warming | complete`,
+  or no row until a pass finishes). `warming` is indexing in progress — whether
+  opportunistic or seeded by a subtree `--index --path`. `--status` reports a
+  repo with no row as `warming` too: only a pass registers a repo, so it's one
+  whose first pass is running (or was cut short).
 - A `warming` repo **blocks until answered** (see the indexing model), so
   incomplete coverage yields a delayed-but-correct answer rather than a
   confident-looking wrong one. An untracked (never-indexed, non-git) dir gets a

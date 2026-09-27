@@ -1389,6 +1389,26 @@ fn drop_removes_a_repos_index() {
 }
 
 #[test]
+fn status_reads_a_first_index_in_progress_as_warming() {
+    // A first pass commits files long before it writes coverage; until then
+    // the repo is partially indexed, not "never" indexed.
+    let (dir, db) = scratch("status-first-pass");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("DELETE FROM coverage", [])
+        .unwrap();
+
+    let (ok, out) = rq(&db, &dir, &["--status", "--ndjson"]);
+    assert!(ok, "status failed: {out}");
+    assert!(out.contains("\"status\":\"warming\""), "mid-pass: {out}");
+    assert!(out.contains("\"symbols\":1"), "keeps its totals: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn record_is_a_searchable_word_not_a_subcommand() {
     let (dir, db) = scratch("disambig");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

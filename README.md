@@ -226,6 +226,10 @@ rq perform --show                                    # 122 candidates: prints th
 ### Other commands
 
 `rq --status --json` emits coverage rows (`repo`, `status`, `files`, `symbols`).
+`status` is `complete`, or `warming` while the index is partial — a first index
+still running, or a pass cut short that the next query continues. `files` and
+`symbols` count what's indexed so far. A dropped repo is gone from `--status`
+until a query or `--index` starts rebuilding it, and then reads `warming`.
 `rq --index --json` emits this run's counts (`files_added`, `symbols_added`)
 plus the repo's totals. `rq --drop --json` reports what it removed (`repo`,
 `files`, `symbols`, `dropped`). Single-result commands emit one object.

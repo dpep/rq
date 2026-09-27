@@ -536,10 +536,13 @@ impl Store {
     }
 
     /// All known repositories with their coverage status and current totals.
+    /// Only an index pass registers a repository and every finished pass
+    /// writes coverage, so a repository without it is mid-way through (or was
+    /// cut short in) its first pass: partially indexed, i.e. `warming`.
     pub(crate) fn coverage_overview(&self) -> Result<Vec<CoverageRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.identity,
-                    COALESCE(c.status, 'never'),
+                    COALESCE(c.status, 'warming'),
                     (SELECT COUNT(*) FROM files fi WHERE fi.repository_id = r.id),
                     (SELECT COUNT(*) FROM symbols s WHERE s.repository_id = r.id)
              FROM repositories r
@@ -585,8 +588,8 @@ impl Store {
             .optional()
     }
 
-    /// Coverage status for a repository's full scope (`never`/`warming`/
-    /// `complete`), or `None` if the repository is unknown.
+    /// Coverage status for a repository's full scope (`warming`/`complete`),
+    /// or `None` if no index pass has finished for it.
     pub(crate) fn coverage_status(&self, identity: &str) -> Result<Option<String>> {
         self.conn
             .query_row(

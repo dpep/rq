@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **`--status` no longer says `never` for a repo that's being indexed.** A
+  first index (or the rebuild after `--drop`) read `never` until its pass
+  finished, however many files it had already indexed. It now reads `warming`,
+  like any partial index; `never` is no longer reported.
+
 ## 0.55.0 — 2026-09-27
 
 ### Added
