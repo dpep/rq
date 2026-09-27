@@ -52,8 +52,16 @@ SHORT FLAGS (easy to misread):\n  \
 The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms \
 automatically on the first search in a git repo. On a large, cold repo a search \
 keeps indexing until it can answer rather than reporting a premature \"no \
-matches\" (an interactive run shows progress and stops on Ctrl-C). Exit codes: 0 \
-= matched, 1 = no match, 2 = no match yet (index still warming — try again)."
+matches\" (an interactive run shows progress and stops on Ctrl-C).\n\n\
+EXIT CODES:\n  \
+0   matched\n  \
+1   no match\n  \
+2   no match yet: the index is still warming, or indexing was interrupted — ask again\n  \
+64  usage error: a bad flag, value or query — fix the command\n  \
+66  a file the command names doesn't exist\n  \
+69  no editor, browser or git remote to hand off to\n  \
+70  internal error (a bug)\n  \
+74  the index can't be opened, read or written"
 )]
 struct Cli {
     /// Search query. With --drop, the repo path/identity to drop.
@@ -1311,7 +1319,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     }
     let mut store = match open_store() {
         Ok(s) => s,
-        Err(_) => return ExitCode::FAILURE,
+        Err(_) => return ExitCode::from(Failure::Database.exit_code()),
     };
     let start = path
         .map(PathBuf::from)
@@ -3111,21 +3119,38 @@ impl Failure {
             Failure::Internal => "internal",
         }
     }
+
+    /// The process exit code, from sysexits(3) so no error shares a code with
+    /// a verdict (0 hit, 1 miss, 2 warming). Coarser than `kind`: one code per
+    /// thing the caller does about it.
+    fn exit_code(self) -> u8 {
+        match self {
+            Failure::Usage => 64,                      // EX_USAGE: fix the command
+            Failure::NotFound => 66,                   // EX_NOINPUT: fix the path
+            Failure::NoRemote | Failure::Launch => 69, // EX_UNAVAILABLE
+            Failure::Internal => 70,                   // EX_SOFTWARE: a bug
+            Failure::Database | Failure::Index => 74,  // EX_IOERR
+        }
+    }
 }
 
-/// Report an error and return exit 1. The message always goes to stderr; a
-/// structured caller also gets it as one JSON object on stdout.
+/// Report an error and return its exit code. The message always goes to
+/// stderr; a structured caller also gets it as one JSON object on stdout.
 fn fail(out: Output, kind: Failure, args: std::fmt::Arguments) -> ExitCode {
     let message = args.to_string();
     eprintln!("{message}");
-    emit_error(out, kind.as_str(), &message, 1);
-    ExitCode::FAILURE
+    emit_error(out, kind, &message);
+    ExitCode::from(kind.exit_code())
 }
 
 /// The structured half of an error: `{"error", "kind", "code"}` on stdout,
 /// nothing for text. `code` is the exit code the process leaves with.
-fn emit_error(out: Output, kind: &str, message: &str, code: u8) {
-    let obj = serde_json::json!({ "error": message, "kind": kind, "code": code });
+fn emit_error(out: Output, kind: Failure, message: &str) {
+    let obj = serde_json::json!({
+        "error": message,
+        "kind": kind.as_str(),
+        "code": kind.exit_code(),
+    });
     // Printed directly: `emit_json` reports its own failures through here.
     let rendered = match out {
         Output::Text => return,
@@ -3139,23 +3164,18 @@ fn emit_error(out: Output, kind: &str, message: &str, code: u8) {
 
 /// A command line clap rejected. It fails before rq knows its output mode, so
 /// the structured flags are read off argv directly: a caller that asked for
-/// JSON gets its usage error as JSON too.
+/// JSON gets its usage error as JSON too. Not `err.exit()`: clap exits 2,
+/// which rq reserves for warming.
 fn clap_failure(err: clap::Error) -> ExitCode {
-    let out = requested_output(std::env::args_os().skip(1));
     // help and --version aren't errors
-    if !err.use_stderr() || out == Output::Text {
+    if !err.use_stderr() {
         err.exit();
     }
     let _ = err.print();
-    let code = u8::try_from(err.exit_code()).unwrap_or(2);
+    let out = requested_output(std::env::args_os().skip(1));
     let text = err.to_string();
-    emit_error(
-        out,
-        Failure::Usage.as_str(),
-        text.lines().next().unwrap_or(""),
-        code,
-    );
-    ExitCode::from(code)
+    emit_error(out, Failure::Usage, text.lines().next().unwrap_or(""));
+    ExitCode::from(Failure::Usage.exit_code())
 }
 
 /// The output mode argv asks for, without a full parse: `--json`/`--ndjson`,

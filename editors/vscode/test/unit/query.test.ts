@@ -130,6 +130,18 @@ describe("parseResult", () => {
     assert.equal(parseResult(0, "not json").status, "error");
   });
 
+  it("reads exit 64 as a usage error, taking rq's JSON message", () => {
+    const stdout = '{"error": "rq: unknown --kind \\"x\\"", "kind": "usage", "code": 64}';
+    const res = parseResult(64, stdout, "rq: unknown --kind \"x\"\nUsage: rq ...\n");
+    assert.deepEqual(res, { status: "error", message: 'rq: unknown --kind "x"' });
+  });
+
+  it("reads an older rq's exit-2 JSON error as an error, not a warming index", () => {
+    const stdout = '{"error": "error: unexpected argument \'--anchor\' found", "kind": "usage", "code": 2}';
+    const res = parseResult(2, stdout, "");
+    assert.deepEqual(res, { status: "error", message: "error: unexpected argument '--anchor' found" });
+  });
+
   it("reads exit 2 with only stderr as a usage error, not a warming index", () => {
     const res = parseResult(2, "", "error: unexpected argument '--anchor' found\n");
     assert.deepEqual(res, { status: "error", message: "error: unexpected argument '--anchor' found" });

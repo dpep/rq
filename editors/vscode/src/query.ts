@@ -134,24 +134,43 @@ export type RqResult =
   | { status: "warming"; hits: Hit[] }
   | { status: "error"; message: string };
 
-/** Interpret one rq run from its exit code (0 hit, 1 miss, 2 warming) and `--json` stdout. */
+/**
+ * Interpret one rq run from its exit code (0 hit, 1 miss, 2 warming, anything
+ * else an error — 64 for usage) and `--json` stdout.
+ */
 export function parseResult(code: number, stdout: string, stderr = ""): RqResult {
   if (code === 1) return { status: "miss" };
   if (code !== 0 && code !== 2) {
-    return { status: "error", message: stderr.trim() || `rq exited with status ${code}` };
+    return { status: "error", message: jsonError(stdout) ?? (stderr.trim() || `rq exited with status ${code}`) };
   }
 
   let json: unknown;
   try {
     json = JSON.parse(stdout);
   } catch {
-    // exit 2 is also a usage error (e.g. a flag an older rq doesn't know), with nothing on stdout
+    // an rq older than 0.54 exits 2 for a usage error too (e.g. a flag it doesn't know)
     if (!stdout.trim() && stderr.trim()) return { status: "error", message: stderr.trim() };
     return { status: "error", message: `rq printed unparseable JSON: ${stdout.slice(0, 200)}` };
   }
+  const error = errorOf(json);
+  if (error !== undefined) return { status: "error", message: error };
   // A miss or a warming index is a `{"status": …}` object, not a result array.
   const hits = Array.isArray(json) ? json.filter(isHit) : [];
   return code === 2 ? { status: "warming", hits } : { status: "ok", hits };
+}
+
+/** The message of rq's `{"error": …}` object on stdout, if that's what it printed. */
+function jsonError(stdout: string): string | undefined {
+  try {
+    return errorOf(JSON.parse(stdout));
+  } catch {
+    return undefined;
+  }
+}
+
+function errorOf(json: unknown): string | undefined {
+  const e = (json as { error?: unknown } | null)?.error;
+  return typeof e === "string" ? e : undefined;
 }
 
 function isHit(x: unknown): x is Hit {

@@ -978,3 +978,47 @@ distance 1 it walked rails in 0.1–0.5 ms. But typos are already rq's best row 
 automaton) replaces a broad net rather than joining it. Or the corpus grows until FTS's
 postings, not the row decode, dominate recall (D3's reversal), and a sharded or
 per-repo fst beats per-repo FTS tables.
+
+## D22 — Errors exit with sysexits codes, apart from every verdict
+
+**Adopted**, 2026-09-27.
+
+Before this, clap's usage errors exited `2`, the code rq gives `warming`, and rq's own
+errors exited `1`, the code it gives a miss. A script branching on the number read a
+typo'd flag as "ask again" and retried it forever, and read an unopenable index as "this
+symbol does not exist" — the confident wrong answer the warming code exists to prevent.
+The README told callers to branch on `kind` instead, which only a JSON caller can do.
+
+Now each code means one thing:
+
+| Exit | Meaning | `kind` |
+|---|---|---|
+| 0 | matched | |
+| 1 | miss (`no_match`, `scope_not_found`) | |
+| 2 | no answer yet (`warming`, `interrupted`) — ask again | |
+| 64 `EX_USAGE` | the command line is wrong | `usage` |
+| 66 `EX_NOINPUT` | a file the command names doesn't exist | `not_found` |
+| 69 `EX_UNAVAILABLE` | no git host, editor or browser to hand off to | `no_remote`, `launch` |
+| 70 `EX_SOFTWARE` | rq couldn't render its own output | `internal` |
+| 74 `EX_IOERR` | the index can't be opened, read or written | `database`, `index` |
+
+*Why sysexits.* It is the only convention for error codes a reader might already know,
+and its range starts above anything a verdict will ever need. `64` was the user's call
+and nothing argued against it: it sits clear of the shell's reserved `126`–`128+n`.
+
+*Why a code per remedy, not per `kind`.* The number is for the caller that can't read
+JSON, and what that caller needs is what to do next. `database` and `index` are both "rq's
+storage failed; look at the disk or `RQ_DB`", and `no_remote` and `launch` are both "the
+thing rq hands off to isn't there". `kind` still tells them apart for a JSON caller.
+
+*Why not `2` for usage, as clap and most Unix tools do.* `2` already means ask again, and
+the whole value of that code is that a caller can retry on it blindly. A retryable code
+that is sometimes a typo is not retryable.
+
+`Failure::exit_code` is the one mapping, and the JSON `code` is read from it, so the
+object and the process can't disagree. The VS Code extension already treated anything
+but 0–2 as an error. It now also reads an older rq's exit-2 JSON error as an error, not
+as warming.
+
+*Reverses if:* a caller shows up that needs two errors under one code told apart without
+JSON — split that code, never reuse `1` or `2`.

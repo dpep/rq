@@ -7,6 +7,22 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **Breaking for scripts: errors have their own exit codes.** A usage error — an
+  unknown or conflicting flag, a bad value, an empty query — now exits `64`
+  instead of `2` (clap's) or `1` (rq's own), so it can no longer be mistaken for
+  "warming, ask again" or "no match". The other errors move too: a missing
+  `--symbols` file exits `66`, no git host/editor/browser to hand off to `69`, an
+  internal error `70`, and an index that can't be opened, read or written `74`.
+  `0` hit, `1` miss and `2` warming are unchanged. If a script treated `2` as
+  "retry" it now stops retrying typos; if it read `1` as "absent" it now sees an
+  index failure as the error it is. Check any script that branches on exit codes
+  other than `0`/`1`/`2`. The JSON error's `code` field carries the new number.
+  `rq --help` lists the table. Exit codes are public API, so the next release is a
+  minor one.
+
 ## 0.53.0 — 2026-09-26
 
 ### Added

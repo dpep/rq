@@ -171,17 +171,24 @@ query, an index that can't be opened, a `--symbols` file that doesn't exist —
 stdout carries one object instead of results:
 
 ```json
-{ "error": "rq: unknown --kind \"widget\" (class, module, method, function, struct, enum, trait, constant)", "kind": "usage", "code": 1 }
+{ "error": "rq: unknown --kind \"widget\" (class, module, method, function, struct, enum, trait, constant)", "kind": "usage", "code": 64 }
 ```
 
-`kind` is stable: `usage`, `database`, `not_found`, `index` or `internal`. `code`
-is the exit code: `1` for errors rq raises itself, `2` for a command line it
-couldn't parse (an unknown flag, conflicting flags), including flags that came
-before `--json`. The message also goes to stderr.
+`kind` is stable, and `code` is the exit code. The message also goes to stderr.
+Errors take codes from `sysexits(3)`, so none is ever mistaken for a miss or a
+retry:
 
-Exit `2` means both "warming" and "unparseable command line", so **branch on
-`status` or `kind`, not on the number.** A `usage` error won't succeed on retry;
-fix the command.
+| `kind` | Exit | Meaning |
+| --- | --- | --- |
+| `usage` | 64 | The command line is wrong: an unknown or conflicting flag, a bad value, an empty query — including flags before `--json`. Fix the command; it won't succeed on retry. |
+| `not_found` | 66 | A file the command names doesn't exist (`--symbols`). |
+| `no_remote`, `launch` | 69 | Nothing to hand off to: `-w` on a repo with no git host, or an editor or browser that won't start. |
+| `internal` | 70 | rq couldn't render its own output — a bug. |
+| `database`, `index` | 74 | The index can't be opened, read or written. |
+
+Every code means one thing, so a script can branch on the number: `1` is
+absent, `2` is ask again, and anything else is an error, which `kind` names.
+`rq --help` lists the same table.
 
 ### Batch mode
 

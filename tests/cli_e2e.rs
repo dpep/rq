@@ -2681,6 +2681,7 @@ fn a_structured_caller_gets_its_errors_as_json() {
         (&["Widget", "--wait", "soon", "--json"], &[], None, "usage"),
         (&["Widget", "-ej", "--wait", "soon"], &[], None, "usage"),
         (&["-w", "Widget", "-J"], &[], None, "usage"),
+        (&["--no-such-flag", "Widget"], &[], None, "usage"),
         (&["--json"], &[], Some("Widget\n"), "usage"),
         (
             &["Widget", "--json"],
@@ -2697,9 +2698,21 @@ fn a_structured_caller_gets_its_errors_as_json() {
         ),
         (&["--symbols", "gone.rb", "--json"], &[], None, "not_found"),
     ];
+    // sysexits(3): none shared with a hit (0), a miss (1) or warming (2)
+    let exit_code = |kind| match kind {
+        "usage" => 64,
+        "not_found" => 66,
+        "database" => 74,
+        other => panic!("no expected exit code for {other}"),
+    };
     for &(args, env, stdin, kind) in cases {
         let (code, out, err) = rq_full(&db, &dir, args, env, stdin);
-        assert_ne!(code, 0, "{args:?} fails");
+        assert_eq!(code, exit_code(kind), "{args:?}: exit code for {kind}");
+        // no structured flag: this case is about the text path's exit code
+        if !args.iter().any(|a| matches!(*a, "--json" | "-J" | "-ej")) {
+            assert!(out.is_empty(), "{args:?}: nothing on stdout: {out:?}");
+            continue;
+        }
         let obj: serde_json::Value = serde_json::from_str(out.trim())
             .unwrap_or_else(|e| panic!("{args:?}: one JSON object on stdout ({e}): {out:?}"));
         assert_eq!(obj["kind"], kind, "{args:?}: {obj}");
@@ -2731,6 +2744,20 @@ fn a_structured_caller_gets_its_errors_as_json() {
     // a value that merely contains `j` is not the flag
     let (_, out, _) = rq_full(&db, &dir, &["Widget", "-xj", "-k", "banana"], &[], None);
     assert!(out.is_empty(), "`-xj` is --lang j, not --json: {out:?}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn help_and_version_are_not_usage_errors() {
+    let (dir, db) = scratch("help-version");
+    for args in [["--help"], ["-h"], ["--version"], ["-V"]] {
+        let (code, out, _) = rq_full(&db, &dir, &args, &[], None);
+        assert_eq!(code, 0, "{args:?} succeeds");
+        assert!(!out.is_empty(), "{args:?} prints to stdout");
+    }
+    let (_, help, _) = rq_full(&db, &dir, &["--help"], &[], None);
+    assert!(help.contains("EXIT CODES"), "--help lists them: {help}");
 
     let _ = fs::remove_dir_all(&dir);
 }
