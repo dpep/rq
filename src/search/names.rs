@@ -509,6 +509,123 @@ mod tests {
         );
     }
 
+    /// Random names built from words that stress the normal form (non-ASCII
+    /// case mappings, a ligature, the Kelvin sign, separators, the 128-byte
+    /// signature edge), each against queries derived from it and a fixed-size
+    /// sample of the rest. `make fuzz` runs it large, in release, with a
+    /// fresh seed: `RQ_FUZZ_NAMES`, `RQ_FUZZ_SEED`.
+    #[test]
+    fn the_index_takes_exactly_what_score_accepts_on_random_names() {
+        const WORDS: &[&str] = &[
+            "get",
+            "set",
+            "http",
+            "Parser",
+            "URL",
+            "id",
+            "x",
+            "widget",
+            "café",
+            "straße",
+            "İd",
+            "Ω",
+            "日本",
+            "v2",
+            "a1b",
+            "K\u{212A}",
+            "ﬁle",
+            "ΣΑΣ",
+            "qq",
+            "zz",
+            "ab",
+            "Io",
+            "ioS",
+            "HTML5",
+            "to",
+            "do",
+        ];
+        const SEPS: &[&str] = &["", "", "", "_", "-", ".", "?", "!", "="];
+        let env = |key, default| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        };
+        let count = env("RQ_FUZZ_NAMES", 300) as usize;
+        let mut seed = env("RQ_FUZZ_SEED", 0x1234_5678_9ABC_DEF1);
+        let pick = |n: usize, seed: &mut u64| (xorshift(seed) as usize) % n;
+
+        let mut names = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut name = String::new();
+            if pick(10, &mut seed) == 0 {
+                name.push(['_', '@', '$'][pick(3, &mut seed)]);
+            }
+            for w in 0..1 + pick(6, &mut seed) {
+                if w > 0 {
+                    name.push_str(SEPS[pick(SEPS.len(), &mut seed)]);
+                }
+                let word = WORDS[pick(WORDS.len(), &mut seed)];
+                match pick(4, &mut seed) {
+                    0 => name.push_str(&word.to_uppercase()),
+                    1 => {
+                        let mut chars = word.chars();
+                        name.extend(chars.next().into_iter().flat_map(char::to_uppercase));
+                        name.push_str(chars.as_str());
+                    }
+                    _ => name.push_str(word),
+                }
+            }
+            if pick(8, &mut seed) == 0 {
+                let target = 124 + pick(9, &mut seed);
+                while name.len() < target {
+                    name.push_str(["a", "B", "_c", "9"][pick(4, &mut seed)]);
+                }
+            }
+            names.push((name.clone(), Signature::of(&name)));
+        }
+
+        let step = (count / 16).max(1);
+        let mut bad = Vec::new();
+        for (i, (name, sig)) in names.iter().enumerate() {
+            let mut sample: Vec<(String, Signature)> =
+                names.iter().skip(i % step).step_by(step).cloned().collect();
+            sample.push((name.clone(), *sig));
+            let chars: Vec<char> = name.chars().collect();
+            let mut queries = derived(name, &mut seed);
+            for _ in 0..3 {
+                let mut at: Vec<usize> = (0..2 + pick(7, &mut seed))
+                    .map(|_| pick(chars.len(), &mut seed))
+                    .collect();
+                at.sort();
+                at.dedup();
+                queries.push(at.iter().map(|&j| chars[j]).collect());
+            }
+            if chars.len() >= 4 {
+                let mut typo = chars.clone();
+                for _ in 0..2 {
+                    typo[1 + pick(chars.len() - 1, &mut seed)] = 'q';
+                }
+                queries.push(typo.iter().collect());
+                let mut extra = chars.clone();
+                extra.insert(1 + pick(chars.len() - 1, &mut seed), 'z');
+                queries.push(extra.iter().collect());
+            }
+            for q in queries.iter().filter(|q| !q.contains('#')) {
+                let leaf = score::parse_qualified(q).0;
+                if !leaf.is_empty() {
+                    bad.extend(disagreements(leaf, &sample));
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "{} disagreements:\n{}",
+            bad.len(),
+            bad[..bad.len().min(20)].join("\n")
+        );
+    }
+
     /// The same check over a real index, every harness query against every
     /// name in its repo: `RQ_NAME_INDEX_DB=<db with rails and discourse>`,
     /// indexed at the recall pins (docs/RECALL.md). Minutes in a debug build.

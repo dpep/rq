@@ -10,6 +10,7 @@
 #   make dogfood    - run rq on its own source (Q=<query>); reproducible
 #   make bench      - search-latency benchmark over REPO (default: .)
 #   make recall     - fuzzy-ranking recall on pinned rails + discourse (BASE=<ref>)
+#   make fuzz       - name index vs scorer on many random names (N=, SEED=)
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
 #   make fmt        - cargo fmt
 #   make clean      - cargo clean
@@ -22,7 +23,7 @@ CARGO ?= cargo
 BIN   := rq
 
 .DEFAULT_GOAL := help
-.PHONY: help build release install uninstall test check dogfood bench recall lint fmt clean
+.PHONY: help build release install uninstall test check dogfood bench recall fuzz lint fmt clean
 
 help:
 	@echo "rq targets:"
@@ -35,6 +36,7 @@ help:
 	@echo "  make dogfood    run rq on real source (Q=<query>, REPO=<path>, ARGS=<flags>)"
 	@echo "  make bench      search-latency benchmark (REPO=. by default)"
 	@echo "  make recall     fuzzy-ranking recall on pinned corpora (BASE=<ref>, ARGS=<flags>)"
+	@echo "  make fuzz       name index vs scorer on random names (N=<names>, SEED=<n>)"
 	@echo "  make lint       cargo fmt --check && cargo clippy"
 	@echo "  make fmt        cargo fmt"
 	@echo "  make clean      cargo clean"
@@ -100,6 +102,16 @@ bench:
 BASE ?=
 recall: release
 	@CARGO="$(CARGO)" script/recall.py $(if $(BASE),--base $(BASE)) $(ARGS)
+
+# The random-names property test, large and in release. `cargo test` runs it
+# small with a fixed seed; this picks a fresh seed unless SEED is given, and
+# prints it so a failure can be replayed.
+N    ?= 20000
+SEED ?= $(shell od -An -N6 -tu8 /dev/urandom | tr -d ' ')
+fuzz:
+	@echo "fuzz: $(N) names, SEED=$(SEED)"
+	@RQ_FUZZ_NAMES=$(N) RQ_FUZZ_SEED=$(SEED) $(CARGO) test --release --lib \
+		the_index_takes_exactly_what_score_accepts_on_random_names
 
 lint:
 	$(CARGO) fmt --check
