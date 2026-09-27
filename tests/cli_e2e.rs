@@ -1669,6 +1669,27 @@ fn one_name_declared_in_several_files_is_one_result() {
 }
 
 #[test]
+fn a_non_ascii_name_is_an_exact_match_however_it_is_cased() {
+    // the index folds names with Unicode lowercasing; the query must fold the
+    // same way, or `über` misses `Über` (and `ÜBER` misses both)
+    let (dir, db) = scratch("unicode");
+    fs::write(dir.join("a.py"), "class Über:\n    pass\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    for query in ["Über", "über", "ÜBER", "übe"] {
+        let (ok, out) = rq(&db, &dir, &[query, "--ndjson"]);
+        assert!(ok, "{query}: {out}");
+        let row: serde_json::Value = serde_json::from_str(first_line(&out)).expect("ndjson");
+        assert_eq!(row["name"], "Über", "{query}: {out}");
+        let features = row["features"].to_string();
+        assert!(
+            features.contains("\"exact\"") || features.contains("\"prefix\""),
+            "{query} is a literal match: {out}"
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_typo_still_finds_the_definition() {
     let (dir, db) = scratch("typo");
     fs::write(

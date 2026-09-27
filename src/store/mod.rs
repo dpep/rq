@@ -922,7 +922,8 @@ impl Store {
         filter: Option<CandidateFilter>,
     ) -> Result<Vec<SymbolRow>> {
         use rusqlite::types::Value;
-        let q = query.to_ascii_lowercase();
+        // folded as `name_lower` is at index time, or a non-ASCII name misses
+        let q = query.to_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
         let window = Value::Integer((limit * if filter.is_some() { NET_WINDOW } else { 1 }) as i64);
         let limit = Value::Integer(limit as i64);

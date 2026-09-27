@@ -1038,12 +1038,13 @@ fn common_subsequence(a: &str, b: &str) -> String {
 /// Lowercase without allocating when there's nothing to change. Called once
 /// per candidate for the name and — wastefully, since it's constant — once per
 /// candidate for the query; most queries and most snake_case names are already
-/// lowercase, so the copy was of something identical.
+/// lowercase, so the copy was of something identical. Unicode folding, as
+/// the store's `name_lower` is written.
 fn lower(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.bytes().any(|b| b.is_ascii_uppercase()) {
-        std::borrow::Cow::Owned(s.to_ascii_lowercase())
-    } else {
+    if s.is_ascii() && !s.bytes().any(|b| b.is_ascii_uppercase()) {
         std::borrow::Cow::Borrowed(s)
+    } else {
+        std::borrow::Cow::Owned(s.to_lowercase())
     }
 }
 

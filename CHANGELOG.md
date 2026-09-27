@@ -61,6 +61,10 @@ and aren't listed; see `git log` for those.
   folders with no source files it could overrun: a search from `/tmp` took over
   a second. It now stops on time, and `--profile` reports the scan as its own
   line.
+- **Names with non-ASCII letters match in any case.** Queries were lowercased
+  for ASCII letters only, while the index lowercases all letters, so `über`
+  found nothing for a class `Über`. Queries now fold case the same way the
+  index does.
 
 ### Changed
 - **Errors under `--json`/`--ndjson` are JSON.** A failed structured run used to
