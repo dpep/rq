@@ -24,6 +24,10 @@ and aren't listed; see `git log` for those.
   suspended, so fuzzy `--all-repos` searches from outside the repo read its
   rows directly (about 250 ms on a large repo, against ~2) until a pass inside
   it finished. A search now rebuilds an index whose pass is gone.
+- **Fuzzy matching folds non-ASCII case.** A query was lowercased in full but
+  a name's letters only in ASCII, so `ΣΑΣprs` and `σασprs` couldn't find
+  `ΣΑΣParser`. Letters whose lowercase is ASCII (`İ`,
+  the Kelvin sign) still match only as typed.
 - **A background warm no longer indexes hidden files.** `rq --index` skips
   dot-files and dot-directories (`.devcontainer/`, `.prettierrc.cjs`), but a
   warm, which lists files with `git ls-files`, indexed the tracked ones, so what

@@ -58,6 +58,11 @@ The alignment check is `score::aligns`, a bit-parallel reachability over the sam
 transitions (u128 masks, a Kogge-Stone fill for "the next word's start"); a name longer
 than 128 bytes or not ASCII goes through `align` itself.
 
+The scorer folds a name's letters one at a time (`score::fold`) to meet a query lowercased
+whole, so `σασprs` finds `ΣΑΣParser`. A letter whose lowercase is ASCII (`İ`, the Kelvin
+sign) keeps its case: `pair_code` codes it as non-ASCII, and folding it to `i` or `k` would
+let the scorer accept a name the screen had dropped.
+
 The result is the exact set of names `score` accepts on the name alone. A property test
 (`search::names::tests`) checks it against rq's real `score` over the harness's queries and
 names, plus derived and edge-case ones, and an ignored test runs every harness query

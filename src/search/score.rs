@@ -504,7 +504,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     let q: Vec<char> = query
         .chars()
         .filter(|c| c.is_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
+        .map(fold)
         .collect();
     if q.is_empty() {
         return None;
@@ -513,7 +513,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     // reject them with one linear scan before any of the DP allocations below
     let mut qi = 0;
     for c in name.chars() {
-        if qi < q.len() && c.to_ascii_lowercase() == q[qi] {
+        if qi < q.len() && fold(c) == q[qi] {
             qi += 1;
         }
     }
@@ -522,7 +522,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     }
     let chars: Vec<char> = name.chars().collect();
     let n = chars.len();
-    let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
+    let lower: Vec<char> = chars.iter().copied().map(fold).collect();
     let boundary = boundaries(&chars);
     // prefix count of word boundaries, so we can ask "is a whole word skipped
     // between j and i?" in O(1) — the "only span adjacent words" rule
@@ -918,7 +918,7 @@ fn compile_glob(query: &str) -> Vec<Glob> {
         .filter_map(|c| match c {
             '*' => Some(Glob::Star),
             '?' => Some(Glob::Any),
-            c if c.is_alphanumeric() => Some(Glob::Lit(c.to_ascii_lowercase())),
+            c if c.is_alphanumeric() => Some(Glob::Lit(fold(c))),
             _ => None,
         })
         .collect()
@@ -934,7 +934,7 @@ fn glob_positions(query: &str, name: &str) -> Option<Vec<usize>> {
     toks.extend(compile_glob(query));
     toks.push(Glob::Star);
 
-    let lower: Vec<char> = name.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let lower: Vec<char> = name.chars().map(fold).collect();
     let mut ti = 0;
     let mut ni = 0;
     let mut positions: Vec<usize> = Vec::new();
@@ -1058,9 +1058,8 @@ pub(crate) fn near_miss_possible(query: &str, name: &str) -> bool {
     if qlen < 4 || qlen.abs_diff(nlen) > MAX_NEAR_MISS {
         return false;
     }
-    let low = |c: char| c.to_ascii_lowercase();
-    let mut qc = leaf.chars().map(low);
-    let mut nc = name.chars().map(low);
+    let mut qc = leaf.chars().map(fold);
+    let mut nc = name.chars().map(fold);
     match (qc.next(), qc.next(), nc.next(), nc.next()) {
         (Some(q0), Some(q1), Some(n0), Some(n1)) => q0 == n0 || (q0 == n1 && q1 == n0),
         _ => false,
@@ -1133,12 +1132,12 @@ fn near_miss_score(query: &str, name: &str, edits: usize) -> f64 {
     aligned * kept - (tail as f64).min(100.0)
 }
 
-/// The longest common subsequence of `a` and `b`, compared ASCII-case-blind and
+/// The longest common subsequence of `a` and `b`, compared case-blind and
 /// spelled as in `a`. Near misses are short, so the quadratic table is small.
 fn common_subsequence(a: &str, b: &str) -> String {
     let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().map(|c| c.to_ascii_lowercase()).collect();
-    let eq = |i: usize, j: usize| a[i].to_ascii_lowercase() == b[j];
+    let b: Vec<char> = b.chars().map(fold).collect();
+    let eq = |i: usize, j: usize| fold(a[i]) == b[j];
     // len[i][j] = LCS length of a[i..] and b[j..]
     let mut len = vec![vec![0usize; b.len() + 1]; a.len() + 1];
     for i in (0..a.len()).rev() {
@@ -1162,6 +1161,22 @@ fn common_subsequence(a: &str, b: &str) -> String {
         }
     }
     out
+}
+
+/// One character lowercased for matching, so `ΣΑΣ` in a name meets the `σασ`
+/// a query is folded to. A letter whose lowercase is ASCII (`İ`, the Kelvin
+/// sign) keeps its case: the name index codes it as non-ASCII ([`pair_code`]),
+/// and the scorer must accept exactly what the index does (D23).
+pub(super) fn fold(c: char) -> char {
+    if c.is_ascii() {
+        return c.to_ascii_lowercase();
+    }
+    match c.to_lowercase().next() {
+        // a string lowercases a word-final `Σ` to `ς`, a lone char to `σ`
+        Some('ς') => 'σ',
+        Some(l) if !l.is_ascii() => l,
+        _ => c,
+    }
 }
 
 /// Lowercase without allocating when there's nothing to change. Called once
@@ -1566,6 +1581,16 @@ mod tests {
     }
 
     #[test]
+    fn non_ascii_letters_match_across_case() {
+        assert_eq!(match_positions("ΣΑΣprs", "ΣΑΣParser"), [0, 1, 2, 3, 5, 6]);
+        assert_eq!(match_positions("σασprs", "ΣΑΣParser"), [0, 1, 2, 3, 5, 6]);
+        assert_eq!(match_positions(&lower("ΣΑΣ"), "ΣΑΣParser"), [0, 1, 2]);
+        assert_eq!(match_positions("grösse", "GRÖSSE"), [0, 1, 2, 3, 4, 5]);
+        // lowercases to ASCII, which the name index can't see: left alone
+        assert!(match_positions("istrtr", "İstanbulRouter").is_empty());
+    }
+
+    #[test]
     fn match_positions_report_what_matched() {
         assert_eq!(match_positions("foo", "FooThing"), vec![0, 1, 2]);
         assert_eq!(match_positions("ft", "FooThing"), vec![0, 3]); // F, T
@@ -1699,7 +1724,7 @@ mod tests {
             let mut qi = 0;
             for &p in &pos {
                 assert!(p < nchars.len(), "in bounds: {q}/{name}");
-                while qi < qchars.len() && !qchars[qi].eq_ignore_ascii_case(&nchars[p]) {
+                while qi < qchars.len() && fold(qchars[qi]) != fold(nchars[p]) {
                     qi += 1;
                 }
                 assert!(
