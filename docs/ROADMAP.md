@@ -58,6 +58,18 @@ detached child) before exiting. See "No daemon — amortized post-interaction wo
 Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
 
 - [ ] streamed result tail (results arrive incrementally)
+- [ ] content-addressed index shared across worktrees — clones and worktrees
+      share one repository identity, but `files` is keyed by
+      `(repository_id, path)`, so the last checkout to index a path wins: an
+      edit indexed in worktree A shows in worktree B's results until B's
+      revalidation or warm rewrites it. Adopt trekr's model instead: symbols
+      keyed by content hash (a pure function of the bytes), plus a per-checkout
+      `path → content` map, so N worktrees cost one index, each sees its own
+      local changes, and a branch switch parses only new content. A schema
+      change on the hot path (search joins through the checkout's map) —
+      measure the join cost and the migration of existing indexes first, and
+      record it as a decision. trekr's `docs/ARCHITECTURE.md` ("A blob's facts
+      are a pure function of its bytes") is the reference design
 - [x] detached background warming — after results print, a search re-execs a
       detached `rq --warm` child (null stdio, own process group, niced +
       throttled I/O) that sweeps until coverage completes on a seconds-scale
