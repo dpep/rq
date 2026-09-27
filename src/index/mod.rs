@@ -412,6 +412,11 @@ fn stream_walk(
             });
         }
         drop(res_tx); // the workers hold the live clones
+        // Owned here so a failing sink drops both ends as it returns: a worker
+        // or walk parked in `send` on a full channel then errors out instead of
+        // holding the scope join forever.
+        drop(path_rx);
+        let res_rx = res_rx;
 
         // consumer (this thread): hand each parsed file to the sink as it arrives
         while let Ok(fs) = res_rx.recv() {

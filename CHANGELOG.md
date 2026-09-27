@@ -44,6 +44,13 @@ and aren't listed; see `git log` for those.
 - **A leading `_` in a fuzzy query favours the underscored name.** `_dshrz`
   ranks `_dasherize` above the public `dasherize`.
 
+### Fixed
+- **An index pass whose write fails now exits instead of hanging.** A failed
+  batch write (a busy database, say) left the walk and parse threads blocked
+  forever at 0% CPU on repos with a couple of thousand source files or more —
+  `rq --index`, a cold search, and the background warm alike. Stuck
+  `rq --warm` processes from earlier versions are safe to kill.
+
 ## 0.54.1 — 2026-09-27
 
 ### Fixed

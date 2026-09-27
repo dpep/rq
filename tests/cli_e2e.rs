@@ -3016,7 +3016,6 @@ fn a_live_scan_answer_says_so() {
 }
 
 #[test]
-#[ignore = "known hang: stream_walk deadlocks when the index sink errors mid-pass (nowait-hang)"]
 fn an_index_pass_whose_writes_fail_exits_instead_of_hanging() {
     // A failed batch write stops the consumer, but the parse workers and the
     // walk keep sending into bounded channels nobody drains: past one channel's
