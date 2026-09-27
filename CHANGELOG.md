@@ -47,6 +47,12 @@ and aren't listed; see `git log` for those.
   start clean, run `rq --drop` in the repo and then `rq --index`, both with the
   current rq.
 
+### Corrected
+- **0.55.0's `tets_br` example overstated it.** The typo reading is offered
+  beside the in-order names, but `test_br` ranks second for `tets_br`, below
+  `test_sub_regions`, which holds the query's letters in order. 0.54.1 ranked
+  it first, so for this query 0.55.0 is a step back, not a recovery.
+
 ### Documented
 - **Exit codes of the non-search commands.** `--status`, `--index` and `--drop`
   exit 0 whenever they ran, even with nothing to show or drop; `--usage` exits 1
