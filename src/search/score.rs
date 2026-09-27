@@ -611,6 +611,115 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     })
 }
 
+/// Bump when [`transition_pairs`] or the name index's record layout changes.
+const PAIRS_VERSION: u32 = 1;
+
+/// Stamped on every repo's name index: [`transition_pairs`]' version and the
+/// constant of [`align`] it encodes. An index written under another value is
+/// rebuilt rather than read. A change to which transitions `align` accepts has
+/// to change `transition_pairs` too (the name index's property test fails until
+/// it does), and with it this.
+pub(crate) const NAME_INDEX_FORMAT: u32 = PAIRS_VERSION * 100 + MAX_NONBOUNDARY_GAP as u32;
+
+/// Letters and digits get a code of their own, any other alphanumeric shares
+/// one; everything else is never matched by a query letter.
+pub(super) const PAIR_CODES: usize = 37;
+
+pub(super) fn pair_code(c: char) -> Option<u8> {
+    match c.to_ascii_lowercase() {
+        c @ 'a'..='z' => Some(c as u8 - b'a'),
+        c @ '0'..='9' => Some(26 + c as u8 - b'0'),
+        c if c.is_alphanumeric() => Some(36),
+        _ => None,
+    }
+}
+
+/// Every pair of codes `(a, b)` a query could step across in `name`, as
+/// `a * PAIR_CODES + b`. [`align`] never skips a word and bounds a mid-word gap,
+/// so each consecutive pair of query letters lands on one of these: a later
+/// letter in the same word within the gap, or any letter of a word and the
+/// start of the next. Alphanumerics adjacent across separators are added too,
+/// which is how an exact, prefix, separator-free or glob match steps. The name
+/// index keeps these per name, so a query missing any is rejected unread.
+pub(super) fn transition_pairs(chars: &[char], boundary: &[bool], out: &mut Vec<u16>) {
+    let pair = |a: u8, b: u8| u16::from(a) * PAIR_CODES as u16 + u16::from(b);
+    let codes: Vec<Option<u8>> = chars.iter().map(|&c| pair_code(c)).collect();
+    let (mut word, mut prev_word) = (0, None);
+    let mut last_alnum: Option<u8> = None;
+    for i in 0..chars.len() {
+        if boundary[i] {
+            prev_word = (i > 0).then_some(word);
+            word = i;
+        }
+        let Some(b) = codes[i] else { continue };
+        let from = match (boundary[i], prev_word) {
+            (true, Some(start)) => start,
+            (true, None) => i,
+            (false, _) => i.saturating_sub(MAX_NONBOUNDARY_GAP + 1).max(word),
+        };
+        out.extend(codes[from..i].iter().flatten().map(|&a| pair(a, b)));
+        out.extend(last_alnum.map(|a| pair(a, b)));
+        last_alnum = Some(b);
+    }
+}
+
+/// Is there any alignment of `query` in `name` — the same answer as
+/// `align(..).is_some()`, without scoring it? Bit-parallel over the name's
+/// positions: `query` is its ASCII letters and digits lowercased, `name` the
+/// lowercased ASCII name (at most 128 bytes) and `boundary` its word starts.
+pub(super) fn aligns(query: &[u8], name: &[u8], boundary: u128) -> bool {
+    let n = name.len();
+    if n == 0 || n > 128 || query.is_empty() || query.len() > n {
+        return false;
+    }
+    // where each of the query's letters sits in the name, in one pass over it
+    let mut slot = [u8::MAX; 128];
+    let mut masks = [0u128; PAIR_CODES];
+    let mut distinct = 0;
+    for &c in query {
+        match slot.get_mut(usize::from(c)) {
+            Some(s) if *s == u8::MAX && distinct < PAIR_CODES => {
+                *s = distinct as u8;
+                distinct += 1;
+            }
+            Some(_) => {}
+            None => return false, // not ASCII: `align` never matches it here
+        }
+    }
+    for (i, &c) in name.iter().enumerate() {
+        if let Some(&k) = slot.get(usize::from(c))
+            && k != u8::MAX
+        {
+            masks[usize::from(k)] |= 1 << i;
+        }
+    }
+    let at = |c: u8| {
+        let k = slot.get(usize::from(c)).copied().unwrap_or(u8::MAX);
+        masks.get(usize::from(k)).copied().unwrap_or(0)
+    };
+    let live = if n == 128 { !0 } else { (1u128 << n) - 1 };
+    let inner = !boundary & live;
+    let b = boundary;
+    let mut s = at(query[0]);
+    for &c in &query[1..] {
+        if s == 0 {
+            return false;
+        }
+        let m = at(c);
+        // mid-word: one to three positions on, with no word start in between
+        let near = (s << 1) | ((s << 2) & !(b << 1)) | ((s << 3) & !(b << 1) & !(b << 2));
+        // a word start: any position the current word reaches, plus one —
+        // `s` smeared forward through the positions that aren't word starts
+        let (mut g, mut p) = (s, inner);
+        for k in [1, 2, 4, 8, 16, 32, 64] {
+            g |= p & (g << k);
+            p &= p << k;
+        }
+        s = (near & inner & m) | ((g << 1) & b & m);
+    }
+    s != 0
+}
+
 /// The char indices in `name` that `query` matched, from the best alignment —
 /// for highlighting *what* matched. Empty if `query` isn't a subsequence.
 pub(crate) fn match_positions(query: &str, name: &str) -> Vec<usize> {
@@ -715,7 +824,7 @@ fn contiguous_highlight(positions: Vec<usize>, name: &str) -> Vec<usize> {
 }
 
 /// The kinds a path match alone can surface: a file's primary definitions.
-const PRIMARY_KINDS: [&str; 5] = ["class", "module", "struct", "enum", "trait"];
+pub(crate) const PRIMARY_KINDS: [&str; 5] = ["class", "module", "struct", "enum", "trait"];
 
 fn is_primary_kind(kind: &str) -> bool {
     PRIMARY_KINDS.contains(&kind)
@@ -749,7 +858,7 @@ fn in_order(query: &str, s: &str) -> bool {
 /// scored `ValidationError` exactly as well as `Validations`. Capped, and gentle
 /// enough that an abbreviation still reaches a long name it barely covers
 /// (`apc` → `ApplicationController`).
-fn fuzzy_value(q: &str, name: &str) -> Option<f64> {
+pub(super) fn fuzzy_value(q: &str, name: &str) -> Option<f64> {
     let s = subsequence_score(q, name)?;
     let tail = name.chars().count().saturating_sub(q.chars().count());
     Some(s.min(600.0) - (tail as f64).min(100.0))
@@ -757,7 +866,7 @@ fn fuzzy_value(q: &str, name: &str) -> Option<f64> {
 
 /// Score `query` as a subsequence of `name` (the best alignment's score), or
 /// `None` if it isn't a subsequence.
-fn subsequence_score(query: &str, name: &str) -> Option<f64> {
+pub(super) fn subsequence_score(query: &str, name: &str) -> Option<f64> {
     align(query, name).map(|a| a.score)
 }
 
@@ -864,7 +973,7 @@ fn glob_positions(query: &str, name: &str) -> Option<Vec<usize>> {
 /// contiguity / start signals as the fuzzy scorer, but no gap penalty: the gaps
 /// are the `*`/`?` the user placed deliberately. `None` when it doesn't match,
 /// or when nothing literal matched (an all-wildcard query like `*`).
-fn wildcard_score(query: &str, name: &str) -> Option<f64> {
+pub(super) fn wildcard_score(query: &str, name: &str) -> Option<f64> {
     let positions = glob_positions(query, name)?;
     if positions.is_empty() {
         return None;
@@ -900,7 +1009,7 @@ pub(crate) fn path_stem(path: &str) -> &str {
 
 /// Mark word-boundary positions: index 0, anything after `_`/non-alphanumeric,
 /// and camelCase humps (lower→Upper, and the last cap of an ACRONYMWord run).
-fn boundaries(chars: &[char]) -> Vec<bool> {
+pub(super) fn boundaries(chars: &[char]) -> Vec<bool> {
     let mut out = vec![false; chars.len()];
     for i in 0..chars.len() {
         let c = chars[i];
@@ -946,7 +1055,7 @@ pub(crate) fn near_miss_possible(query: &str, name: &str) -> bool {
     }
 }
 
-fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
+pub(super) fn near_miss_distance(q: &str, name: &str) -> Option<usize> {
     // Every gate here reads the strings directly. Collecting into `Vec<char>`
     // first cost two allocations per candidate across thousands of them, which
     // swamped the comparisons meant to avoid the work — a gate below an
@@ -1048,7 +1157,7 @@ fn common_subsequence(a: &str, b: &str) -> String {
 /// candidate for the query; most queries and most snake_case names are already
 /// lowercase, so the copy was of something identical. Unicode folding, as
 /// the store's `name_lower` is written.
-fn lower(s: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn lower(s: &str) -> std::borrow::Cow<'_, str> {
     if s.is_ascii() && !s.bytes().any(|b| b.is_ascii_uppercase()) {
         std::borrow::Cow::Borrowed(s)
     } else {
@@ -1060,7 +1169,7 @@ fn lower(s: &str) -> std::borrow::Cow<'_, str> {
 /// `.` are all word joiners across the languages rq indexes, and a query that
 /// omits them is spelling the same name. Any other character is part of the
 /// name: `save!` and `name=` are different methods from `save` and `name`.
-fn joiners_eq(a: &str, b: &str) -> bool {
+pub(super) fn joiners_eq(a: &str, b: &str) -> bool {
     // Compared in lockstep rather than by building two squashed Strings: this
     // runs against every candidate, and on a query that recalls thousands the
     // allocations cost more than everything else in scoring put together.

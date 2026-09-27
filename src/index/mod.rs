@@ -530,6 +530,8 @@ fn run_index(
     let bulk_fts = stored.is_empty();
     if bulk_fts {
         store.defer_fts_insert()?;
+        // likewise the name index: rebuilt from every name at the end
+        store.suspend_name_index(repo_id)?;
     } else if store.fts_trigger_missing().unwrap_or(false) {
         // A cold bulk index elsewhere dropped the trigger — either it crashed
         // before its sync, or it's still running. Heal before writing more
@@ -695,6 +697,11 @@ fn run_index(
         let _span = crate::profile::span("index: fts sync");
         store.sync_fts()?;
         drop(t);
+    }
+    {
+        let mut span = crate::profile::span("index: name index");
+        let rebuilt = store.maintain_name_index(repo_id)?;
+        span.note(|| if rebuilt { "rebuilt" } else { "current" }.to_string());
     }
     files_indexed += walk_files;
     symbols += walk_symbols;

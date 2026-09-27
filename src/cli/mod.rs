@@ -1377,6 +1377,10 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         let edits = worktree_edits(&root, head.as_deref());
         if !changed_since_index(&store, Some(&identity), Some(&root), edits) {
             crate::trace!("warm: unchanged since indexed, nothing to do");
+            // but a database from before the name index has none yet
+            if let Some(id) = store.repository_id(&identity).ok().flatten() {
+                let _ = store.maintain_name_index(id);
+            }
             if let Some(stamp) = head
                 .as_deref()
                 .and_then(|h| crate::index::git_state_stamp(&root, h))

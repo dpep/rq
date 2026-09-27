@@ -2,11 +2,15 @@
 
 Fuzzy recall used to be three broad nets (first letter, any shared trigram, a file-path
 `LIKE`) filtered by the scorer's necessary condition and cut at a cap (D12). The name index
-replaces the first two. For each repo it keeps one fixed-size **signature** per distinct
-symbol name. A query screens every signature with a few AND instructions, verifies the
-survivors exactly, and fetches rows only for the names the scorer will accept. The decision
-and its numbers are D23 in [DECISIONS.md](DECISIONS.md); this is how it works, and the
-design spike it came from.
+replaces all three. For each repo it keeps one fixed-size **signature** per distinct symbol
+name and per file. A query screens every signature with a few AND instructions, verifies
+the survivors exactly, and fetches rows only for the names and files the scorer will
+accept. The decision and its numbers are D23 in [DECISIONS.md](DECISIONS.md); this is how it
+works, and the design spike it came from.
+
+It is read only with `RQ_RECALL=scan`, for now: complete recall finds 105 more sources on
+the harness but exposes ranking weaknesses the capped nets hid (D23). The index is built
+and maintained either way.
 
 ## Why an index is possible
 
@@ -62,42 +66,56 @@ against every name in rails and discourse.
 ## Storage: chunks in SQLite
 
 ```sql
-name_sigs (repository_id, chunk, n, sigs BLOB, keys BLOB)   -- PRIMARY KEY (repository_id, chunk)
+name_sigs (repository_id, kind, chunk, n, sigs BLOB, keys BLOB)  -- PRIMARY KEY (repository_id, kind, chunk)
 name_index (repository_id PRIMARY KEY, format, built)
 ```
 
-A repo's names are stored in append order, in chunks of up to 512. `sigs` holds the
-chunk's signatures back to back; `keys` holds each name's end offset (u32), then the names'
+Two kinds of key: distinct symbol names (kind 0), and repo-relative file paths (kind 1),
+signed by their stem, because `score` lets a file named like the query surface its
+primary definitions. Keys are stored in append order, in chunks of up to 512. `sigs` holds
+a chunk's signatures back to back; `keys` holds each key's end offset (u32), then the keys'
 bytes. The scan reads a chunk's `keys` only when one of its signatures survives.
 
 - **Appends ride the symbols' transaction.** `replace_files` asks, before it rewrites a
-  file, whether each of its names is already in the repo; the new ones are appended to the
-  last chunk in the same transaction. A reader sees names and symbols together.
-- **Deletes are free.** A name with no symbols left still screens and verifies, then
-  fetches no rows. It stays until the next rebuild.
-- **Rebuild** writes the repo's chunks from `SELECT DISTINCT name` and stamps
-  `name_index`. It runs when the index is missing or stamped with another format, at the
-  end of a cold pass (which skips appends, as it skips per-row FTS), and as compaction once
-  appends since the last rebuild pass a quarter of it.
+  file, whether each of its names is already in the repo, and whether the file is new;
+  the new ones are appended to the last chunk in the same transaction. A reader sees
+  names and symbols together.
+- **Deletes are free.** A name or file with no rows left still screens and verifies,
+  then fetches nothing. It stays until the next rebuild.
+- **Rebuild** writes the repo's chunks from `SELECT DISTINCT name` and its file paths,
+  and stamps `name_index`. It runs at the end of any index pass whose repo's index is
+  missing or stamped with another format, at the end of a cold pass (which suspends the
+  index and skips appends, as it skips per-row FTS), and as compaction once the keys
+  appended since the last rebuild pass a quarter of what it wrote (at least 1,000).
 - **Missing or stale means fall back.** Recall reads the index only when `name_index`
-  holds the current format for every repo searched; otherwise it runs the FTS nets. The
-  warm child rebuilds a missing index, so an upgraded database gets one after its first
-  hit.
+  holds the current format for every repo searched; otherwise it runs the FTS nets. A
+  new repo starts with an empty, current index. The warm child rebuilds a missing one,
+  so an upgraded database gets one after its first hit.
+
+A flat file next to the database, mapped per query, measured faster (below), but it
+needs its own cross-process publish protocol, crash reconciliation with SQLite, and a
+lifecycle for `--drop` and a replaced `RQ_DB`; SQLite gives all three for free.
+
+| 2,372 queries, in process, fresh map or connection each | median | p90 | p99 |
+|---|---|---|---|
+| in memory (floor) | 172 µs | 628 | 2,564 |
+| flat file, mapped per query | 280 | 730 | 2,663 |
+| SQLite chunks, fresh connection | 540 | 1,008 | 3,044 |
 
 ## Recall
 
 `Store::search_candidates` keeps the exact and prefix layers and their fast path. After
-them, the name index replaces the first-letter net, the trigram net, `rq_keep` and
-`NET_WINDOW`: scan the repo's signatures, verify survivors, then fetch rows by
-`(repository_id, name_lower)` for the accepted names. The cap still bounds the rows. When
-the accepted names hold more rows than the cap, they are fetched best first by the value
-`score` gives the name (glob or alignment), not in whatever order a net met them.
-`score()` still sees whole rows and is unchanged, so this isn't D1's two-phase split.
+them, the name index replaces the first-letter net, the trigram net, the path `LIKE` net,
+`rq_keep` and `NET_WINDOW`: scan the repo's name signatures, verify survivors, fetch rows by
+`(repository_id, name_lower)`; scan its file signatures, verify stems, fetch the primary
+definitions of the accepted files. The cap still bounds the rows. When the accepted names
+hold more rows than the cap, they are fetched best first by the value `score` gives the
+name (glob or alignment), not in whatever order a net met them. `score()` still sees whole
+rows and is unchanged, so this isn't D1's two-phase split.
 
-`RQ_RECALL=fts` selects the old nets, for comparison. Dropping the FTS table and its
-triggers is a later migration, once the index has been the default for a release: until
-then FTS is the fallback while an index is missing, and a migration that drops it has to
-build every repo's index first.
+Dropping the FTS table and its triggers is a later migration, once the index is the
+default: until then FTS is the default and the fallback while an index is missing, and a
+migration that drops it has to build every repo's index first.
 
 ## The spike
 

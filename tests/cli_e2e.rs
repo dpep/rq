@@ -205,6 +205,42 @@ fn cold_index_builds_a_working_fuzzy_index() {
 }
 
 #[test]
+fn the_name_index_answers_fuzzy_queries_and_keeps_up_with_edits() {
+    // RQ_RECALL=scan reads fuzzy recall from the name index: built at the end
+    // of a cold index, then appended to as files are written
+    let (dir, db) = scratch("nameindex");
+    fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
+    fs::write(dir.join("connection_pool.rb"), "module Base\nend\n").unwrap();
+    let (ok, out) = rq(&db, &dir, &["--index"]);
+    assert!(ok, "index failed: {out}");
+    let scan = |query: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .args([query, "--json"])
+            .current_dir(&dir)
+            .env("RQ_DB", &db)
+            .env("RQ_WARM_DETACH", "0")
+            .env("RQ_RECALL", "scan")
+            .output()
+            .expect("run rq");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    // an abbreviation, not a substring of the name
+    assert!(scan("wdgctl").contains("AlphaWidgetController"));
+    // a module named only by its file
+    assert!(scan("conpool").contains("\"Base\""));
+
+    fs::write(dir.join("b.rb"), "class BetaGadgetFactory\nend\n").unwrap();
+    let (ok, out) = rq(&db, &dir, &["--index"]);
+    assert!(ok, "reindex failed: {out}");
+    assert!(
+        scan("gdgfac").contains("BetaGadgetFactory"),
+        "an appended name"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_search_that_warms_a_cold_repo_leaves_a_working_fuzzy_index() {
     // the same, when the first contact is a search rather than `--index`: the
     // budgeted warm it runs must leave FTS in step, both for this answer and

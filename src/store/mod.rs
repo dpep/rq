@@ -3,6 +3,7 @@
 //! The background indexer writes here; search reads. WAL mode lets those
 //! happen concurrently. See `docs/ARCHITECTURE.md` for the schema.
 
+mod names;
 mod schema;
 
 use std::collections::HashMap;
@@ -11,6 +12,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::core::{Symbol, now_unix};
+use crate::search::Probe;
 
 pub(crate) type Result<T> = rusqlite::Result<T>;
 
@@ -246,7 +248,7 @@ impl Store {
         default_branch: Option<&str>,
     ) -> Result<i64> {
         let now = now_unix();
-        self.conn.query_row(
+        let id = self.conn.query_row(
             "INSERT INTO repositories (identity, default_branch, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?3)
              ON CONFLICT(identity) DO UPDATE SET
@@ -255,7 +257,9 @@ impl Store {
              RETURNING id",
             params![identity.to_string(), default_branch, now],
             |r| r.get(0),
-        )
+        )?;
+        names::start(&self.conn, id)?;
+        Ok(id)
     }
 
     /// Record (or update) a local checkout of a repository.
@@ -377,6 +381,7 @@ impl Store {
         let mut symbols_written = 0;
         for chunk in files.chunks(BATCH) {
             let tx = self.conn.transaction()?;
+            let (mut fresh, mut fresh_files) = (Vec::new(), Vec::new());
             {
                 let mut upsert = tx.prepare(
                     "INSERT INTO files (repository_id, path, language, mtime, content_hash, indexed_at)
@@ -402,6 +407,10 @@ impl Store {
                         parent, visibility)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 )?;
+                // names new to the repo, for its name index; asked before a
+                // file's own rows are cleared, so a rewrite isn't mistaken for one
+                let indexing = names::current(&tx, repository_id)?;
+                let mut checked: std::collections::HashSet<&str> = Default::default();
                 for f in chunk {
                     // content unchanged (e.g. mtime moved but bytes didn't): skip
                     // the rewrite, but refresh the stat columns — otherwise a
@@ -412,6 +421,9 @@ impl Store {
                     if stored.as_deref() == Some(f.content_hash.as_str()) {
                         touch.execute(params![repository_id, f.path, f.mtime, now])?;
                         continue;
+                    }
+                    if indexing && stored.is_none() {
+                        fresh_files.push(f.path.clone());
                     }
                     let file_id: i64 = upsert.query_row(
                         params![
@@ -424,6 +436,15 @@ impl Store {
                         ],
                         |r| r.get(0),
                     )?;
+                    if indexing {
+                        for s in &f.symbols {
+                            if checked.insert(&s.name)
+                                && !names::known(&tx, repository_id, &s.name)?
+                            {
+                                fresh.push(s.name.clone());
+                            }
+                        }
+                    }
                     clear.execute(params![file_id])?;
                     for s in &f.symbols {
                         insert.execute(params![
@@ -443,6 +464,8 @@ impl Store {
                     symbols_written += f.symbols.len();
                 }
             }
+            names::append(&tx, repository_id, names::Keys::Names, &fresh)?;
+            names::append(&tx, repository_id, names::Keys::Files, &fresh_files)?;
             tx.commit()?;
         }
         Ok((files_written, symbols_written))
@@ -690,6 +713,8 @@ impl Store {
     pub(crate) fn drop_repository(&mut self, repository_id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
         for sql in [
+            "DELETE FROM name_sigs WHERE repository_id = ?1",
+            "DELETE FROM name_index WHERE repository_id = ?1",
             "DELETE FROM symbols WHERE repository_id = ?1",
             "DELETE FROM files WHERE repository_id = ?1",
             "DELETE FROM coverage WHERE repository_id = ?1",
@@ -952,12 +977,14 @@ impl Store {
         force_fuzzy: bool,
         repo: Option<i64>,
         filter: Option<CandidateFilter>,
+        names: Option<&Probe>,
     ) -> Result<Vec<SymbolRow>> {
         use rusqlite::types::Value;
         // folded as `name_lower` is at index time, or a non-ASCII name misses
         let q = query.to_lowercase();
         let mut found: HashMap<i64, SymbolRow> = HashMap::new();
         let window = Value::Integer((limit * if filter.is_some() { NET_WINDOW } else { 1 }) as i64);
+        let cap = limit;
         let limit = Value::Integer(limit as i64);
         // The repo scope, bound after a layer's own placeholders as the next
         // numbered one.
@@ -1006,6 +1033,20 @@ impl Store {
         // identical results, no wasted fetch/score. (Wildcard queries force the
         // fuzzy layers; they aren't gated.)
         if !force_fuzzy && !found.is_empty() {
+            return Ok(found.into_values().collect());
+        }
+
+        // The name index holds exactly the names and file stems the scorer
+        // accepts, so when it's current it replaces every net below.
+        if let Some(probe) = names
+            && self.name_index_ready(repo)?
+        {
+            for (id, cand) in self.named_candidates(repo, probe, cap)? {
+                found.entry(id).or_insert(cand);
+            }
+            for (id, cand) in self.filed_candidates(repo, probe, cap)? {
+                found.entry(id).or_insert(cand);
+            }
             return Ok(found.into_values().collect());
         }
 
@@ -1514,7 +1555,7 @@ mod tests {
         store.set_file_git_ts(repo, &times).unwrap();
 
         let cands = store
-            .search_candidates("foo", 10, false, None, None)
+            .search_candidates("foo", 10, false, None, None, None)
             .unwrap();
         assert_eq!(cands[0].git_ts, Some(1_700_000_000));
     }

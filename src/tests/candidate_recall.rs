@@ -34,7 +34,7 @@ fn exact_match_survives_a_flooded_first_char_bucket() {
         .unwrap();
 
     let cands = store
-        .search_candidates("mango", 5, false, None, None)
+        .search_candidates("mango", 5, false, None, None, None)
         .unwrap();
     assert!(
         cands.iter().any(|c| c.name == "mango"),
@@ -66,7 +66,7 @@ fn a_strong_match_short_circuits_the_broad_fuzzy_layers() {
         .unwrap();
 
     let strong_only = store
-        .search_candidates("user", 50, false, None, None)
+        .search_candidates("user", 50, false, None, None, None)
         .unwrap();
     assert!(strong_only.iter().any(|c| c.name == "User"), "prefix kept");
     assert!(
@@ -75,7 +75,7 @@ fn a_strong_match_short_circuits_the_broad_fuzzy_layers() {
     );
 
     let forced = store
-        .search_candidates("user", 50, true, None, None)
+        .search_candidates("user", 50, true, None, None, None)
         .unwrap();
     assert!(
         forced.iter().any(|c| c.name == "Peruser"),
@@ -106,7 +106,7 @@ fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
         .unwrap();
 
     let cands = store
-        .search_candidates("widget", 5, false, Some(here), None)
+        .search_candidates("widget", 5, false, Some(here), None, None)
         .unwrap();
     let names: Vec<&str> = cands.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
@@ -133,7 +133,7 @@ fn a_filtered_net_reaches_past_rows_that_cannot_match() {
 
     let names = |filter: Option<crate::store::CandidateFilter>| -> Vec<String> {
         store
-            .search_candidates("mgo", 5, false, None, filter)
+            .search_candidates("mgo", 5, false, None, filter, None)
             .unwrap()
             .into_iter()
             .map(|c| c.name)

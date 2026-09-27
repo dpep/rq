@@ -156,6 +156,27 @@ CREATE VIRTUAL TABLE symbols_fts USING fts5(
   detail=none
 );
 
+-- the name index (NAME_INDEX.md, D23): each repo's distinct symbol names
+-- (kind 0) and file paths (kind 1, signed by their stem) as 40-byte
+-- signatures, in append-order chunks of up to 512
+name_sigs (
+  repository_id INTEGER NOT NULL,
+  kind INTEGER NOT NULL,
+  chunk INTEGER NOT NULL,
+  n INTEGER NOT NULL,                -- keys in the chunk
+  sigs BLOB NOT NULL,                -- n signatures, back to back
+  keys BLOB NOT NULL,                -- n end offsets (u32), then the keys' bytes
+  PRIMARY KEY (repository_id, kind, chunk)
+);
+
+-- a repo's name index is read only while current: built under this format
+-- (score::NAME_INDEX_FORMAT) and maintained since
+name_index (
+  repository_id INTEGER PRIMARY KEY,
+  format INTEGER NOT NULL,
+  built INTEGER NOT NULL             -- keys the last rebuild wrote
+);
+
 -- partial-indexing state, per repo (or directory scope)
 coverage (
   id INTEGER PRIMARY KEY,
@@ -187,6 +208,14 @@ meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 
 Decisions worth calling out:
 
+- **The name index** holds, per repo, a signature for every distinct symbol
+  name and file stem: which characters it has and which pairs of them a query
+  could step across under `align`'s rules. Fuzzy recall screens every
+  signature, verifies the survivors with the scorer's own match chain, and
+  fetches rows only for the names it accepts, so its candidates are exactly
+  what `score` would take from any row (NAME_INDEX.md, D23). Behind
+  `RQ_RECALL=scan` until the ranking weaknesses complete recall exposes are
+  fixed; FTS below is the default and the fallback while an index is missing.
 - **Trigram FTS5** narrows millions of symbols to a small candidate set before
   any expensive scoring runs — the answer to "fuzzy + millions + 50 ms".
   Within each capped net, the scorer's own necessary condition
@@ -233,9 +262,13 @@ search only reads.
   A pass over a cold repo (explicit or a first search's warm) suspends the
   per-row FTS trigger and indexes the new names in one step at the end of the
   pass, before coverage is recorded — per-row, the writer rather than parsing
-  bounds the pass. Fuzzy recall can't see that pass's rows until then, which a
-  warming search never needs: it accepts only exact/prefix matches, served by
-  the name index.
+  bounds the pass. It suspends the name index the same way and rebuilds it at
+  the end; every other write appends the names and files new to the repo in
+  the transaction that writes them, and every pass ends by rebuilding an index
+  that is missing, from another format, or holding a quarter more keys than its
+  last rebuild wrote. Fuzzy recall can't see a cold pass's rows until then,
+  which a warming search never needs: it accepts only exact/prefix matches,
+  served by the `name_lower` B-tree.
 - **Opportunistic + time-bounded** (`index_budgeted`) — the first query warms the
   index without blocking on a full walk: a small inline budget indexes the active
   (branch) files first and answers, then the deferred pass warms more per query
@@ -322,7 +355,7 @@ Staged, streaming, early-exit on confidence:
 | ----- | ---- | ----- |
 | 0 | parse query | case, separators, looks-like-a-path? |
 | 1 | exact / prefix symbol | indexed `name_lower`; fastest, highest confidence |
-| 2 | fuzzy symbol | trigram FTS candidate set (+ first-letter range for ≤ 6 chars) → abbreviation-aware scorer; an fst over names was slower (D21) |
+| 2 | fuzzy symbol | trigram FTS candidate set (+ first-letter range for ≤ 6 chars) → abbreviation-aware scorer; an fst over names was slower (D21). With `RQ_RECALL=scan`, the name index's exact set instead (D23) |
 | 3 | path / filename | |
 | 4 | live scan | async, streamed when coverage is low |
 | 5 | opportunistic extraction | parse newly-seen files, persist for next time |

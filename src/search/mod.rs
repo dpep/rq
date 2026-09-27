@@ -5,9 +5,14 @@
 //! opportunistic extraction) and true streaming/early-exit arrive in phase 2;
 //! for now the candidate set is gathered once and ranked.
 
+mod names;
 mod score;
 
-pub(crate) use score::{Boosts, Feature, confidence, match_positions, match_quality, path_stem};
+pub(crate) use names::{Probe, SIG_BYTES, Signature};
+pub(crate) use score::{
+    Boosts, Feature, NAME_INDEX_FORMAT, PRIMARY_KINDS, confidence, match_positions, match_quality,
+    path_stem,
+};
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -391,12 +396,14 @@ fn search_query(
     let t = std::time::Instant::now();
     // Repo scope: outside `--all-repos`, a search inside a repo returns only
     // that repo's definitions — never another indexed repo's.
+    let probe = name_index_recall().then(|| Probe::new(leaf));
     let mut candidates = store.search_candidates(
         recall,
         CANDIDATE_LIMIT,
         score::has_wildcard(leaf),
         only_repo,
         Some(could_match(query, recall)),
+        probe.as_ref(),
     )?;
     // `Foo.new` runs a constructor the store knows by another name
     if qualifier.is_some() && leaf.eq_ignore_ascii_case("new") {
@@ -407,6 +414,7 @@ fn search_query(
                 false,
                 only_repo,
                 Some(could_match(name, name)),
+                name_index_recall().then(|| Probe::new(name)).as_ref(),
             )?);
         }
     }
@@ -495,6 +503,13 @@ fn search_query(
         );
     }
     Ok(Matches { hits, total })
+}
+
+/// `RQ_RECALL=scan` reads fuzzy recall from the name index rather than the
+/// trigram nets. Not yet the default: complete recall exposes ranking
+/// weaknesses the capped nets hid (DECISIONS D23).
+fn name_index_recall() -> bool {
+    std::env::var("RQ_RECALL").is_ok_and(|v| v == "scan")
 }
 
 /// Recall's filter for `query`: [`score::could_match`], owning its strings so
@@ -847,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn the_recall_filter_keeps_everything_the_scorer_would_accept() {
+    fn recall_keeps_everything_the_scorer_would_accept() {
         // One shape per way `score` can match: letters in order, a primary
         // definition named only by its file, a transposition, a glob, a scope,
         // a sigil, non-ASCII.
@@ -886,6 +901,11 @@ mod tests {
                 .unwrap();
         }
         let boosts = Boosts::default;
+        // every row in the store: what the scorer would accept with no recall
+        let every: Vec<SymbolRow> = files
+            .iter()
+            .flat_map(|(file, _)| store.symbols_in_file(repo, file).unwrap())
+            .collect();
         let queries = [
             "conpool",
             "usr",
@@ -902,10 +922,20 @@ mod tests {
             let recall = score::strip_wildcards(leaf);
             // forced, so the fuzzy layers run even where a prefix matched
             let all = store
-                .search_candidates(&recall, 1000, true, None, None)
+                .search_candidates(&recall, 1000, true, None, None, None)
                 .unwrap();
             let kept = store
-                .search_candidates(&recall, 1000, true, None, Some(could_match(query, &recall)))
+                .search_candidates(
+                    &recall,
+                    1000,
+                    true,
+                    None,
+                    Some(could_match(query, &recall)),
+                    None,
+                )
+                .unwrap();
+            let indexed = store
+                .search_candidates(&recall, 1000, true, None, None, Some(&Probe::new(leaf)))
                 .unwrap();
             for near_miss in [false, true] {
                 let accepted =
@@ -920,6 +950,17 @@ mod tests {
                     accepted(&all),
                     accepted(&kept),
                     "{query} (near miss: {near_miss})"
+                );
+                // The nets are capped and can't reach every row; the index
+                // holds exactly what the scorer takes from any of them.
+                assert_eq!(
+                    accepted(&every),
+                    accepted(&indexed),
+                    "{query} from the name index (near miss: {near_miss})"
+                );
+                assert!(
+                    accepted(&indexed).is_superset(&accepted(&all)),
+                    "{query}: the index keeps what the nets found (near miss: {near_miss})"
                 );
             }
             if query == "conpool" {

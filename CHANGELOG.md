@@ -7,6 +7,20 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Added
+- **A name index for fuzzy recall, opt-in with `RQ_RECALL=scan`.** Each repo's
+  distinct symbol names and file names get a small signature of what a query
+  could match, so fuzzy recall screens every name and hands the scorer exactly
+  the names it accepts, instead of a capped net that missed some: on the recall
+  harness, sources found at all go from 81.5% to 86.0%, and recall's median
+  from ~9 ms to ~1 ms. It isn't the default yet, because complete
+  recall exposes ranking weaknesses the capped net hid (DECISIONS D23). The
+  index database gains two tables and grows by about a quarter; it migrates
+  itself, and each repo's index is built on its next index pass or search.
+  Nothing to do.
+
 ## 0.54.1 — 2026-09-27
 
 ### Fixed

@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 16;
+pub(crate) const VERSION: i64 = 17;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -104,6 +104,27 @@ CREATE TABLE usage_daily (
   on_complete INTEGER NOT NULL,      -- ran against a fully indexed repo
   live INTEGER NOT NULL DEFAULT 0,   -- answered from a live scan, not the index
   PRIMARY KEY (day, source, flags)
+);
+
+-- the name index (docs/NAME_INDEX.md): each repo's distinct symbol names and
+-- file paths as fixed-size signatures, in append-order chunks. `keys` is each
+-- key's end offset (u32), then the keys' bytes.
+CREATE TABLE name_sigs (
+  repository_id INTEGER NOT NULL,
+  kind INTEGER NOT NULL,             -- 0 symbol names, 1 file paths (by stem)
+  chunk INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  sigs BLOB NOT NULL,
+  keys BLOB NOT NULL,
+  PRIMARY KEY (repository_id, kind, chunk)
+);
+
+-- a repo's index is read only while it's current: built under this format,
+-- and maintained since. `built` is how many names the last rebuild wrote.
+CREATE TABLE name_index (
+  repository_id INTEGER PRIMARY KEY,
+  format INTEGER NOT NULL,
+  built INTEGER NOT NULL
 );
 
 -- small key/value store (indexed HEAD, warm lock, branch-file cache)
@@ -290,6 +311,26 @@ const MIGRATION_V16: Step = Step::AddColumn {
     decl: "INTEGER NOT NULL DEFAULT 0",
 };
 
+/// Migration v16 -> v17: the name index's tables, empty. Recall falls back to
+/// the FTS nets for a repo until its index is built, which the next index pass
+/// or warm child does.
+pub(crate) const MIGRATION_V17: &str = r#"
+CREATE TABLE IF NOT EXISTS name_sigs (
+  repository_id INTEGER NOT NULL,
+  kind INTEGER NOT NULL,
+  chunk INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  sigs BLOB NOT NULL,
+  keys BLOB NOT NULL,
+  PRIMARY KEY (repository_id, kind, chunk)
+);
+CREATE TABLE IF NOT EXISTS name_index (
+  repository_id INTEGER PRIMARY KEY,
+  format INTEGER NOT NULL,
+  built INTEGER NOT NULL
+);
+"#;
+
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
@@ -305,7 +346,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 15] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 16] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -321,6 +362,7 @@ pub(crate) const MIGRATIONS: [(i64, Step); 15] = [
     (14, Step::Sql(MIGRATION_V14)),
     (15, Step::Sql(MIGRATION_V15)),
     (16, MIGRATION_V16),
+    (17, Step::Sql(MIGRATION_V17)),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]
