@@ -2,7 +2,7 @@
   "name": "rq",
   "displayName": "rq — Reference Query",
   "description": "Go to definition, backed by the rq CLI.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "dpep",
   "license": "MIT",
   "repository": {
@@ -68,7 +68,7 @@
             "typescript",
             "javascript"
           ],
-          "markdownDescription": "Languages rq answers Go to Definition for (`typescript`/`javascript` include `.tsx`/`.jsx`). With `rq.mode` set to `fallback`, rq only answers where the language's own server finds nothing, so it's safe to leave on alongside rust-analyzer, gopls, Pylance or TypeScript."
+          "markdownDescription": "Languages rq answers Go to Definition for (`typescript`/`javascript` include `.tsx`/`.jsx`). With `rq.mode` set to `fallback`, rq only answers where the language's own server finds nothing, so it's safe to leave on alongside rust-analyzer, gopls, Pylance or TypeScript. An empty list turns rq off for every language, Cmd/Ctrl-T included (to leave only Cmd/Ctrl-T to the servers, use `rq.workspaceSymbols: off`)."
         },
         "rq.mode": {
           "type": "string",

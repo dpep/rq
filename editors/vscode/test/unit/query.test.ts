@@ -152,6 +152,11 @@ describe("findRepoRoot", () => {
   it("resolves hits against the root", () => {
     assert.equal(hitPath("/repo", hit("save", 1, "lib/a.rb")), path.resolve("/repo/lib/a.rb"));
   });
+
+  it("prefers the root rq reports, e.g. another repo under -a", () => {
+    const other = { ...hit("save", 1, "lib/a.rb"), root: "/elsewhere" };
+    assert.equal(hitPath("/repo", other), path.resolve("/elsewhere/lib/a.rb"));
+  });
 });
 
 describe("editorLanguages", () => {

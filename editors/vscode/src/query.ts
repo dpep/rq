@@ -9,6 +9,7 @@ export interface Hit {
   name: string;
   kind: string;
   file: string; // repo-root-relative
+  root?: string; // the checkout `file` is relative to (rq ≥ 0.53); absent from older rq
   line: number; // 1-based
   end_line?: number;
   parent?: string;
@@ -170,8 +171,9 @@ export function findRepoRoot(dir: string, exists: (p: string) => boolean): strin
 }
 
 /** Absolute path of a hit, given the directory rq ran in (its root). */
+/** Absolute path of a hit: rq's own `root` when it reports one, else the directory rq ran in. */
 export function hitPath(root: string, hit: Hit): string {
-  return path.resolve(root, hit.file);
+  return path.resolve(hit.root ?? root, hit.file);
 }
 
 /** Keys another provider's symbol claims: its file with its line, and with its name. */
