@@ -3014,3 +3014,56 @@ fn a_live_scan_answer_says_so() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+#[ignore = "known hang: stream_walk deadlocks when the index sink errors mid-pass (nowait-hang)"]
+fn an_index_pass_whose_writes_fail_exits_instead_of_hanging() {
+    // A failed batch write stops the consumer, but the parse workers and the
+    // walk keep sending into bounded channels nobody drains: past one channel's
+    // worth of files in flight, the pass parks at 0% CPU forever. A lock that
+    // outlasts busy_timeout does this for real; a trigger makes it certain.
+    let (dir, db) = scratch("sink-error");
+    for i in 0..2500 {
+        fs::write(
+            dir.join(format!("w{i}.rb")),
+            format!("def widget_{i}\nend\n"),
+        )
+        .unwrap();
+    }
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--status"]); // lay down the schema
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_symbols BEFORE INSERT ON symbols \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["--index", "."])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "0")
+        .env("RQ_JOBS", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run rq");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let _ = fs::remove_dir_all(&dir);
+
+    let status = status.expect("rq --index hung after a failed write");
+    assert!(!status.success(), "a failed write is an error, not success");
+}
