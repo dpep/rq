@@ -2481,6 +2481,131 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Run the binary with extra env and optional piped stdin; hand back the exit
+/// code, stdout and stderr.
+fn rq_full(
+    db: &Path,
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&str>,
+) -> (i32, String, String) {
+    use std::io::Write;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rq"));
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("RQ_DB", db)
+        .env("RQ_WARM_DETACH", "0")
+        .stdin(if stdin.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("run rq");
+    if let Some(input) = stdin {
+        child
+            .stdin
+            .take()
+            .expect("stdin piped")
+            .write_all(input.as_bytes())
+            .expect("write stdin");
+    }
+    let out = child.wait_with_output().expect("rq exits");
+    (
+        out.status.code().expect("exit code"),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn a_structured_caller_gets_its_errors_as_json() {
+    let (dir, db) = scratch("json-errors");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    // a file where the database's directory should be: nothing can be created
+    let blocked = dir.join("blocked");
+    fs::write(&blocked, "").unwrap();
+    let unwritable = blocked.join("rq.db");
+    let corrupt = dir.join("corrupt.db");
+    fs::write(&corrupt, "not a database, just bytes ".repeat(200)).unwrap();
+
+    let unwritable = unwritable.to_str().unwrap();
+    let corrupt = corrupt.to_str().unwrap();
+    // args, extra env, piped stdin, the error kind expected
+    type Case<'a> = (
+        &'a [&'a str],
+        &'a [(&'a str, &'a str)],
+        Option<&'a str>,
+        &'a str,
+    );
+    let cases: &[Case] = &[
+        (&["Widget", "-k", "banana", "--json"], &[], None, "usage"),
+        (&["Widget", "-x", "cobol", "-J"], &[], None, "usage"),
+        (&["  ", "--json"], &[], None, "usage"),
+        // clap rejects these before rq has read its own flags
+        (&["Widget", "--wait", "soon", "--json"], &[], None, "usage"),
+        (&["Widget", "-ej", "--wait", "soon"], &[], None, "usage"),
+        (&["-w", "Widget", "-J"], &[], None, "usage"),
+        (&["--json"], &[], Some("Widget\n"), "usage"),
+        (
+            &["Widget", "--json"],
+            &[("RQ_DB", unwritable)],
+            None,
+            "database",
+        ),
+        (&["Widget", "-J"], &[("RQ_DB", corrupt)], None, "database"),
+        (
+            &["--status", "--json"],
+            &[("RQ_DB", corrupt)],
+            None,
+            "database",
+        ),
+        (&["--symbols", "gone.rb", "--json"], &[], None, "not_found"),
+    ];
+    for &(args, env, stdin, kind) in cases {
+        let (code, out, err) = rq_full(&db, &dir, args, env, stdin);
+        assert_ne!(code, 0, "{args:?} fails");
+        let obj: serde_json::Value = serde_json::from_str(out.trim())
+            .unwrap_or_else(|e| panic!("{args:?}: one JSON object on stdout ({e}): {out:?}"));
+        assert_eq!(obj["kind"], kind, "{args:?}: {obj}");
+        assert_eq!(
+            obj["code"], code,
+            "{args:?}: the object carries the exit code"
+        );
+        let message = obj["error"].as_str().expect("an error message");
+        // the human still reads it on stderr, the same words
+        assert!(
+            err.contains(message),
+            "{args:?}: stderr {err:?} vs {message:?}"
+        );
+
+        // without a structured flag nothing lands on stdout, and the exit
+        // code is the same (`-w` alone is legal, so it has nothing to compare)
+        let plain: Vec<&str> = args
+            .iter()
+            .copied()
+            .filter(|a| !matches!(*a, "--json" | "-J"))
+            .map(|a| if a == "-ej" { "-e" } else { a })
+            .collect();
+        if stdin.is_none() && !args.contains(&"-w") {
+            let (plain_code, out, _) = rq_full(&db, &dir, &plain, env, None);
+            assert_eq!(plain_code, code, "{plain:?}: same exit code as text");
+            assert!(out.is_empty(), "{plain:?}: nothing on stdout: {out:?}");
+        }
+    }
+    // a value that merely contains `j` is not the flag
+    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-xj", "-k", "banana"], &[], None);
+    assert!(out.is_empty(), "`-xj` is --lang j, not --json: {out:?}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// `--profile` on an index run reports phases, counters and the slowest files —
 /// to stderr, structured when the output mode is, and nothing at all when off.
 #[test]

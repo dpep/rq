@@ -36,6 +36,20 @@ and aren't listed; see `git log` for those.
   confident "no match". rq now also rechecks the files it indexed as edits.
 
 ### Changed
+- **Errors under `--json`/`--ndjson` are JSON.** A failed structured run used to
+  print nothing on stdout. Now it prints one
+  `{"error": …, "kind": …, "code": …}` object: an unknown `-k`/`-x`, an empty
+  query, a bad `--wait`, `--json` on piped queries, an index that can't be
+  opened, a missing `--symbols` file. Errors clap raises while parsing the
+  command line (a bad value, conflicting flags) are covered too, since rq
+  reads `--json`/`-j`/`--ndjson`/`-J` off the command line itself. The human
+  message still goes to stderr and exit codes are unchanged. `kind` is one of
+  `usage`, `database`, `not_found`, `index`, `internal`. Scripts that treated
+  empty stdout as failure should check for `error` instead. This changes the
+  output shape, so the next release is a minor one.
+- **`rq --symbols` on a file that doesn't exist says so.** It used to report
+  "no symbols" (`{"status": "no_match"}` in JSON), which also describes a
+  real file with no definitions. It is now a `not_found` error. Exit 1 as before.
 - **The VS Code extension (0.3.0) no longer lists a symbol twice in Cmd/Ctrl-T.**
   With `rq.workspaceSymbols: dedupe` (the default), rq adds only the symbols no
   language server already returned — e.g. beside trekr for Ruby — and `off`

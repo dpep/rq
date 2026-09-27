@@ -200,7 +200,10 @@ struct Cli {
 
 /// Parse arguments and dispatch. Returns the process exit code.
 pub fn run() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => return clap_failure(err),
+    };
     crate::trace::enable_from(cli.verbose);
     crate::profile::enable_from(cli.profile);
     crate::index::set_parse_jobs(cli.jobs);
@@ -235,7 +238,7 @@ fn dispatch(cli: Cli) -> ExitCode {
     }
     let out = output_format(&cli);
     if cli.target.as_deref().is_some_and(|t| t.trim().is_empty()) {
-        return fail(format_args!("rq: empty query"));
+        return fail(out, Failure::Usage, format_args!("rq: empty query"));
     }
     // Reject an unknown --kind/--lang rather than filtering everything away: a
     // typo used to come back as `no_match`, exit 1 — the one code a script is
@@ -245,9 +248,13 @@ fn dispatch(cli: Cli) -> ExitCode {
         match canonical_kind(k) {
             Some(c) => kinds.push(c.to_string()),
             None => {
-                return fail(format_args!(
-                    "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant)"
-                ));
+                return fail(
+                    out,
+                    Failure::Usage,
+                    format_args!(
+                        "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant)"
+                    ),
+                );
             }
         }
     }
@@ -256,10 +263,14 @@ fn dispatch(cli: Cli) -> ExitCode {
     for x in &cli.lang {
         let matched = canonical_langs(x);
         if matched.is_empty() {
-            return fail(format_args!(
-                "rq: unknown --lang {x:?} ({})",
-                crate::lang::languages().join(", ")
-            ));
+            return fail(
+                out,
+                Failure::Usage,
+                format_args!(
+                    "rq: unknown --lang {x:?} ({})",
+                    crate::lang::languages().join(", ")
+                ),
+            );
         }
         langs.extend(matched);
     }
@@ -283,7 +294,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                 paths.extend(cli.dirs.clone());
                 target
             };
-            let mut session = match Session::open() {
+            let mut session = match Session::open(out) {
                 Ok(s) => s,
                 Err(code) => return code,
             };
@@ -464,11 +475,17 @@ struct Session {
 
 impl Session {
     /// Resolve the search context, or the exit code to fail with.
-    fn open() -> std::result::Result<Session, ExitCode> {
+    fn open(out: Output) -> std::result::Result<Session, ExitCode> {
         let open_span = crate::profile::span("store open");
         let store = match open_store() {
             Ok(s) => s,
-            Err(e) => return Err(fail(format_args!("rq: cannot open database: {e}"))),
+            Err(e) => {
+                return Err(fail(
+                    out,
+                    Failure::Database,
+                    format_args!("rq: cannot open database: {e}"),
+                ));
+            }
         };
         drop(open_span);
         let git_span = crate::profile::span("setup: git root");
@@ -606,15 +623,23 @@ fn cmd_batch(
     langs: &[String],
 ) -> ExitCode {
     if out == Output::Json {
-        return fail(format_args!(
-            "rq: --json can't frame a stream of queries — use --ndjson (-J), \
+        return fail(
+            out,
+            Failure::Usage,
+            format_args!(
+                "rq: --json can't frame a stream of queries — use --ndjson (-J), \
              where each line carries the query it answers"
-        ));
+            ),
+        );
     }
     if cli.open || cli.web || cli.show {
-        return fail(format_args!(
-            "rq: --open, --web and --show act on a single result, not a stream of queries"
-        ));
+        return fail(
+            out,
+            Failure::Usage,
+            format_args!(
+                "rq: --open, --web and --show act on a single result, not a stream of queries"
+            ),
+        );
     }
 
     use std::io::BufRead;
@@ -633,7 +658,7 @@ fn cmd_batch(
         return ExitCode::SUCCESS;
     }
 
-    let mut session = match Session::open() {
+    let mut session = match Session::open(out) {
         Ok(s) => s,
         Err(code) => return code,
     };
@@ -941,7 +966,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 if let Some(h) = indexer {
                     let _ = h.join();
                 }
-                return fail(format_args!("rq: {e}"));
+                return fail(out, Failure::Database, format_args!("rq: {e}"));
             }
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -1656,7 +1681,11 @@ fn launch_editor(file: &std::path::Path, line: i64) -> ExitCode {
             crate::profile::emit(false);
             // exec returns only on failure
             let err = std::process::Command::new(&prog).args(&args).exec();
-            fail(format_args!("rq --open: cannot run {prog}: {err}"))
+            fail(
+                Output::Text,
+                Failure::Launch,
+                format_args!("rq --open: cannot run {prog}: {err}"),
+            )
         }
         None => {
             println!("{loc}");
@@ -1714,10 +1743,14 @@ fn open_web(
     root: Option<&std::path::Path>,
 ) -> ExitCode {
     if hit.repo_identity.starts_with("local:") {
-        return fail(format_args!(
-            "rq --web: {} has no git remote to link to",
-            hit.repo_identity
-        ));
+        return fail(
+            Output::Text,
+            Failure::NoRemote,
+            format_args!(
+                "rq --web: {} has no git remote to link to",
+                hit.repo_identity
+            ),
+        );
     }
     let here =
         current.is_some() && store.repository_id(&hit.repo_identity).ok().flatten() == current;
@@ -1743,7 +1776,11 @@ fn open_web(
             crate::profile::emit(false);
             // exec returns only on failure
             let err = std::process::Command::new(&prog).arg(&url).exec();
-            fail(format_args!("rq --web: cannot run {prog}: {err}"))
+            fail(
+                Output::Text,
+                Failure::Launch,
+                format_args!("rq --web: cannot run {prog}: {err}"),
+            )
         }
         None => {
             println!("{url}");
@@ -2314,7 +2351,13 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let open_span = crate::profile::span("store open");
     let mut store = match open_store() {
         Ok(s) => s,
-        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+        Err(e) => {
+            return fail(
+                out,
+                Failure::Database,
+                format_args!("rq: cannot open database: {e}"),
+            );
+        }
     };
     drop(open_span);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -2326,9 +2369,12 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let warming_ok = crate::index::is_git_repo(&root) || coverage.is_some();
     let current = store.repository_id(&identity).ok().flatten();
     let path = root.join(&rel);
-    // An index can outlive the file; a deleted file has no outline.
     if !path.is_file() {
-        return emit_symbols(out, &[]);
+        return fail(
+            out,
+            Failure::NotFound,
+            format_args!("rq --symbols: no such file: {file_arg}"),
+        );
     }
     let indexable = path
         .extension()
@@ -2362,7 +2408,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let mut query_span = crate::profile::span("symbols: query");
     let mut rows = match store.symbols_in_file(repo_id, &rel) {
         Ok(r) => r,
-        Err(e) => return fail(format_args!("rq: {e}")),
+        Err(e) => return fail(out, Failure::Database, format_args!("rq: {e}")),
     };
     query_span.note(|| format!("{} rows", rows.len()));
     drop(query_span);
@@ -2691,7 +2737,13 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
     let open_span = crate::profile::span("store open");
     let mut store = match open_store() {
         Ok(s) => s,
-        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+        Err(e) => {
+            return fail(
+                out,
+                Failure::Database,
+                format_args!("rq: cannot open database: {e}"),
+            );
+        }
     };
     drop(open_span);
     let indexed = crate::index::index_under(&mut store, &root, &subdirs);
@@ -2741,14 +2793,20 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(format_args!("rq --index: {e}")),
+        Err(e) => fail(out, Failure::Index, format_args!("rq --index: {e}")),
     }
 }
 
 fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     let mut store = match open_store() {
         Ok(s) => s,
-        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+        Err(e) => {
+            return fail(
+                out,
+                Failure::Database,
+                format_args!("rq: cannot open database: {e}"),
+            );
+        }
     };
 
     // Resolve the repo to drop: TARGET as a path (→ repo root → identity, like
@@ -2766,7 +2824,7 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
                 .flatten()
                 .map(|id| (s.to_string(), id))
         }),
-        Err(e) => return fail(format_args!("rq --drop: {e}")),
+        Err(e) => return fail(out, Failure::Database, format_args!("rq --drop: {e}")),
     };
 
     let Some((identity, repo_id)) = resolved else {
@@ -2795,7 +2853,7 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
                 &serde_json::json!({"repo": identity, "files": files, "symbols": symbols, "dropped": true}),
             ),
         },
-        Err(e) => fail(format_args!("rq --drop: {e}")),
+        Err(e) => fail(out, Failure::Database, format_args!("rq --drop: {e}")),
     }
 }
 
@@ -2813,7 +2871,7 @@ fn emit_json<T: serde::Serialize>(out: Output, value: &T) -> ExitCode {
             println!("{s}");
             ExitCode::SUCCESS
         }
-        Err(e) => fail(format_args!("rq: {e}")),
+        Err(e) => fail(out, Failure::Internal, format_args!("rq: {e}")),
     }
 }
 
@@ -2824,13 +2882,13 @@ fn emit_rows<T: serde::Serialize>(out: Output, rows: &[T]) -> Option<ExitCode> {
     match out {
         Output::Json => match serde_json::to_string_pretty(rows) {
             Ok(s) => println!("{s}"),
-            Err(e) => return Some(fail(format_args!("rq: {e}"))),
+            Err(e) => return Some(fail(out, Failure::Internal, format_args!("rq: {e}"))),
         },
         Output::Ndjson => {
             for r in rows {
                 match serde_json::to_string(r) {
                     Ok(line) => println!("{line}"),
-                    Err(e) => return Some(fail(format_args!("rq: {e}"))),
+                    Err(e) => return Some(fail(out, Failure::Internal, format_args!("rq: {e}"))),
                 }
             }
         }
@@ -2842,11 +2900,17 @@ fn emit_rows<T: serde::Serialize>(out: Output, rows: &[T]) -> Option<ExitCode> {
 fn cmd_status(out: Output) -> ExitCode {
     let store = match open_store() {
         Ok(s) => s,
-        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+        Err(e) => {
+            return fail(
+                out,
+                Failure::Database,
+                format_args!("rq: cannot open database: {e}"),
+            );
+        }
     };
     let rows = match store.coverage_overview() {
         Ok(rows) => rows,
-        Err(e) => return fail(format_args!("rq --status: {e}")),
+        Err(e) => return fail(out, Failure::Database, format_args!("rq --status: {e}")),
     };
     if let Some(code) = emit_rows(out, &rows) {
         return code;
@@ -2873,11 +2937,17 @@ fn cmd_status(out: Output) -> ExitCode {
 fn cmd_usage(out: Output) -> ExitCode {
     let store = match open_store() {
         Ok(s) => s,
-        Err(e) => return fail(format_args!("rq: cannot open database: {e}")),
+        Err(e) => {
+            return fail(
+                out,
+                Failure::Database,
+                format_args!("rq: cannot open database: {e}"),
+            );
+        }
     };
     let rows = match store.usage_overview() {
         Ok(rows) => rows,
-        Err(e) => return fail(format_args!("rq --usage: {e}")),
+        Err(e) => return fail(out, Failure::Database, format_args!("rq --usage: {e}")),
     };
     if let Some(code) = emit_rows(out, &rows) {
         return code;
@@ -2943,9 +3013,122 @@ fn db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(home).join(".local/share/rq/rq.db"))
 }
 
-fn fail(args: std::fmt::Arguments) -> ExitCode {
-    eprintln!("{args}");
+/// What kind of thing went wrong: the stable `kind` of a structured error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Failure {
+    /// The command line asks for something rq can't do.
+    Usage,
+    /// The index can't be opened or read.
+    Database,
+    /// A file the command names doesn't exist.
+    NotFound,
+    /// `--web` on a repo with no git host to link to.
+    NoRemote,
+    /// The editor or browser couldn't be started.
+    Launch,
+    /// `--index` failed part-way.
+    Index,
+    /// rq couldn't render its own output.
+    Internal,
+}
+
+impl Failure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Failure::Usage => "usage",
+            Failure::Database => "database",
+            Failure::NotFound => "not_found",
+            Failure::NoRemote => "no_remote",
+            Failure::Launch => "launch",
+            Failure::Index => "index",
+            Failure::Internal => "internal",
+        }
+    }
+}
+
+/// Report an error and return exit 1. The message always goes to stderr; a
+/// structured caller also gets it as one JSON object on stdout.
+fn fail(out: Output, kind: Failure, args: std::fmt::Arguments) -> ExitCode {
+    let message = args.to_string();
+    eprintln!("{message}");
+    emit_error(out, kind.as_str(), &message, 1);
     ExitCode::FAILURE
+}
+
+/// The structured half of an error: `{"error", "kind", "code"}` on stdout,
+/// nothing for text. `code` is the exit code the process leaves with.
+fn emit_error(out: Output, kind: &str, message: &str, code: u8) {
+    let obj = serde_json::json!({ "error": message, "kind": kind, "code": code });
+    // Printed directly: `emit_json` reports its own failures through here.
+    let rendered = match out {
+        Output::Text => return,
+        Output::Json => serde_json::to_string_pretty(&obj),
+        Output::Ndjson => serde_json::to_string(&obj),
+    };
+    if let Ok(s) = rendered {
+        println!("{s}");
+    }
+}
+
+/// A command line clap rejected. It fails before rq knows its output mode, so
+/// the structured flags are read off argv directly: a caller that asked for
+/// JSON gets its usage error as JSON too.
+fn clap_failure(err: clap::Error) -> ExitCode {
+    let out = requested_output(std::env::args_os().skip(1));
+    // help and --version aren't errors
+    if !err.use_stderr() || out == Output::Text {
+        err.exit();
+    }
+    let _ = err.print();
+    let code = u8::try_from(err.exit_code()).unwrap_or(2);
+    let text = err.to_string();
+    emit_error(
+        out,
+        Failure::Usage.as_str(),
+        text.lines().next().unwrap_or(""),
+        code,
+    );
+    ExitCode::from(code)
+}
+
+/// The output mode argv asks for, without a full parse: `--json`/`--ndjson`,
+/// or `-j`/`-J` alone or in a cluster of short flags (`-ej`). A cluster ends at
+/// the first flag that takes a value, since the rest is that value (`-xj` is
+/// `--lang j`). Nothing after `--` is a flag.
+fn requested_output(args: impl IntoIterator<Item = std::ffi::OsString>) -> Output {
+    let cmd = Cli::command();
+    let takes_value = |c: char| {
+        cmd.get_arguments()
+            .any(|a| a.get_short() == Some(c) && a.get_action().takes_values())
+    };
+    let (mut json, mut ndjson) = (false, false);
+    for arg in args {
+        let arg = arg.to_string_lossy();
+        match arg.as_ref() {
+            "--" => break,
+            "--json" => json = true,
+            "--ndjson" => ndjson = true,
+            a if a.starts_with('-') && !a.starts_with("--") => {
+                for c in a.chars().skip(1) {
+                    match c {
+                        'j' => json = true,
+                        'J' => ndjson = true,
+                        c if takes_value(c) => break,
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // the same precedence `output_format` gives a parsed command line
+    if ndjson {
+        Output::Ndjson
+    } else if json {
+        Output::Json
+    } else {
+        Output::Text
+    }
 }
 
 #[cfg(test)]
@@ -2965,6 +3148,27 @@ mod tests {
         assert_eq!(parse_anchor("C:odd/w.rb:3"), ok("C:odd/w.rb", 3));
         for bad in ["app/w.rb", "app/w.rb:", "app/w.rb:0", ":12"] {
             assert!(parse_anchor(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_output_mode_is_read_off_argv_before_clap_parses_it() {
+        let mode = |args: &[&str]| requested_output(args.iter().map(std::ffi::OsString::from));
+        for (args, want) in [
+            (&["x", "--json"][..], Output::Json),
+            (&["x", "--ndjson"], Output::Ndjson),
+            (&["x", "-ej"], Output::Json),
+            (&["-Je", "x"], Output::Ndjson),
+            (&["x", "--json", "-J"], Output::Ndjson),
+            (&["x"], Output::Text),
+            // the rest of a cluster after a value-taking flag is its value
+            (&["x", "-xj"], Output::Text),
+            (&["x", "-l5j"], Output::Text),
+            // and after `--` nothing is a flag
+            (&["--", "-j"], Output::Text),
+            (&["x", "--jobs", "2"], Output::Text),
+        ] {
+            assert!(mode(args) == want, "{args:?}");
         }
     }
 

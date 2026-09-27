@@ -123,6 +123,15 @@ emits this run's counts plus the index totals, and `rq --drop --json` reports wh
 it removed (`repo`, `files`, `symbols`, `dropped`). Single-result commands emit
 one object; `--ndjson` is the compact one-line form.
 
+Errors are structured too. When a structured run fails (a bad flag or value, an
+empty query, an index that can't be opened, a `--symbols` file that doesn't
+exist) stdout carries one object instead of results:
+`{"error": "<message>", "kind": "<kind>", "code": <exit code>}`. `kind` is
+stable: `usage`, `database`, `not_found`, `index`, or `internal`. The same message
+still goes to stderr, and the exit code is unchanged: `1` for rq's own errors,
+`2` for a command line rq couldn't parse. That covers flags that came before
+`--json` too.
+
 Narrow with `--path` when you know the area:
 
 ```sh

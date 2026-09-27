@@ -85,6 +85,13 @@ Exit codes mirror it: `0` matched, `1` no match, `2` warming. `2`/`warming` is
 rare — rq blocks and indexes a cold repo before answering — so you normally just
 get results.
 
+An error is JSON too: `{"error": "…", "kind": "usage", "code": 2}` on stdout,
+where `kind` is `usage`, `database`, `not_found`, `index` or `internal`. Check
+for an `error` key before reading results. A `usage` error means fix the
+command (an unknown `-k`, a bad `--wait`, `--json` on piped queries). Don't
+retry it unchanged. `code` is the exit code, and a `usage` error can exit `2`
+like `warming`, so read `kind` or `status` rather than the number.
+
 ## Scope when you know more
 
 - Position: when you're reading a file and look up a name used in it, pass
