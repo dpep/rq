@@ -48,11 +48,13 @@ and aren't listed; see `git log` for those.
   ranks `_dasherize` above the public `dasherize`.
 
 ### Fixed
-- **An index pass whose write fails now exits instead of hanging.** A failed
-  batch write (a busy database, say) left the walk and parse threads blocked
-  forever at 0% CPU on repos with a couple of thousand source files or more —
-  `rq --index`, a cold search, and the background warm alike. Stuck
-  `rq --warm` processes from earlier versions are safe to kill.
+- **A search or index pass no longer hangs forever at 0% CPU.** On repos
+  with a couple of thousand source files or more, the file walk could be left
+  waiting on parse threads that had already stopped: when a batch write failed
+  (a busy database, say), or, rarely, when a live scan's time budget ran out
+  at the wrong moment. `rq --no-wait` on a cold repo, `rq --index`, a cold
+  search, and the background warm could all hang. Stuck `rq --warm` processes
+  from earlier versions are safe to kill.
 - **Two index passes at once wait for each other instead of failing.** A
   batch write that lost a race with another writer failed immediately with
   "database is locked", ignoring the busy timeout; now it waits its turn.
