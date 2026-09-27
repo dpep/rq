@@ -1189,7 +1189,7 @@ mod tests {
         // A deferred batch reads first, so a writer that commits while it waits
         // for the lock invalidates its snapshot: SQLite then fails it with
         // SQLITE_BUSY at once, busy_timeout or not.
-        let path = std::env::temp_dir().join(format!("rq-busy-{}.db", std::process::id()));
+        let path = std::env::temp_dir().join(format!("rq-busy-store-{}.db", std::process::id()));
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
