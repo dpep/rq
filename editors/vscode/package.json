@@ -2,7 +2,7 @@
   "name": "rq",
   "displayName": "rq — Reference Query",
   "description": "Go to definition, backed by the rq CLI.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "dpep",
   "license": "MIT",
   "repository": {
