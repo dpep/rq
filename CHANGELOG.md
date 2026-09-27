@@ -9,6 +9,13 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Added
+- **JSON results say which checkout `file` is relative to.** Every search
+  result, `--show` and `--symbols` row in `--json`/`--ndjson` carries `root`, the
+  absolute checkout root. It is per result, because `-a/--all-repos` spans
+  repos: join `root` and `file` rather than guessing the repo from the cwd. A new
+  output field, so the next release is a minor one.
+
 ### Changed
 - **The VS Code extension (0.3.0) no longer lists a symbol twice in Cmd/Ctrl-T.**
   With `rq.workspaceSymbols: dedupe` (the default), rq adds only the symbols no

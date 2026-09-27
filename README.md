@@ -89,8 +89,9 @@ the VS Code extension (Cmd-click Go to Definition) and Neovim.
 `-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
 surface for editors, scripts, and AI agents. Each result is an object with
 `name`, `kind`, `language`, `file`, `line`, `end_line` (the definition's last
-line — read `line..=end_line` for the whole span), `parent`, `repo`,
-`confidence` (0–1: match quality × how much it leads the runner-up), `features`
+line — read `line..=end_line` for the whole span), `parent`, `repo`, `root`
+(the absolute checkout `file` is relative to — per result, since `-a` spans
+repos), `confidence` (0–1: match quality × how much it leads the runner-up), `features`
 (the scoring signals, strongest first), and `signature` (the definition's source
 line, so you can judge a result without opening the file). On a miss, JSON
 returns a `{"status": …}` object instead of results — `no_match` (definitive),
@@ -132,7 +133,8 @@ rq perform app/services --json            # ...scoped to a subtree (rg-style)
 
 `rq --symbols <file>` lists every definition in a file, in line order — a
 structural outline, not a ranked search. Honors `-k/--kind` and `-x/--lang`, and
-emits `--json`/`--ndjson` like everything else.
+emits `--json`/`--ndjson` like everything else, with the same `file`, `repo` and
+`root` fields as a search result.
 
 ```sh
 rq --symbols src/search/score.rs

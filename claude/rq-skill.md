@@ -33,7 +33,8 @@ Each result is an object:
 
 ```json
 { "name": "RefundProcessor", "kind": "class", "file": "app/services/refund_processor.rb",
-  "line": 7, "end_line": 34, "parent": "Billing", "repo": "github.com/org/app",
+  "root": "/home/me/code/app", "line": 7, "end_line": 34, "parent": "Billing",
+  "repo": "github.com/org/app",
   "confidence": 0.98, "features": ["exact","current_repo","recency"],
   "signature": "class RefundProcessor < Base" }
 ```
@@ -62,6 +63,8 @@ attributable, and a name that matched nothing still reports
 lookup that never ran are otherwise indistinguishable. Needs `--ndjson`/`-J`
 (`--json` can't frame several result sets), and `--show`/`--open` don't apply.
 
+`file` is relative to `root`, the absolute checkout it came from; join the two
+to read it, even under `-a/--all-repos`, where results span repos.
 `signature` is the definition's source line, so you usually don't need to open
 the file to confirm a match. `confidence` (0–1) is how sure rq is this is the one
 you meant — near 1.0 means take it; a low value or several close results means

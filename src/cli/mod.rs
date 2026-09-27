@@ -1011,13 +1011,17 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // in text output and carried in JSON. Cheap: only the displayed results.
     let _signatures_span = crate::profile::span("signatures");
     for hit in &mut hits {
-        hit.signature = read_signature(store, &hit.repo_identity, &hit.file, hit.line, here);
+        let root = hit_root(store, &hit.repo_identity, &hit.file, here);
+        hit.signature = root
+            .as_deref()
+            .and_then(|r| read_signature(&r.join(&hit.file), hit.line));
+        hit.root = root.map(|r| r.to_string_lossy().into_owned());
     }
     drop(_signatures_span);
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
-    if show && let Some(code) = show_top_definition(store, &mut hits, query, out, here) {
+    if show && let Some(code) = show_top_definition(&mut hits, query, out) {
         return code;
     }
 
@@ -2093,21 +2097,22 @@ fn hit_file_roots(store: &Store, repo_identity: &str, here: Option<Here>) -> Vec
     roots
 }
 
-/// The definition's source line (trimmed) for a hit — read from the first
-/// candidate root that has the file (see [`hit_file_roots`]). Best-effort.
-fn read_signature(
-    store: &Store,
-    repo_identity: &str,
-    file: &str,
-    line: i64,
-    here: Option<Here>,
-) -> Option<String> {
-    hit_file_roots(store, repo_identity, here)
-        .into_iter()
-        .find_map(|root| {
-            let src = std::fs::read_to_string(root.join(file)).ok()?;
-            signature_in(&src.lines().collect::<Vec<_>>(), line)
-        })
+/// The checkout root a hit's `file` is relative to: the first candidate (see
+/// [`hit_file_roots`]) that has the file on disk, else the likeliest one — the
+/// file may be gone, but the root still says where it was relative to.
+fn hit_root(store: &Store, repo_identity: &str, file: &str, here: Option<Here>) -> Option<PathBuf> {
+    let mut roots = hit_file_roots(store, repo_identity, here);
+    let at = roots
+        .iter()
+        .position(|r| r.join(file).is_file())
+        .unwrap_or(0);
+    (at < roots.len()).then(|| roots.swap_remove(at))
+}
+
+/// The definition's source line (trimmed) at `line` of `path`. Best-effort.
+fn read_signature(path: &std::path::Path, line: i64) -> Option<String> {
+    let src = std::fs::read_to_string(path).ok()?;
+    signature_in(&src.lines().collect::<Vec<_>>(), line)
 }
 
 /// Confidence at or above which `--show` prints a body instead of a list. Exact
@@ -2119,18 +2124,19 @@ const SHOW_CONFIDENCE: f64 = 0.85;
 /// and return the exit code; otherwise return `None` to fall through to the
 /// ranked list. Emits a single object in JSON/NDJSON (with a `body` field).
 fn show_top_definition(
-    store: &Store,
     hits: &mut [crate::search::Hit],
     query: &str,
     out: Output,
-    here: Option<Here>,
 ) -> Option<ExitCode> {
     let top = hits.first()?;
     if top.confidence < SHOW_CONFIDENCE {
         return None; // ambiguous / weak — let the caller list candidates
     }
     let end = top.end_line.unwrap_or(top.line);
-    let body = read_span(store, &top.repo_identity, &top.file, top.line, end, here);
+    let body = top.root.as_deref().and_then(|root| {
+        let src = std::fs::read_to_string(std::path::Path::new(root).join(&top.file)).ok()?;
+        span_in(&src, top.line, end)
+    });
     hits[0].body = body;
     let top = &hits[0];
     let code = match out {
@@ -2166,21 +2172,6 @@ fn show_top_definition(
     Some(code)
 }
 
-/// The source span `start..=end` (1-based, inclusive) of a hit — the full
-/// definition body for `--show`. Best-effort, mirroring [`read_signature`].
-fn read_span(
-    store: &Store,
-    repo_identity: &str,
-    file: &str,
-    start: i64,
-    end: i64,
-    here: Option<Here>,
-) -> Option<String> {
-    hit_file_roots(store, repo_identity, here)
-        .into_iter()
-        .find_map(|root| span_in(&std::fs::read_to_string(root.join(file)).ok()?, start, end))
-}
-
 /// Lines `start..=end` (1-based, inclusive) of already-read `content`, joined —
 /// clamped to the file's bounds. `None` if `start` is past the end.
 fn span_in(content: &str, start: i64, end: i64) -> Option<String> {
@@ -2212,6 +2203,8 @@ struct SymbolOut {
     kind: String,
     language: String,
     file: String,
+    /// Absolute checkout root `file` is relative to, as on a search hit.
+    root: String,
     line: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     end_line: Option<i64>,
@@ -2298,6 +2291,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let lines: Vec<&str> = content
         .as_deref()
         .map_or_else(Vec::new, |c| c.lines().collect());
+    let root_str = root.to_string_lossy().into_owned();
     let syms: Vec<SymbolOut> = rows
         .into_iter()
         .map(|r| SymbolOut {
@@ -2306,6 +2300,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
             kind: r.kind,
             language: r.language,
             file: r.file,
+            root: root_str.clone(),
             line: r.line,
             end_line: r.end_line,
             parent: r.parent,

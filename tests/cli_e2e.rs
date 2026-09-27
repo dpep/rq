@@ -504,6 +504,58 @@ fn a_search_does_not_leak_another_indexed_repo() {
 }
 
 #[test]
+fn structured_results_name_the_checkout_root_their_file_is_relative_to() {
+    // Each result carries its own `root`: `--all-repos` spans checkouts, so a
+    // caller can't assume the cwd's repo is the one `file` is relative to.
+    let (dir_a, db) = scratch("root-a");
+    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-root-b", std::process::id()));
+    let _ = fs::remove_dir_all(&dir_b);
+    fs::create_dir_all(dir_b.join("lib")).unwrap();
+    fs::write(dir_a.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir_b.join("lib/b.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir_a);
+    git_init_commit(&dir_b);
+    rq(&db, &dir_a, &["--index"]);
+    rq(&db, &dir_b, &["--index"]);
+    let root_of = |d: &Path| d.canonicalize().unwrap().to_string_lossy().into_owned();
+    let expect = |file: &str| {
+        if file == "a.rb" {
+            root_of(&dir_a)
+        } else {
+            root_of(&dir_b)
+        }
+    };
+
+    let (ok, out) = rq(&db, &dir_a, &["Widget", "--all-repos", "--json"]);
+    assert!(ok, "hit: {out}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).expect("json array");
+    assert_eq!(rows.len(), 2, "both repos: {out}");
+    for row in &rows {
+        let file = row["file"].as_str().unwrap();
+        assert_eq!(row["root"].as_str(), Some(expect(file).as_str()), "{out}");
+    }
+
+    // ndjson carries the same field, from a subdirectory of the other repo too
+    let (ok, out) = rq(&db, &dir_b.join("lib"), &["Widget", "-a", "--ndjson"]);
+    assert!(ok, "hit: {out}");
+    for line in out.lines() {
+        let row: serde_json::Value = serde_json::from_str(line).expect("ndjson line");
+        let file = row["file"].as_str().unwrap();
+        assert_eq!(row["root"].as_str(), Some(expect(file).as_str()), "{out}");
+    }
+
+    // an outline names its root as well
+    let (ok, out) = rq(&db, &dir_b.join("lib"), &["--symbols", "b.rb", "--ndjson"]);
+    assert!(ok, "outline: {out}");
+    let row: serde_json::Value = serde_json::from_str(first_line(&out)).expect("ndjson");
+    assert_eq!(row["file"], "lib/b.rb");
+    assert_eq!(row["root"].as_str(), Some(root_of(&dir_b).as_str()));
+
+    let _ = fs::remove_dir_all(&dir_a);
+    let _ = fs::remove_dir_all(&dir_b);
+}
+
+#[test]
 fn another_repos_exact_match_does_not_hide_a_fuzzy_one_here() {
     // Repo B defines `wdgt` exactly; repo A only has `Widget`, an abbreviation
     // match. Searching from A must still find Widget — B's exact hit is out of

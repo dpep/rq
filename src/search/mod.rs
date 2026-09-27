@@ -82,6 +82,11 @@ pub(crate) struct Hit {
     pub kind: String,
     pub language: String,
     pub file: String,
+    /// Absolute checkout root `file` is relative to — per result, since
+    /// `--all-repos` spans repos and one repo may have several checkouts.
+    /// Filled before output; omitted when rq knows no checkout for the repo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
     pub line: i64,
     /// 1-based last line of the definition — read `line..=end_line` for the whole
     /// span. Omitted in JSON when unknown (a row indexed before end-line tracking).
@@ -611,6 +616,7 @@ fn rank_one(
         kind: c.kind.clone(),
         language: c.language.clone(),
         file: c.file.clone(),
+        root: None,
         line: c.line,
         end_line: c.end_line,
         parent: c.parent.clone(),
@@ -641,6 +647,7 @@ mod tests {
             kind: "class".into(),
             language: "ruby".into(),
             file: file.into(),
+            root: None,
             line,
             end_line: None,
             parent: None,
@@ -908,6 +915,7 @@ mod tests {
             kind: "class".into(),
             language: "ruby".into(),
             file: "a.rb".into(),
+            root: None,
             line: 1,
             end_line: Some(1),
             parent: None,
@@ -1009,6 +1017,7 @@ mod tests {
             kind: "method".into(),
             language: "ruby".into(),
             file: "a.rb".into(),
+            root: None,
             line: 1,
             end_line: Some(1),
             parent: None,
