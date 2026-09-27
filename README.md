@@ -314,9 +314,11 @@ whose first index hasn't finished the same way. A live answer is marked
 `"source": "live"` in JSON (text output doesn't mark it), `-v` notes the files it scanned and how long it took against its budget
 (`RQ_FALLBACK_BUDGET_MS`, default 250 ms), and `--usage` counts these answers
 apart. The index is a SQLite file at `$RQ_DB`
-(default `~/.local/share/rq/rq.db`). `RQ_DB` must be an absolute path: a
-relative one would resolve against each command's working directory and split
-the index, so rq refuses it with a usage error (exit 64).
+(default `~/.local/share/rq/rq.db`; an empty `RQ_DB` means the default).
+`RQ_DB` must be an absolute path to a file: a relative one would resolve
+against each command's working directory and split the index, so rq refuses it
+with a usage error (exit 64), as it does a directory, or a default path under an
+unset or relative `HOME`.
 
 ## Shell completions
 

@@ -24,6 +24,13 @@ and aren't listed; see `git log` for those.
   suspended, so fuzzy `--all-repos` searches from outside the repo read its
   rows directly (about 250 ms on a large repo, against ~2) until a pass inside
   it finished. A search now rebuilds an index whose pass is gone.
+- **`RQ_DB` and `HOME` are checked before anything is opened.** An empty
+  `RQ_DB=` now means the default path instead of failing. An `RQ_DB` that names
+  a directory (`/some/dir/`) is refused with exit 64 rather than creating a file
+  named after it. The hint for a relative `RQ_DB` suggests `$HOME/…` for a
+  `~/…` path, where it used to suggest `$PWD/~/…`. With `RQ_DB` unset, an unset
+  `HOME` now says so, and a relative `HOME` is refused; both exit 64 (an unset
+  `HOME` used to exit 74 with a message that didn't name it).
 
 ### Upgrade note (correction to 0.55.0)
 - **An older rq can't index a migrated database at all.** 0.55.0's note said an

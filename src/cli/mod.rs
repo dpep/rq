@@ -229,17 +229,11 @@ fn dispatch(cli: Cli) -> ExitCode {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
         return ExitCode::SUCCESS;
     }
-    // A relative path would resolve against each caller's cwd, silently
-    // splitting the one shared index into a database per directory.
-    if let Some(db) = std::env::var_os("RQ_DB").filter(|p| std::path::Path::new(p).is_relative()) {
+    if let Err(message) = db_location() {
         return fail(
             output_format(&cli),
             Failure::Usage,
-            format_args!(
-                "rq: RQ_DB must be an absolute path, not {:?} (e.g. RQ_DB=\"$PWD/{}\")",
-                db,
-                db.to_string_lossy()
-            ),
+            format_args!("{message}"),
         );
     }
     if let Some(path) = &cli.index {
@@ -3177,10 +3171,52 @@ fn open_store() -> Result<Store, Box<dyn std::error::Error>> {
 
 /// Resolve the database path: `$RQ_DB`, else `$HOME/.local/share/rq/rq.db`.
 fn db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(p) = std::env::var("RQ_DB") {
-        return Ok(PathBuf::from(p));
+    Ok(db_location()?)
+}
+
+/// The database path from the environment, or the usage error that refuses it.
+/// A relative path would resolve against each caller's cwd, silently splitting
+/// the one shared index into a database per directory.
+fn db_location() -> Result<PathBuf, String> {
+    let var = |name| std::env::var_os(name).filter(|v| !v.is_empty());
+    db_location_from(var("RQ_DB"), var("HOME"))
+}
+
+fn db_location_from(
+    rq_db: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(db) = rq_db {
+        let shown = db.to_string_lossy();
+        if std::path::Path::new(&db).is_relative() {
+            // the shell doesn't expand a quoted or mid-word `~`
+            let hint = match shown.strip_prefix("~/") {
+                Some(rest) => format!("$HOME/{rest}"),
+                None => format!("$PWD/{shown}"),
+            };
+            return Err(format!(
+                "rq: RQ_DB must be an absolute path, not {shown:?} (e.g. RQ_DB=\"{hint}\")"
+            ));
+        }
+        if shown.ends_with('/') || std::path::Path::new(&db).is_dir() {
+            return Err(format!(
+                "rq: RQ_DB names a directory, not a database file: {shown:?} (e.g. RQ_DB=\"{}/rq.db\")",
+                shown.trim_end_matches('/')
+            ));
+        }
+        return Ok(PathBuf::from(db));
     }
-    let home = std::env::var("HOME")?;
+    let Some(home) = home else {
+        return Err(
+            "rq: HOME is not set, so there's no default index path; set HOME, or RQ_DB to an absolute path".into(),
+        );
+    };
+    if std::path::Path::new(&home).is_relative() {
+        return Err(format!(
+            "rq: HOME is a relative path ({:?}), so the default index would move with the working directory; set RQ_DB to an absolute path",
+            home.to_string_lossy()
+        ));
+    }
     Ok(PathBuf::from(home).join(".local/share/rq/rq.db"))
 }
 
@@ -3317,6 +3353,28 @@ fn requested_output(args: impl IntoIterator<Item = std::ffi::OsString>) -> Outpu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_database_path_is_refused_unless_it_is_an_absolute_file() {
+        let at = |db: Option<&str>, home: Option<&str>| {
+            db_location_from(db.map(Into::into), home.map(Into::into))
+        };
+        assert_eq!(
+            at(None, Some("/home/a")).unwrap(),
+            PathBuf::from("/home/a/.local/share/rq/rq.db")
+        );
+        assert_eq!(
+            at(Some("/x/rq.db"), None).unwrap(),
+            PathBuf::from("/x/rq.db")
+        );
+
+        let refused = |db, home| at(db, home).unwrap_err();
+        assert!(refused(Some("~/x.db"), None).contains("RQ_DB=\"$HOME/x.db\""));
+        assert!(refused(Some("x.db"), None).contains("RQ_DB=\"$PWD/x.db\""));
+        assert!(refused(Some("/x/"), None).contains("RQ_DB=\"/x/rq.db\""));
+        assert!(refused(None, None).contains("HOME is not set"));
+        assert!(refused(None, Some("home/a")).contains("HOME is a relative path"));
+    }
 
     #[test]
     fn parses_an_anchor_from_the_right() {

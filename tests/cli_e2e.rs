@@ -3187,3 +3187,30 @@ fn a_relative_rq_db_is_a_usage_error() {
     assert!(err["error"].as_str().unwrap().contains("RQ_DB"), "{err}");
     assert!(!created, "nothing is written beside the caller");
 }
+
+#[test]
+fn an_empty_rq_db_means_the_default_and_a_directory_is_refused() {
+    let (dir, _) = scratch("empty-db");
+    let run = |db: &str| {
+        Command::new(env!("CARGO_BIN_EXE_rq"))
+            .args(["--status", "--json"])
+            .current_dir(&dir)
+            .env("RQ_DB", db)
+            .env("HOME", &dir)
+            .output()
+            .expect("run rq")
+    };
+    let empty = run("");
+    let default_made = dir.join(".local/share/rq/rq.db").exists();
+    let slash = format!("{}/dbs/", dir.display());
+    let trailing = run(&slash);
+    let dir_made = dir.join("dbs").exists();
+    let _ = fs::remove_dir_all(&dir);
+
+    assert_eq!(empty.status.code(), Some(0));
+    assert!(default_made, "the default path under HOME");
+    assert_eq!(trailing.status.code(), Some(64));
+    let err: serde_json::Value = serde_json::from_slice(&trailing.stdout).expect("error json");
+    assert_eq!(err["kind"], "usage");
+    assert!(!dir_made, "nothing is created for a refused path");
+}
