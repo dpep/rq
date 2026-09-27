@@ -39,6 +39,7 @@ rq --symbols FILE         outline a file's definitions, in line order\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python/ts/js)\n  \
 rq 'Foo::Bar'             qualify by scope — the surest way past an ambiguous name\n  \
 rq 'Foo#bar'              ...and by owner, for a method\n  \
+rq save --anchor w.rb:9   rank as if asked from line 9 of w.rb\n  \
 rq Foo.new                the constructor (initialize, __init__, ...)\n  \
 rq 'refund*proc'          wildcards: * (any run), ? (one char) — quote them\n  \
 rq -o thing               open the best match in your editor\n  \
@@ -138,6 +139,14 @@ struct Cli {
     /// search inside a repo returns only that repo's definitions.
     #[arg(short = 'a', long = "all-repos")]
     all_repos: bool,
+
+    /// The position the query is asked from — an editor's cursor, or the file
+    /// an agent is reading. Ranks definitions in the scopes enclosing that line,
+    /// then those in the same file and nearby directories, higher. Context,
+    /// never a filter. FILE is relative to the current directory; COL is
+    /// accepted and ignored.
+    #[arg(long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with_all = ["index", "status", "usage", "symbols", "drop", "warm"])]
+    anchor: Option<AnchorSpec>,
 
     /// Index a repository (PATH, or the current directory).
     #[arg(long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with = "status")]
@@ -278,6 +287,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                 Ok(s) => s,
                 Err(code) => return code,
             };
+            session.anchor = cli.anchor.as_ref().map(|a| session.anchor_at(a));
             cmd_search(
                 &mut session,
                 &SearchArgs {
@@ -295,6 +305,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                     all_repos: cli.all_repos,
                     show: cli.show,
                     batch: false,
+                    anchored: cli.anchor.is_some(),
                 },
             )
         }
@@ -370,6 +381,7 @@ fn flag_summary(args: &SearchArgs) -> String {
         (args.all_repos, "all-repos"),
         (args.no_wait, "no-wait"),
         (args.batch, "batch"),
+        (args.anchored, "anchor"),
         (!args.paths.is_empty(), "path"),
         (!args.kinds.is_empty(), "kind"),
         (!args.langs.is_empty(), "lang"),
@@ -423,6 +435,8 @@ struct SearchArgs<'a> {
     /// unattributable.
     batch: bool,
     show: bool,
+    /// Asked from a position (`--anchor`); the anchor itself lives on the session.
+    anchored: bool,
 }
 
 /// Default action: search the index and print ranked results.
@@ -444,6 +458,8 @@ struct Session {
     branch_refresh: Option<BranchRefresh>,
     identity: Option<String>,
     coverage: Option<String>,
+    /// Where the queries are asked from (`--anchor`), resolved once.
+    anchor: Option<crate::search::Anchor>,
 }
 
 impl Session {
@@ -510,8 +526,62 @@ impl Session {
             branch_refresh,
             identity,
             coverage,
+            anchor: None,
         })
     }
+
+    /// Resolve `--anchor` against this session: the repo its file sits in (the
+    /// one we're in, when it's under our root), its path there, and what
+    /// encloses its line — read live if the index doesn't hold this version.
+    fn anchor_at(&self, spec: &AnchorSpec) -> crate::search::Anchor {
+        let _span = crate::profile::span("setup: anchor");
+        let here = self.cwd.clone().unwrap_or_else(|| PathBuf::from("."));
+        let abs = here.join(&spec.file);
+        let abs = abs.canonicalize().unwrap_or(abs);
+        let root = self
+            .root
+            .clone()
+            .filter(|r| abs.starts_with(r))
+            .or_else(|| crate::index::repo_root(&abs))
+            .or_else(|| abs.parent().map(PathBuf::from))
+            .unwrap_or(here);
+        let identity = resolve_identity(&self.store, &root);
+        let rel = abs
+            .strip_prefix(&root)
+            .map_or_else(|_| spec.file.to_string_lossy(), |r| r.to_string_lossy())
+            .into_owned();
+        let repo_id = self.store.repository_id(&identity).ok().flatten();
+        let defs = crate::index::current_definitions(&self.store, repo_id, &identity, &root, &rel);
+        crate::search::Anchor::new(identity, rel, spec.line, &defs)
+    }
+}
+
+/// A parsed `--anchor FILE:LINE[:COL]`.
+#[derive(Debug, Clone, PartialEq)]
+struct AnchorSpec {
+    file: PathBuf,
+    line: i64,
+}
+
+/// Parse `FILE:LINE` or `FILE:LINE:COL` (1-based), splitting from the right so
+/// a path holding a colon still parses.
+fn parse_anchor(s: &str) -> Result<AnchorSpec, String> {
+    let num = |t: &str| t.parse::<i64>().ok().filter(|n| *n > 0);
+    let bad = || format!("expected FILE:LINE[:COL], got {s:?}");
+    let (rest, last) = s.rsplit_once(':').ok_or_else(bad)?;
+    let last = num(last).ok_or_else(bad)?;
+    // `FILE:LINE:COL` when what precedes the last number is itself a number
+    let (file, line) = rest
+        .rsplit_once(':')
+        .and_then(|(file, line)| num(line).map(|line| (file, line)))
+        .unwrap_or((rest, last));
+    if file.is_empty() {
+        return Err(bad());
+    }
+    Ok(AnchorSpec {
+        file: PathBuf::from(file),
+        line,
+    })
 }
 
 /// Answer a stream of queries, one per line on stdin, in a single run.
@@ -567,6 +637,7 @@ fn cmd_batch(
         Ok(s) => s,
         Err(code) => return code,
     };
+    session.anchor = cli.anchor.as_ref().map(|a| session.anchor_at(a));
 
     // Warm to completion before answering anything, so a cold repo doesn't
     // return a page of misses that only mean "not indexed yet".
@@ -613,6 +684,7 @@ fn cmd_batch(
                 all_repos: cli.all_repos,
                 show: false,
                 batch: true,
+                anchored: cli.anchor.is_some(),
             },
         );
         if code == ExitCode::SUCCESS {
@@ -665,6 +737,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         branch_refresh,
         identity,
         coverage,
+        anchor,
     } = session;
     let cwd_is_git = *cwd_is_git;
 
@@ -693,7 +766,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Default: scope results to the current repo (when it's indexed) so a search
     // never leaks another repo's definitions. `--all-repos` searches everything.
     let only_repo = if all_repos { None } else { current };
-    let active = crate::search::ActiveFiles::new(active_paths.clone());
+    let ctx = crate::search::Context {
+        active: crate::search::ActiveFiles::new(active_paths.clone()),
+        anchor: anchor.clone(),
+    };
 
     drop(repo_span);
     let warm_span = crate::profile::span("setup: warm decision");
@@ -837,7 +913,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let rank_limit = limit.max(2);
     let mut total;
     let mut hits = loop {
-        match crate::search::search(store, query, current, only_repo, &active, rank_limit) {
+        match crate::search::search(store, query, current, only_repo, &ctx, rank_limit) {
             Ok(m) => {
                 total = m.total;
                 let h = m.hits;
@@ -891,7 +967,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
     if !hits.is_empty()
         && revalidate_top(store, &hits, here)
-        && let Ok(m) = crate::search::search(store, query, current, only_repo, &active, rank_limit)
+        && let Ok(m) = crate::search::search(store, query, current, only_repo, &ctx, rank_limit)
     {
         total = m.total;
         hits = m.hits;
@@ -905,7 +981,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         && coverage.is_none()
         && let Some(root) = &root
     {
-        let tail = live_fallback(root, query, rank_limit);
+        let tail = live_fallback(root, query, rank_limit, &ctx);
         hits = crate::search::merge(hits, tail, rank_limit);
         total = total.max(hits.len());
     }
@@ -964,7 +1040,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
         // search never pays for it.
-        let elsewhere = crate::search::scope_miss_owner(store, query, current, only_repo, &active);
+        let elsewhere = crate::search::scope_miss_owner(store, query, current, only_repo, &ctx);
         let code = no_match_code(out, query, interrupted, incomplete, elsewhere.as_deref());
         // Counted after the answer, and only here: whether this was a
         // definitive miss or a not-ready one is only known on this path, and
@@ -1266,14 +1342,30 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
 
 /// Live in-memory scan of an untracked (non-git, never-indexed) dir: substring
 /// pre-filtered first, then the unfiltered fuzzy retry. Persists nothing.
-fn live_fallback(root: &std::path::Path, query: &str, limit: usize) -> Vec<crate::search::Hit> {
+fn live_fallback(
+    root: &std::path::Path,
+    query: &str,
+    limit: usize,
+    ctx: &crate::search::Context,
+) -> Vec<crate::search::Hit> {
     crate::trace!("empty → live (in-memory) scan of an untracked dir");
     let deadline = std::time::Instant::now() + live_fallback_budget();
-    let h = crate::search::live_search(root, query, limit, &HashSet::new(), Some(deadline), true);
+    let scan = |prefilter| {
+        crate::search::live_search(
+            root,
+            query,
+            limit,
+            &HashSet::new(),
+            Some(deadline),
+            prefilter,
+            ctx,
+        )
+    };
+    let h = scan(true);
     if !h.is_empty() {
         return h;
     }
-    crate::search::live_search(root, query, limit, &HashSet::new(), Some(deadline), false)
+    scan(false)
 }
 
 /// A high-confidence name match: exact or prefix (not fuzzy/path-only).
@@ -2859,6 +2951,22 @@ fn fail(args: std::fmt::Arguments) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_an_anchor_from_the_right() {
+        let ok = |file: &str, line| {
+            Ok(AnchorSpec {
+                file: PathBuf::from(file),
+                line,
+            })
+        };
+        assert_eq!(parse_anchor("app/w.rb:42"), ok("app/w.rb", 42));
+        assert_eq!(parse_anchor("app/w.rb:42:7"), ok("app/w.rb", 42));
+        assert_eq!(parse_anchor("C:odd/w.rb:3"), ok("C:odd/w.rb", 3));
+        for bad in ["app/w.rb", "app/w.rb:", "app/w.rb:0", ":12"] {
+            assert!(parse_anchor(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn open_menu_choice_parsing() {

@@ -895,6 +895,169 @@ fn a_discarded_deletion_is_found_again() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Three `save`s; unanchored, the tie falls to path order and Gadget's leads.
+fn three_saves(label: &str) -> (PathBuf, PathBuf) {
+    let (dir, db) = scratch(label);
+    fs::create_dir_all(dir.join("app/models")).unwrap();
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    let class = |name: &str, extra: &str| {
+        format!("class {name}\n  def save\n  end\n  def persist\n    save{extra}\n  end\nend\n")
+    };
+    fs::write(dir.join("app/models/widget.rb"), class("Widget", "")).unwrap();
+    fs::write(dir.join("app/models/gadget.rb"), class("Gadget", "")).unwrap();
+    fs::write(dir.join("lib/aaa.rb"), class("Aaa", "")).unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    (dir, db)
+}
+
+fn top_file(ndjson: &str) -> String {
+    let row: serde_json::Value = serde_json::from_str(first_line(ndjson)).expect("ndjson");
+    row["file"].as_str().unwrap_or_default().to_string()
+}
+
+#[test]
+fn an_anchor_ranks_the_enclosing_class_first() {
+    let (dir, db) = three_saves("anchor");
+    let (_, plain) = rq(&db, &dir, &["save", "-k", "method", "--ndjson"]);
+    assert_eq!(
+        top_file(&plain),
+        "app/models/gadget.rb",
+        "baseline: {plain}"
+    );
+    assert!(!plain.contains("enclosing") && !plain.contains("proximity"));
+
+    // line 5 is the `save` call inside Widget#persist
+    let at = "app/models/widget.rb:5";
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["save", "-k", "method", "--anchor", at, "--ndjson"],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(top_file(&out), "app/models/widget.rb", "{out}");
+    let row: serde_json::Value = serde_json::from_str(first_line(&out)).unwrap();
+    let features: Vec<&str> = row["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert!(features.contains(&"enclosing") && features.contains(&"proximity"));
+
+    // text + --explain name both features; a column is accepted
+    let (_, text) = rq(
+        &db,
+        &dir,
+        &[
+            "save",
+            "-k",
+            "method",
+            "--anchor",
+            "app/models/widget.rb:5:7",
+            "--explain",
+        ],
+    );
+    assert!(
+        first_line(&text).starts_with("app/models/widget.rb"),
+        "{text}"
+    );
+    assert!(
+        text.contains("enclosing 60") && text.contains("proximity 90"),
+        "{text}"
+    );
+
+    // FILE resolves against the cwd, here a subdirectory
+    let (_, sub) = rq(
+        &db,
+        &dir.join("app"),
+        &[
+            "save",
+            "-k",
+            "method",
+            "--anchor",
+            "models/widget.rb:5",
+            "--json",
+        ],
+    );
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&sub).expect("json");
+    assert_eq!(rows[0]["file"], "app/models/widget.rb", "{sub}");
+
+    // every line of a batch is asked from the same place
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["-J", "-k", "method", "--anchor", at])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "0")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn rq");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"save\npersist\n").unwrap();
+    }
+    let batch = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+    let first_for = |q: &str| {
+        batch
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|r| r["query"] == q)
+            .map(|r| r["file"].as_str().unwrap_or_default().to_string())
+    };
+    assert_eq!(
+        first_for("save").as_deref(),
+        Some("app/models/widget.rb"),
+        "{batch}"
+    );
+    assert_eq!(
+        first_for("persist").as_deref(),
+        Some("app/models/widget.rb"),
+        "{batch}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_anchor_file_the_index_has_not_seen_is_read_live() {
+    // A file created after indexing, reopening Widget: nothing about it is in
+    // the index, so only a live read knows line 3 sits inside Widget.
+    let (dir, db) = three_saves("anchor-live");
+    fs::write(
+        dir.join("app/models/widget_ext.rb"),
+        "class Widget\n  def again\n    save\n  end\nend\n",
+    )
+    .unwrap();
+    let at = "app/models/widget_ext.rb:3";
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["save", "-k", "method", "--anchor", at, "--ndjson"],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(top_file(&out), "app/models/widget.rb", "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_anchor_is_rejected_where_it_means_nothing() {
+    let (dir, db) = scratch("anchor-bad");
+    for args in [
+        &["--status", "--anchor", "a.rb:1"][..],
+        &["--symbols", "a.rb", "--anchor", "a.rb:1"],
+        &["save", "--anchor", "a.rb"],
+        &["save", "--anchor", "a.rb:0"],
+    ] {
+        let (ok, out, err) = rq_both(&db, &dir, args);
+        assert!(!ok, "{args:?} should fail: {out}");
+        assert!(err.contains("--anchor"), "{args:?}: {err}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
     // `rq --index <subdir>` seeds only that subtree in this run, yet stores

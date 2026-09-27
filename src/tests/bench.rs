@@ -49,7 +49,7 @@ fn search_latency() {
         root.display()
     );
 
-    let go = |q: &str| search::search(&store, q, None, None, &search::ActiveFiles::default(), 10);
+    let go = |q: &str| search::search(&store, q, None, None, &search::Context::default(), 10);
 
     // warm up
     for q in QUERIES {

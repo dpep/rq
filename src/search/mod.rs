@@ -69,10 +69,127 @@ impl ActiveFiles {
     }
 }
 
+/// The directories leading to a repo-relative file, outermost first.
+fn dir_segments(path: &str) -> Vec<&str> {
+    parent_dir(path).map_or_else(Vec::new, |d| d.split('/').collect())
+}
+
 /// The directory portion of a repo-relative path (`app/models/user.rb` →
 /// `app/models`), or `None` for a top-level file.
 fn parent_dir(path: &str) -> Option<&str> {
     path.rfind('/').map(|i| &path[..i])
+}
+
+/// Enclosing-scope boost per scope level the candidate's parent shares with
+/// the anchor's: sharing the innermost class outranks sharing only its module.
+const ENCLOSING_STEP: f64 = 60.0;
+/// Cap on the enclosing-scope boost — below a branch file's, and far below the
+/// gap between match tiers, so it reorders equals rather than overruling a
+/// better name match.
+const MAX_ENCLOSING: f64 = 180.0;
+/// Proximity boost for a candidate in the anchor's own file.
+const SAME_FILE_BOOST: f64 = 90.0;
+/// Proximity boost for a candidate in the anchor's directory; it halves with
+/// each directory step between the two, and stops counting below
+/// [`MIN_PROXIMITY`].
+const SAME_DIR_BOOST: f64 = 60.0;
+const MIN_PROXIMITY: f64 = 5.0;
+
+/// Where a query was asked from (`--anchor FILE:LINE`): an editor's cursor, or
+/// the file an agent is reading. Ranking context only — it never filters.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Anchor {
+    /// Identity of the repo the anchor's file belongs to.
+    identity: String,
+    /// The anchor's file, relative to that repo's root.
+    file: String,
+    /// Lowercased scope chain of the innermost definition enclosing the
+    /// anchor's line (`Foo::Widget#save` → `[foo, widget, save]`); empty when
+    /// the line sits outside every definition.
+    scope: Vec<String>,
+}
+
+impl Anchor {
+    /// An anchor at `line` of `file`, given that file's definitions as they
+    /// stand now. Language-blind: only spans and recorded parents are read.
+    pub(crate) fn new(identity: String, file: String, line: i64, defs: &[SymbolRow]) -> Self {
+        let innermost = defs
+            .iter()
+            .filter(|d| d.line <= line && line <= d.end_line.unwrap_or(d.line))
+            .max_by_key(|d| (d.line, std::cmp::Reverse(d.end_line)));
+        let scope = innermost.map_or_else(Vec::new, |d| {
+            let mut scope = d.parent.as_deref().map_or_else(Vec::new, score::segments);
+            scope.push(d.name.to_ascii_lowercase());
+            scope
+        });
+        Anchor {
+            identity,
+            file,
+            scope,
+        }
+    }
+
+    /// The candidate is defined inside a scope enclosing the anchor — its parent
+    /// is a leading run of the anchor's scope chain — graded by how much of the
+    /// chain it shares. A bare `save` inside `Widget` thereby prefers
+    /// `Widget#save`. rq records no inheritance, so a `save` the class inherits
+    /// from an ancestor earns nothing here.
+    fn enclosing(&self, parent: Option<&str>) -> f64 {
+        let Some(parent) = parent else {
+            return 0.0;
+        };
+        let p = score::segments(parent);
+        if p.is_empty() || p.len() > self.scope.len() || p[..] != self.scope[..p.len()] {
+            return 0.0;
+        }
+        (ENCLOSING_STEP * p.len() as f64).min(MAX_ENCLOSING)
+    }
+
+    /// Same file, then same directory, decaying with each directory step
+    /// between the two. Only within the anchor's own repo.
+    fn proximity(&self, identity: &str, file: &str) -> f64 {
+        if identity != self.identity {
+            return 0.0;
+        }
+        if file == self.file {
+            return SAME_FILE_BOOST;
+        }
+        let (a, b) = (dir_segments(&self.file), dir_segments(file));
+        let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        let steps = (a.len() - common) + (b.len() - common);
+        let boost = SAME_DIR_BOOST * 0.5_f64.powi(steps as i32);
+        if boost < MIN_PROXIMITY { 0.0 } else { boost }
+    }
+}
+
+/// Where a search is asked from, beyond the query: the files the branch is
+/// changing, and the anchor position when the caller gave one.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Context {
+    pub active: ActiveFiles,
+    pub anchor: Option<Anchor>,
+}
+
+impl Context {
+    /// The context-dependent boosts for one candidate.
+    fn boosts(&self, c: &SymbolRow, recency: f64) -> Boosts {
+        let (enclosing, proximity) = self.anchor.as_ref().map_or((0.0, 0.0), |a| {
+            (
+                a.enclosing(c.parent.as_deref()),
+                a.proximity(&c.repo_identity, &c.file),
+            )
+        });
+        Boosts {
+            recency,
+            branch: if self.active.is_empty() {
+                0.0
+            } else {
+                self.active.boost(&c.file)
+            },
+            enclosing,
+            proximity,
+        }
+    }
 }
 
 /// A ranked search result. Serializes for `--json` / `--ndjson`.
@@ -175,18 +292,18 @@ impl std::ops::Deref for Matches {
 /// `current_repo_id` (if any) boosts results from the repository you're in;
 /// `only_repo` (if any) restricts results to that repository, so a search inside
 /// a repo answers about *that* repo rather than leaking others you've indexed;
-/// `active` boosts files you're changing on the current branch.
+/// `ctx` carries where the search is asked from: the branch's changed files
+/// and an optional anchor position.
 pub(crate) fn search(
     store: &Store,
     query: &str,
     current_repo_id: Option<i64>,
     only_repo: Option<i64>,
-    active: &ActiveFiles,
+    ctx: &Context,
     limit: usize,
 ) -> crate::store::Result<Matches> {
-    let run = |q: &str, typo: bool| {
-        search_query(store, q, current_repo_id, only_repo, active, limit, typo)
-    };
+    let run =
+        |q: &str, typo: bool| search_query(store, q, current_repo_id, only_repo, ctx, limit, typo);
     if !query.contains('.') {
         return run(query, true);
     }
@@ -242,7 +359,7 @@ fn search_query(
     query: &str,
     current_repo_id: Option<i64>,
     only_repo: Option<i64>,
-    active: &ActiveFiles,
+    ctx: &Context,
     limit: usize,
     // retry as a near miss when nothing matches outright
     typo: bool,
@@ -293,17 +410,11 @@ fn search_query(
         candidates
             .iter()
             .filter_map(|c| {
-                let boosts = Boosts {
-                    // prefer whichever recency signal is more recent: a recent edit
-                    // (mtime, stored in nanoseconds — convert to seconds) or a
-                    // recent commit (git_ts, seconds)
-                    recency: recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now),
-                    branch: if active.is_empty() {
-                        0.0
-                    } else {
-                        active.boost(&c.file)
-                    },
-                };
+                // prefer whichever recency signal is more recent: a recent edit
+                // (mtime, stored in nanoseconds — convert to seconds) or a
+                // recent commit (git_ts, seconds)
+                let recency = recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now);
+                let boosts = ctx.boosts(c, recency);
                 rank_one(query, c, current_repo_id, boosts, near_miss)
             })
             .collect()
@@ -393,11 +504,11 @@ pub(crate) fn scope_miss_owner(
     query: &str,
     current_repo_id: Option<i64>,
     only_repo: Option<i64>,
-    active: &ActiveFiles,
+    ctx: &Context,
 ) -> Option<String> {
     let (leaf, qualifier) = score::parse_qualified(query);
     qualifier?;
-    let bare = search(store, leaf, current_repo_id, only_repo, active, 1).ok()?;
+    let bare = search(store, leaf, current_repo_id, only_repo, ctx, 1).ok()?;
     let hit = bare.hits.first()?;
     Some(match &hit.parent {
         Some(parent) => format!("{parent} ({}:{})", hit.file, hit.line),
@@ -440,30 +551,18 @@ pub(crate) fn live_search(
     skip: &HashSet<String>,
     deadline: Option<Instant>,
     prefilter: bool,
+    ctx: &Context,
 ) -> Vec<Hit> {
     let needle = prefilter.then_some(query.as_bytes());
     let identity = crate::index::detect_identity(root).to_string();
     let rows: Vec<SymbolRow> = crate::index::scan(root, skip, deadline, needle)
         .into_iter()
         .flat_map(|fs| fs.symbols)
-        .map(|s| SymbolRow {
-            name: s.name,
-            kind: s.kind.as_str().to_string(),
-            language: s.language,
-            file: s.file,
-            line: s.line as i64,
-            end_line: Some(s.end_line as i64),
-            parent: s.parent,
-            repository_id: LIVE_REPO_ID,
-            repo_identity: identity.clone(),
-            mtime: None,
-            git_ts: None,
-            visibility: s.visibility.map(str::to_string),
-        })
+        .map(|s| SymbolRow::live(s, LIVE_REPO_ID, &identity))
         .collect();
     let rank = |q: &str| -> Vec<Hit> {
         rows.iter()
-            .filter_map(|row| rank_one(q, row, Some(LIVE_REPO_ID), Boosts::default(), false))
+            .filter_map(|row| rank_one(q, row, Some(LIVE_REPO_ID), ctx.boosts(row, 0.0), false))
             .collect()
     };
     let mut hits = rank(query);
@@ -758,10 +857,7 @@ mod tests {
                 .replace_file_symbols(repo, file, "ruby", None, "h", syms)
                 .unwrap();
         }
-        let boosts = || Boosts {
-            recency: 0.0,
-            branch: 0.0,
-        };
+        let boosts = Boosts::default;
         let queries = [
             "conpool",
             "usr",
@@ -830,19 +926,11 @@ mod tests {
     fn only_repo_scopes_results_to_that_repo() {
         let (store, a, b) = store_two_repos();
         // scoped to repo A: only A's Widget, never B's
-        let hits = search(
-            &store,
-            "Widget",
-            Some(a),
-            Some(a),
-            &ActiveFiles::default(),
-            10,
-        )
-        .unwrap();
+        let hits = search(&store, "Widget", Some(a), Some(a), &Context::default(), 10).unwrap();
         assert_eq!(hits.hits.len(), 1);
         assert_eq!(hits.hits[0].repo_identity, "local:/tmp/a");
         // no scope (--all-repos): both repos' Widgets surface
-        let all = search(&store, "Widget", Some(a), None, &ActiveFiles::default(), 10).unwrap();
+        let all = search(&store, "Widget", Some(a), None, &Context::default(), 10).unwrap();
         assert_eq!(all.hits.len(), 2);
         let _ = b;
     }
@@ -851,15 +939,7 @@ mod tests {
     fn scoped_search_reports_no_match_rather_than_leaking_another_repo() {
         let (store, a, _b) = store_two_repos();
         // "Gadget" exists in neither; scoped to A it's simply absent (not B's)
-        let hits = search(
-            &store,
-            "Gadget",
-            Some(a),
-            Some(a),
-            &ActiveFiles::default(),
-            10,
-        )
-        .unwrap();
+        let hits = search(&store, "Gadget", Some(a), Some(a), &Context::default(), 10).unwrap();
         assert!(hits.is_empty());
     }
 
@@ -870,7 +950,7 @@ mod tests {
             sym("User", Kind::Class),
             sym("UserMailer", Kind::Class),
         ]);
-        let hits = search(&store, "user", None, None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(&store, "user", None, None, &Context::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
     }
 
@@ -881,15 +961,7 @@ mod tests {
             sym("Refund", Kind::Class),
             sym("Payment", Kind::Class),
         ]);
-        let hits = search(
-            &store,
-            "refundproc",
-            None,
-            None,
-            &ActiveFiles::default(),
-            10,
-        )
-        .unwrap();
+        let hits = search(&store, "refundproc", None, None, &Context::default(), 10).unwrap();
         assert_eq!(hits[0].name, "RefundProcessor");
         assert!(!names(&hits).contains(&"Payment"));
     }
@@ -897,14 +969,14 @@ mod tests {
     #[test]
     fn short_fuzzy_query_still_resolves() {
         let store = store_with(&[sym("User", Kind::Class), sym("Account", Kind::Class)]);
-        let hits = search(&store, "usr", None, None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(&store, "usr", None, None, &Context::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
     }
 
     #[test]
     fn no_match_returns_empty() {
         let store = store_with(&[sym("User", Kind::Class)]);
-        let hits = search(&store, "zzzzz", None, None, &ActiveFiles::default(), 10).unwrap();
+        let hits = search(&store, "zzzzz", None, None, &Context::default(), 10).unwrap();
         assert!(hits.is_empty());
     }
 
@@ -965,15 +1037,7 @@ mod tests {
             nested("Config", Kind::Class, "Qux"),
         ]);
         // `Foo::Config` should surface the Config nested under Foo first
-        let hits = search(
-            &store,
-            "Foo::Config",
-            None,
-            None,
-            &ActiveFiles::default(),
-            10,
-        )
-        .unwrap();
+        let hits = search(&store, "Foo::Config", None, None, &Context::default(), 10).unwrap();
         assert_eq!(hits[0].parent.as_deref(), Some("Foo"));
         assert!(hits[0].features.iter().any(|f| f.name == "parent"));
     }
@@ -991,22 +1055,14 @@ mod tests {
             "Bar::Worker#perform",
             None,
             None,
-            &ActiveFiles::default(),
+            &Context::default(),
             10,
         )
         .unwrap();
         assert_eq!(m[0].kind, "method");
         assert_eq!(m[0].parent.as_deref(), Some("Bar::Worker"));
         // a module qualified by its enclosing scope
-        let w = search(
-            &store,
-            "Bar::Worker",
-            None,
-            None,
-            &ActiveFiles::default(),
-            10,
-        )
-        .unwrap();
+        let w = search(&store, "Bar::Worker", None, None, &Context::default(), 10).unwrap();
         assert_eq!(w[0].name, "Worker");
         assert_eq!(w[0].parent.as_deref(), Some("Bar"));
     }
@@ -1065,11 +1121,137 @@ mod tests {
         assert_eq!(hits.len(), 2, "no qualifier — nothing to gate on");
     }
 
+    fn row(name: &str, parent: Option<&str>, file: &str, span: (i64, i64)) -> SymbolRow {
+        SymbolRow {
+            name: name.into(),
+            kind: "method".into(),
+            language: "ruby".into(),
+            file: file.into(),
+            line: span.0,
+            end_line: Some(span.1),
+            parent: parent.map(str::to_string),
+            repository_id: 1,
+            repo_identity: "local:/tmp/x".into(),
+            mtime: None,
+            git_ts: None,
+            visibility: None,
+        }
+    }
+
+    fn anchor_in_widget(line: i64) -> Anchor {
+        // module Shop; class Widget; def persist ... end; end; end
+        let defs = [
+            row("Shop", None, "app/shop/widget.rb", (1, 20)),
+            row("Widget", Some("Shop"), "app/shop/widget.rb", (2, 19)),
+            row(
+                "persist",
+                Some("Shop::Widget"),
+                "app/shop/widget.rb",
+                (5, 9),
+            ),
+        ];
+        Anchor::new(
+            "local:/tmp/x".into(),
+            "app/shop/widget.rb".into(),
+            line,
+            &defs,
+        )
+    }
+
+    #[test]
+    fn an_anchor_takes_the_innermost_enclosing_definition() {
+        assert_eq!(anchor_in_widget(7).scope, ["shop", "widget", "persist"]);
+        assert_eq!(anchor_in_widget(3).scope, ["shop", "widget"]);
+        assert!(anchor_in_widget(40).scope.is_empty(), "outside everything");
+    }
+
+    #[test]
+    fn enclosing_grades_by_how_much_scope_is_shared() {
+        let a = anchor_in_widget(7);
+        let cases = [
+            (Some("Shop::Widget"), 2.0 * ENCLOSING_STEP),
+            (Some("Shop"), ENCLOSING_STEP),
+            (Some("Shop::Gadget"), 0.0),
+            (Some("Other::Shop::Widget"), 0.0),
+            (Some("Shop::Widget::persist::Inner::Deeper"), 0.0),
+            (None, 0.0),
+        ];
+        for (parent, want) in cases {
+            assert_eq!(a.enclosing(parent), want, "{parent:?}");
+        }
+    }
+
+    #[test]
+    fn proximity_decays_with_directory_distance() {
+        let a = anchor_in_widget(7);
+        let id = "local:/tmp/x";
+        let cases = [
+            (id, "app/shop/widget.rb", SAME_FILE_BOOST),
+            (id, "app/shop/gadget.rb", SAME_DIR_BOOST),
+            (id, "app/shop/parts/gear.rb", SAME_DIR_BOOST / 2.0),
+            (id, "app/other/gear.rb", SAME_DIR_BOOST / 4.0),
+            (id, "lib/deep/down/gear.rb", 0.0),
+            ("local:/tmp/elsewhere", "app/shop/widget.rb", 0.0),
+        ];
+        for (identity, file, want) in cases {
+            assert_eq!(a.proximity(identity, file), want, "{file}");
+        }
+    }
+
+    #[test]
+    fn an_anchor_prefers_the_definition_in_its_enclosing_class() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/x"), None)
+            .unwrap();
+        for (file, parent) in [
+            ("app/a/gadget.rb", "Gadget"),
+            ("app/shop/widget.rb", "Shop::Widget"),
+            ("lib/z/zeta.rb", "Zeta"),
+        ] {
+            store
+                .replace_file_symbols(
+                    repo,
+                    file,
+                    "ruby",
+                    None,
+                    "h",
+                    &[nested("save", Kind::Method, parent)],
+                )
+                .unwrap();
+        }
+        let plain = search(&store, "save", None, None, &Context::default(), 10).unwrap();
+        assert_eq!(
+            plain[0].parent.as_deref(),
+            Some("Gadget"),
+            "unanchored: by path"
+        );
+        assert!(plain.iter().all(|h| {
+            h.features
+                .iter()
+                .all(|f| !matches!(f.name, "enclosing" | "proximity"))
+        }));
+
+        // asked from a file elsewhere, but inside Shop::Widget: scope wins
+        let mut anchor = anchor_in_widget(7);
+        anchor.file = "app/b/other.rb".into();
+        let ctx = Context {
+            anchor: Some(anchor),
+            ..Context::default()
+        };
+        let hits = search(&store, "save", None, None, &ctx, 10).unwrap();
+        assert_eq!(hits[0].parent.as_deref(), Some("Shop::Widget"));
+        assert!(hits[0].features.iter().any(|f| f.name == "enclosing"));
+    }
+
     #[test]
     fn branch_boost_lifts_an_active_file() {
         let store = store_with(&[sym("User", Kind::Class)]); // lives in app/x.rb
-        let active = ActiveFiles::new(["app/x.rb".to_string()]);
-        let hits = search(&store, "user", None, None, &active, 10).unwrap();
+        let ctx = Context {
+            active: ActiveFiles::new(["app/x.rb".to_string()]),
+            anchor: None,
+        };
+        let hits = search(&store, "user", None, None, &ctx, 10).unwrap();
         assert!(hits[0].features.iter().any(|f| f.name == "branch"));
     }
 }

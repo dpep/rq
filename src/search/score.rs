@@ -89,6 +89,11 @@ pub(crate) struct Boosts {
     /// Branch signal: symbols in files you're changing on this branch (or their
     /// directory neighbors) — where you're most likely working.
     pub branch: f64,
+    /// Anchor signal: the candidate is defined in a scope that lexically
+    /// encloses the position the query was asked from.
+    pub enclosing: f64,
+    /// Anchor signal: the candidate's file is the anchor's, or near it.
+    pub proximity: f64,
 }
 
 /// Score `cand` for `query`. Returns `None` when the candidate doesn't match at
@@ -364,6 +369,20 @@ pub(crate) fn score(
         });
     }
 
+    // Anchor boosts — where the query was asked from (`--anchor`).
+    if boosts.enclosing > 0.0 {
+        features.push(Feature {
+            name: "enclosing",
+            value: boosts.enclosing,
+        });
+    }
+    if boosts.proximity > 0.0 {
+        features.push(Feature {
+            name: "proximity",
+            value: boosts.proximity,
+        });
+    }
+
     let total = features.iter().map(|f| f.value).sum();
     Some(Scored { total, features })
 }
@@ -629,7 +648,7 @@ fn segment_count(s: &str) -> usize {
         .count()
 }
 
-fn segments(s: &str) -> Vec<String> {
+pub(crate) fn segments(s: &str) -> Vec<String> {
     s.split("::")
         .flat_map(|p| p.split(['#', '.']))
         .filter(|p| !p.is_empty())

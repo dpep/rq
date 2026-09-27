@@ -48,6 +48,7 @@ rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescri
                             #   (prefix-matched; r=ruby+rust; aliases rb/rs/ts/js)
 rq <query> -l/--limit N     # cap the number of results (default 10; 0 = every match)
 rq <query> -a/--all-repos   # search every indexed repo (default: just the current one)
+rq <query> --anchor F:LINE  # rank as if asked from that line (enclosing class, same file, nearby)
 rq <query> --show           # print the definition's source (confident match only; pipe to less)
 rq <query> -o/--open        # open the best match in your editor
 rq <query> -w/--web         # open the best match on GitHub, pinned to a pushed sha
@@ -171,6 +172,13 @@ query is matched and scored by an additive, explainable sum of signals:
 - **recency** — symbols in recently-edited or recently-committed files
 - **branch** — on a feature branch, files you're changing vs the trunk (and
   their directory neighbors) — where you're most likely working
+- **anchor** — with `--anchor FILE:LINE[:COL]` (an editor's cursor, the file an
+  agent is reading), definitions in the scopes enclosing that line rank higher
+  (`enclosing`: a bare `save` inside `Widget` prefers `Widget#save`), then those
+  in the same file and nearby directories (`proximity`). Context, never a
+  filter. rq records no inheritance, so a method the class inherits gets no
+  `enclosing` credit. The file is read live if the index doesn't hold its
+  current version
 
 Returning fewer, better, ranked results is the goal — not completeness.
 

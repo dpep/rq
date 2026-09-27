@@ -1427,6 +1427,42 @@ pub(crate) fn refresh_file(
     Ok(Refresh::Updated)
 }
 
+/// A file's definitions as it stands on disk now: the index's rows when they
+/// reflect this version of it, else parsed live — the file may be unindexed,
+/// edited, or in a repo rq has never seen. Writes nothing. Empty when the file
+/// can't be read or isn't a language rq knows.
+pub(crate) fn current_definitions(
+    store: &Store,
+    repository_id: Option<i64>,
+    identity: &str,
+    root: &Path,
+    rel: &str,
+) -> Vec<crate::store::SymbolRow> {
+    let path = root.join(rel);
+    if let Some(repo_id) = repository_id
+        && let Some(mtime) = file_mtime(&path)
+        && store.file_mtime(repo_id, rel).ok() == Some(Some(Some(mtime)))
+        && let Ok(rows) = store.symbols_in_file(repo_id, rel)
+    {
+        return rows;
+    }
+    let Some(plugin) = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(lang::plugin_for_extension)
+    else {
+        return Vec::new();
+    };
+    let Ok(source) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    plugin
+        .extract(rel, &source)
+        .into_iter()
+        .map(|s| crate::store::SymbolRow::live(s, repository_id.unwrap_or(-1), identity))
+        .collect()
+}
+
 /// The newest commit in HEAD's history that a remote has — HEAD itself once
 /// it's pushed — so a git host can serve it. `None` when nothing is pushed.
 pub(crate) fn pushed_head(root: &Path) -> Option<String> {

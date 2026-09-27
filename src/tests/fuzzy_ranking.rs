@@ -2,7 +2,7 @@
 //! query wins when several could.
 
 use crate::core::{Kind, RepoIdentity, Symbol};
-use crate::search::{self, ActiveFiles};
+use crate::search::{self, Context};
 use crate::store::Store;
 
 /// A definition in its own file, spanning `lines` lines.
@@ -34,7 +34,7 @@ fn store_with(defs: Vec<(String, Symbol)>) -> Store {
 }
 
 fn first(store: &Store, query: &str) -> String {
-    search::search(store, query, None, None, &ActiveFiles::default(), 10)
+    search::search(store, query, None, None, &Context::default(), 10)
         .unwrap()
         .first()
         .map_or_else(|| "<none>".into(), |h| h.name.clone())

@@ -65,6 +65,19 @@ each equally, reported as the median and p90 of per-query medians. `--json`
 prints the same report as one object (`corpus`, `runs[]` with `by_type`, `diff`
 with `lost_first`/`lost_top10`, `bench`); its field names are stable.
 
+## Anchored call sites
+
+`--anchored` adds a second measurement, of `--anchor` (D18), on the binary
+under test only. [`script/recall/anchored.tsv`](../script/recall/anchored.tsv)
+holds 446 Ruby call sites (190 rails, 256 discourse): the query is the called
+name, the anchor is the call site, and the truth is the one definition
+`trekr --def` resolves it to at confidence 0.9 or more. Only names defined at
+least twice are sampled, so there is always something to rank. Rank is by
+location, not name. Each query runs plain and anchored, reported overall, by
+receiver kind, and by whether the truth sits in the anchor's own file.
+[`derive_anchored.py`](../script/recall/derive_anchored.py) regenerates the set
+(needs `trekr`); moving a corpus pin means rerunning it.
+
 ## Reproducibility
 
 - **Pinned corpora.** rails and discourse at the commits in

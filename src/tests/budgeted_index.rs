@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::index;
-use crate::search::{self, ActiveFiles};
+use crate::search::{self, Context};
 use crate::store::Store;
 
 fn scratch_dir(tag: &str) -> PathBuf {
@@ -19,7 +19,7 @@ fn scratch_dir(tag: &str) -> PathBuf {
 }
 
 fn finds(store: &Store, query: &str) -> bool {
-    !search::search(store, query, None, None, &ActiveFiles::default(), 5)
+    !search::search(store, query, None, None, &Context::default(), 5)
         .unwrap()
         .is_empty()
 }

@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::index;
-use crate::search::{self, ActiveFiles};
+use crate::search::{self, Context};
 use crate::store::Store;
 
 /// Write `source` as `name` into a throwaway repo dir of its own and index it,
@@ -34,7 +34,7 @@ pub(crate) fn indexed(tag: &str, name: &str, source: &str) -> (Store, PathBuf) {
 /// nothing. Ordering is what these tests assert, so the first hit is the
 /// answer.
 pub(crate) fn top(store: &Store, query: &str) -> search::Hit {
-    let hits = search::search(store, query, None, None, &ActiveFiles::default(), 10).unwrap();
+    let hits = search::search(store, query, None, None, &Context::default(), 10).unwrap();
     assert!(!hits.is_empty(), "no hits for {query:?}");
     hits.hits.into_iter().next().unwrap()
 }

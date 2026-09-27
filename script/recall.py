@@ -178,6 +178,78 @@ def measure(label, binary, corpus, queries, jobs):
             "query_s": round(query_s, 1), "results": results}
 
 
+# ----- anchored -----
+
+
+def load_anchored():
+    with open(DATA / "anchored.tsv") as f:
+        header = f.readline().rstrip("\n").split("\t")
+        return [dict(zip(header, line.rstrip("\n").split("\t"))) for line in f]
+
+
+def measure_anchored(binary, corpus, rows, jobs):
+    """Rank each call site's resolved definition, asked plain and from the call
+    site (`--anchor`). Rank is by location: a same-named definition elsewhere is
+    the wrong answer here, and a declaration folded into another result counts
+    at that result's rank."""
+    with tempfile.TemporaryDirectory(prefix="rq-recall-anchor-") as tmp:
+        env = isolated_env(os.path.join(tmp, "rq.db"))
+        for path in corpus.values():
+            run([str(binary), "--index", str(path)], env=env, stdout=subprocess.DEVNULL)
+
+        def rank(row, anchored):
+            args = [str(binary), row["query"], "--json", "--no-wait", "--limit", "0"]
+            if anchored:
+                args += ["--anchor", row["anchor"]]
+            p = subprocess.run(args, cwd=corpus[row["repo"]], env=env, capture_output=True, text=True)
+            hits = json.loads(p.stdout) if p.stdout.strip() else []
+            for i, h in enumerate(hits if isinstance(hits, list) else []):
+                if row["truth"] in [f"{h['file']}:{h['line']}", *h.get("also_in", [])]:
+                    return i + 1
+            return None
+
+        with ThreadPoolExecutor(jobs) as ex:
+            plain = list(ex.map(lambda r: rank(r, False), rows))
+            anchored = list(ex.map(lambda r: rank(r, True), rows))
+    return plain, anchored
+
+
+def summarize_anchored(rows, plain, anchored):
+    def cut(pred):
+        idx = [i for i, r in enumerate(rows) if pred(r)]
+        return {"plain": tally([{"rank": plain[i]} for i in idx]),
+                "anchored": tally([{"rank": anchored[i]} for i in idx])}
+
+    same_file = lambda r: r["anchor"].split(":")[0] == r["truth"].split(":")[0]  # noqa: E731
+    out = {"all": cut(lambda r: True),
+           "truth_in_anchor_file": cut(same_file),
+           "truth_elsewhere": cut(lambda r: not same_file(r))}
+    for recv in sorted({r["recv"] for r in rows}):
+        out[f"recv={recv}"] = cut(lambda r, recv=recv: r["recv"] == recv)
+    moves = Counter()
+    far = float("inf")
+    lost = []
+    for r, a, b in zip(rows, plain, anchored):
+        ra, rb = a or far, b or far
+        moves["up" if rb < ra else "down" if rb > ra else "same"] += 1
+        if ra == 1 and rb != 1:
+            lost.append({**r, "plain_rank": a, "anchored_rank": b})
+    return {"cuts": out, "up": moves["up"], "down": moves["down"], "same": moves["same"], "lost_first": lost}
+
+
+def print_anchored(a):
+    print(f"\nanchored call sites: {a['up']} up, {a['down']} down, {a['same']} unchanged with --anchor")
+    print(f"{'':<22} {'n':>4}  {'#1 plain':>14}  {'#1 anchored':>14}  {'top10 plain':>14}  {'top10 anchored':>14}")
+    for name, c in a["cuts"].items():
+        p, q = c["plain"], c["anchored"]
+        cell = lambda t, k: f"{t[k]:>4} {t[k + '_pct']:5.1f}%"  # noqa: E731
+        print(f"{name:<22} {p['n']:>4}  {cell(p, 'first'):>14}  {cell(q, 'first'):>14}"
+              f"  {cell(p, 'top10'):>14}  {cell(q, 'top10'):>14}")
+    print(f"\nlost #1 with --anchor: {len(a['lost_first'])}")
+    for x in a["lost_first"]:
+        print(f"  {x['repo']:<9} {x['query']:<24} {x['anchor']:<60} -> #{x['anchored_rank']}")
+
+
 # ----- report -----
 
 
@@ -255,6 +327,9 @@ def print_report(report):
                 print(f"  {x['repo']:<9} {x['query']!r:<28} {x['source']:<34} "
                       f"{rank(x['base_rank']):>4} -> {rank(x['new_rank']):<5} now #1: {x['new_first']}")
 
+    if report.get("anchored"):
+        print_anchored(report["anchored"])
+
     b = report.get("bench")
     if b:
         print(f"\nlatency, {b['reps']} interleaved reps x {b['queries']} hand-picked queries "
@@ -317,6 +392,9 @@ def main():
                     help="exit 1 if any source loses #1 or the top 10 against the baseline")
     ap.add_argument("--bench", type=int, metavar="REPS", default=0,
                     help="also time the hand-picked queries, interleaved, REPS times each")
+    ap.add_argument("--anchored", action="store_true",
+                    help="also rank script/recall/anchored.tsv's call sites with and without --anchor "
+                         "(the binary under test only)")
     ap.add_argument("--jobs", type=int, default=4, help="queries in flight at once (default 4)")
     ap.add_argument("--cache", metavar="DIR",
                     help="where corpora are fetched (default $RQ_RECALL_CACHE, else ~/.cache/rq-recall)")
@@ -351,6 +429,10 @@ def main():
               "runs": [summarize(r, queries) for r in raw]}
     if len(raw) == 2:
         report["diff"] = diff(raw[0], raw[1], queries)
+    if args.anchored:
+        note(f"new: {len(load_anchored())} anchored call sites, plain and with --anchor")
+        rows = load_anchored()
+        report["anchored"] = summarize_anchored(rows, *measure_anchored(new_bin, corpus, rows, args.jobs))
     if args.bench:
         report["bench"] = bench(report["runs"], corpus, queries, args.bench)
 

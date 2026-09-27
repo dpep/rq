@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use crate::search::{self, ActiveFiles};
+use crate::search::{self, Context};
 use crate::tests::support::{indexed, top};
 
 /// The fixture source, embedded at compile time so there's no runtime path to
@@ -39,7 +39,7 @@ fn ranks_the_named_type_first_and_classifies_kinds() {
 fn kind_filter_narrows_to_struct() {
     let (store, dir) = indexed("kinds", "widget.rs", WIDGET_RS);
 
-    let structs: Vec<_> = search::search(&store, "widget", None, None, &ActiveFiles::default(), 10)
+    let structs: Vec<_> = search::search(&store, "widget", None, None, &Context::default(), 10)
         .unwrap()
         .hits
         .into_iter()

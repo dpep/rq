@@ -15,6 +15,14 @@ and aren't listed; see `git log` for those.
   absolute checkout root. It is per result, because `-a/--all-repos` spans
   repos: join `root` and `file` rather than guessing the repo from the cwd. A new
   output field, so the next release is a minor one.
+- **`--anchor FILE:LINE[:COL]` ranks from where you are.** Pass the position a
+  lookup is asked from, such as an editor's cursor or the file an agent is
+  reading. Definitions in the classes and modules enclosing that line rank
+  first, then the same file and nearby directories. On real call sites in rails
+  and discourse it ranked the resolved definition first 79% of the time,
+  against 48% without. It reorders and never filters, and works with batch
+  stdin too. Without the flag, ranking is unchanged. A new flag, so the next
+  release is a minor one.
 
 ### Fixed
 - **Discarding an edit (`git checkout -- file`) is picked up.** The tree reads

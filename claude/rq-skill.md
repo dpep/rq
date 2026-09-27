@@ -87,6 +87,14 @@ get results.
 
 ## Scope when you know more
 
+- Position: when you're reading a file and look up a name used in it, pass
+  where you are: `rq save --anchor app/models/widget.rb:42 --json` (the
+  file:line of the reference; a trailing `:COL` is fine). rq then prefers the
+  definition in the enclosing class/module, then the same file and nearby
+  directories. On call sites in rails and discourse it put the resolved
+  definition first 79% of the time, against 48% without. It only reorders, so
+  it's safe whenever you know the file; it can't see inherited methods, and a
+  call on another object (`other.save`) is better asked as `rq Other#save`.
 - Fuzzy/abbreviation works: `rq refundproc`, `rq usr`, `rq perform`.
 - Scope: `rq Billing::RefundProcessor`, or `rq RefundProcessor#perform` (or
   `.perform`) for a method inside a class — rq keeps only the definitions in that

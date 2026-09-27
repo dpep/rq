@@ -366,16 +366,25 @@ why a result ranked where it did:
   index, not on the search path)
 - **branch** — on a feature branch, symbols in files that differ from the trunk
   (committed since divergence + uncommitted) get a strong boost; symbols in
-  those files' directories a smaller one. This is the one signal computed *at
+  those files' directories a smaller one. This is the one git signal computed *at
   search time* (a few `git diff --name-only` calls) because it tracks live
   working state; it's gated to feature branches, so the trunk pays nothing.
   The active-file set also drives proactive pre-indexing — `index_budgeted`
   warms those files first.
+- **anchor** — `--anchor FILE:LINE[:COL]` names where the query is asked from.
+  Two features, both boosts, never filters. `enclosing`: the candidate's
+  `parent` is a leading run of the scope chain of the innermost definition
+  whose `line..end_line` span holds the anchor line, 60 per shared level, capped
+  at 180. `proximity`: 90 in the anchor's own file, else 60 in its directory,
+  halving per directory step and dropped below 5; anchor's repo only. Built
+  only from stored spans and parents (or a live parse of the anchor file when
+  the index doesn't hold its current version), so it is language-blind. No
+  inheritance, so an inherited method earns no `enclosing` (D18).
 
 Match quality and the static features live in the pure `score()` function. The
-dynamic, context-dependent signals (`recency`, `branch`) are computed by the
-search layer — which owns the clock and the branch state — and passed in via a
-`Boosts` struct, so a new git signal (recent commit, branch, ownership) is a new
+dynamic, context-dependent signals (`recency`, `branch`, `enclosing`,
+`proximity`) are computed by the search layer — which owns the clock, the
+branch state and the anchor — and passed in via a `Boosts` struct, so a new git signal (recent commit, branch, ownership) is a new
 field, not a new parameter. Prefer understandable scoring over sophisticated
 algorithms; tuning a weight must never require re-indexing.
 

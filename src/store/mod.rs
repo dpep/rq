@@ -38,6 +38,27 @@ pub(crate) struct SymbolRow {
     pub visibility: Option<String>,
 }
 
+impl SymbolRow {
+    /// A row for a symbol parsed live rather than read from the index — the
+    /// same shape, with no file times.
+    pub(crate) fn live(s: Symbol, repository_id: i64, repo_identity: &str) -> Self {
+        SymbolRow {
+            name: s.name,
+            kind: s.kind.as_str().to_string(),
+            language: s.language,
+            file: s.file,
+            line: s.line as i64,
+            end_line: Some(s.end_line as i64),
+            parent: s.parent,
+            repository_id,
+            repo_identity: repo_identity.to_string(),
+            mtime: None,
+            git_ts: None,
+            visibility: s.visibility.map(str::to_string),
+        }
+    }
+}
+
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 /// Longest query that still gets the first-character anchor pass.

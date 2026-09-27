@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::index;
-use crate::search::{self, ActiveFiles};
+use crate::search::{self, Context};
 use crate::store::Store;
 
 /// Index a copy of `src/` whose files all share one (old) mtime, so the recency
@@ -44,7 +44,7 @@ fn copy_with_uniform_mtime(src: &Path, dst: &Path) {
 }
 
 fn top(store: &Store, query: &str) -> (String, String) {
-    search::search(store, query, None, None, &ActiveFiles::default(), 10)
+    search::search(store, query, None, None, &Context::default(), 10)
         .unwrap()
         .first()
         .map(|h| (h.name.clone(), h.kind.clone()))

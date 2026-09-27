@@ -729,3 +729,78 @@ vendored Go 0.12 → 0.13 s (+30%, mostly generated protobuf consts), discourse
 *Reverses if:* camelCase consts crowd real answers in use (drop to
 `UPPER_SNAKE` for JS; the table is the price), or a `variable` kind joins the
 model, which would be the honest home for Go's `var` sentinels.
+
+## D18 — `--anchor`: rank from the position a query is asked from
+
+**Adopted**, 2026-09-26. Recall harness (D12) plus a new anchored set, release builds,
+against main.
+
+A query now says where it is asked from: `--anchor FILE:LINE[:COL]`, an editor's cursor
+or the file an agent is reading. Two additive features, both boosts, never filters:
+
+- **`enclosing`**: the innermost definition whose `line..end_line` span holds the
+  anchor line gives a scope chain (`Shop::Widget#persist` → `shop, widget, persist`).
+  A candidate whose `parent` is a leading run of that chain earns 60 per shared level,
+  capped at 180. A bare `save` inside `Widget` then prefers `Widget#save`.
+- **`proximity`**: 90 in the anchor's own file. Otherwise 60 in its directory, halving
+  per directory step between the two and dropped below 5. Anchor's repo only.
+
+Both read only stored spans and parents, so no language logic reaches the core. The
+anchor file comes from the index when its stored mtime matches, else a live parse,
+because an editor's file is often dirty or new. That costs 0.1–0.3 ms from the index and
+about 2.6 ms for a live parse of a 1,900-line file. rq records no inheritance, so a
+method the enclosing class inherits earns nothing from `enclosing`.
+
+*The set.* `script/recall/anchored.tsv`: 446 Ruby call sites (190 rails, 256 discourse).
+Names were sampled from those defined at least twice. The truth is the one definition
+`trekr --def` resolves the call to at confidence 0.9 or more, ranked by location.
+
+| 446 call sites | #1 plain | #1 anchored | top 10 plain | top 10 anchored |
+|---|---|---|---|---|
+| all | 213 (47.8%) | 351 (78.7%) | 432 (96.9%) | 439 (98.4%) |
+| truth in the anchor's file (276) | 115 (41.7%) | 258 (93.5%) | 269 | 276 |
+| truth elsewhere (170) | 98 (57.6%) | 93 (54.7%) | 163 | 163 |
+| bare/implicit call (303) | 131 (43.2%) | 273 (90.1%) | 296 | 303 |
+| `Const.call` (82) | 51 | 50 | 80 | 80 |
+| `local.call` (47) | 25 | 22 | 42 | 42 |
+
+170 sources moved up and 9 down. Most of the gain is the 62% of call sites whose
+definition sits in the anchor's own file, which is what implicit Ruby calls mostly are.
+Where it doesn't, the anchor costs 5 #1s and no top 10s. The 9 losses are the two known
+limits:
+- **An inherited method.** `read_message` inside `MessageEncryptor` runs a prepended
+  module's.
+- **A call on another class, asked as a bare name, from a class that defines the same
+  name.** `TopicSubtype.notify_moderators` from inside `Topic`. `rq TopicSubtype.notify_moderators`
+  is the query for that.
+
+*Unanchored ranking is unchanged.* The full recall run against main changed 0 of 2,372
+top 10s (1,132 / 1,602 / 1,886 #1 / top 10 / found, both). `--json --limit 0 --explain`
+over 300 rails queries on one shared index is byte-identical: 26,557 rows.
+
+*Weights.*
+
+| variant | #1 | top 10 | #1, truth elsewhere |
+|---|---|---|---|
+| adopted (60/180, 90/60) | 351 | 439 | 93 |
+| `enclosing` only | 347 | 437 | 91 |
+| `proximity` only | 344 | 436 | 93 |
+| both at half weight | 352 | 438 | 95 |
+
+Each signal alone gets most of the gain, because in Ruby the enclosing class and the
+same file usually coincide. Both are kept: `enclosing` reaches a class reopened or
+`impl`-ed in another file, and `proximity` serves top-level functions (Go, JS) with no
+enclosing definition. Half weights measure the same, but the harness zeroes `recency`,
+which spreads 0–120 in real use. The anchor is a deliberate signal and should not lose
+to a file's mtime, so the weights sit at `recency`'s scale, below `branch`'s 180 per
+file, and well under the gap between match tiers.
+
+*Rejected:*
+- **Filtering to the anchor's scope.** Navigation, not search: the definition you want
+  is often the inherited or external one rq can't see.
+- **Inferring the receiver from the source line.** That is a language's semantics, and
+  trekr's job.
+
+*Reverses if:* an inheritance model lands (then `enclosing` should walk ancestors), or
+anchored use shows the same-file boost crowding out a better definition elsewhere
+(shrink `proximity` first, since `enclosing` carries the scope case alone).
