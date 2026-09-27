@@ -456,8 +456,9 @@ The index is **never assumed complete**.
   whose first pass is running (or was cut short).
 - A `warming` repo **blocks until answered** (see the indexing model), so
   incomplete coverage yields a delayed-but-correct answer rather than a
-  confident-looking wrong one. An untracked (never-indexed, non-git) dir gets a
-  bounded in-memory live scan, merged with whatever the index offered. Each
+  confident-looking wrong one. A dir with no finished pass that this query
+  isn't warming — untracked and non-git, or a git repo asked with `--no-wait` —
+  gets a bounded in-memory live scan, merged with whatever the index offered. Each
   result carries its `source` (`index` or `live`), so a blended answer says
   which parts were never persisted.
 - **Opportunistic extraction** grows coverage through normal use.

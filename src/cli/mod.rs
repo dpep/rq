@@ -84,8 +84,9 @@ struct Cli {
     /// Answer immediately from the committed index — never block waiting on a
     /// background (re)index. For agents/scripts: a query issued mid-rebuild
     /// returns at once (a miss reports `warming`, exit 2, so a caller can retry)
-    /// instead of blocking up to the wait budget. Shorthand for `--wait 0`;
-    /// leftover warming still detaches to a background child.
+    /// instead of blocking up to the wait budget. A repo with nothing indexed
+    /// yet is live-scanned instead. Shorthand for `--wait 0`; leftover warming
+    /// still detaches to a background child.
     #[arg(long = "no-wait")]
     no_wait: bool,
 

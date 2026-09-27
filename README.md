@@ -140,7 +140,7 @@ that doesn't apply is **omitted**, never `null`.
 | `parent` | when nested | The enclosing scope, e.g. `ActiveRecord::Migration`. |
 | `visibility` | when the language expresses one | `public`, `crate`, `private` or `protected`. |
 | `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
-| `source` | search | `index`, or `live` when the result came from a live scan of a directory rq doesn't track (see [Staying current](#staying-current)). |
+| `source` | search | `index`, or `live` when the result came from a live scan of files on disk because no index pass has finished for this directory yet: one rq doesn't track, or a repo asked with `--no-wait` before its first index (or after `--drop`). The hit is real; only its ranking is provisional. See [Staying current](#staying-current). |
 | `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it. |
 | `features` | search | The scoring signals that fired, strongest first. |
 | `signature` | when the line is non-empty | The definition's first source line, trimmed. |
@@ -159,7 +159,7 @@ A miss is one `{"status": …, "query": …}` object instead of results:
 | --- | --- | --- |
 | `no_match` | 1 | Definitive: nothing by that name. |
 | `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
-| `warming` | 2 | The index is incomplete; retry. Rare, since a cold repo blocks until it can answer. |
+| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait`, since otherwise a cold repo blocks until it can answer. |
 | `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
 
 A match exits `0`. Every miss is non-zero, so `rq … && …` reads as "found
@@ -245,7 +245,10 @@ nothing recorded yet it exits `1`.
 `--no-wait` answers from whatever's already indexed instead of waiting on a
 warming repo — say, right after a branch switch on a huge repo. A miss reports
 `warming` (exit 2) so you can retry; warming continues in a detached background
-process.
+process. On a repo with no index yet it answers from a quick live scan
+(`"source": "live"`), and misses only what that scan can't reach. On a small or
+fully indexed repo it answers the same as without the flag: the difference
+shows only while a large index is being built.
 
 `--wait <dur>` caps how long a query may wait: `50ms`, `2s`, `1m`, or bare
 seconds (`--wait 0` is `--no-wait`). It overrides `RQ_WAIT_BUDGET_MS` (default 1
@@ -306,8 +309,9 @@ reconciling added and removed ones.
 
 A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
-it still answers at zero coverage. A live answer is marked `"source": "live"` in
-JSON, `-v` notes the files it scanned and how long it took against its budget
+it still answers at zero coverage. A `--no-wait` query live-scans a git repo
+whose first index hasn't finished the same way. A live answer is marked
+`"source": "live"` in JSON (text output doesn't mark it), `-v` notes the files it scanned and how long it took against its budget
 (`RQ_FALLBACK_BUDGET_MS`, default 250 ms), and `--usage` counts these answers
 apart. The index is a SQLite file at `$RQ_DB`
 (default `~/.local/share/rq/rq.db`). `RQ_DB` must be an absolute path: a

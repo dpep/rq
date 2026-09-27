@@ -61,9 +61,11 @@ rq.
   it; a low value or several close results, disambiguate (add a kind, scope, or
   path).
 - `total` is how many matches the results were drawn from, before `-l`.
-- `source` is `live` when rq answered from a bounded scan of a directory it
-  doesn't index (outside a git repo), `index` otherwise. Asking there often?
-  `rq --index <dir>` once.
+- `source` is `live` when rq answered from a bounded scan of files on disk
+  because nothing is indexed there yet — a directory outside a git repo, or a
+  repo asked with `--no-wait` before its first index finished. `index`
+  otherwise. The hit is real; its ranking is provisional. Asking outside a repo
+  often? `rq --index <dir>` once.
 - Fields that don't apply (`parent`, `visibility`, `end_line`, …) are omitted,
   never `null`. `declarations` and `also_in` appear when one name is declared in
   several places (a reopened module) and rq folded them into one result.
@@ -75,8 +77,8 @@ On a miss, JSON is one `{"status": …, "query": …}` object, not results:
 - `no_match` (exit 1) — definitive. Fall back to `rg`.
 - `scope_not_found` (exit 1) — nothing inside the scope you named; `found_in`
   says where the name does live. Re-ask with that scope.
-- `warming` (exit 2) — index incomplete; retry. Rare: rq indexes a cold repo
-  before answering.
+- `warming` (exit 2) — index incomplete; retry. Mostly after `--no-wait`;
+  otherwise rq indexes a cold repo before answering.
 - `interrupted` (exit 2) — indexing was stopped; run again.
 
 An error is JSON too, on stdout: `{"error": "…", "kind": "usage", "code": 64}`.

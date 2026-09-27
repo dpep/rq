@@ -19,6 +19,11 @@ and aren't listed; see `git log` for those.
 - **Exit codes of the non-search commands.** `--status`, `--index` and `--drop`
   exit 0 whenever they ran, even with nothing to show or drop; `--usage` exits 1
   when nothing is recorded yet. `--help` and the README now say so.
+- **What `--no-wait` and `source: live` mean.** On a repo with no finished
+  index — never indexed, or just dropped — `--no-wait` answers from a live scan
+  (`"source": "live"`) rather than `warming`, so on a small or indexed repo it
+  looks the same as a normal query. The README had `live` meaning only "a
+  directory rq doesn't track".
 
 ## 0.55.0 — 2026-09-27
 

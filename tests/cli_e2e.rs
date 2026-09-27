@@ -3001,6 +3001,36 @@ fn foo_dot_new_finds_the_class_outside_git_too() {
 }
 
 #[test]
+fn no_wait_on_an_unindexed_repo_answers_from_a_live_scan() {
+    // --no-wait won't index before answering, so a git repo with no finished
+    // pass — never indexed, or just dropped — is scanned live instead: a hit
+    // says `live`, and a miss is `warming` because the index can't vouch yet.
+    let (dir, db) = scratch("no-wait-live");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    let source = |out: &str| {
+        let row: serde_json::Value = serde_json::from_str(first_line(out)).expect("a JSON row");
+        row["source"].as_str().unwrap_or_default().to_string()
+    };
+
+    let (code, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(source(&out), "live", "cold: {out}");
+    let (code, _, _) = rq_full(&db, &dir, &["Gizmo", "-J", "--no-wait"], &[], None);
+    assert_eq!(code, 2, "a cold miss is warming, not absent");
+
+    rq(&db, &dir, &["--index"]);
+    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
+    assert_eq!(source(&out), "index", "indexed: {out}");
+
+    rq(&db, &dir, &["--drop"]);
+    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
+    assert_eq!(source(&out), "live", "dropped: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_live_scan_answer_says_so() {
     // never indexed and not a git repo, so the only answer is a live scan
     let (dir, db) = scratch("live-source");
