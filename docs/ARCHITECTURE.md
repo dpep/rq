@@ -177,7 +177,8 @@ usage_daily (
   PRIMARY KEY (day, source, flags)
 );
 
--- small key/value store (indexed HEAD, warm lock, warm verdict, branch-file cache)
+-- small key/value store (indexed HEAD, warm lock, warm verdict, branch-file
+-- cache, and the files the index holds as uncommitted edits)
 meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 ```
 
@@ -294,7 +295,11 @@ search only reads.
   warm child rather than wait on it, so a hit on an indexed repo forks no `git`.
   A miss still asks inline, since its exit code (absent vs. still warming)
   depends on the answer. "Moved" means a new HEAD or a dirty source file whose
-  mtime differs from the indexed one — dirty-but-indexed is unchanged. A child
+  mtime differs from the indexed one — dirty-but-indexed is unchanged. The
+  index also remembers which files it took in as edits (the dirty set at each
+  check and at the end of a sweep, plus any file revalidated singly), and checks
+  those too: a discarded edit (`git checkout -- f`) is clean, so status no
+  longer names it, yet the index still holds the edit until it's reindexed. A child
   that finds nothing moved records the verdict with a git-state stamp (HEAD
   commit + `.git/index` mtime), and for 10 s (`RQ_WARM_RECHECK_MS`) a hit whose
   stamp still matches skips the spawn too. Staging, commits, checkouts and pulls

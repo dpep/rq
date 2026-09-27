@@ -16,6 +16,12 @@ and aren't listed; see `git log` for those.
   repos: join `root` and `file` rather than guessing the repo from the cwd. A new
   output field, so the next release is a minor one.
 
+### Fixed
+- **Discarding an edit (`git checkout -- file`) is picked up.** The tree reads
+  clean again, so rq's `git status` check used to see nothing to reindex, and
+  the index kept the discarded version: a method the edit had removed stayed a
+  confident "no match". rq now also rechecks the files it indexed as edits.
+
 ### Changed
 - **The VS Code extension (0.3.0) no longer lists a symbol twice in Cmd/Ctrl-T.**
   With `rq.workspaceSymbols: dedupe` (the default), rq adds only the symbols no

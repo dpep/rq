@@ -612,9 +612,11 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
     fs::write(dir.join("c.rb"), "class Gizmo\n  def go; end\nend\n").unwrap();
     assert!(warmed(&db, &dir, "widget"), "tracked edit triggers a warm");
 
-    // restore the tracked file to its committed content (tree clean again), then
-    // add an untracked file — which the cheaper check intentionally ignores
+    // restore the tracked file to its committed content (tree clean again) —
+    // itself a change the index has to take in — then add an untracked file,
+    // which the cheaper check intentionally ignores
     fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
+    assert!(warmed(&db, &dir, "widget"), "the restore is reindexed");
     fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
     assert!(
         !warmed(&db, &dir, "widget"),
@@ -815,6 +817,80 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
     // a further edit is still seen
     fs::write(dir.join("c.rb"), "class Gizmo\n  def stop; end\nend\n").unwrap();
     assert!(warmed(&db, &dir, "widget"), "a new edit still warms");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn git_checkout_file(dir: &Path, file: &str) {
+    let _ = Command::new("git")
+        .args(["checkout", "--", file])
+        .current_dir(dir)
+        .output();
+}
+
+/// Symbols the index holds for the repo, per `--status`.
+fn indexed_symbols(db: &Path, dir: &Path) -> i64 {
+    let (_, out) = rq(db, dir, &["--status", "--json"]);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).expect("status json");
+    rows[0]["symbols"].as_i64().expect("symbols")
+}
+
+#[test]
+fn a_discarded_edit_is_reindexed() {
+    // `git checkout -- f` leaves the tree clean, so `git status` no longer
+    // names f — yet the index still holds the edit. The staleness check has to
+    // remember which files it took in as edits, or the edit's symbols linger
+    // until something else happens to reindex f.
+    let (dir, db) = scratch("discarded-edit");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    let clean = indexed_symbols(&db, &dir);
+
+    fs::write(dir.join("c.rb"), "class Gizmo\n  def spin; end\nend\n").unwrap();
+    let (ok, out) = rq(&db, &dir, &["spin", "--ndjson"]);
+    // the miss that notices the edit reindexes it; the retry finds it
+    let (ok2, out2) = rq(&db, &dir, &["spin", "--ndjson"]);
+    assert!(ok || ok2, "the edit is indexed: {out} {out2}");
+    assert_eq!(indexed_symbols(&db, &dir), clean + 1);
+
+    git_checkout_file(&dir, "c.rb");
+    // a search elsewhere — its hit's file is revalidated, not c.rb's
+    assert!(
+        warmed(&db, &dir, "widget"),
+        "the discard is seen as a change"
+    );
+    assert_eq!(
+        indexed_symbols(&db, &dir),
+        clean,
+        "the edit's symbol is gone"
+    );
+    let (found, out) = rq(&db, &dir, &["spin", "--ndjson"]);
+    assert!(!found, "no longer found: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_discarded_deletion_is_found_again() {
+    // The costly direction: an edit removed a method, the index took that in,
+    // and discarding it brings the method back. Until reindexed, a search for
+    // it is a confident "no match" (exit 1) for a symbol that is right there.
+    let (dir, db) = scratch("discarded-deletion");
+    fs::write(dir.join("c.rb"), "class Gizmo\n  def spin; end\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
+    rq(&db, &dir, &["spin"]); // revalidates c.rb: the method is gone
+    let (found, _) = rq(&db, &dir, &["spin"]);
+    assert!(!found, "the deletion is indexed");
+
+    git_checkout_file(&dir, "c.rb");
+    rq(&db, &dir, &["spin"]); // notices the discard and reindexes
+    let (found, out) = rq(&db, &dir, &["spin", "--ndjson"]);
+    assert!(found, "the restored method is found: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }

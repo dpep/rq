@@ -737,6 +737,16 @@ fn run_index(
         // an unchanged committed tree and skip re-walking a large repo
         if let Some(head) = git_head(root) {
             let _ = store.set_indexed_head(repo_id, &head);
+            // A full sweep leaves the index matching the disk, so the edits it
+            // holds are exactly what's dirty now. Unchanged when it parsed
+            // nothing, which is most sweeps of a clean repo — skip the status.
+            if stats.files_indexed > 0 {
+                let edited: Vec<String> = dirty_files(root)
+                    .into_iter()
+                    .filter(|f| is_source(f))
+                    .collect();
+                let _ = store.set_edited_files(repo_id, &edited);
+            }
         }
     }
     // commit times feed the recency signal, but `git log -n1000 --name-only` is
@@ -1173,19 +1183,10 @@ fn parse_porcelain_z(out: &[u8]) -> Vec<String> {
 /// one never indexed. An edit the index already reflects is *not* a change —
 /// the worktree stays dirty until commit, and treating dirty as stale re-warmed
 /// on every query and made every miss read as "still warming".
-pub(crate) fn has_unindexed_edits(
-    store: &Store,
-    repository_id: i64,
-    root: &Path,
-    dirty: &[String],
-) -> bool {
+fn has_unindexed_edits(store: &Store, repository_id: i64, root: &Path, dirty: &[String]) -> bool {
     dirty.iter().any(|rel| {
-        let ext = Path::new(rel)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or_default();
-        if lang::plugin_for_extension(ext).is_none() {
-            return false; // not something rq indexes
+        if !is_source(rel) {
+            return false;
         }
         let on_disk = file_mtime(&root.join(rel));
         match store.file_mtime(repository_id, rel) {
@@ -1194,6 +1195,53 @@ pub(crate) fn has_unindexed_edits(
             Err(_) => true,
         }
     })
+}
+
+/// Whether the worktree holds anything the index doesn't reflect, given the
+/// files `git status` calls dirty — and the files the index last held as edits.
+///
+/// `dirty` alone misses a discarded edit: `git checkout -- f` makes `f` clean,
+/// so status stops naming it, while the index still holds the edited version's
+/// symbols. So the index's own record of the edits it took in is checked too,
+/// and an entry is dropped only once it's clean and the index matches the disk
+/// again — the reindex it triggers has landed.
+pub(crate) fn has_unindexed_changes(
+    store: &Store,
+    repository_id: i64,
+    root: &Path,
+    dirty: &[String],
+) -> bool {
+    let prior = store.edited_files(repository_id).unwrap_or_default();
+    let unsettled: Vec<String> = prior
+        .iter()
+        .filter(|f| !dirty.contains(f))
+        .filter(|f| has_unindexed_edits(store, repository_id, root, std::slice::from_ref(f)))
+        .cloned()
+        .collect();
+    let changed = !unsettled.is_empty() || has_unindexed_edits(store, repository_id, root, dirty);
+    // a dirty source file is an edit the index holds, or is about to
+    let mut edited: Vec<String> = dirty
+        .iter()
+        .filter(|f| is_source(f))
+        .cloned()
+        .chain(unsettled)
+        .collect();
+    edited.sort();
+    edited.dedup();
+    let mut prior = prior;
+    prior.sort();
+    if edited != prior {
+        let _ = store.set_edited_files(repository_id, &edited);
+    }
+    changed
+}
+
+/// Whether a path is something a language plugin indexes.
+fn is_source(rel: &str) -> bool {
+    Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| lang::plugin_for_extension(e).is_some())
 }
 
 /// Repo-relative files you're working on this branch: committed changes since
@@ -1373,6 +1421,9 @@ pub(crate) fn refresh_file(
     // the plugin knows its language even when a file parses to zero symbols
     let language = plugin.map_or("unknown", |p| p.language());
     store.replace_file_symbols(repository_id, rel, language, mtime, &hash, &symbols)?;
+    // Off the sweep path, a changed file is most likely an edit in progress;
+    // if it's later discarded, the staleness check has to know to look.
+    let _ = store.note_edited_file(repository_id, rel);
     Ok(Refresh::Updated)
 }
 

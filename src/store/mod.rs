@@ -715,6 +715,32 @@ impl Store {
         self.meta_set(&format!("head:{repository_id}"), head)
     }
 
+    /// Files the index may hold in a state other than HEAD's: the edits it has
+    /// indexed. A discarded edit (`git checkout -- f`) leaves `f` clean, so
+    /// `git status` stops naming it while the index still holds the edit; this
+    /// is how the staleness check still knows to look at it.
+    pub(crate) fn edited_files(&self, repository_id: i64) -> Result<Vec<String>> {
+        Ok(self
+            .meta_get(&format!("edited:{repository_id}"))?
+            .map(|v| v.lines().map(str::to_string).collect())
+            .unwrap_or_default())
+    }
+
+    /// Replace the edited-file set (newline-delimited: git paths can't hold one).
+    pub(crate) fn set_edited_files(&self, repository_id: i64, files: &[String]) -> Result<()> {
+        self.meta_set(&format!("edited:{repository_id}"), &files.join("\n"))
+    }
+
+    /// Add one file to the edited-file set.
+    pub(crate) fn note_edited_file(&self, repository_id: i64, path: &str) -> Result<()> {
+        let mut files = self.edited_files(repository_id)?;
+        if files.iter().any(|f| f == path) {
+            return Ok(());
+        }
+        files.push(path.to_string());
+        self.set_edited_files(repository_id, &files)
+    }
+
     /// The git HEAD sha at the last commit-times capture (recency signal), if
     /// any — lets the next capture read only the commits since, or skip the
     /// `git log` entirely when HEAD hasn't moved.

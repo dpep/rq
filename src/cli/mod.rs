@@ -1816,12 +1816,9 @@ fn changed_since_index(
     let (Some(dirty), Some(root)) = (edits, root) else {
         return true;
     };
-    if dirty.is_empty() {
-        return false;
-    }
     match identity.and_then(|id| store.repository_id(id).ok().flatten()) {
-        Some(repo_id) => crate::index::has_unindexed_edits(store, repo_id, root, &dirty),
-        None => true,
+        Some(repo_id) => crate::index::has_unindexed_changes(store, repo_id, root, &dirty),
+        None => !dirty.is_empty(),
     }
 }
 
