@@ -37,7 +37,7 @@ Symbol {
   repository   # which repo it belongs to
   language     # ruby, go, ts, ...
   name         # RefundProcessor, perform, User
-  kind         # class | module | method | function | struct | enum | trait | constant
+  kind         # class | module | method | function | struct | enum | trait | constant | type | macro | variant
   file         # repo-relative path
   line         # 1-based
   parent       # enclosing symbol (cheap nesting, NOT a call graph)
@@ -91,7 +91,7 @@ trait LanguagePlugin {
 
 A registry maps file extension → plugin. Adding Java/C# is a new
 plugin. The one shared thing a language may extend is the `core::Kind`
-vocabulary — Rust added `struct`/`enum`/`trait` — which generalizes the model
+vocabulary — Rust added `struct`/`enum`/`trait`, then `type`/`macro`/`variant` — which generalizes the model
 rather than leaking a language into `index`/`search`/scoring.
 
 ## SQLite schema
@@ -135,7 +135,7 @@ symbols (
   file_id INTEGER NOT NULL REFERENCES files(id),
   name TEXT NOT NULL,
   name_lower TEXT NOT NULL,          -- prefix / ranking
-  kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait|constant
+  kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait|constant|type|macro|variant
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
   end_line INTEGER,                  -- 1-based last line of the definition body
@@ -224,7 +224,9 @@ Decisions worth calling out:
   `content_hash` so neither skip keeps the old rows (the hash to `''`, not
   NULL, which the write path can't read), and demotes its repos' coverage to
   `warming` so the next search sweeps them. v14 did this for the Go, Python and
-  TS/JS constants: users upgrade and the symbols appear, with no `--drop`. Old
+  TS/JS constants, and v19's re-read of every file (for the `generated` flag)
+  also picked up Rust's variants, aliases, macros and macro-body items: users
+  upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to
   append a live-scan tail.

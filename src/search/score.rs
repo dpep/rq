@@ -343,7 +343,7 @@ pub(crate) fn score(
     // Top-level types rank alongside classes; methods/functions stay neutral.
     let kind = match cand.kind.as_str() {
         "class" | "struct" | "trait" => 15.0,
-        "module" | "enum" => 12.0,
+        "module" | "enum" | "type" => 12.0,
         _ => 0.0,
     };
     if kind != 0.0 {

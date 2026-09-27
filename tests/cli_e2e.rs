@@ -2104,6 +2104,34 @@ fn kind_filter_scopes_by_symbol_kind() {
 }
 
 #[test]
+fn kind_type_means_any_named_type() {
+    let (dir, db) = scratch("kind-type");
+    fs::write(
+        dir.join("a.rs"),
+        "pub struct Gizmo;
+pub type GizmoRef = Gizmo;
+pub enum Mode { Gizmos }
+fn gizmo() {}
+",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    // `type` is an alias or a struct; `alias` only the alias
+    let (ok, out) = rq(&db, &dir, &["giz", "-k", "type", "--ndjson"]);
+    assert!(ok, "kind search failed: {out}");
+    assert!(out.contains("\"name\":\"GizmoRef\""), "alias kept: {out}");
+    assert!(out.contains("\"name\":\"Gizmo\""), "struct kept: {out}");
+    assert!(!out.contains("\"kind\":\"function\""), "fn dropped: {out}");
+    let (_, out) = rq(&db, &dir, &["giz", "-k", "alias", "--ndjson"]);
+    assert!(!out.contains("\"name\":\"Gizmo\""), "struct dropped: {out}");
+    let (_, out) = rq(&db, &dir, &["Gizmos", "-k", "member", "--ndjson"]);
+    assert!(out.contains("\"kind\":\"variant\""), "variant found: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn kind_constant_selects_constants_across_languages() {
     let (dir, db) = scratch("kind-const");
     fs::write(

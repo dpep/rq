@@ -20,6 +20,13 @@ pub(crate) enum Kind {
     Enum,
     Trait,
     Constant,
+    /// A macro definition (Rust `macro_rules!`).
+    Macro,
+    /// A named type that isn't a struct, enum or trait: a type alias (Rust and
+    /// TypeScript `type X = …`) or a Go named type (`type Celsius float64`).
+    Type,
+    /// One case of an enum: a Rust variant, a TypeScript or Python enum member.
+    Variant,
 }
 
 impl Kind {
@@ -34,6 +41,9 @@ impl Kind {
             Kind::Enum => "enum",
             Kind::Trait => "trait",
             Kind::Constant => "constant",
+            Kind::Macro => "macro",
+            Kind::Type => "type",
+            Kind::Variant => "variant",
         }
     }
 }
@@ -85,5 +95,8 @@ mod tests {
         assert_eq!(Kind::Enum.as_str(), "enum");
         assert_eq!(Kind::Trait.as_str(), "trait");
         assert_eq!(Kind::Constant.as_str(), "constant");
+        assert_eq!(Kind::Macro.as_str(), "macro");
+        assert_eq!(Kind::Type.as_str(), "type");
+        assert_eq!(Kind::Variant.as_str(), "variant");
     }
 }

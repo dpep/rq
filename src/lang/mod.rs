@@ -20,6 +20,8 @@ pub(crate) struct Ctx<'a> {
     src: &'a [u8],
     file: &'a str,
     language: &'static str,
+    /// Rows above `src` in the real file: nonzero only for a re-parsed fragment.
+    row_offset: usize,
 }
 
 impl Ctx<'_> {
@@ -48,8 +50,8 @@ impl Ctx<'_> {
             kind,
             language: self.language.to_string(),
             file: self.file.to_string(),
-            line: node.start_position().row as u32 + 1,
-            end_line: node.end_position().row as u32 + 1,
+            line: (self.row_offset + node.start_position().row) as u32 + 1,
+            end_line: (self.row_offset + node.end_position().row) as u32 + 1,
             parent: parent.map(str::to_string),
             visibility: None, // plugins that know it set it on the result
         }
@@ -57,6 +59,46 @@ impl Ctx<'_> {
 }
 
 /// Join a name onto its enclosing qualified name with the language's separator.
+impl Ctx<'_> {
+    /// Parse the source between `start` and `end` (bytes, starting on `row`) as
+    /// a standalone fragment and walk it: for code the grammar sees only as
+    /// opaque tokens, such as a Rust macro body. Symbols keep their real lines.
+    /// A fragment that doesn't parse cleanly is not walked, and returns false.
+    pub(crate) fn walk_fragment(
+        &self,
+        grammar: &Language,
+        (start, end, row): (usize, usize, usize),
+        walk: impl FnOnce(&Ctx, Node),
+    ) -> bool {
+        let src = &self.src[start..end];
+        // A parser of its own: the file's parser stays borrowed for the walk.
+        // Released before walking, so a fragment inside a fragment can parse.
+        let tree = FRAGMENT_PARSERS.with(|cell| {
+            let mut parsers = cell.borrow_mut();
+            let parser = match parsers.entry(self.language) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let mut p = Parser::new();
+                    p.set_language(grammar).ok()?;
+                    v.insert(p)
+                }
+            };
+            parser.parse(src, None)
+        });
+        let Some(tree) = tree.filter(|t| !t.root_node().has_error()) else {
+            return false;
+        };
+        let ctx = Ctx {
+            src,
+            file: self.file,
+            language: self.language,
+            row_offset: self.row_offset + row,
+        };
+        walk(&ctx, tree.root_node());
+        true
+    }
+}
+
 pub(crate) fn qualify(parent: Option<&str>, name: &str, sep: &str) -> String {
     match parent {
         Some(p) => format!("{p}{sep}{name}"),
@@ -69,6 +111,8 @@ thread_local! {
     /// loading) is the expensive step of parser setup, and the indexer calls
     /// `extract` once per file — reuse makes that a one-time cost per worker.
     static PARSERS: std::cell::RefCell<std::collections::HashMap<&'static str, Parser>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static FRAGMENT_PARSERS: std::cell::RefCell<std::collections::HashMap<&'static str, Parser>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
@@ -118,6 +162,7 @@ pub(crate) fn extract_with_key(
             src: source.as_bytes(),
             file,
             language,
+            row_offset: 0,
         };
         walk(&ctx, tree.root_node(), &mut out);
         out

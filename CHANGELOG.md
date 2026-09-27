@@ -44,6 +44,25 @@ search in each repo starts it, and answers from the old index meanwhile.
   request to list every interface, which rq doesn't do: it navigates to a
   name. The usage error now points at `rq --symbols FILE`, the listing it has.
 
+### Added
+- **Rust: enum variants, `type` aliases and `macro_rules!` are indexed**, as
+  the new kinds `variant`, `type` and `macro`. `rq TryRecvError::Empty` and
+  `rq select` now find them, and `-k variant`, `-k type` and `-k macro`
+  filter to them. `-k member` is the same as `-k variant`, and `-k alias`
+  is the same as `-k type`.
+- **Rust: items inside a braced macro call are indexed.** tokio declares much
+  of its API inside `cfg_rt! { … }` blocks, so `rq JoinHandle` used to return
+  a private test mock. The call's body is parsed as items when it parses as
+  items cleanly.
+
+### Changed
+- **`-k type` now means any named type:** the new `type` kind plus `struct`.
+  It used to mean `struct` alone. `-k struct` (`-k s`) is unchanged, and
+  `-k alias` selects aliases only.
+- **Rust trait methods take the trait's visibility.** A `pub trait` method
+  used to count as private and rank below public API. A trait impl's methods
+  now carry no visibility at all.
+
 ## 0.55.1 — 2026-09-27
 
 ### Fixed

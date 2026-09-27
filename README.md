@@ -48,7 +48,7 @@ rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
-rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait|constant
+rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait|constant|type|macro|variant
 rq KIND <query>             # a leading kind keyword is shorthand for -k (rq class Widget)
 rq Scope::name              # scope-aware: only the name defined inside Scope (or Scope#method)
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
@@ -172,7 +172,7 @@ query, an index that can't be opened, a `--symbols` file that doesn't exist —
 stdout carries one object instead of results:
 
 ```json
-{ "error": "rq: unknown --kind \"widget\" (class, module, method, function, struct, enum, trait, constant)", "kind": "usage", "code": 64 }
+{ "error": "rq: unknown --kind \"widget\" (class, module, method, function, struct, enum, trait, constant, type, macro, variant)", "kind": "usage", "code": 64 }
 ```
 
 `kind` is stable, and `code` is the exit code. The message also goes to stderr.

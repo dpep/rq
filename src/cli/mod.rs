@@ -33,7 +33,7 @@ rq thing --json           machine-readable results (for editors/agents)\n  \
 rq thing --no-wait        answer now from the committed index; don't block on a rebuild\n  \
 rq thing --wait 2s        ...or wait up to a bounded time for the index to warm\n  \
 rq thing app/web          restrict to a directory (rg-style)\n  \
-rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t)\n  \
+rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t/v, type, macro)\n  \
 rq class Widget           a leading kind keyword is shorthand for -k\n  \
 rq --symbols FILE         outline a file's definitions, in line order\n  \
 rq thing -x rust          restrict to a language (ruby/rust/go/python/ts/js)\n  \
@@ -272,13 +272,13 @@ fn dispatch(cli: Cli) -> ExitCode {
     let mut kinds: Vec<String> = Vec::new();
     for k in &cli.kind {
         match canonical_kind(k) {
-            Some(c) => kinds.push(c.to_string()),
+            Some(c) => kinds.extend(c.iter().map(|k| k.to_string())),
             None => {
                 return fail(
                     out,
                     Failure::Usage,
                     format_args!(
-                        "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant)"
+                        "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant, type, macro, variant)"
                     ),
                 );
             }
@@ -312,7 +312,7 @@ fn dispatch(cli: Cli) -> ExitCode {
             let query = if cli.kind.is_empty() {
                 let (kw, query, dirs) = split_kind_keyword(target, cli.dirs.clone());
                 if let Some(k) = kw {
-                    kinds.push(k.to_string());
+                    kinds.extend(k.iter().map(|k| k.to_string()));
                 }
                 paths.extend(dirs);
                 query
@@ -2651,16 +2651,12 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
 /// `rq class Foo` and `rq method zoom`. Only the full, unambiguous keyword forms
 /// count (never the single-letter `-k` shortcuts, which are far likelier to be a
 /// real query). Returns the canonical kind, so it filters exactly like `--kind`.
-fn keyword_kind(token: &str) -> Option<&'static str> {
+fn keyword_kind(token: &str) -> Option<&'static [&'static str]> {
     match token.to_ascii_lowercase().as_str() {
-        "class" => Some("class"),
-        "module" => Some("module"),
-        "method" => Some("method"),
-        "function" | "fn" => Some("function"),
-        "struct" | "type" => Some("struct"),
-        "enum" => Some("enum"),
-        "trait" | "interface" => Some("trait"),
-        "constant" | "const" => Some("constant"),
+        "class" | "module" | "method" | "function" | "fn" | "struct" | "type" | "enum"
+        | "trait" | "interface" | "constant" | "const" | "macro" | "variant" => {
+            canonical_kind(token)
+        }
         _ => None,
     }
 }
@@ -2673,7 +2669,7 @@ fn keyword_kind(token: &str) -> Option<&'static str> {
 fn split_kind_keyword(
     target: String,
     dirs: Vec<String>,
-) -> (Option<&'static str>, String, Vec<String>) {
+) -> (Option<&'static [&'static str]>, String, Vec<String>) {
     // Quoted form: the whole thing is one arg (`"class Foo"`), so peel the first
     // whitespace-separated word and keep the remainder as the query.
     if let Some((head, rest)) = target.split_once(char::is_whitespace) {
@@ -2694,16 +2690,22 @@ fn split_kind_keyword(
 
 /// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.
 /// Unknown values pass through lowercased (so they simply match nothing).
-fn canonical_kind(s: &str) -> Option<&'static str> {
+fn canonical_kind(s: &str) -> Option<&'static [&'static str]> {
     Some(match s.to_ascii_lowercase().as_str() {
-        "c" | "class" => "class",
-        "m" | "method" => "method",
-        "f" | "fn" | "func" | "function" => "function",
-        "mod" | "module" => "module",
-        "s" | "struct" | "type" => "struct",
-        "e" | "enum" => "enum",
-        "t" | "trait" | "interface" => "trait",
-        "const" | "constant" => "constant",
+        "c" | "class" => &["class"],
+        "m" | "method" => &["method"],
+        "f" | "fn" | "func" | "function" => &["function"],
+        "mod" | "module" => &["module"],
+        "s" | "struct" => &["struct"],
+        // `type` is any named type: an alias, and the structs that languages
+        // declare with the same keyword (Go's `type Foo struct`)
+        "type" => &["type", "struct"],
+        "alias" | "type_alias" => &["type"],
+        "e" | "enum" => &["enum"],
+        "t" | "trait" | "interface" => &["trait"],
+        "const" | "constant" => &["constant"],
+        "macro" | "macro_rules" => &["macro"],
+        "v" | "variant" | "member" | "enum_member" => &["variant"],
         _ => return None,
     })
 }
@@ -3469,22 +3471,22 @@ mod tests {
         // unquoted: `rq class Widget` — keyword + next positional is the query
         assert_eq!(
             split_kind_keyword("class".into(), d(&["Widget"])),
-            (Some("class"), "Widget".into(), vec![])
+            (Some(&["class"][..]), "Widget".into(), vec![])
         );
         // quoted: `rq 'method zoom'` — one arg, peel the first word
         assert_eq!(
             split_kind_keyword("method zoom".into(), vec![]),
-            (Some("method"), "zoom".into(), vec![])
+            (Some(&["method"][..]), "zoom".into(), vec![])
         );
         // `fn` is an alias for function; composes with a qualifier tail
         assert_eq!(
             split_kind_keyword("fn".into(), d(&["Foo::run"])),
-            (Some("function"), "Foo::run".into(), vec![])
+            (Some(&["function"][..]), "Foo::run".into(), vec![])
         );
         // extra positionals after the query stay as rg-style path dirs
         assert_eq!(
             split_kind_keyword("struct".into(), d(&["Gadget", "src"])),
-            (Some("struct"), "Gadget".into(), d(&["src"]))
+            (Some(&["struct"][..]), "Gadget".into(), d(&["src"]))
         );
     }
 
@@ -3543,17 +3545,21 @@ mod tests {
 
     #[test]
     fn a_kind_normalizes_language_specific_spellings() {
-        assert_eq!(canonical_kind("f"), Some("function"));
+        assert_eq!(canonical_kind("f"), Some(&["function"][..]));
         // TypeScript's spellings land on the shared model's kinds
-        assert_eq!(canonical_kind("interface"), Some("trait"));
-        assert_eq!(canonical_kind("type"), Some("struct"));
-        assert_eq!(canonical_kind("const"), Some("constant"));
+        assert_eq!(canonical_kind("interface"), Some(&["trait"][..]));
+        // `type` is any named type; `alias` only the alias
+        assert_eq!(canonical_kind("type"), Some(&["type", "struct"][..]));
+        assert_eq!(canonical_kind("alias"), Some(&["type"][..]));
+        assert_eq!(canonical_kind("member"), Some(&["variant"][..]));
+        assert_eq!(canonical_kind("macro"), Some(&["macro"][..]));
+        assert_eq!(canonical_kind("const"), Some(&["constant"][..]));
         assert_eq!(canonical_kind("banana"), None);
         // …and work as the leading-keyword shorthand too
         let d = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert_eq!(
             split_kind_keyword("interface".into(), d(&["Renderer"])),
-            (Some("trait"), "Renderer".into(), vec![])
+            (Some(&["trait"][..]), "Renderer".into(), vec![])
         );
     }
 
