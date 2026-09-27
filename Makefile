@@ -9,7 +9,7 @@
 #   make check      - the pre-push gate: fmt + clippy + tests, stop on failure
 #   make dogfood    - run rq on its own source (Q=<query>); reproducible
 #   make bench      - search-latency benchmark over REPO (default: .)
-#   make recall     - fuzzy-ranking recall on pinned rails + discourse (BASE=<ref>)
+#   make recall     - fuzzy-ranking recall on pinned Ruby + Rust corpora (BASE=<ref>)
 #   make fuzz       - name index vs scorer on many random names (N=, SEED=)
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
 #   make fmt        - cargo fmt
@@ -92,7 +92,7 @@ bench:
 	RQ_BENCH_REPO="$(REPO)" $(CARGO) test --release search_latency -- --ignored --nocapture
 
 # Fuzzy-ranking recall: where the name each query was derived from ranks, over
-# rails and discourse at pinned commits (docs/RECALL.md). BASE builds a git ref
+# pinned Ruby and Rust corpora (docs/RECALL.md). BASE builds a git ref
 # and lists the sources that lost #1 or the top 10 against it. Not part of
 # `check` or CI: the corpora are fetched once into ~/.cache/rq-recall, and each
 # binary takes about a minute.

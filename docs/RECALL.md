@@ -14,7 +14,9 @@ script/recall.py --help              # every flag; make passes them through ARGS
 ```
 
 It is **not** part of `cargo test`, `make check` or CI. It needs the network once
-(to fetch the corpora) and takes about a minute per binary. Run it by hand for any
+(to fetch the corpora) and takes about a minute per binary.
+`--queries FILE` runs another query set in the same format (only its repos are
+indexed), and `--misses` lists every query whose source isn't #1. Run it by hand for any
 change to scoring, recall or the match chain, and put its numbers in the
 decision that records the change.
 
@@ -25,9 +27,19 @@ Every query was derived from a real symbol name, and that name, the query's
 source ranks **#1**, in the **top 10**, or is **found** at all (`--limit 0`).
 Rank is by name, so any definition of the source counts.
 
-2,372 queries over two corpora: 58 hand-picked (no source, but they count
-toward churn) and 2,314 derived from 440 randomly sampled names of five or more
-letters. Each sampled name yields up to six queries, one per **type**:
+6,879 queries over six corpora, reported per language and per repo as well as
+in total. A ranking change has to hold up on each language, not just on the
+mixed total.
+
+- **Ruby**: rails and discourse, 2,372 queries. 58 are hand-picked (no source,
+  but they count toward churn) and 2,314 are derived from 440 randomly sampled
+  names of five or more letters.
+- **Rust**: tokio and ripgrep, sampled at random (250 and 150 names), and rq and
+  trekr, 150 names each drawn from those the last 300 commits before the pin
+  added or changed. Those last two are the dogfood set: definitions a developer
+  on this project actually went looking for. 4,507 queries.
+
+Each sampled Ruby name yields up to six queries, one per fuzzy **type**:
 
 | type | recipe | `test_float_limits` → |
 |---|---|---|
@@ -39,9 +51,25 @@ letters. Each sampled name yields up to six queries, one per **type**:
 | `glob` | `first3*last3` | `tes*lim` |
 
 A derived query other than a glob is kept only if no name in its repo starts
-with it, so every one reaches the fuzzy layers. The set lives in
-[`script/recall/queries.tsv`](../script/recall/queries.tsv) (`repo`, `query`,
-`type`, `source`).
+with it, so every one reaches the fuzzy layers. Rust names also get three
+literal types:
+
+| type | recipe | example |
+|---|---|---|
+| `exact` | the name as written | `JoinHandle` |
+| `case` | the other convention: snake to camelCase, Camel to snake | `join_handle` |
+| `qualified` | `Owner::name`, for a method or associated fn | `Runtime::block_on` |
+
+Rust ground truth is read from source with a regex, not from rq's index, so a
+definition rq fails to extract is still asked for and counts as a miss. `exact`
+therefore measures extraction coverage as much as ranking. Names defined only
+in tests, benches or examples are left out.
+
+The set lives in [`script/recall/queries.tsv`](../script/recall/queries.tsv)
+(`repo`, `query`, `type`, `source`).
+[`derive.py`](../script/recall/derive.py) generates the Rust rows
+(`sample` for tokio and ripgrep, `touched --rev <pin>` for rq and trekr, seed 1).
+The Ruby rows came from an earlier, uncommitted version of the same recipes.
 
 ## Reading the report
 
@@ -85,7 +113,7 @@ receiver kind, and by whether the truth sits in the anchor's own file.
 
 ## Reproducibility
 
-- **Pinned corpora.** rails and discourse at the commits in
+- **Pinned corpora.** Each corpus is pinned at a commit in
   [`script/recall/corpus.json`](../script/recall/corpus.json), shallow-fetched
   once into `~/.cache/rq-recall` (`$RQ_RECALL_CACHE` or `--cache` to move it),
   never vendored. The query set was derived at those commits, so moving a pin
@@ -118,3 +146,20 @@ the FTS path, with no answer changed):
 | name index, before D24 (`RQ_RECALL=scan`) | 1,218 (52.6%) | 1,677 (72.5%) | 1,991 (86.0%) |
 | D24, the name index as default | 1,304 (56.4%) | 1,750 (75.6%) | 2,000 (86.4%) |
 | D24 with `RQ_RECALL=fts` | 1,207 (52.2%) | 1,648 (71.2%) | 1,894 (81.8%) |
+
+### Rust baseline
+
+Rust entered the harness at 0.55.1 (`402b389`). Before this, Rust ranking had
+never been measured.
+
+| | source #1 | top 10 | found |
+|---|---|---|---|
+| rust, all four corpora | 3,558 (78.9%) | 3,848 (85.4%) | 3,867 (85.8%) |
+| tokio | 1,190 (67.7%) | 1,312 (74.6%) | 1,321 (75.1%) |
+| ripgrep | 806 (81.3%) | 867 (87.5%) | 869 (87.7%) |
+| rq | 826 (90.3%) | 866 (94.6%) | 867 (94.8%) |
+| trekr | 736 (87.3%) | 803 (95.3%) | 810 (96.1%) |
+
+tokio's `found` rate is low because definitions were missing from the index,
+not because they ranked badly. Items inside `cfg_*! { … }` blocks,
+`macro_rules!`, enum variants and `type` aliases were not extracted.

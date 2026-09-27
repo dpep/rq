@@ -1,10 +1,32 @@
 {
   "rails": {
     "url": "https://github.com/rails/rails.git",
-    "sha": "dfd1e951aa1aeef06c39fffb2994db8a8fa1914f"
+    "sha": "dfd1e951aa1aeef06c39fffb2994db8a8fa1914f",
+    "language": "ruby"
   },
   "discourse": {
     "url": "https://github.com/discourse/discourse.git",
-    "sha": "d55f1dcce56f9a08f8c78ef56ff641b7d7820035"
+    "sha": "d55f1dcce56f9a08f8c78ef56ff641b7d7820035",
+    "language": "ruby"
+  },
+  "tokio": {
+    "url": "https://github.com/tokio-rs/tokio.git",
+    "sha": "be8ee45b3fc2d107174e586141b1cb12c93e2ddf",
+    "language": "rust"
+  },
+  "ripgrep": {
+    "url": "https://github.com/BurntSushi/ripgrep.git",
+    "sha": "4649aa9700619f94cf9c66876e9549d83420e16c",
+    "language": "rust"
+  },
+  "rq": {
+    "url": "https://github.com/dpep/rq.git",
+    "sha": "402b389831835af116a824b3bff88ffdd74d577d",
+    "language": "rust"
+  },
+  "trekr": {
+    "url": "https://github.com/dpep/trekr.git",
+    "sha": "087f2381e8f4d9f4bc7e5bed8010bcfc8cee8945",
+    "language": "rust"
   }
 }

@@ -2,8 +2,9 @@
 """Fuzzy-ranking recall over pinned real corpora. See docs/RECALL.md.
 
 Every query in script/recall/queries.tsv was derived from a real symbol name in
-rails or discourse (its ground truth, the `source`). This builds an isolated
-index of both repos at the pinned commits, runs every query through rq, and
+one of the pinned corpora (its ground truth, the `source`): rails and discourse
+for Ruby, tokio, ripgrep, rq and trekr for Rust. This builds an isolated index
+of the repos at the pinned commits, runs every query through rq, and
 reports where each source ranks: #1, top 10, or found at all. With a baseline
 it also lists the sources that lost #1 or the top 10.
 
@@ -30,7 +31,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "script" / "recall"
-TYPES = ["abbr3", "abbr2", "first+last", "consonants", "typo", "glob"]
+TYPES = ["exact", "case", "qualified", "abbr3", "abbr2", "first+last", "consonants", "typo", "glob"]
 # Recency decays against the wall clock, so a checkout's real dates would make
 # the numbers drift with the calendar. Every file and the one commit are dated
 # here instead, far past the decay, which zeroes the signal for good.
@@ -130,9 +131,9 @@ def build_ref(ref):
 # ----- one run -----
 
 
-def load_queries():
+def load_queries(path):
     rows = []
-    with open(DATA / "queries.tsv") as f:
+    with open(path) as f:
         header = f.readline().rstrip("\n").split("\t")
         for line in f:
             rows.append(dict(zip(header, line.rstrip("\n").split("\t"))))
@@ -266,11 +267,16 @@ def tally(rows):
             "first_pct": pct(c["first"]), "top10_pct": pct(c["top10"]), "found_pct": pct(c["found"])}
 
 
-def summarize(run_, queries):
+def summarize(run_, queries, pins):
     sourced = [(q, r) for q, r in zip(queries, run_["results"]) if q["source"]]
     out = {k: run_[k] for k in ("label", "bin", "index_s", "query_s")}
     out.update(tally([r for _, r in sourced]))
     out["by_type"] = {t: tally([r for q, r in sourced if q["type"] == t]) for t in TYPES}
+    out["by_repo"] = {repo: tally([r for q, r in sourced if q["repo"] == repo])
+                      for repo in dict.fromkeys(q["repo"] for q in queries)}
+    # a ranking change must hold up per language, not just on the mixed total
+    out["by_language"] = {lang: tally([r for q, r in sourced if pins[q["repo"]]["language"] == lang])
+                          for lang in dict.fromkeys(pins[q["repo"]]["language"] for q in queries)}
     return out
 
 
@@ -312,9 +318,28 @@ def print_report(report):
           + "  " + "  ".join(f"{'top10 ' + r['label'][:8]:>15}" for r in runs))
     for t in TYPES:
         n = runs[0]["by_type"][t]["n"]
+        if not n:
+            continue
         print(f"{t:<11} {n:>4}  "
               + "  ".join(f"{r['by_type'][t]['first_pct']:>11.1f}%" for r in runs) + "  "
               + "  ".join(f"{r['by_type'][t]['top10_pct']:>14.1f}%" for r in runs))
+
+    print(f"\n{'repo':<11} {'n':>4}  " + "  ".join(f"{'#1 ' + r['label'][:8]:>12}" for r in runs)
+          + "  " + "  ".join(f"{'top10 ' + r['label'][:8]:>15}" for r in runs)
+          + "  " + "  ".join(f"{'found ' + r['label'][:8]:>15}" for r in runs))
+    for key in ("by_language", "by_repo"):
+        for repo, t in runs[0][key].items():
+            print(f"{repo:<11} {t['n']:>4}  "
+                  + "  ".join(f"{r[key][repo]['first_pct']:>11.1f}%" for r in runs) + "  "
+                  + "  ".join(f"{r[key][repo]['top10_pct']:>14.1f}%" for r in runs) + "  "
+                  + "  ".join(f"{r[key][repo]['found_pct']:>14.1f}%" for r in runs))
+
+    if report.get("misses") is not None:
+        rank = lambda x: "-" if x is None else f"#{x}"  # noqa: E731
+        print(f"\nnot #1 ({runs[-1]['label']}): {len(report['misses'])}")
+        for x in report["misses"]:
+            print(f"  {x['repo']:<9} {x['type']:<10} {x['query']!r:<34} {x['source']:<30} "
+                  f"{rank(x['rank']):>4}  #1: {x['first']}")
 
     d = report.get("diff")
     if d:
@@ -395,6 +420,10 @@ def main():
     ap.add_argument("--anchored", action="store_true",
                     help="also rank script/recall/anchored.tsv's call sites with and without --anchor "
                          "(the binary under test only)")
+    ap.add_argument("--queries", metavar="TSV", default=str(DATA / "queries.tsv"),
+                    help="the query set (default script/recall/queries.tsv); only its repos are indexed")
+    ap.add_argument("--misses", action="store_true",
+                    help="list every sourced query whose source isn't #1 for the binary under test")
     ap.add_argument("--jobs", type=int, default=4, help="queries in flight at once (default 4)")
     ap.add_argument("--cache", metavar="DIR",
                     help="where corpora are fetched (default $RQ_RECALL_CACHE, else ~/.cache/rq-recall)")
@@ -408,8 +437,10 @@ def main():
 
     pins = json.loads((DATA / "corpus.json").read_text())
     cache = cache_dir(args.cache)
+    queries = load_queries(args.queries)
+    wanted = {q["repo"] for q in queries}
+    pins = {repo: p for repo, p in pins.items() if repo in wanted}
     corpus = {repo: checkout(cache, repo, p["url"], p["sha"]) for repo, p in pins.items()}
-    queries = load_queries()
 
     bins = []
     if args.base:
@@ -426,9 +457,15 @@ def main():
 
     report = {"corpus": pins, "queries": len(queries),
               "sourced": sum(1 for q in queries if q["source"]),
-              "runs": [summarize(r, queries) for r in raw]}
+              "runs": [summarize(r, queries, pins) for r in raw]}
     if len(raw) == 2:
         report["diff"] = diff(raw[0], raw[1], queries)
+    if args.misses:
+        report["misses"] = [
+            {"repo": q["repo"], "query": q["query"], "type": q["type"], "source": q["source"],
+             "rank": r["rank"], "first": r["top"][0][0] if r["top"] else None,
+             "first_at": f"{r['top'][0][1]}:{r['top'][0][2]}" if r["top"] else None}
+            for q, r in zip(queries, raw[-1]["results"]) if q["source"] and r["rank"] != 1]
     if args.anchored:
         note(f"new: {len(load_anchored())} anchored call sites, plain and with --anchor")
         rows = load_anchored()
