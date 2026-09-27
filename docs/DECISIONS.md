@@ -1371,7 +1371,7 @@ size, the rails + discourse index goes 35.2 → 31.2 MB without FTS and → 27.8
 index too (a migration's drop frees pages for reuse rather than shrinking the file).
 Without the first-letter net nothing reads that index: every other name query joins
 `repositories` and seeks `idx_symbols_repo_name` per repo, and the plans are identical with
-and without it. Removing them is a schema change awaiting a go-ahead.
+and without it. Removed in D26.
 
 *Rejected, measured:*
 - **A 128-bit pair Bloom** (24-byte signatures). −1.5 MB (−4.3%), identical answers, but the
@@ -1392,3 +1392,57 @@ and without it. Removing them is a schema change awaiting a go-ahead.
 move to their own file or database), which would make appending through it free; or the
 row verify's cost during a cold pass starts to show on real repos, where a rebuild on
 demand before the pass ends is the next step.
+
+## D26 — FTS removed: the name index is the only fuzzy recall
+
+**Adopted**, 2026-09-27. Release builds, rails and discourse at the recall pins.
+
+*What.* Schema v18 drops `symbols_fts`, its three sync triggers, and
+`idx_symbols_name_lower`; the code that read and maintained them goes with it: the
+first-letter, trigram and path `LIKE` nets, the in-SQLite `rq_keep` filter and
+`score::could_match` behind it, the indexer's deferred FTS sync, and `RQ_RECALL`. The
+migration drops the triggers first (one left behind would fail every symbol write) and
+builds nothing: recall rebuilds each repo's name index on first need (D25). Every name query
+left is scoped by repository and seeks `idx_symbols_repo_name`; unscoped (`-a`) exact and
+prefix queries scan `repositories` and seek it per repo, the same plan as with the dropped
+index.
+
+*A rebuild that can't take the lock reads the repo from its rows.* D25 kept the FTS nets
+for one case: another writer holding the lock past the 3 s busy timeout when recall needs
+to rebuild. Three ways to answer that without them:
+- **Propagate the error** (exit 74). A spurious failure: the answer is in the database,
+  and a caller told `database` has nothing to fix.
+- **Report warming** (exit 2). Honest that a retry will do better, but it withholds an
+  answer rq can give, and `warming` means the index is incomplete, which it isn't.
+- **Verify the repo's names from its rows**, as recall already does for a repo whose cold
+  pass suspended its index. Complete over what's committed, 55–120 ms at rails and
+  discourse size, and the rebuild is left to the next search.
+
+The third, since it's the same answer by an existing path. Only a busy or locked error
+takes it; any other error from the rebuild propagates and exits 74.
+
+| rails + discourse, fresh index | file | vacuumed |
+|---|---|---|
+| 0.54.1 (FTS, no name index) | 29.7 MB | 28.0 MB |
+| main (FTS and the name index) | 36.6 MB | 35.2 MB |
+| this (the name index alone) | 29.1 MB | 27.8 MB |
+
+A database migrated in place keeps its file size. From main the drop frees 1,836 pages
+(7.5 MB) for reuse; from 0.54.1, whose users skip v17, the name index is built into those
+pages and the file stays at 29.7 MB with 135 pages free. An older rq on a migrated
+database fails any query that reaches fuzzy recall (`no such table: symbols_fts`, exit
+74) and its first index of a repo; exact and prefix matches still answer.
+
+`make recall BASE=main --anchored`: 0 sources moved, the top 10 changed in 0 of 2,372
+queries, anchored unchanged (351 #1, 439 top 10 with `--anchor`).
+
+| 396 queries × 5 reps, interleaved, load 14–27, ms | main | this |
+|---|---|---|
+| recall median / p90 / p99 | 1.55 / 4.18 / 14.08 | 1.52 / 4.18 / 13.91 |
+| first answer median / p90 / p99 | 3.51 / 8.75 / 24.93 | 3.43 / 8.53 / 25.51 |
+
+Flat, as expected: the nets never ran by default, so removing them changes no query's
+work. Output was byte-identical on every query.
+
+*Reverses if:* the name index has to be rebuilt somewhere recall can't afford to wait for
+it, or a query shape appears that it can't screen, and a fallback earns its storage back.

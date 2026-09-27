@@ -16,11 +16,18 @@ and aren't listed; see `git log` for those.
   of a capped net that missed some. With the ranking changes below, on the
   recall harness the source ranks first for 56.4% of queries (was 49.0%), in the
   top 10 for 75.6% (69.2%), and is found at all for 86.4% (81.5%); the query
-  phase's median drops from ~7 ms to ~2 ms (DECISIONS D23, D24). The index
-  database gains two tables and grows by about a quarter; it migrates itself,
-  and each repo's index is built by the first search or index pass that needs
-  it (a fraction of a second, once). Nothing to do. `RQ_RECALL=fts` forces the
-  old nets, for now.
+  phase's median drops from ~7 ms to ~2 ms (DECISIONS D23, D24). The database
+  migrates itself: the name index replaces the trigram table the nets read,
+  so it stays about the size it was (a fresh rails + discourse index is 27.8
+  MB, against 28.0 before), and each repo's index is built by the first search
+  or index pass that needs it (a fraction of a second, once) (D26).
+
+### Upgrade note
+- **Upgrade every rq that shares the database.** The migration drops the
+  trigram table older releases search, so an older rq on a migrated database
+  fails any query without an exact or prefix match, and the first index of any
+  repo, and its writes leave the name index behind. That includes a copy pinned elsewhere on
+  `PATH`, or another machine's rq on a shared `RQ_DB`.
 
 ### Changed
 - **Fuzzy matches rank by how well the name reads.** A definition's kind, size,

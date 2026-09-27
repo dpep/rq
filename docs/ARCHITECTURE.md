@@ -144,17 +144,11 @@ symbols (
   visibility TEXT                    -- public|crate|private|protected; NULL when
                                      -- unknown (pre-v9 rows backfill lazily)
 );
-CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
--- repo-scoped recall: a search inside a repo range-scans only its names
--- (also serves the per-repo counts the old repository_id index did)
+-- exact and prefix recall: every name query is scoped by repository, even
+-- unscoped (`-a`) ones, which seek it once per repo through `repositories`
+-- (also serves the per-repo counts the old repository_id index did). The
+-- trigram FTS table and the name_lower-only index went in v18 (D26).
 CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
-
--- fuzzy candidate narrowing: trigram FTS over symbol names. detail=none:
--- recall ORs single trigrams and never reads positions (D20)
-CREATE VIRTUAL TABLE symbols_fts USING fts5(
-  name, content='symbols', content_rowid='id', tokenize='trigram',
-  detail=none
-);
 
 -- the name index (NAME_INDEX.md, D23): each repo's distinct symbol names
 -- (kind 0) and file paths (kind 1, signed by their stem) as 40-byte
@@ -215,15 +209,12 @@ Decisions worth calling out:
   signature, verifies the survivors with the scorer's own match chain, and
   fetches rows only for the names it accepts, so its candidates are exactly
   what `score` would take from any row (NAME_INDEX.md, D23). The default
-  since D24 fixed the ranking weaknesses complete recall exposed. A repo whose
+  since D24 fixed the ranking weaknesses complete recall exposed, and the only
+  fuzzy recall since D26 removed the trigram FTS nets it replaced. A repo whose
   index is missing or from another format is rebuilt before recall reads it,
-  and one suspended by a cold pass is verified from its rows (D25); FTS below
-  runs only if the rebuild fails, or when `RQ_RECALL=fts` forces it.
-- **Trigram FTS5** narrows millions of symbols to a small candidate set before
-  any expensive scoring runs — the answer to "fuzzy + millions + 50 ms".
-  Within each capped net, the scorer's own necessary condition
-  (`score::could_match`, registered as a SQLite function) drops rows that
-  can't match before they're decoded (D12).
+  and one suspended by a cold pass is verified from its rows (D25), as is one
+  whose rebuild finds another writer holding the lock past the busy timeout
+  (D26).
 - **`content_hash`** detects staleness so partial/old indexes don't silently
   point at moved lines.
 - **An extraction change re-extracts by migration.** When a plugin starts
@@ -263,11 +254,8 @@ search only reads.
   fans out across CPUs; the parsed files are written in **one** transaction (one
   `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.
   A pass over a cold repo (explicit or a first search's warm) suspends the
-  per-row FTS trigger and indexes the new names in one step at the end of the
-  pass, before coverage is recorded — per-row, the writer rather than parsing
-  bounds the pass. It suspends the name index the same way and rebuilds it at
-  the end, and meanwhile fuzzy recall verifies the repo's committed names
-  directly. Every other write appends the names and files new to the repo in
+  name index and rebuilds it at the end, before coverage is recorded, and
+  meanwhile fuzzy recall verifies the repo's committed names directly. Every other write appends the names and files new to the repo in
   the transaction that writes them, and every pass ends by rebuilding an index
   that is missing, from another format, or holding a quarter more keys than its
   last rebuild wrote.
@@ -357,7 +345,7 @@ Staged, streaming, early-exit on confidence:
 | ----- | ---- | ----- |
 | 0 | parse query | case, separators, looks-like-a-path? |
 | 1 | exact / prefix symbol | indexed `name_lower`; fastest, highest confidence |
-| 2 | fuzzy symbol | the name index's exact candidate set (D23) → abbreviation-aware scorer. Without a current index (or with `RQ_RECALL=fts`), the trigram FTS nets (+ first-letter range for ≤ 6 chars); an fst over names was slower (D21) |
+| 2 | fuzzy symbol | the name index's exact candidate set (D23) → abbreviation-aware scorer; an fst over names was slower (D21), and the trigram FTS nets it replaced are gone (D26) |
 | 3 | path / filename | |
 | 4 | live scan | async, streamed when coverage is low |
 | 5 | opportunistic extraction | parse newly-seen files, persist for next time |
@@ -523,8 +511,8 @@ launcher. VS Code, Neovim, and JetBrains are all just result openers — see
 
 ## Open risks (tracked, not yet resolved)
 
-1. **Fuzzy-over-millions latency** — mitigated by trigram candidate narrowing;
-   needs measurement against the 50 ms budget at scale.
+1. **Fuzzy-over-millions latency** — mitigated by the name index's signature
+   screen (D23); needs measurement against the 50 ms budget at scale.
 2. **Cross-repo ranking** — resolved for the common case by scoping to the
    current repo by default (`--all-repos` opts out); cross-repo ranking priors
    (recency) still matter under `--all-repos`.

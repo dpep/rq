@@ -9,9 +9,8 @@ accept. The decision and its numbers are D23 in [DECISIONS.md](DECISIONS.md); th
 works, and the design spike it came from.
 
 It is the default recall since D24: complete recall finds 105 more sources on the harness,
-and exposed ranking weaknesses the capped nets hid (D23), which D24 fixed. The FTS nets
-remain the fallback while a repo's index is missing or being rebuilt, and `RQ_RECALL=fts`
-forces them.
+and exposed ranking weaknesses the capped nets hid (D23), which D24 fixed. Since D26 it is
+the only fuzzy recall: the trigram table and the nets are gone.
 
 ## Why an index is possible
 
@@ -89,7 +88,7 @@ bytes. The scan reads a chunk's `keys` only when one of its signatures survives.
   once the keys appended since the last rebuild pass a quarter of what it wrote (at
   least 1,000).
 - **A cold pass suspends the index.** It marks the repo's `name_index` suspended, drops
-  its chunks and skips appends, as it skips per-row FTS, then rebuilds at its end. The
+  its chunks and skips appends, then rebuilds at its end. The
   rebuild writes every chunk into contiguous pages; appending between the pass's batches
   scatters them among the symbols' pages, which costs every later scan (D25). Meanwhile
   recall reads the suspended repo's distinct names and file paths from its rows and
@@ -98,8 +97,9 @@ bytes. The scan reads a chunk's `keys` only when one of its signatures survives.
 - **Missing or stale means rebuild, then read.** Before recall reads the index it
   rebuilds every repo searched whose `name_index` is missing or holds another format:
   once per repo after an upgrade, 62 ms for rails and 103–110 for discourse. A new repo
-  starts with an empty, current index. The FTS nets run only if that rebuild fails (a
-  writer held the lock past the busy timeout).
+  starts with an empty, current index. If another writer holds the lock past the busy
+  timeout, the rebuild is left to a later search and recall reads that repo from its rows,
+  as it does a suspended one (D26).
 
 A flat file next to the database, mapped per query, measured faster (below), but it
 needs its own cross-process publish protocol, crash reconciliation with SQLite, and a
@@ -114,7 +114,7 @@ lifecycle for `--drop` and a replaced `RQ_DB`; SQLite gives all three for free.
 ## Recall
 
 `Store::search_candidates` keeps the exact and prefix layers and their fast path. After
-them, the name index replaces the first-letter net, the trigram net, the path `LIKE` net,
+them, the name index replaced the first-letter net, the trigram net, the path `LIKE` net,
 `rq_keep` and `NET_WINDOW`: scan the repo's name signatures, verify survivors, fetch rows by
 `(repository_id, name_lower)`; scan its file signatures, verify stems, fetch the primary
 definitions of the accepted files. The cap still bounds the rows. When the accepted names
@@ -122,9 +122,8 @@ hold more rows than the cap, they are fetched best first by the value `score` gi
 name (glob or alignment), not in whatever order a net met them. `score()` still sees whole
 rows and is unchanged, so this isn't D1's two-phase split.
 
-Dropping the FTS table and its triggers is a later migration, once the index is the
-default: until then FTS is the default and the fallback while an index is missing, and a
-migration that drops it has to build every repo's index first.
+Schema v18 dropped the FTS table, its triggers and the `name_lower`-only index its
+first-letter net read (D26). It builds no index: recall rebuilds each repo's on first need.
 
 ## The spike
 
