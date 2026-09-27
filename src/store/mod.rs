@@ -9,7 +9,7 @@ mod schema;
 use std::collections::HashMap;
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::core::{Symbol, now_unix};
 use crate::search::Probe;
@@ -366,7 +366,11 @@ impl Store {
         let mut files_written = 0;
         let mut symbols_written = 0;
         for chunk in files.chunks(BATCH) {
-            let tx = self.conn.transaction()?;
+            // Immediate: this reads before it writes, and a deferred upgrade
+            // fails at once when another writer commits first.
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
             let (mut fresh, mut fresh_files) = (Vec::new(), Vec::new());
             {
                 let mut upsert = tx.prepare(
@@ -1060,6 +1064,43 @@ mod tests {
             end_line: line,
             parent: parent.map(String::from),
             visibility: None,
+        }
+    }
+
+    #[test]
+    fn a_batch_write_waits_out_a_concurrent_writer() {
+        // A deferred batch reads first, so a writer that commits while it waits
+        // for the lock invalidates its snapshot: SQLite then fails it with
+        // SQLITE_BUSY at once, busy_timeout or not.
+        let path = std::env::temp_dir().join(format!("rq-busy-{}.db", std::process::id()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        let mut store = Store::open(&path).unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::Local("/tmp/busy".into()), None)
+            .unwrap();
+        let other = Store::open(&path).unwrap();
+        other
+            .conn
+            .execute_batch("BEGIN IMMEDIATE; INSERT INTO meta VALUES ('k', 'v');")
+            .unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            other.conn.execute_batch("COMMIT").unwrap();
+        });
+        let file = FileSymbols {
+            path: "app/models/user.rb".into(),
+            language: "ruby".into(),
+            mtime: Some(1),
+            content_hash: "h".into(),
+            symbols: vec![sym("User", Kind::Class, 1, None)],
+        };
+        let written = store.replace_files(repo, &[file]);
+        holder.join().unwrap();
+        assert_eq!(written.unwrap(), (1, 1));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
     }
 

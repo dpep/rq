@@ -50,6 +50,9 @@ and aren't listed; see `git log` for those.
   forever at 0% CPU on repos with a couple of thousand source files or more —
   `rq --index`, a cold search, and the background warm alike. Stuck
   `rq --warm` processes from earlier versions are safe to kill.
+- **Two index passes at once wait for each other instead of failing.** A
+  batch write that lost a race with another writer failed immediately with
+  "database is locked", ignoring the busy timeout; now it waits its turn.
 
 ## 0.54.1 — 2026-09-27
 
