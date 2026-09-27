@@ -213,6 +213,12 @@ pub(crate) fn score(
         false
     };
 
+    // What the definition looks like — its file, visibility, extent, depth and
+    // kind — picks among names that answer the query about equally well, so it
+    // counts in proportion to how surely the name answered it. At full weight it
+    // outweighed the name itself on an approximate match (DECISIONS D24).
+    let quality = match_quality(&features);
+
     // Layer 3: path / filename matching (same glob/fuzzy split as the name).
     let stem = path_stem(&cand.file);
     let path_match = if wildcard {
@@ -225,7 +231,7 @@ pub(crate) fn score(
         if let Some(ps) = path_match {
             features.push(Feature {
                 name: "path",
-                value: (ps * 0.2).min(50.0),
+                value: (ps * 0.2).min(50.0) * quality,
             });
         }
     } else {
@@ -252,7 +258,7 @@ pub(crate) fn score(
     ) {
         features.push(Feature {
             name: "private",
-            value: -15.0,
+            value: -15.0 * quality,
         });
     }
 
@@ -281,7 +287,7 @@ pub(crate) fn score(
                 // not "body": that's the field `--show` fills with source, and
                 // a feature sharing the name reads as the same thing in JSON
                 name: "extent",
-                value: (span.ln() * BODY_WEIGHT).min(MAX_BODY_BONUS),
+                value: (span.ln() * BODY_WEIGHT).min(MAX_BODY_BONUS) * quality,
             });
         }
     }
@@ -302,7 +308,7 @@ pub(crate) fn score(
     if depth > 0 {
         features.push(Feature {
             name: "depth",
-            value: -(DEPTH_PENALTY * depth as f64).min(MAX_DEPTH_PENALTY),
+            value: -(DEPTH_PENALTY * depth as f64).min(MAX_DEPTH_PENALTY) * quality,
         });
     }
 
@@ -316,7 +322,7 @@ pub(crate) fn score(
     if kind != 0.0 {
         features.push(Feature {
             name: "kind",
-            value: kind,
+            value: kind * quality,
         });
     }
 
@@ -1427,6 +1433,30 @@ mod tests {
         // demote `User` for `user`, so neither spelling is rewarded.
         assert_eq!(total("symbol", "symbol"), total("symbol", "Symbol"));
         assert_eq!(total("user", "User"), total("user", "user"));
+    }
+
+    #[test]
+    fn a_closer_name_outranks_a_bigger_definition() {
+        // The method reads as the query; the class only holds its letters. Its
+        // extent, kind and file name must not carry it past the better name.
+        let method = row("find_public_node", "method", 1);
+        let mut class = row("RefillPushNoticeLevel", "class", 1);
+        class.file = "app/models/refill_push_notice_level.rb".into();
+        class.end_line = Some(200);
+        let at = |r: &SymbolRow| score("fipuno", r, None, Boosts::default(), false).unwrap();
+        let (m, c) = (at(&method), at(&class));
+        assert!(name_evidence(&m.features) > name_evidence(&c.features));
+        assert!(m.total > c.total, "{} > {}", m.total, c.total);
+        // the same features still order two exact matches at full weight
+        let exact = |r: &SymbolRow| score(&r.name, r, None, Boosts::default(), false).unwrap();
+        let extent = |s: &Scored| {
+            s.features
+                .iter()
+                .find(|f| f.name == "extent")
+                .unwrap()
+                .value
+        };
+        assert_eq!(extent(&exact(&class)), MAX_BODY_BONUS);
     }
 
     #[test]

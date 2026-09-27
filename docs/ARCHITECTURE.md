@@ -380,6 +380,11 @@ why a result ranked where it did:
   enough to outweigh `recency`, or which of two same-named symbols won would
   come down to file mtimes
 - **kind weight** — tunable (e.g. class/module slightly above method)
+- **definition shape** — `kind`, `extent` (log of body lines), `path`, `depth`
+  (nesting past two levels) and `private` pick among names that answer the
+  query about equally well. Each is scaled by the match quality, so they keep
+  full weight between two exact matches and shrink to about a third on a fuzzy
+  one, where they used to outweigh the name itself (D24)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:

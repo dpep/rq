@@ -1134,3 +1134,51 @@ losses left are ambiguous or deliberate. Then the FTS table and its triggers go 
 migration, which has to build every repo's index first. *Reverses entirely if:* a way to
 match can't be expressed as transitions between a name's characters, or a matching rule
 changes in a way the property test can't keep the pairs in step with.
+
+## D24 — Ranking for complete recall: name evidence first
+
+**Adopted**, 2026-09-27. D23's name index recalls every name a query can match, and its
+46 losses were all ranking: weaknesses the capped nets hid by never holding the
+competitor. Each fix below is its own commit, measured with `make recall` against the
+commit before it, under both `RQ_RECALL=scan` and the FTS nets, with `--anchored`. An
+offline re-ranker over `--explain` output (every hit, unrounded) reproduced the harness
+exactly and screened the variants; the chosen one was then measured for real.
+
+### 1. Definition shape scales with match quality
+
+*The weakness.* `kind`, `extent`, `path`, `depth` and `private` were sized as
+tiebreakers between exact matches (1000), where they are small. On a fuzzy match, whose
+evidence runs from about 30 to 200, they decide: a class carries extent, kind and a file
+named after it (~65), a method about 11. `fipuno` answered `BackfillPushNotificationLevel`
+(fuzzy 65) over `find_published_node` (109), and `lclztn` sank `localizations` to #51 under
+Localization* classes.
+
+*The rule.* Each of these is multiplied by `match_quality` (exact 1.0, prefix 0.9, glob
+0.7, fuzzy 0.30–0.65, path-only 0.25). They keep full weight between exact matches, and on
+a fuzzy match they shrink to about a third: still enough to order names that read as the
+query about equally well. A path-only hit's `path` is its evidence and stays whole.
+
+| 2,314 sourced | scan #1 | top 10 | found | FTS #1 | top 10 | found |
+|---|---|---|---|---|---|---|
+| before | 1,218 | 1,677 | 1,991 | 1,133 | 1,602 | 1,886 |
+| scaled | 1,280 | 1,716 | 1,991 | 1,190 | 1,624 | 1,886 |
+
+Scan: 373 up, 73 down. Anchored call sites unchanged (351 #1, 439 top 10 with
+`--anchor`), in both modes: they are exact matches, where the scale is 1. Of the 13 lost
+#1s, 12 are ambiguous by name — the new #1 reads as the query at least as well
+(`fity`: `file_type` 96 over `field_type` 92; `docbaspac`: `docker_base_packages` 186 over
+`dockerfile_base_packages` 170; `chngls`, `fndprv`, `mgrtps` and the rest), and the
+side features that used to carry the source are now too small to. The 13th, `subtes`, is
+the test-path cliff (part 2). Of the 5 lost top 10s, `chatest` is the cliff, `tstlft` and
+`tstdlg` are ambiguous by name, and `tstwhr` and `dscvry` are within 5 points of name
+evidence, which side features still decide. FTS loses the same queries plus `deauco`
+(ambiguous: `DEFAULT_*` constants read as `deauco` better than `DECRYPTED_AUTH_COOKIE`).
+
+*Rejected, screened offline under scan:*
+- **Weighting the name instead** (fuzzy × 2: 1,259 #1, 15 lost; × 3: 1,279, 20 lost). A
+  constant is the same scale without the grading, and it moves the fuzzy value that
+  `match_quality` and confidence read.
+- **Capping side features at a share of the fuzzy value** (0.25–0.75): 1,229–1,259 #1,
+  and a cap is a kink where the scale is a line.
+- **Dropping `path` on a name match** (it restates a class's name): 1,228 #1, 37 lost
+  top 10s. The file still helps.

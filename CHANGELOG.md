@@ -21,6 +21,12 @@ and aren't listed; see `git log` for those.
   itself, and each repo's index is built on its next index pass or search.
   Nothing to do.
 
+### Changed
+- **Fuzzy matches rank by how well the name reads.** A definition's kind, size,
+  file name, nesting and visibility now count in proportion to how surely its
+  name matched, so a big class that merely holds the query's letters no longer
+  outranks a method that reads as the query (DECISIONS D24).
+
 ## 0.54.1 — 2026-09-27
 
 ### Fixed
