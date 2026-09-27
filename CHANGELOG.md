@@ -25,6 +25,11 @@ and aren't listed; see `git log` for those.
   release is a minor one.
 
 ### Fixed
+- **`save` no longer reads `save!` as an exact match.** A trailing `!`, `?` or `=`
+  is part of a name, not a separator, so `rq save` ranks `save!`, `save?` and
+  `save=` as prefix matches, well below `save`. `rq 'Foo#save' --show` used to fall back to
+  the list because `save!` scored within 50 of it. Only `_`, `-` and `.` may
+  still be left out of an exact match.
 - **Discarding an edit (`git checkout -- file`) is picked up.** The tree reads
   clean again, so rq's `git status` check used to see nothing to reindex, and
   the index kept the discarded version: a method the edit had removed stayed a

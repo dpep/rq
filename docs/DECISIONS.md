@@ -804,3 +804,45 @@ file, and well under the gap between match tiers.
 *Reverses if:* an inheritance model lands (then `enclosing` should walk ancestors), or
 anchored use shows the same-file boost crowding out a better definition elsewhere
 (shrink `proximity` first, since `enclosing` carries the scope case alone).
+
+## D19 — Only word joiners are separators: `save!` is not an exact `save`
+
+**Adopted**, 2026-09-26. Recall harness (D12) and the anchored set (D18), release builds,
+against main.
+
+The separator-insensitive exact match compared names with every non-alphanumeric
+character dropped. So `save!`, `valid?` and `name=` were exact matches for `save`,
+`valid` and `name`, 50 behind the real one (`separators -50`). In rails,
+`rq 'ActiveRecord::Persistence#save'` scored `save` 1456 and `save!` 1401, confidence
+0.61, and `--show` fell back to the list on a name typed exactly.
+
+Now only the word joiners `_`, `-` and `.` may be left out. Any other character is part
+of the name, so `save!` is a prefix match for `save` (699), and `save` scores 1456 at
+confidence 1.00. `save!` still finds `save!` exactly. The rule is about characters, not
+languages: `!`, `?` and `=` only turn up in the names of languages that allow them.
+
+| 2,314 sourced queries | #1 | top 10 | found |
+|---|---|---|---|
+| main | 1,132 | 1,602 | 1,886 |
+| adopted | 1,133 | 1,602 | 1,886 |
+| also separator-insensitive prefix | 1,139 | 1,599 | 1,881 |
+
+Adopted: 2 up, 1 down, top 10 changed in 8 of 2,372 queries. The one loss is `hasicon`
+for `has_icon?`, #1 → #10, now fuzzy rather than exact-with-separators. It left out
+both the joiner and the `?`, and main already reads a separator-less *prefix* as fuzzy
+(`parsefil` for `parse_file`). Anchored call sites are unchanged: 351 #1, 439 top 10
+of 446.
+
+*Rejected: separators left out of a prefix too.* That keeps `hasicon` at #1, and gains 7
+#1s overall. But it loses 3 top 10s and 5 found (`setview` for `setup_view` now finds
+only `set_view_paths`). A separator-less prefix counts as a literal match, which
+suppresses the fuzzy tail (D12) where main kept it. That's a change to what counts as
+literal, with ambiguous queries on both sides, not a fix for sigils.
+
+*Rejected: a `sigil` penalty on an exact match.* That needs a list of sigil characters in
+the core, and a size to tune. Reading them as part of the name gets the same result from
+the prefix tier.
+
+*Reverses if:* separator-less prefixes are taken up on their own merits (the rejected row
+is their price), or a language has names where a non-joiner punctuation character is
+routinely left off when typing.

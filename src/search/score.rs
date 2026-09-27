@@ -157,7 +157,7 @@ pub(crate) fn score(
             });
         }
         true
-    } else if alnum_eq(&name_lower, &q) {
+    } else if joiners_eq(&name_lower, &q) {
         // The same identifier with the separators left out — `parsefile` for
         // `parse_file`, `usercontroller` for `user-controller`. That's a
         // deliberate abbreviation of an exact match, not a fuzzy one, and it
@@ -1039,13 +1039,15 @@ fn lower(s: &str) -> std::borrow::Cow<'_, str> {
 
 /// Are these the same identifier once separators are dropped? `_`, `-`, and
 /// `.` are all word joiners across the languages rq indexes, and a query that
-/// omits them is spelling the same name.
-fn alnum_eq(a: &str, b: &str) -> bool {
+/// omits them is spelling the same name. Any other character is part of the
+/// name: `save!` and `name=` are different methods from `save` and `name`.
+fn joiners_eq(a: &str, b: &str) -> bool {
     // Compared in lockstep rather than by building two squashed Strings: this
     // runs against every candidate, and on a query that recalls thousands the
     // allocations cost more than everything else in scoring put together.
-    let mut sa = a.chars().filter(char::is_ascii_alphanumeric);
-    let mut sb = b.chars().filter(char::is_ascii_alphanumeric);
+    let word = |c: &char| !matches!(c, '_' | '-' | '.');
+    let mut sa = a.chars().filter(word);
+    let mut sb = b.chars().filter(word);
     let mut any = false;
     loop {
         match (sa.next(), sb.next()) {
@@ -1208,6 +1210,33 @@ mod tests {
         assert!(exact > plural, "{exact} > {plural}");
         // spelling it out in full still wins over leaving separators off
         assert!(total("parse_file", "parse_file").unwrap() > exact);
+    }
+
+    #[test]
+    fn a_sigil_the_query_left_off_is_not_an_exact_match() {
+        // `!`, `?` and `=` end a name rather than join its words: `save!` is a
+        // different method from `save`, not the same one spelled with a separator
+        let literal = |query: &str, name: &str| {
+            score(
+                query,
+                &row(name, "method", 1),
+                None,
+                Boosts::default(),
+                false,
+            )
+            .is_some_and(|s| s.features.iter().any(|f| f.name == "exact"))
+        };
+        for (query, name) in [("save", "save!"), ("valid", "valid?"), ("name", "name=")] {
+            assert!(!literal(query, name), "{query} is not exactly {name}");
+            // and it still wins the query that types it, by the full match tier
+            assert!(literal(name, name));
+            assert!(!literal(name, query), "{name} is not exactly {query}");
+            let gap = total(query, query).unwrap() - total(query, name).unwrap();
+            assert!(gap > 200.0, "{query}: {name} trails by {gap}");
+        }
+        // separators still join words, wherever they sit
+        assert!(literal("isvalid?", "is_valid?"));
+        assert!(literal("init", "__init__"));
     }
 
     #[test]
