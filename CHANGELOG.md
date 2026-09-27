@@ -49,6 +49,10 @@ and aren't listed; see `git log` for those.
 - **`-a -o` opens another repo's match where it is.** `--open` joined the match's
   path onto the current checkout, so a hit from another repo opened a file that
   didn't exist. It now uses the match's own `root`.
+- **`total` counts every match under `-k`, `-x` or a path filter.** It was
+  counted after the list was cut to the limit, so `rq class Base -l 1` reported
+  `"total": 2`. It now counts the filtered matches before `--limit`, as it does
+  without a filter.
 
 ### Changed
 - **Errors under `--json`/`--ndjson` are JSON.** A failed structured run used to

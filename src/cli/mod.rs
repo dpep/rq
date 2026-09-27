@@ -1022,9 +1022,11 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     apply_gates(query, &mut hits);
     apply_post_filters(args, cwd.as_deref(), root.as_deref(), &mut hits);
     // A filtered search reports what survived the filter — that's the set the
-    // caller asked about.
+    // caller asked about — counted before any cut. The runner-up stays for
+    // confidence; `--limit` applies once that's assigned.
     if !args.paths.is_empty() || !args.kinds.is_empty() || !args.langs.is_empty() {
         total = hits.len();
+        hits.truncate(want.max(2));
     }
 
     if hits.is_empty() {
@@ -1430,7 +1432,7 @@ fn apply_gates(query: &str, hits: &mut Vec<crate::search::Hit>) {
 }
 
 /// Post-filters: keep only results under a `--path` dir, of a `--kind`, and/or
-/// in a `--lang`, then trim to the requested count.
+/// in a `--lang`.
 fn apply_post_filters(
     args: &SearchArgs,
     cwd: Option<&std::path::Path>,
@@ -1455,11 +1457,6 @@ fn apply_post_filters(
     }
     if !args.langs.is_empty() {
         hits.retain(|h| args.langs.iter().any(|l| l == &h.language));
-    }
-    // Deliberately not truncated to `want` here: confidence is measured against
-    // the runner-up, so the final cut happens after it's assigned.
-    if !args.paths.is_empty() || !args.kinds.is_empty() || !args.langs.is_empty() {
-        hits.truncate(args.want.max(2));
     }
 }
 

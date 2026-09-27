@@ -1717,6 +1717,14 @@ fn confidence_and_total_do_not_depend_on_the_limit() {
         "total reports the full match count: {one}"
     );
 
+    // a filter narrows what total counts, but the limit still doesn't cut it
+    fs::write(dir.join("b.rb"), "def widget_helper\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    for args in [&["class", "Widget"][..], &["Widget", "-k", "class"][..]] {
+        let (_, out) = rq(&db, &dir, &[args, &["--ndjson", "-l", "1"]].concat());
+        assert!(out.contains("\"total\":6"), "{args:?}: {out}");
+    }
+
     // --explain reaches structured output instead of being silently dropped
     let (_, out) = rq(&db, &dir, &["Widget", "--ndjson", "-e", "-l", "1"]);
     assert!(
