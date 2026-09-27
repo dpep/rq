@@ -30,6 +30,9 @@ and aren't listed; see `git log` for those.
   definition matched approximately gives up a share of its match instead of a
   flat 400 points, so it still ranks below an equally good match outside tests,
   but no longer below any match outside tests at all.
+- **A typo reading is offered beside a name that holds the letters in order.**
+  `tets_br` finds `test_br` again, ranked by how well each reads, where before
+  the typo was dropped whenever an in-order name read better.
 
 ## 0.54.1 — 2026-09-27
 

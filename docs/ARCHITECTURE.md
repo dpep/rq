@@ -450,8 +450,7 @@ algorithms; tuning a weight must never require re-indexing.
 Intra-token fuzz (`paymnt → Payments`) falls back to subsequence matching with
 a penalty. A near miss (`sleect → Select`, up to two edits) competes with those
 fuzzy matches whenever nothing matched literally. It is scored by the letters it
-keeps, and it joins only when that evidence is at least the best in-order
-match's (D14). Quality of ranking matters more than the cleverness of the
+keeps (D14) and ranks beside them on its score (D24). Quality of ranking matters more than the cleverness of the
 algorithm.
 
 ## Partial indexing

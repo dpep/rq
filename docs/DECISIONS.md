@@ -586,7 +586,9 @@ query phase median 7.1 → 7.3 ms, since near misses are now scored on every fuz
 query.
 
 *Reverses if:* typo candidates start winning on queries whose in-order reading was
-right. The gate is the lever: it compares evidence, not totals.
+right. The gate is the lever: it compares evidence, not totals. *Gate dropped in D24*:
+once side features scale with match quality, totals compare evidence, and the gate only
+hid near misses that ranked below the in-order reading anyway.
 
 ## D15 — Letters matched before a word start earn no credit
 
@@ -1216,3 +1218,28 @@ compression lets extent decide. `twedele` loses `tweedle` from its results: ever
 first-pass hit used to score ≤ 0 under the cliff, which let every near miss join (D14's
 fallback); now `tweedle_deedle` scores above zero and sets the bar. Part 3 is that gate.
 FTS: no lost #1, the same two top 10s. Anchored unchanged: their truths are exact matches.
+
+### 3. Every near miss joins, and ranks on its score
+
+*The weakness.* D14 let a near miss join only if its name evidence was at least the best
+in-order match's, because kind, extent and recency otherwise carried weak guesses in
+(`shft` → `Sheet`). With nothing above zero, every near miss joined. Complete recall
+nearly always holds a name with the letters in order, so the bar rarely fell: `tets_br`
+dropped `test_br` (typo 102) because `test_sub_regions` holds the letters at 114, and
+after part 2 `twedele` dropped `tweedle` the same way. The old fallback had been doing
+the work only because the test cliff pushed every first-pass hit below zero.
+
+*The rule.* Without a literal hit, every near miss joins and ranks on its total. Part 1
+made that total compare name evidence first, which is what the gate was for; a near miss
+that reads worse than an in-order name now ranks below it rather than vanishing.
+
+| 2,314 sourced | scan #1 | top 10 | found | FTS #1 | top 10 | found |
+|---|---|---|---|---|---|---|
+| before (part 2) | 1,303 | 1,741 | 1,990 | 1,207 | 1,640 | 1,885 |
+| no gate | 1,303 | 1,750 | 2,000 | 1,207 | 1,648 | 1,894 |
+
+No source lost #1 or the top 10 in either mode, and no hand-picked query's #1 changed
+(D14's `shft`, `updget`, `cmlz` among them). 10 sources move down, by one to eight
+places as near misses join the list: two stay in the top 10 (`updget` #3 → #8, `fedete`
+#5 → #6), and the rest were already past it. `tets_br` and `twedele` find their sources again. Anchored
+unchanged.

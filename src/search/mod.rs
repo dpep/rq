@@ -441,33 +441,26 @@ fn search_query(
     let mut hits = rank(&candidates, false);
     // A near miss competes with fuzzy matches, never with a literal one: once
     // the query spelled a name outright (exact, prefix, glob) the typo reading
-    // is moot. Short of that, `sleect` means `Select` more surely than
-    // `IsolatedExecutionState` merely holding those letters in order, so a near
-    // miss joins the ranking when its name evidence is at least the best
-    // in-order match's — compared before kind, extent and recency, which every
-    // candidate carries and which would otherwise let a weak guess like `set`
-    // for `shft` ride in on them. With nothing above zero it's the fallback it
-    // always was, and every near miss joins. Candidates that already matched
-    // keep the score they had.
+    // is moot. Short of that, every near miss joins and ranks on its score:
+    // `sleect` means `Select` more surely than `IsolatedExecutionState` merely
+    // holding those letters in order, and a name that holds them better still
+    // ranks above the typo. Side features scale with match quality, so a weak
+    // guess can't ride in on them. Candidates that already matched keep the
+    // score they had.
     let literal = hits
         .iter()
         .any(|h| h.score > 0.0 && score::is_literal(&h.features));
     if typo && qualifier.is_none() && !literal {
-        let bar = if hits.iter().all(|h| h.score <= 0.0) {
-            f64::NEG_INFINITY
-        } else {
-            hits.iter()
-                .map(|h| score::name_evidence(&h.features))
-                .fold(f64::NEG_INFINITY, f64::max)
-        };
         let near: Vec<SymbolRow> = candidates
             .iter()
             .filter(|c| score::near_miss_possible(query, &c.name))
             .cloned()
             .collect();
-        hits.extend(rank(&near, true).into_iter().filter(|h| {
-            h.features.iter().any(|f| f.name == "typo") && score::name_evidence(&h.features) >= bar
-        }));
+        hits.extend(
+            rank(&near, true)
+                .into_iter()
+                .filter(|h| h.features.iter().any(|f| f.name == "typo")),
+        );
     }
     // A named scope that answered nothing may itself be the slip. That is a
     // guess about the question, not the name, so it stays a last resort:
@@ -1040,6 +1033,18 @@ mod tests {
         let store = store_with(&[sym("User", Kind::Class), sym("Account", Kind::Class)]);
         let hits = search(&store, "usr", None, None, &Context::default(), 10).unwrap();
         assert_eq!(hits[0].name, "User");
+    }
+
+    #[test]
+    fn a_transposition_joins_beside_a_name_holding_the_letters_in_order() {
+        // `test_sub_regions` holds `tets_br` in order and outscores the one-swap
+        // reading, which must still be offered rather than dropped
+        let store = store_with(&[
+            sym("test_sub_regions", Kind::Method),
+            sym("test_br", Kind::Method),
+        ]);
+        let hits = search(&store, "tets_br", None, None, &Context::default(), 10).unwrap();
+        assert!(names(&hits).contains(&"test_br"), "{:?}", names(&hits));
     }
 
     #[test]
