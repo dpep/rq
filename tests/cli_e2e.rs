@@ -1857,7 +1857,7 @@ fn usage_counts_searches_by_caller_and_flags() {
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
 
-    // nothing recorded yet is a "nothing happened" exit, like an empty --status
+    // nothing recorded yet exits 1, like a search that finds nothing
     let (ok, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
     assert!(!ok, "empty usage should exit non-zero: {out}");
 
@@ -2813,6 +2813,20 @@ fn help_and_version_are_not_usage_errors() {
     }
     let (_, help, _) = rq_full(&db, &dir, &["--help"], &[], None);
     assert!(help.contains("EXIT CODES"), "--help lists them: {help}");
+    assert!(help.contains("--drop"), "and the commands' own: {help}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn commands_with_nothing_to_do_still_succeed() {
+    // A command that ran but had nothing to report or remove still succeeded;
+    // exit 1 stays a search's "absent" (and --usage's "nothing recorded").
+    let (dir, db) = scratch("nothing-to-do");
+    for args in [&["--status"][..], &["--drop"], &["--index"], &["--index"]] {
+        let (code, out, _) = rq_full(&db, &dir, args, &[], None);
+        assert_eq!(code, 0, "{args:?}: {out}");
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

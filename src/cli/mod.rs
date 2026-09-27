@@ -55,8 +55,8 @@ automatically on the first search in a git repo. On a large, cold repo a search 
 keeps indexing until it can answer rather than reporting a premature \"no \
 matches\" (an interactive run shows progress and stops on Ctrl-C).\n\n\
 EXIT CODES:\n  \
-0   matched\n  \
-1   no match\n  \
+0   matched; --status, --index, --drop: ran, even with nothing to show or drop\n  \
+1   no match; --usage: nothing recorded yet\n  \
 2   no match yet: the index is still warming, or indexing was interrupted — ask again\n  \
 64  usage error: a bad flag, value or query — fix the command\n  \
 66  a file the command names doesn't exist\n  \
@@ -3157,7 +3157,8 @@ fn cmd_usage(out: Output) -> ExitCode {
             );
         }
     }
-    // Nothing recorded is the "nothing happened" case, like an empty --status.
+    // Nothing recorded exits 1, like a search that finds nothing. (An empty
+    // --status exits 0: it ran, and "no repos" is its answer.)
     if rows.is_empty() {
         return ExitCode::from(1);
     }

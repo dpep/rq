@@ -234,6 +234,12 @@ until a query or `--index` starts rebuilding it, and then reads `warming`.
 plus the repo's totals. `rq --drop --json` reports what it removed (`repo`,
 `files`, `symbols`, `dropped`). Single-result commands emit one object.
 
+These commands exit `0` whenever they ran, including when there's nothing to
+report: an empty `--status`, an `--index` that found nothing new, or a `--drop`
+of a repo that isn't indexed (`"dropped": false` tells you). They exit non-zero
+only with an error code from the table above. `--usage` is the exception: with
+nothing recorded yet it exits `1`.
+
 ### Waiting on the index
 
 `--no-wait` answers from whatever's already indexed instead of waiting on a

@@ -15,6 +15,11 @@ and aren't listed; see `git log` for those.
   finished, however many files it had already indexed. It now reads `warming`,
   like any partial index; `never` is no longer reported.
 
+### Documented
+- **Exit codes of the non-search commands.** `--status`, `--index` and `--drop`
+  exit 0 whenever they ran, even with nothing to show or drop; `--usage` exits 1
+  when nothing is recorded yet. `--help` and the README now say so.
+
 ## 0.55.0 — 2026-09-27
 
 ### Added
