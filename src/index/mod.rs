@@ -522,6 +522,7 @@ fn run_index(
     }
 
     let stored = store.file_mtimes(repo_id)?;
+    let coverage_mark = store.coverage_mark(repo_id)?;
     drop(setup_span);
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -772,12 +773,19 @@ fn run_index(
     } else {
         status
     };
-    store.set_coverage(
+    let recorded = store.set_coverage_since(
         repo_id,
         stats.files_seen as i64,
         stats.files_indexed as i64,
         status,
+        &coverage_mark,
     )?;
+    if !recorded {
+        crate::trace!(
+            "coverage {}: kept the `complete` another pass recorded during this one",
+            crate::trace::abbrev(&root_display)
+        );
+    }
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",
         crate::trace::abbrev(&root_display),

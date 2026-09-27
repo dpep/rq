@@ -93,6 +93,10 @@ pub(crate) struct FileSymbols {
     pub symbols: Vec<Symbol>,
 }
 
+/// A coverage row's `(status, last_indexed_at)` as a pass found it when it
+/// began, or `None` before any pass finished (see `set_coverage_since`).
+pub(crate) type CoverageMark = Option<(String, i64)>;
+
 /// One row of `rq status` output — the current indexed totals for a repo (not
 /// any single run's incremental counts).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -495,6 +499,7 @@ impl Store {
     }
 
     /// Record indexing coverage for a repository (scope `full`).
+    #[cfg(test)]
     pub(crate) fn set_coverage(
         &self,
         repository_id: i64,
@@ -502,8 +507,43 @@ impl Store {
         files_indexed: i64,
         status: &str,
     ) -> Result<()> {
+        let mark = self.coverage_mark(repository_id)?;
+        self.set_coverage_since(repository_id, files_seen, files_indexed, status, &mark)?;
+        Ok(())
+    }
+
+    /// The coverage row as a pass found it when it began: `(status,
+    /// last_indexed_at)`, or `None` before any pass finished.
+    pub(crate) fn coverage_mark(&self, repository_id: i64) -> Result<CoverageMark> {
+        self.conn
+            .query_row(
+                "SELECT status, last_indexed_at FROM coverage
+                 WHERE repository_id = ?1 AND scope = 'full'",
+                params![repository_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+    }
+
+    /// Record coverage at the end of a pass that began at `mark`. A pass that
+    /// didn't complete leaves alone a `complete` another writer recorded since
+    /// `mark`: it would strand the repo at `warming` with nothing indexing.
+    /// Compare-and-set in the one upsert, so no writer lands in between.
+    /// Returns whether the row was written.
+    pub(crate) fn set_coverage_since(
+        &self,
+        repository_id: i64,
+        files_seen: i64,
+        files_indexed: i64,
+        status: &str,
+        mark: &CoverageMark,
+    ) -> Result<bool> {
         let now = now_unix();
-        self.conn.execute(
+        let (mark_status, mark_at) = match mark {
+            Some((s, at)) => (Some(s.as_str()), Some(*at)),
+            None => (None, None),
+        };
+        let written = self.conn.execute(
             "INSERT INTO coverage
                (repository_id, scope, files_seen, files_indexed, status, last_indexed_at)
              VALUES (?1, 'full', ?2, ?3, ?4, ?5)
@@ -511,10 +551,21 @@ impl Store {
                files_seen = excluded.files_seen,
                files_indexed = excluded.files_indexed,
                status = excluded.status,
-               last_indexed_at = excluded.last_indexed_at",
-            params![repository_id, files_seen, files_indexed, status, now],
+               last_indexed_at = excluded.last_indexed_at
+             WHERE excluded.status = 'complete'
+                OR coverage.status <> 'complete'
+                OR (coverage.status IS ?6 AND coverage.last_indexed_at IS ?7)",
+            params![
+                repository_id,
+                files_seen,
+                files_indexed,
+                status,
+                now,
+                mark_status,
+                mark_at
+            ],
         )?;
-        Ok(())
+        Ok(written > 0)
     }
 
     /// Set the last-commit time for files in a repository, from a path → unix-ts
@@ -1563,6 +1614,42 @@ mod tests {
         assert_eq!(overview[0].identity, "github.com/dpep/rq");
         assert_eq!(overview[0].status, "warming");
         assert_eq!(overview[0].symbols, 2);
+    }
+
+    #[test]
+    fn a_cut_short_pass_keeps_a_complete_recorded_during_it() {
+        let store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/tmp/rq"), None)
+            .unwrap();
+        let status = |store: &Store| store.coverage_overview().unwrap()[0].status.clone();
+
+        // first pass ever: nothing to protect
+        let mark = store.coverage_mark(repo).unwrap();
+        assert!(
+            store
+                .set_coverage_since(repo, 5, 2, "warming", &mark)
+                .unwrap()
+        );
+
+        // a warm begins; a concurrent full index completes; the warm runs out of time
+        let mark = store.coverage_mark(repo).unwrap();
+        store.set_coverage(repo, 5, 5, "complete").unwrap();
+        assert!(
+            !store
+                .set_coverage_since(repo, 5, 1, "warming", &mark)
+                .unwrap()
+        );
+        assert_eq!(status(&store), "complete");
+
+        // a pass that began on that `complete` still records its own outcome
+        let mark = store.coverage_mark(repo).unwrap();
+        assert!(
+            store
+                .set_coverage_since(repo, 5, 1, "warming", &mark)
+                .unwrap()
+        );
+        assert_eq!(status(&store), "warming");
     }
 
     #[test]

@@ -14,6 +14,11 @@ and aren't listed; see `git log` for those.
   first index (or the rebuild after `--drop`) read `never` until its pass
   finished, however many files it had already indexed. It now reads `warming`,
   like any partial index; `never` is no longer reported.
+- **A repo no longer sticks at `warming` after a concurrent `--index`.** A
+  background warm that ran out of time recorded `warming` over the `complete`
+  an `rq --index` had written while it ran, so with nothing left indexing, a
+  miss exited 2 (warming) instead of 1. A pass that didn't finish now leaves a
+  `complete` recorded during it alone.
 
 ### Documented
 - **Exit codes of the non-search commands.** `--status`, `--index` and `--drop`
