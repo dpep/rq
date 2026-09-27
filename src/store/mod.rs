@@ -231,7 +231,9 @@ impl Store {
                 }
             }
         }
-        if version != schema::VERSION {
+        // Only ever raise it: an older rq that lowered it would make a newer one
+        // re-run migrations it had already applied.
+        if version < schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
         }
         Ok(Store { conn })
@@ -1298,6 +1300,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(usage, 1);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opening_a_newer_database_leaves_its_version_alone() {
+        let path = std::env::temp_dir().join(format!("rq-newer-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let newer = schema::VERSION + 1;
+        drop(Store::open(&path).unwrap());
+        {
+            let store = Store::open(&path).unwrap();
+            store
+                .conn
+                .pragma_update(None, "user_version", newer)
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, newer, "an older rq must not lower the version");
         drop(store);
         let _ = std::fs::remove_file(&path);
     }

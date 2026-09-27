@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **An older rq no longer lowers a newer database's schema version.** Opening
+  a database written by a newer rq used to write the older version back, so
+  the newer rq re-ran migrations it had already applied — breaking any that
+  add a column. Now the version is only ever raised.
+
 ## 0.54.0 — 2026-09-27
 
 ### Changed

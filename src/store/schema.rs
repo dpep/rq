@@ -294,8 +294,8 @@ const MIGRATION_V16: Step = Step::AddColumn {
 pub(crate) enum Step {
     Sql(&'static str),
     /// `ALTER TABLE … ADD COLUMN`, skipped when the column is already there.
-    /// SQL can't say `IF NOT EXISTS` here, and a step can run twice: an older
-    /// rq opening the database resets `user_version` to its own.
+    /// SQL can't say `IF NOT EXISTS` here, and a step can run twice: rq before
+    /// 0.54.1 reset `user_version` to its own when it opened a newer database.
     AddColumn {
         table: &'static str,
         column: &'static str,
