@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.53.0 — 2026-09-26
 
 ### Added
 - **JSON results say which checkout `file` is relative to.** Every search
