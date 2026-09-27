@@ -1,23 +1,30 @@
 rq — Reference Query
 ====================
 
-**rq finds the code you're looking for.**  Search for a class, method, function, struct, const...and rq will find it's definition.
+**rq finds the code you're looking for.** Name a class, method, function, struct or constant, and rq ranks its definition first.
+
+In a Rails checkout:
 
 ```sh
-rq refund        # → RefundProcessor   app/services/refund_processor.rb:7
-rq perform       # → the perform you actually meant, ranked first
-rq usr           # → User              app/models/user.rb:1  (fuzzy, abbreviation-aware)
-rq refund*proc   # → explicit gaps: `*` any run, `?` one char (`.` too, when it isn't a scope; a lone trailing `?` is a Ruby predicate's name)
-rq Account::save # → the save defined inside Account (scope-aware; also Account::Refund)
-rq Account.new   # → Account's constructor (initialize, __init__, constructor)
-rq class Widget  # → a leading kind keyword is shorthand for -k class
+rq HashWithIndifferentAccess  # → activesupport/lib/active_support/hash_with_indifferent_access.rb:55
+rq hwia                       # → the same class: fuzzy and abbreviation-aware
+rq 'Hash*Access'              # → wildcards: `*` any run, `?` one char (quote them)
+rq ActiveRecord::Base         # → the Base defined inside ActiveRecord
+rq Persistence#save           # → the save defined inside Persistence
+rq Migration.new              # → Migration's constructor (initialize, __init__, constructor)
+rq class Base                 # → a leading kind keyword is shorthand for -k class
+rq perform activejob          # → the perform under activejob/, ranked
 ```
+
+rq finds **names**, not behaviour. If you know what the code does but not what
+it's called, use semantic search ([contour](https://github.com/dpep/contour)) or
+text search (`rg`) instead.
 
 ## Why not grep / ctags / an LSP?
 
 - **grep / rg** give every textual mention; rq gives the one place a symbol is *defined*, ranked.
 - **ctags** is static and relevance-blind; rq ranks by match quality, your current repo, recency, and the branch you're on.
-- **an LSP** is heavy — per-language, per-project, slow to warm. rq is one blazingly fast binary across all your repos: in-process search at `rg` speed (sub-millisecond), warms itself on first use, and self-heals on edits.
+- **an LSP** is heavy — per-language, per-project, slow to warm. rq is one binary across all your repos: sub-millisecond search, warms itself on first use, and self-heals on edits.
 
 Definitions come from [Tree-sitter](https://tree-sitter.github.io/) for Ruby, Rust, Go, Python,
 TypeScript, and JavaScript.
@@ -43,13 +50,13 @@ rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
 rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait|constant
 rq KIND <query>             # a leading kind keyword is shorthand for -k (rq class Widget)
-rq Scope::name              # scope-aware: prefer the name defined inside Scope (or Scope::Type#method)
+rq Scope::name              # scope-aware: only the name defined inside Scope (or Scope#method)
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
                             #   (prefix-matched; r=ruby+rust; aliases rb/rs/ts/js)
 rq <query> -l/--limit N     # cap the number of results (default 10; 0 = every match)
 rq <query> -a/--all-repos   # search every indexed repo (default: just the current one)
-rq <query> --anchor F:LINE  # rank as if asked from that line (enclosing class, same file, nearby)
-rq <query> --show           # print the definition's source (confident match only; pipe to less)
+rq <query> --anchor F:LINE  # rank as if asked from that line (F:LINE[:COL])
+rq <query> --show           # print the definition's source (confident match only)
 rq <query> -o/--open        # open the best match in your editor
 rq <query> -w/--web         # open the best match on GitHub, pinned to a pushed sha
 rq --symbols FILE           # outline a file's definitions, in line order
@@ -62,115 +69,195 @@ rq --usage                  # searches per day, by caller and flags
 
 ## Opening results
 
-`rq -o <query>` jumps straight to the best match in your editor. On a terminal
-with several matches it prompts you to choose; otherwise it takes the top hit. The
-launcher is resolved in order: `RQ_OPEN` (a command template with `{file}`,
-`{line}`, or `{}` = `path:line`), then VS Code (`code`), then `$VISUAL`/`$EDITOR`,
-and failing all that it just prints the resolved `path:line`. A template with
-none of those placeholders gets `path:line` appended as its last argument.
+`rq -o <query>` jumps to the best match in your editor. On a terminal with
+several matches it asks you to choose; otherwise it takes the top hit. The
+launcher is, in order:
+
+1. `RQ_OPEN`, a command template: `{file}` is the absolute path, `{line}` the
+   line, `{}` both as `path:line`. A template with none of them gets `path:line`
+   appended as its last argument.
+2. VS Code (`code`).
+3. `$VISUAL`, then `$EDITOR`.
+4. Nothing found: rq prints `path:line`.
 
 ```sh
-rq -o refund                          # open the top match
-RQ_OPEN='vim +{line} {file}' rq -o x  # force a specific launcher
-RQ_OPEN=subl rq -o x                  # runs `subl path:line`
+rq -o Widget                               # open the top match
+RQ_OPEN='vim +{line} {file}' rq -o Widget  # runs `vim +12 /abs/path/widget.rb`
+RQ_OPEN=subl rq -o Widget                  # runs `subl /abs/path/widget.rb:12`
 ```
 
-`rq -w <query>` does the same in the browser: it opens the match on the repo's
+`rq -w <query>` does the same in the browser. It opens the match on the repo's
 git host (`https://<remote>/blob/<sha>/<file>#L<line>`), pinned to a commit so
-the link stays accurate as the branch moves — HEAD, or if HEAD isn't pushed yet,
-the newest commit in its history that is, so the link always resolves. A result from another repo
-(`-a`) links to that host's default branch, since rq doesn't know what's checked
-out there. The launcher is `$BROWSER`, then `open`/`xdg-open`, else the URL is
-printed.
+the link survives the branch moving: HEAD, or if HEAD isn't pushed yet, the
+newest pushed commit in its history. A result from another repo (`-a`) links to
+that host's default branch, since rq doesn't know what's checked out there. The
+launcher is `$BROWSER`, then `open`/`xdg-open`, else rq prints the URL.
 
-For an interactive fzf picker (or to wire a custom flow), `script/rq-open` is a
-small reference wrapper around `rq`; see [docs/EDITORS.md](docs/EDITORS.md) for
-the VS Code extension (Cmd-click Go to Definition) and Neovim.
+For an interactive fzf picker, `script/rq-open` is a small wrapper around `rq`.
+[docs/EDITORS.md](docs/EDITORS.md) covers it, the VS Code extension
+(Cmd-click Go to Definition) and Neovim.
+
+## Ranking from where you are
+
+`--anchor FILE:LINE[:COL]` tells rq where the question comes from — an editor's
+cursor, or the file an agent is reading. Definitions in the classes and modules
+enclosing that line rank first, then the same file and nearby directories.
+
+```sh
+$ rq 'valid?' -l 2
+activemodel/lib/active_model/validations.rb:342  method valid? · ActiveModel::Validations
+activerecord/lib/active_record/validations.rb:69  method valid? · ActiveRecord::Validations
+
+$ rq 'valid?' --anchor activerecord/lib/active_record/validations.rb:48 -l 1
+activerecord/lib/active_record/validations.rb:69  method valid? · ActiveRecord::Validations
+```
+
+It reorders and never filters, so it's safe whenever you know the file. `FILE`
+is relative to the current directory; `COL` is accepted and ignored. rq records
+no inheritance, so an inherited method gets no credit from the enclosing class.
+The VS Code extension passes `--anchor` on every click.
 
 ## For agents / scripts
 
 `-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
-surface for editors, scripts, and AI agents. Each result is an object with
-`name`, `kind`, `language`, `file`, `line`, `end_line` (the definition's last
-line — read `line..=end_line` for the whole span), `parent`, `repo`, `root`
-(the absolute checkout `file` is relative to — per result, since `-a` spans
-repos), `confidence` (0–1: match quality × how much it leads the runner-up), `features`
-(the scoring signals, strongest first), and `signature` (the definition's source
-line, so you can judge a result without opening the file). On a miss, JSON
-returns a `{"status": …}` object instead of results — `no_match` (definitive),
-`warming` (index incomplete, retry), or `interrupted`. Exit codes mirror it: `0`
-matched, `1` no match, `2` no match *yet* (warming). All non-zero, so
-`rq … && …` is unchanged.
+surface for editors, scripts, and AI agents. Every command honors them, not just
+search.
 
-`--show` fetches the definition's source in one step: when the top match is
-confident it prints the full `line..=end_line` span (a `body` field in JSON),
-else it falls back to the ranked list — so it never dumps a definition it isn't
-sure about.
+### Result fields
 
-Pass `--no-wait` for a strictly non-blocking query — it answers from whatever's
-already committed instead of waiting on a warming repo. Handy for agents/scripts:
-a query issued while a background reindex is rewriting the index (say, right
-after a branch switch on a huge repo) returns at once rather than blocking up to
-the wait budget; a miss reports `warming` (exit 2) so the caller can retry, and
-leftover warming still continues in a detached background child.
+A search result, a `--show` result and a `--symbols` row share one shape. A field
+that doesn't apply is **omitted**, never `null`.
 
-`--wait <dur>` sets how long a query may wait for the index to warm before
-answering with whatever's committed — a duration like `50ms`, `2s`, `1m`, or a
-bare number of seconds (`--wait 0` is the same as `--no-wait`). It overrides
-`RQ_WAIT_BUDGET_MS` (default 1 minute) for that one call.
+| Field | Present | Meaning |
+| --- | --- | --- |
+| `name` | always | The symbol's name. |
+| `kind` | always | `class`, `module`, `method`, `function`, `struct`, `enum`, `trait` or `constant`. |
+| `language` | always | `ruby`, `rust`, `go`, `python`, `typescript` or `javascript`. |
+| `file` | always | Path relative to `root`. |
+| `root` | when rq knows a checkout for the repo (always for `--symbols`) | Absolute checkout root. Per result, because `-a` spans repos: join `root` and `file` to read it. |
+| `line` | always | 1-based first line of the definition. |
+| `end_line` | when known | Last line: `line..=end_line` is the whole definition. |
+| `parent` | when nested | The enclosing scope, e.g. `ActiveRecord::Migration`. |
+| `visibility` | when the language expresses one | `public`, `crate`, `private` or `protected`. |
+| `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
+| `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it. |
+| `features` | search | The scoring signals that fired, strongest first. |
+| `signature` | when the line is non-empty | The definition's first source line, trimmed. |
+| `body` | `--show`, confident match | The full `line..=end_line` source. |
+| `declarations` | when more than one | How many places declare this name (a reopened module, `impl` blocks across files), folded into one result. |
+| `also_in` | with `declarations` | `file:line` of the other declarations. |
+| `total` | search | Matches the window was drawn from, before `--limit`. |
+| `explain` | `--explain` | Feature name → score contribution. |
+| `query` | batch mode | The stdin line this row answers. |
 
-`--json`/`--ndjson` work for every command, not just search: `rq --status --json`
-emits the coverage rows (`repo`, `status`, `files`, `symbols`), `rq --index --json`
-emits this run's counts plus the index totals, and `rq --drop --json` reports what
-it removed (`repo`, `files`, `symbols`, `dropped`). Single-result commands emit
-one object; `--ndjson` is the compact one-line form.
+### Misses and exit codes
 
-Errors are structured too. When a structured run fails (a bad flag or value, an
-empty query, an index that can't be opened, a `--symbols` file that doesn't
-exist) stdout carries one object instead of results:
-`{"error": "<message>", "kind": "<kind>", "code": <exit code>}`. `kind` is
-stable: `usage`, `database`, `not_found`, `index`, or `internal`. The same message
-still goes to stderr, and the exit code is unchanged: `1` for rq's own errors,
-`2` for a command line rq couldn't parse. That covers flags that came before
-`--json` too.
+A miss is one `{"status": …, "query": …}` object instead of results:
 
-Narrow with `--path` when you know the area:
+| `status` | Exit | Meaning |
+| --- | --- | --- |
+| `no_match` | 1 | Definitive: nothing by that name. |
+| `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
+| `warming` | 2 | The index is incomplete; retry. Rare, since a cold repo blocks until it can answer. |
+| `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
+
+A match exits `0`. Every miss is non-zero, so `rq … && …` reads as "found
+something".
+
+### Errors
+
+When a run fails under `--json`/`--ndjson` — a bad flag or value, an empty
+query, an index that can't be opened, a `--symbols` file that doesn't exist —
+stdout carries one object instead of results:
+
+```json
+{ "error": "rq: unknown --kind \"widget\" (class, module, method, function, struct, enum, trait, constant)", "kind": "usage", "code": 1 }
+```
+
+`kind` is stable: `usage`, `database`, `not_found`, `index` or `internal`. `code`
+is the exit code: `1` for errors rq raises itself, `2` for a command line it
+couldn't parse (an unknown flag, conflicting flags), including flags that came
+before `--json`. The message also goes to stderr.
+
+Exit `2` means both "warming" and "unparseable command line", so **branch on
+`status` or `kind`, not on the number.** A `usage` error won't succeed on retry;
+fix the command.
+
+### Batch mode
+
+Pipe queries on stdin, one per line, with `-J`. rq resolves the repo and opens
+the index once instead of per query, which on a large repo is most of what a
+lookup costs:
 
 ```sh
-rq RefundProcessor --json                 # jump to the definition
-rq perform app/services --json            # ...scoped to a subtree (rg-style)
+printf 'HashWithIndifferentAccess\nNoSuchThing\n' | rq -J -l 1
 ```
+
+```json
+{"query":"HashWithIndifferentAccess","name":"HashWithIndifferentAccess","kind":"class",…}
+{"query":"NoSuchThing","status":"no_match"}
+```
+
+Each row carries its `query`; a miss row carries its own `status`. The run exits
+`0` if any query matched, non-zero only if every one missed. `--json` can't frame
+several result sets, so batch needs `-J`, and `--show`/`--open`/`--web` don't
+apply. A cold repo is indexed up front, within the `--wait` budget, before the
+first answer.
+
+### Reading the source
+
+`--show` locates and reads in one call. When the top match's confidence is at
+least 0.85 it prints the full `line..=end_line` span (`body` in JSON); otherwise
+it prints the ranked list, so it never dumps a definition it isn't sure about.
+
+```sh
+rq ActiveSupport::HashWithIndifferentAccess --show   # confident: prints the class
+rq perform --show                                    # 122 candidates: prints the list
+```
+
+### Other commands
+
+`rq --status --json` emits coverage rows (`repo`, `status`, `files`, `symbols`).
+`rq --index --json` emits this run's counts (`files_added`, `symbols_added`)
+plus the repo's totals. `rq --drop --json` reports what it removed (`repo`,
+`files`, `symbols`, `dropped`). Single-result commands emit one object.
+
+### Waiting on the index
+
+`--no-wait` answers from whatever's already indexed instead of waiting on a
+warming repo — say, right after a branch switch on a huge repo. A miss reports
+`warming` (exit 2) so you can retry; warming continues in a detached background
+process.
+
+`--wait <dur>` caps how long a query may wait: `50ms`, `2s`, `1m`, or bare
+seconds (`--wait 0` is `--no-wait`). It overrides `RQ_WAIT_BUDGET_MS` (default 1
+minute) for that call.
 
 ## File outline
 
 `rq --symbols <file>` lists every definition in a file, in line order — a
 structural outline, not a ranked search. Honors `-k/--kind` and `-x/--lang`, and
-emits `--json`/`--ndjson` like everything else, with the same `file`, `repo` and
-`root` fields as a search result.
+emits the same fields as a search result, minus the scoring ones.
 
 ```sh
 rq --symbols src/search/score.rs
-rq --symbols src/store/schema.rs -k struct,enum --json
-```
-
-Each result is a navigable `path:line`. `--explain` shows the additive score:
-
-```sh
-$ rq Store --explain
-src/store/mod.rs:56  struct Store
-    pub struct Store {
-    confidence 1.00 · score 1290 = exact 1000 + kind 15 + current_repo 200 + recency 75
-src/search/mod.rs:316  function store_with · tests
-    fn store_with(symbols: &[Symbol]) -> Store {
-    confidence 0.75 · score 954 = prefix 695 + current_repo 200 + recency 59
+rq --symbols src/store/mod.rs -k struct,enum --json
 ```
 
 ## Ranking
 
-Symbols come from Tree-sitter (Ruby, Rust, Go, Python, TypeScript, JavaScript;
-the core is
-language-agnostic). A
-query is matched and scored by an additive, explainable sum of signals:
+A query is matched and scored by an additive sum of named signals, and
+`--explain` shows the sum for each result:
+
+```sh
+$ rq Store --explain -l 2
+src/store/mod.rs:84  struct Store
+    pub(crate) struct Store {
+    confidence 0.90 · score 1296 = exact 1000 + case 150 + extent 11 + kind 15 + recency 120
+src/cli/mod.rs:1873  method store · BranchRefresh
+    fn store(self, store: &Store) {
+    confidence 0.04 · score 1123 = exact 1000 + private -15 + extent 18 + recency 120
+```
 
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence
 - **visibility** — public API edges out private/protected helpers (Rust `pub`,
@@ -180,29 +267,24 @@ query is matched and scored by an additive, explainable sum of signals:
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the repo you're in by default
   (`-a`/`--all-repos` to search every indexed repo)
-- **recency** — symbols in recently-edited or recently-committed files
+- **recency** — symbols in recently edited or committed files
 - **branch** — on a feature branch, files you're changing vs the trunk (and
   their directory neighbors) — where you're most likely working
-- **anchor** — with `--anchor FILE:LINE[:COL]` (an editor's cursor, the file an
-  agent is reading), definitions in the scopes enclosing that line rank higher
-  (`enclosing`: a bare `save` inside `Widget` prefers `Widget#save`), then those
-  in the same file and nearby directories (`proximity`). Context, never a
-  filter. rq records no inheritance, so a method the class inherits gets no
-  `enclosing` credit. The file is read live if the index doesn't hold its
-  current version
+- **anchor** — with `--anchor`, definitions enclosing that line (`enclosing`),
+  then those in the same file and nearby directories (`proximity`)
 
-Returning fewer, better, ranked results is the goal — not completeness.
+Fewer, better, ranked results are the goal — not completeness.
 
 ## Staying current
 
 You rarely run `rq --index` by hand. The first query in a git repo warms the
-index opportunistically — files you're changing on this branch first — and once
-your answer prints, a detached, low-priority child finishes the sweep in the
-background, so coverage completes without delaying your shell. A **cold** repo
-is the exception: the first query blocks and indexes until it can answer
-(progress shown, Ctrl-C to stop) rather than lie with a false miss. It's a
-one-time cost — the index persists and self-heals as you search, re-reading
-edited files and reconciling added/removed ones on the warm sweep.
+index, files you're changing on this branch first, and once your answer prints
+a detached, low-priority process finishes the sweep in the background. A
+**cold** repo is the exception: the first query indexes until it can answer
+rather than report a false miss. On a terminal, a progress line appears if that
+takes longer than half a second, and Ctrl-C stops it. It's a one-time cost — the
+index persists and self-heals as you search, re-reading edited files and
+reconciling added and removed ones.
 
 A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
@@ -219,12 +301,14 @@ Homebrew installs bash/zsh completions automatically.
 
 ## Using with Claude Code
 
-`rq` ships with a Claude Code skill (`claude/rq-skill.md`) so Claude reaches for it when locating a definition instead of grepping the tree. Two ways to install it — the marketplace plugin, which updates itself and brings the sibling skills, or a local copy of the one file:
+`rq` ships with a Claude Code skill (`claude/rq-skill.md`) so Claude reaches for it when locating a definition instead of grepping the tree. Install the marketplace plugin, which updates itself and brings the sibling skills:
 
 ```
 /plugin marketplace add dpep/claude
 /plugin install code@dpep
 ```
+
+Or copy the one file:
 
 ```sh
 mkdir -p ~/.claude/skills/rq
@@ -243,10 +327,10 @@ budget. Benchmark your own tree: `make bench REPO=/path/to/repo`.
 
 rq indexes **definitions** — classes, modules, methods, functions. It does
 **not** do call graphs, type inference, reference tracking, inheritance, or LSP
-features; it's useful with definitions alone. It's built for many repositories
-and millions of symbols, and never assumes everything belongs to one project.
-Repository identity is normalized from the git remote (`github.com/org/repo`),
-falling back to `local:/absolute/path`.
+features. It's built for many repositories and millions of symbols, and never
+assumes everything belongs to one project. Repository identity is normalized
+from the git remote (`github.com/org/repo`), falling back to
+`local:/absolute/path`.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
