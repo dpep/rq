@@ -40,6 +40,12 @@ and aren't listed; see `git log` for those.
   clean again, so rq's `git status` check used to see nothing to reindex, and
   the index kept the discarded version: a method the edit had removed stayed a
   confident "no match". rq now also rechecks the files it indexed as edits.
+- **A repo's first search no longer answers from other repos.** Until its first
+  index registered it, a repo searched every indexed repo, so `rq Widget` could
+  return another checkout's `Widget`. It now answers only for itself, as it
+  does from then on. This showed most in a repo with no commits yet. There,
+  every search also reindexed the repo and reported a miss as `warming`. Such
+  a repo now behaves like one with commits.
 
 ### Changed
 - **Errors under `--json`/`--ndjson` are JSON.** A failed structured run used to

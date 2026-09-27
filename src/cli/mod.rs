@@ -786,12 +786,15 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         );
     }
     let repo_span = crate::profile::span("setup: repo state");
-    let current = identity
-        .as_deref()
-        .and_then(|id| store.repository_id(id).ok().flatten());
-    // Default: scope results to the current repo (when it's indexed) so a search
-    // never leaks another repo's definitions. `--all-repos` searches everything.
-    let only_repo = if all_repos { None } else { current };
+    let repo_id = |store: &Store| {
+        identity
+            .as_deref()
+            .and_then(|id| store.repository_id(id).ok().flatten())
+    };
+    let mut current = repo_id(store);
+    // Default: scope results to the current repo so a search never leaks
+    // another repo's definitions. `--all-repos` searches everything.
+    let scope = |current| Scope::new(all_repos, warming_ok, current);
     let ctx = crate::search::Context {
         active: crate::search::ActiveFiles::new(active_paths.clone()),
         anchor: anchor.clone(),
@@ -939,7 +942,11 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let rank_limit = limit.max(2);
     let mut total;
     let mut hits = loop {
-        match crate::search::search(store, query, current, only_repo, &ctx, rank_limit) {
+        // the warm registers a repo it's indexing for the first time
+        if current.is_none() {
+            current = repo_id(store);
+        }
+        match scope(current).search(store, query, current, &ctx, rank_limit) {
             Ok(m) => {
                 total = m.total;
                 let h = m.hits;
@@ -993,7 +1000,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
     if !hits.is_empty()
         && revalidate_top(store, &hits, here)
-        && let Ok(m) = crate::search::search(store, query, current, only_repo, &ctx, rank_limit)
+        && let Ok(m) = scope(current).search(store, query, current, &ctx, rank_limit)
     {
         total = m.total;
         hits = m.hits;
@@ -1066,7 +1073,13 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
         // search never pays for it.
-        let elsewhere = crate::search::scope_miss_owner(store, query, current, only_repo, &ctx);
+        let elsewhere = match scope(current) {
+            Scope::Nothing => None,
+            Scope::All => crate::search::scope_miss_owner(store, query, current, None, &ctx),
+            Scope::Repo(id) => {
+                crate::search::scope_miss_owner(store, query, current, Some(id), &ctx)
+            }
+        };
         let code = no_match_code(out, query, interrupted, incomplete, elsewhere.as_deref());
         // Counted after the answer, and only here: whether this was a
         // definitive miss or a not-ready one is only known on this path, and
@@ -1670,6 +1683,49 @@ fn finish_open(
     launch_editor(&target, hit.line)
 }
 
+/// The repos a search may answer from.
+#[derive(Clone, Copy)]
+enum Scope {
+    /// `--all-repos`, or a directory that isn't a repo rq tracks.
+    All,
+    Repo(i64),
+    /// A repo the index hasn't registered yet — its first query, before the
+    /// warm has written anything. Nothing is in scope, not every repo.
+    Nothing,
+}
+
+impl Scope {
+    fn new(all_repos: bool, in_repo: bool, current: Option<i64>) -> Scope {
+        match current {
+            _ if all_repos => Scope::All,
+            Some(id) => Scope::Repo(id),
+            None if in_repo => Scope::Nothing,
+            None => Scope::All,
+        }
+    }
+
+    fn search(
+        self,
+        store: &Store,
+        query: &str,
+        current: Option<i64>,
+        ctx: &crate::search::Context,
+        limit: usize,
+    ) -> crate::store::Result<crate::search::Matches> {
+        let only_repo = match self {
+            Scope::All => None,
+            Scope::Repo(id) => Some(id),
+            Scope::Nothing => {
+                return Ok(crate::search::Matches {
+                    hits: Vec::new(),
+                    total: 0,
+                });
+            }
+        };
+        crate::search::search(store, query, current, only_repo, ctx, limit)
+    }
+}
+
 /// Launch the editor on `file:line`, resolving the command in order: `RQ_OPEN`
 /// template → VS Code (`code`) → `$VISUAL`/`$EDITOR` → print the location. The
 /// chosen command replaces this process via `exec`.
@@ -1940,7 +1996,7 @@ fn cached_branch_files(
 fn worktree_edits(cwd: &std::path::Path, indexed_head: Option<&str>) -> Option<Vec<String>> {
     let head = indexed_head?;
     let _span = crate::profile::span("git: worktree changed?");
-    (crate::index::git_head(cwd).as_deref() == Some(head)).then(|| crate::index::dirty_files(cwd))
+    (crate::index::head_state(cwd).as_deref() == Some(head)).then(|| crate::index::dirty_files(cwd))
 }
 
 /// Whether the worktree holds anything the index doesn't yet reflect, given

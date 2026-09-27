@@ -735,7 +735,7 @@ fn run_index(
         }
         // record the commit the index now reflects, so a later search can detect
         // an unchanged committed tree and skip re-walking a large repo
-        if let Some(head) = git_head(root) {
+        if let Some(head) = head_state(root) {
             let _ = store.set_indexed_head(repo_id, &head);
             // A full sweep leaves the index matching the disk, so the edits it
             // holds are exactly what's dirty now. Unchanged when it parsed
@@ -1136,6 +1136,17 @@ pub(crate) fn git_head(root: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Stands in for the commit in a repo that has none yet.
+const UNBORN_HEAD: &str = "unborn";
+
+/// The HEAD an index records itself as reflecting: the commit sha, or a marker
+/// for an unborn HEAD (`git init`, nothing committed) — a real state to compare
+/// against, not an absent one. Never hand this to git; use [`git_head`] for a
+/// sha. `None` outside a git work tree.
+pub(crate) fn head_state(root: &Path) -> Option<String> {
+    git_head(root).or_else(|| is_git_repo(root).then(|| UNBORN_HEAD.to_string()))
+}
+
 /// Repo-relative *tracked* files with uncommitted changes (staged or unstaged),
 /// both sides of a rename. `--untracked-files=no` skips the work-tree-wide
 /// untracked-file scan — the expensive, cold-cache-sensitive part of `git
@@ -1321,7 +1332,7 @@ pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
 /// HEAD there means forking git.
 pub(crate) fn git_state_stamp(root: &Path, head: &str) -> Option<String> {
     let git_dir = root.join(".git");
-    if !git_dir.is_dir() || git_head(root)? != head {
+    if !git_dir.is_dir() || head_state(root)? != head {
         return None;
     }
     let index = std::fs::metadata(git_dir.join("index"))

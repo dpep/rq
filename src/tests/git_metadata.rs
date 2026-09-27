@@ -78,3 +78,34 @@ fn git_metadata_read_from_disk_matches_git() {
     // and a detached HEAD has no branch, so there are no branch files
     assert!(index::branch_changed_files(&dir).is_empty());
 }
+
+#[test]
+fn an_unborn_head_is_a_state_of_its_own() {
+    let dir = scratch("unborn");
+    assert_eq!(index::head_state(&dir), None, "not a repo yet");
+    git(&dir, &["init", "-q"]);
+    let unborn = index::head_state(&dir);
+    assert!(
+        unborn.is_some(),
+        "a repo with no commits still has a HEAD state"
+    );
+    assert_eq!(index::git_head(&dir), None, "but no commit to hand git");
+
+    fs::write(dir.join("a.rb"), "class A\nend\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    );
+    assert_eq!(index::head_state(&dir), index::git_head(&dir));
+    assert_ne!(index::head_state(&dir), unborn, "the first commit moves it");
+    let _ = fs::remove_dir_all(&dir);
+}

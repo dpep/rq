@@ -504,6 +504,39 @@ fn a_search_does_not_leak_another_indexed_repo() {
 }
 
 #[test]
+fn a_repo_with_no_commits_is_a_repo_like_any_other() {
+    // An unborn HEAD (`git init`, files not yet committed) must not read as
+    // "no repo": its first query is scoped to it, not to every indexed repo,
+    // and once indexed it settles like a committed repo instead of reindexing
+    // (and calling every miss provisional) on each search.
+    let (dir_a, db) = scratch("unborn-a");
+    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-unborn-b", std::process::id()));
+    let _ = fs::remove_dir_all(&dir_b);
+    fs::create_dir_all(&dir_b).unwrap();
+    fs::write(dir_b.join("b.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir_b);
+    rq(&db, &dir_b, &["--index"]);
+    fs::write(dir_a.join("a.rb"), "class Gadget\nend\n").unwrap();
+    git_init(&dir_a);
+
+    let (ok, out) = rq(&db, &dir_a, &["Widget", "--json"]);
+    assert!(!ok, "no Widget here — the first query must miss: {out}");
+    assert!(!out.contains("b.rb"), "must not leak the other repo: {out}");
+
+    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--json"]);
+    assert!(ok, "its own untracked file is indexed: {out}");
+    let root = dir_a.canonicalize().unwrap();
+    assert!(out.contains(&*root.to_string_lossy()), "{out}");
+    assert!(
+        !warmed(&db, &dir_a, "gadget"),
+        "an indexed, unchanged unborn repo does not re-warm"
+    );
+
+    let _ = fs::remove_dir_all(&dir_a);
+    let _ = fs::remove_dir_all(&dir_b);
+}
+
+#[test]
 fn structured_results_name_the_checkout_root_their_file_is_relative_to() {
     // Each result carries its own `root`: `--all-repos` spans checkouts, so a
     // caller can't assume the cwd's repo is the one `file` is relative to.
