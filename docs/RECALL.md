@@ -58,6 +58,11 @@ A loss is a question, not a verdict. Some queries are genuinely ambiguous
 deliberate rule doing its job (D12's test-path cases). Read each one; record
 the ones you accept in the decision.
 
+To compare two settings of one binary, such as `RQ_RECALL=scan` against the default,
+pass `--base-bin` and `--bin` a two-line `sh` wrapper that sets the variable and `exec`s
+rq. Wrap both sides: the wrapper's own start adds ~2 ms to `wall`, though not to `query`
+or `first answer`, which rq measures itself.
+
 `--fail-on-loss` exits 1 if any source lost #1 or the top 10, for a change that
 is meant to be a pure gain. `--bench REPS` adds latency: the hand-picked queries
 through every binary, interleaved and rotated per rep so machine load lands on

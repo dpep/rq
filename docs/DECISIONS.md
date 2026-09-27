@@ -1022,3 +1022,115 @@ as warming.
 
 *Reverses if:* a caller shows up that needs two errors under one code told apart without
 JSON — split that code, never reuse `1` or `2`.
+
+## D23 — A name index for fuzzy recall: built, exact, opt-in until ranking catches up
+
+**Built behind `RQ_RECALL=scan`**, 2026-09-27. Not the default. Rails and discourse at the
+recall pins, release builds, every timing interleaved against main on a shared machine
+(load 5–20). How it works is in [NAME_INDEX.md](NAME_INDEX.md), along with the spike it came from.
+
+*What.* Per repo, a 40-byte signature for every distinct symbol name and every file (signed
+by its stem): which characters it holds, a Bloom filter of the character pairs a query can
+step across under `align`'s rules, and a typo key. Recall screens every signature,
+verifies the survivors with the scorer's own chain, and fetches rows only for what `score`
+accepts. It replaces the first-letter net, the trigram net, the path `LIKE` net, `rq_keep`
+and `NET_WINDOW`. This is D21's reversal clause: a net that prunes, replacing the broad
+ones rather than joining them. The spike's pair postings were 2–6× faster again at these
+sizes, but need a base, a delta and a background rebuild. The scan is append-only, and the
+postings can be layered on the same `transition_pairs` later.
+
+*Exact, and tested as exact.* A property test compares the index with rq's real `score` on
+the harness's queries and names, plus derived and edge-case ones (non-ASCII, sigils,
+acronyms, a name longer than the bit-parallel verifier takes). An ignored test runs every
+harness query against every name in rails (32,987) and discourse (44,708): **0
+disagreements over ~92M pairs.** D12's recall test now asserts that the index's candidates
+are exactly what `score` takes from every row in its store. The format stamp,
+`NAME_INDEX_FORMAT`, rebuilds an index written under other matching rules.
+
+*Storage: SQLite, not a mapped file.* Measured in process with a fresh connection or
+mapping per query, over all 2,372 harness queries:
+
+| | median | p90 | p99 |
+|---|---|---|---|
+| in memory (floor) | 172 µs | 628 | 2,564 |
+| flat file, mapped per query | 280 | 730 | 2,663 |
+| SQLite chunks of 512, fresh connection | 540 | 1,008 | 3,044 |
+
+The file is ~0.26 ms faster. SQLite gets appends in the symbols' own transaction, crash
+safety, and `--drop` and a replaced `RQ_DB` for free. The file would need a cross-process
+publish protocol, a way to reconcile names committed to SQLite but never appended, and
+its own lifecycle. Chunk size (256, 1,024, 4,096) moved the scan by under 10%.
+
+*The path net had to go into the index too.* With only the name index plus the old `LIKE`
+net, D12's recall test failed: `widgetcontroller` lost `Widgets` in `widget_controller.rb`,
+a primary definition named only by its file, which the trigram net used to carry in
+through `rq_keep`'s stem branch. D12 counted 131 top-10 hits from such definitions. Files
+are the second key kind, and every primary kind counts, where the `LIKE` net took only
+classes and modules.
+
+*Recall (`make recall`, main against scan).*
+
+| | source #1 | top 10 | found |
+|---|---|---|---|
+| main | 1,133 (49.0%) | 1,602 (69.2%) | 1,886 (81.5%) |
+| scan | 1,218 (52.6%) | 1,677 (72.5%) | 1,991 (86.0%) |
+
+`abbr2` carries it (#1 119 → 212, found 272 → 378). `consonants` loses (#1 108 → 103, top
+10 235 → 219), and so does `typo` (#1 394 → 391). 110 sources move up and 258 down. Anchored
+call sites are identical in every cut (351 #1, 439 top 10 with `--anchor`): they are defined
+names, answered by the exact and prefix layers. Two runs gave the same losses.
+
+*Why it isn't the default: every loss is ranking, and read.* 14 sources lost #1 and 33 the
+top 10 (46 queries). Every source is still recalled. They are weaknesses the capped nets
+hid by never holding the competitor, as D12 found:
+- **The test-path cliff, 22 (5 lost #1).** The source is in a test file, and complete
+  recall almost always holds *some* non-test name with the letters in order, which the
+  −400 penalty then ranks above it however weak its match. `coclfi` →
+  `delete_action_cable_files_skipping_action_cable` (fuzzy 15) over `ConditionalClassFilter`
+  (103); `tstwrt` → `Start`, a near miss that joined because every in-order hit was a test
+  (score ≤ 0, so D14's bar fell to nothing). D12 accepted this for three queries and
+  rejected a proportional penalty; at 22 it needs another look, probably a bar on name
+  evidence like D14's.
+- **Side features over name evidence, 22 (7 lost #1).** A scattered match wins on extent,
+  kind, `path` and depth: `fipuno` → `BackfillPushNotificationLevel` (fuzzy 65 + extent 35
+  + kind 15 + path 16) over `find_published_node` (109 + 11): a 44-point lead in name
+  evidence loses to 55 points of side features. `lclztn` falls from #5 to #51 under 118
+  hits.
+- **D14's gate, 1.** `tets_br` loses `test_br` from its results: `test_sub_regions` holds the
+  letters in order at 114 against the transposition's 102, so the near miss never joins.
+- **The query's `_`, 1.** `_dshrz` now ranks the public `dasherize` over `_dasherize`;
+  `align` ignores the query's separators.
+
+*Latency.* 395 queries (every sixth, all types), 3 reps interleaved, load 8–10, ms:
+
+| | main | scan | this build, FTS |
+|---|---|---|---|
+| recall median / p90 / p99 | 9.4 / 22.9 / 30.8 | 0.90 / 2.3 / 8.3 | 9.6 / 24.5 / 31.9 |
+| first answer median / p90 / p99 | 12.3 / 27.9 / 40.1 | 1.9 / 4.2 / 14.5 | 12.4 / 29.0 / 39.1 |
+| wall median | 32.7 | 31.8 | 32.7 |
+
+Recall's median is 0.8–1.3 ms for every query type, against 6–14 ms. Wall doesn't move:
+the git check after the answer dominates it (D13's point). The FTS column is this build
+without the switch: keeping the index costs nothing at query time. `make recall --bench`
+(58 hand queries, 5 reps) agrees: query phase 9.1 → 1.9 ms, first answer 10.7 → 3.3.
+
+*Costs.* The database grows 29.7 → 36.9 MB (+24%) on rails and discourse, `name_sigs`
+7.2 MB: signatures 3.8, keys 2.7, the rest page overhead. Dropping FTS gives back 3.7. A
+cold index adds a serial rebuild about as long as the FTS sync: 55–71 ms on rails
+(FTS 62–80), 89–124 on discourse, 5–10% of the pass; signing is half of it (~0.8 µs a
+key, allocating). A one-file write of 20 symbols, five of them new names: 480 → 551 µs
+median (p90 602 → 686). Appends first re-signed the whole last chunk, which cost +200 µs;
+they now keep its signatures.
+
+*Rejected:*
+- **The mapped file**, above.
+- **Keeping the `LIKE` path net**, above: it loses path-only hits the nets had.
+- **Pair postings now.** 2–6× faster in the spike, needing machinery the scan doesn't.
+  Revisit at a million names, where the scan's median is ~5 ms.
+
+*Reverses if (becomes the default):* the test-path and side-feature losses are fixed as
+ranking changes of their own, measured on this harness with `RQ_RECALL=scan`, and the
+losses left are ambiguous or deliberate. Then the FTS table and its triggers go in a
+migration, which has to build every repo's index first. *Reverses entirely if:* a way to
+match can't be expressed as transitions between a name's characters, or a matching rule
+changes in a way the property test can't keep the pairs in step with.
