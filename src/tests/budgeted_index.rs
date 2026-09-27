@@ -181,3 +181,35 @@ fn a_content_scan_returns_only_matching_files_to_persist() {
     assert_eq!(scanned[0].path, "a.rb");
     assert!(scanned[0].symbols.iter().any(|s| s.name == "Widget"));
 }
+
+#[test]
+fn warm_and_full_index_skip_the_same_hidden_files() {
+    let dir = scratch_dir("hidden");
+    fs::create_dir_all(dir.join(".tools")).unwrap();
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join(".tools/b.rb"), "class Gadget\nend\n").unwrap();
+    fs::write(dir.join(".config.js"), "function gizmo() {}\n").unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+
+    // the warm enumerates through `git ls-files`, which lists tracked dot-files
+    let mut warmed = Store::open_in_memory().unwrap();
+    index::index_budgeted(&mut warmed, &dir, &[], Duration::from_secs(5), None).unwrap();
+    // the full index walks the filesystem, which skips them
+    let mut walked = Store::open_in_memory().unwrap();
+    index::index_under(&mut walked, &dir, &[]).unwrap();
+
+    for store in [&warmed, &walked] {
+        assert!(finds(store, "Widget"));
+        assert!(!finds(store, "Gadget"));
+        assert!(!finds(store, "gizmo"));
+    }
+    fs::remove_dir_all(&dir).ok();
+}

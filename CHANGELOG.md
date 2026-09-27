@@ -24,6 +24,11 @@ and aren't listed; see `git log` for those.
   suspended, so fuzzy `--all-repos` searches from outside the repo read its
   rows directly (about 250 ms on a large repo, against ~2) until a pass inside
   it finished. A search now rebuilds an index whose pass is gone.
+- **A background warm no longer indexes hidden files.** `rq --index` skips
+  dot-files and dot-directories (`.devcontainer/`, `.prettierrc.cjs`), but a
+  warm, which lists files with `git ls-files`, indexed the tracked ones, so what
+  was indexed depended on which pass ran last. Neither indexes them now; the
+  next full pass forgets any a warm added.
 - **`RQ_DB` and `HOME` are checked before anything is opened.** An empty
   `RQ_DB=` now means the default path instead of failing. An `RQ_DB` that names
   a directory (`/some/dir/`) is refused with exit 64 rather than creating a file

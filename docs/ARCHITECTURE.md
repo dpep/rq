@@ -250,7 +250,10 @@ search only reads.
   differs only by parameters (active files, subtrees, deadline): collect
   candidates serially → parse the changed/new ones → write a batch.
 - **Incremental** — a cheap `mtime` match short-circuits before any read; the
-  content `hash` then guards the write. The walker respects `.gitignore`.
+  content `hash` then guards the write. The walker respects `.gitignore`, and
+  no pass indexes a hidden path (a `.`-prefixed file or directory): a warm
+  enumerates with `git ls-files`, which lists tracked ones, so one filter
+  (`is_source`) keeps the indexed set the same whichever pass finishes.
 - **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
   fans out across CPUs; the parsed files are written in **one** transaction (one
   `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.

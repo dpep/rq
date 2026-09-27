@@ -353,17 +353,14 @@ fn stream_walk(
                     finished = false;
                     break;
                 }
-                let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-                    continue;
-                };
-                if lang::plugin_for_extension(ext).is_none() {
-                    continue;
-                }
                 let rel = path
                     .strip_prefix(root)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .into_owned();
+                if !is_source(&rel) {
+                    continue;
+                }
                 if !seen.insert(rel.clone()) {
                     continue; // already handled (active file), or a duplicate
                 }
@@ -807,17 +804,14 @@ fn note_candidate(
     seen: &mut HashSet<String>,
     to_parse: &mut Vec<std::path::PathBuf>,
 ) {
-    let Some(ext) = file.extension().and_then(|e| e.to_str()) else {
-        return;
-    };
-    if lang::plugin_for_extension(ext).is_none() {
-        return;
-    }
     let rel = file
         .strip_prefix(root)
         .unwrap_or(file)
         .to_string_lossy()
         .into_owned();
+    if !is_source(&rel) {
+        return;
+    }
     if !seen.insert(rel.clone()) {
         return; // already noted (e.g. an active file re-seen by the walk)
     }
@@ -1258,12 +1252,21 @@ pub(crate) fn has_unindexed_changes(
     changed
 }
 
-/// Whether a path is something a language plugin indexes.
+/// Whether a repo-relative path is something a language plugin indexes. Hidden
+/// paths (any `.`-prefixed component) aren't: the filesystem walk skips them,
+/// and `git ls-files` doesn't, so every enumeration filters through here to
+/// index the same set whichever pass finishes.
 fn is_source(rel: &str) -> bool {
-    Path::new(rel)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| lang::plugin_for_extension(e).is_some())
+    let path = Path::new(rel);
+    let hidden = path.components().any(|c| match c {
+        std::path::Component::Normal(name) => name.as_encoded_bytes().starts_with(b"."),
+        _ => false,
+    });
+    !hidden
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| lang::plugin_for_extension(e).is_some())
 }
 
 /// Repo-relative files you're working on this branch: committed changes since
