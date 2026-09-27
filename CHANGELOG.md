@@ -30,6 +30,9 @@ and aren't listed; see `git log` for those.
   `PATH`, or another machine's rq on a shared `RQ_DB`.
 
 ### Changed
+- **A relative `RQ_DB` is refused (exit 64).** It resolved against each
+  command's working directory, quietly creating a separate, empty index
+  wherever rq ran. If you set `RQ_DB` to a relative path, make it absolute.
 - **Fuzzy matches rank by how well the name reads.** A definition's kind, size,
   file name, nesting and visibility now count in proportion to how surely its
   name matched, so a big class that merely holds the query's letters no longer

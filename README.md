@@ -300,7 +300,9 @@ it still answers at zero coverage. A live answer is marked `"source": "live"` in
 JSON, `-v` notes the files it scanned and how long it took against its budget
 (`RQ_FALLBACK_BUDGET_MS`, default 250 ms), and `--usage` counts these answers
 apart. The index is a SQLite file at `$RQ_DB`
-(default `~/.local/share/rq/rq.db`).
+(default `~/.local/share/rq/rq.db`). `RQ_DB` must be an absolute path: a
+relative one would resolve against each command's working directory and split
+the index, so rq refuses it with a usage error (exit 64).
 
 ## Shell completions
 

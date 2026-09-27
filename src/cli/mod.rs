@@ -49,7 +49,8 @@ rq --usage                show how rq has been called (by caller and flags)\n  \
 rq --drop                 remove this repo's index (opposite of --index)\n\n\
 SHORT FLAGS (easy to misread):\n  \
 -j = --json (not jobs; --jobs is long-only)   -l = --limit (not lang)   -x = --lang\n\n\
-The index is a SQLite file at $RQ_DB (default ~/.local/share/rq/rq.db); it warms \
+The index is a SQLite file at $RQ_DB, an absolute path (default \
+~/.local/share/rq/rq.db); it warms \
 automatically on the first search in a git repo. On a large, cold repo a search \
 keeps indexing until it can answer rather than reporting a premature \"no \
 matches\" (an interactive run shows progress and stops on Ctrl-C).\n\n\
@@ -226,6 +227,19 @@ fn dispatch(cli: Cli) -> ExitCode {
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
         return ExitCode::SUCCESS;
+    }
+    // A relative path would resolve against each caller's cwd, silently
+    // splitting the one shared index into a database per directory.
+    if let Some(db) = std::env::var_os("RQ_DB").filter(|p| std::path::Path::new(p).is_relative()) {
+        return fail(
+            output_format(&cli),
+            Failure::Usage,
+            format_args!(
+                "rq: RQ_DB must be an absolute path, not {:?} (e.g. RQ_DB=\"$PWD/{}\")",
+                db,
+                db.to_string_lossy()
+            ),
+        );
     }
     if let Some(path) = &cli.index {
         // index PATH (else cwd); with --path, seed only those subtrees

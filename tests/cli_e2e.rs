@@ -3103,3 +3103,23 @@ fn concurrent_first_queries_share_a_fresh_database() {
     let _ = fs::remove_dir_all(&dir);
     assert!(failures.is_empty(), "{failures:?}");
 }
+
+#[test]
+fn a_relative_rq_db_is_a_usage_error() {
+    let (dir, _) = scratch("relative-db");
+    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["Widget", "--json"])
+        .current_dir(&dir)
+        .env("RQ_DB", "dbs/rq.db")
+        .env("RQ_WARM_DETACH", "0")
+        .output()
+        .expect("run rq");
+    let created = dir.join("dbs").exists();
+    let _ = fs::remove_dir_all(&dir);
+
+    assert_eq!(out.status.code(), Some(64));
+    let err: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error json");
+    assert_eq!(err["kind"], "usage");
+    assert!(err["error"].as_str().unwrap().contains("RQ_DB"), "{err}");
+    assert!(!created, "nothing is written beside the caller");
+}
