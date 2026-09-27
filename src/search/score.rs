@@ -895,9 +895,9 @@ pub(crate) fn has_wildcard(query: &str) -> bool {
     }
 }
 
-/// A wildcard query's literal characters, metachars removed — used to seed the
-/// store's candidate recall (which keys off literal trigrams) before the glob
-/// does the precise matching. `find*controller` → `findcontroller`.
+/// A wildcard query's literal characters, metachars removed — the key for the
+/// store's exact and prefix layers, before the glob does the precise matching.
+/// `find*controller` → `findcontroller`.
 pub(crate) fn strip_wildcards(query: &str) -> String {
     query.chars().filter(|c| !matches!(c, '*' | '?')).collect()
 }

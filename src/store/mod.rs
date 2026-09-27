@@ -211,7 +211,6 @@ impl Store {
         if version == 0 {
             // fresh database — SCHEMA is already at the current version
             conn.execute_batch(schema::SCHEMA)?;
-            conn.execute_batch(schema::FTS_INSERT_TRIGGER)?;
         } else {
             // cumulative migrations for existing databases
             for (v, step) in schema::MIGRATIONS {
@@ -458,55 +457,6 @@ impl Store {
         Ok((files_written, symbols_written))
     }
 
-    /// Suspend per-row FTS maintenance for a cold bulk index: drop the
-    /// `AFTER INSERT` trigger so symbol inserts skip the expensive per-row
-    /// trigram tokenization. Pair with [`sync_fts`](Self::sync_fts), which
-    /// indexes the skipped rows in one pass and restores the trigger. No-op safe
-    /// to call when the trigger is already gone.
-    pub(crate) fn defer_fts_insert(&self) -> Result<()> {
-        self.conn
-            .execute_batch("DROP TRIGGER IF EXISTS symbols_ai;")?;
-        Ok(())
-    }
-
-    /// Index every symbol the FTS index is missing — the rows written while the
-    /// `AFTER INSERT` trigger was absent, by this writer or any other — then
-    /// recreate the trigger. The inverse of
-    /// [`defer_fts_insert`](Self::defer_fts_insert).
-    ///
-    /// "Missing" is read from FTS5's `_docsize` table, which holds one row per
-    /// indexed rowid, so this is exact without a watermark and costs an
-    /// anti-join over `symbols` plus the new rows' tokenization. A full
-    /// `'rebuild'` re-tokenizes every repo in the database to add one: 293 ms
-    /// against 34 ms for the anti-join at 176k symbols. One transaction: a
-    /// concurrent writer lands before (and is caught up) or after the trigger
-    /// is back, never in between.
-    pub(crate) fn sync_fts(&self) -> Result<()> {
-        let sql = format!(
-            "BEGIN IMMEDIATE;
-             INSERT INTO symbols_fts(rowid, name)
-               SELECT s.id, s.name FROM symbols s
-               WHERE NOT EXISTS (SELECT 1 FROM symbols_fts_docsize d WHERE d.id = s.id);
-             {}
-             COMMIT;",
-            schema::FTS_INSERT_TRIGGER
-        );
-        self.conn.execute_batch(&sql)?;
-        Ok(())
-    }
-
-    /// Whether the `AFTER INSERT` FTS-sync trigger is currently absent — true
-    /// only mid-bulk-index (see [`defer_fts_insert`](Self::defer_fts_insert))
-    /// or after one crashed before its [`sync_fts`](Self::sync_fts).
-    pub(crate) fn fts_trigger_missing(&self) -> Result<bool> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='symbols_ai'",
-            [],
-            |r| r.get(0),
-        )?;
-        Ok(n == 0)
-    }
-
     /// Record indexing coverage for a repository (scope `full`).
     pub(crate) fn set_coverage(
         &self,
@@ -693,9 +643,8 @@ impl Store {
         tx.commit()
     }
 
-    /// Drop a repository entirely — the inverse of indexing it: its symbols (and
-    /// their FTS rows, via trigger), files, coverage, checkout, and the
-    /// repository row. Deleted in FK-safe order in one
+    /// Drop a repository entirely — the inverse of indexing it: its symbols,
+    /// files, coverage, checkout, and the repository row. Deleted in FK-safe order in one
     /// transaction.
     pub(crate) fn drop_repository(&mut self, repository_id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -1289,48 +1238,78 @@ mod tests {
     }
 
     #[test]
-    fn v15_rebuilds_the_trigram_table_without_positions() {
-        let path = std::env::temp_dir().join(format!("rq-migrate-v15-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        {
-            // a v14 index: positional trigram table, one indexed symbol
+    fn v18_drops_the_trigram_table_and_recall_still_answers() {
+        // 0.54.1 shipped v16; v17 only ever reached unreleased builds
+        for from in [16, 17] {
+            let path = std::env::temp_dir()
+                .join(format!("rq-migrate-v18-{from}-{}.db", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            {
+                let mut store = Store::open(&path).unwrap();
+                let repo = store.upsert_repository(&"local:/r", None).unwrap();
+                let widget = [sym("AlphaWidget", Kind::Class, 1, None)];
+                store
+                    .replace_file_symbols(repo, "a.rb", "ruby", None, "h", &widget)
+                    .unwrap();
+                if from == 16 {
+                    store
+                        .conn
+                        .execute_batch("DROP TABLE name_sigs; DROP TABLE name_index;")
+                        .unwrap();
+                }
+                // v17's FTS objects, as it created them
+                store
+                    .conn
+                    .execute_batch(&format!(
+                        "CREATE VIRTUAL TABLE symbols_fts USING fts5(name, content='symbols', \
+                           content_rowid='id', tokenize='trigram', detail=none); \
+                         INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild'); \
+                         CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN \
+                           INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name); END; \
+                         CREATE TRIGGER symbols_ad AFTER DELETE ON symbols BEGIN \
+                           INSERT INTO symbols_fts(symbols_fts, rowid, name) \
+                             VALUES ('delete', old.id, old.name); END; \
+                         CREATE TRIGGER symbols_au AFTER UPDATE ON symbols BEGIN \
+                           INSERT INTO symbols_fts(symbols_fts, rowid, name) \
+                             VALUES ('delete', old.id, old.name); \
+                           INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name); END; \
+                         CREATE INDEX idx_symbols_name_lower ON symbols(name_lower); \
+                         PRAGMA user_version={from};"
+                    ))
+                    .unwrap();
+            }
             let mut store = Store::open(&path).unwrap();
-            let repo = store.upsert_repository(&"local:/r", None).unwrap();
-            store
+            let left: i64 = store
                 .conn
-                .execute_batch(
-                    "DROP TABLE symbols_fts; \
-                     CREATE VIRTUAL TABLE symbols_fts USING fts5(name, content='symbols', \
-                       content_rowid='id', tokenize='trigram'); \
-                     PRAGMA user_version=14;",
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE name LIKE 'symbols_fts%' OR type = 'trigger' \
+                       OR name = 'idx_symbols_name_lower'",
+                    [],
+                    |r| r.get(0),
                 )
                 .unwrap();
-            let widget = [sym("AlphaWidget", Kind::Class, 1, None)];
+            assert_eq!(left, 0, "from v{from}: FTS objects remain");
+            let repo = store.repository_id("local:/r").unwrap().unwrap();
+            // a write needs no trigger, and recall builds the index it reads
+            let gadget = [sym("BetaGadget", Kind::Class, 1, None)];
             store
-                .replace_file_symbols(repo, "a.rb", "ruby", None, "h", &widget)
+                .replace_file_symbols(repo, "b.rb", "ruby", None, "h", &gadget)
                 .unwrap();
+            for (query, name) in [("alwdg", "AlphaWidget"), ("btgdg", "BetaGadget")] {
+                let found = store
+                    .search_candidates(query, 10, false, Some(repo), &Probe::new(query))
+                    .unwrap();
+                assert!(
+                    found.iter().any(|c| c.name == name),
+                    "from v{from}: {query} recalls {name}"
+                );
+            }
+            drop(store);
+            for ext in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+            }
         }
-        let store = Store::open(&path).unwrap();
-        let sql: String = store
-            .conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name = 'symbols_fts'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(sql.contains("detail=none"), "{sql}");
-        let hits: i64 = store
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'idg'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hits, 1, "existing names stay searchable without a re-index");
-        drop(store);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -1480,42 +1459,5 @@ mod tests {
         assert!(store.file_unchanged(repo, "a.rb", "abc").unwrap());
         assert!(!store.file_unchanged(repo, "a.rb", "xyz").unwrap());
         assert!(!store.file_unchanged(repo, "missing.rb", "abc").unwrap());
-    }
-
-    #[test]
-    fn fts_sync_indexes_exactly_the_rows_the_trigger_missed() {
-        let mut store = Store::open_in_memory().unwrap();
-        let first = store
-            .upsert_repository(&RepoIdentity::local("/tmp/first"), None)
-            .unwrap();
-        let second = store
-            .upsert_repository(&RepoIdentity::local("/tmp/second"), None)
-            .unwrap();
-        let widget = [sym("AlphaWidget", Kind::Class, 1, None)];
-        store
-            .replace_file_symbols(first, "a.rb", "ruby", None, "h", &widget)
-            .unwrap();
-
-        // a bulk index of another repo, with per-row FTS suspended
-        store.defer_fts_insert().unwrap();
-        let gadget = [sym("BetaWidget", Kind::Class, 1, None)];
-        store
-            .replace_file_symbols(second, "b.rb", "ruby", None, "h", &gadget)
-            .unwrap();
-        store.sync_fts().unwrap();
-
-        let count = |sql: &str| -> i64 { store.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
-        assert_eq!(
-            count("SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'dge'"),
-            2,
-            "both repos searchable, neither indexed twice"
-        );
-        assert!(!store.fts_trigger_missing().unwrap(), "trigger restored");
-        store.sync_fts().unwrap();
-        assert_eq!(
-            count("SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH 'dge'"),
-            2,
-            "a second sync finds nothing left to add"
-        );
     }
 }

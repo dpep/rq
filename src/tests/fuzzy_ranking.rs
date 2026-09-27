@@ -74,8 +74,8 @@ fn letters_picked_from_inside_a_word_are_not_an_abbreviation() {
 
 #[test]
 fn a_match_past_the_cap_of_names_that_cannot_match_is_still_found() {
-    // More trigram-sharing names than the cap, none holding the query's
-    // letters in order, all met before the one that does
+    // More names sharing the query's substrings than the candidate cap, none
+    // holding its letters in order, all written before the one that does
     let mut store = Store::open_in_memory().unwrap();
     let repo = store
         .upsert_repository(&RepoIdentity::local("/tmp/x"), None)

@@ -6,12 +6,9 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 17;
+pub(crate) const VERSION: i64 = 18;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
-/// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
-/// bulk index drops it and recreates it once its rows are indexed) and is applied alongside
-/// this on a fresh database.
 pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE repositories (
   id INTEGER PRIMARY KEY,
@@ -55,30 +52,8 @@ CREATE TABLE symbols (
   visibility TEXT                    -- public|crate|private|protected; NULL when
                                      -- unknown (pre-v9 rows backfill lazily)
 );
-CREATE INDEX idx_symbols_name_lower ON symbols(name_lower);
 CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
-
--- fuzzy candidate narrowing: trigram FTS over symbol names. detail=none drops
--- positions, which an OR of single trigrams never reads; a MATCH on a longer
--- substring is a phrase query, and fails.
-CREATE VIRTUAL TABLE symbols_fts USING fts5(
-  name,
-  content='symbols',
-  content_rowid='id',
-  tokenize='trigram',
-  detail=none
-);
-
--- keep the external-content FTS index in sync with symbols
--- (the AFTER INSERT trigger is FTS_INSERT_TRIGGER, defined once below)
-CREATE TRIGGER symbols_ad AFTER DELETE ON symbols BEGIN
-  INSERT INTO symbols_fts(symbols_fts, rowid, name) VALUES ('delete', old.id, old.name);
-END;
-CREATE TRIGGER symbols_au AFTER UPDATE ON symbols BEGIN
-  INSERT INTO symbols_fts(symbols_fts, rowid, name) VALUES ('delete', old.id, old.name);
-  INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
-END;
 
 CREATE TABLE coverage (
   id INTEGER PRIMARY KEY,
@@ -312,9 +287,8 @@ const MIGRATION_V16: Step = Step::AddColumn {
     decl: "INTEGER NOT NULL DEFAULT 0",
 };
 
-/// Migration v16 -> v17: the name index's tables, empty. Recall falls back to
-/// the FTS nets for a repo until its index is built, which the next index pass
-/// or warm child does.
+/// Migration v16 -> v17: the name index's tables, empty. Recall builds a
+/// repo's index the first time it needs it.
 pub(crate) const MIGRATION_V17: &str = r#"
 CREATE TABLE IF NOT EXISTS name_sigs (
   repository_id INTEGER NOT NULL,
@@ -332,6 +306,18 @@ CREATE TABLE IF NOT EXISTS name_index (
 );
 "#;
 
+/// Migration v17 -> v18: fuzzy recall reads only the name index, so the
+/// trigram table and its sync triggers go, with the `name_lower` index only
+/// its first-letter net read. Triggers first: one left behind would fail every
+/// symbol write. Nothing is rebuilt; the freed pages are reused.
+pub(crate) const MIGRATION_V18: &str = r#"
+DROP TRIGGER IF EXISTS symbols_ai;
+DROP TRIGGER IF EXISTS symbols_ad;
+DROP TRIGGER IF EXISTS symbols_au;
+DROP TABLE IF EXISTS symbols_fts;
+DROP INDEX IF EXISTS idx_symbols_name_lower;
+"#;
+
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
@@ -347,7 +333,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 16] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 17] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -364,14 +350,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 16] = [
     (15, Step::Sql(MIGRATION_V15)),
     (16, MIGRATION_V16),
     (17, Step::Sql(MIGRATION_V17)),
+    (18, Step::Sql(MIGRATION_V18)),
 ];
-
-/// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]
-/// on a fresh database. A cold bulk index drops this trigger, inserts symbols
-/// without per-row FTS maintenance, indexes the rows FTS is missing in one
-/// pass, then recreates it from here.
-pub(crate) const FTS_INSERT_TRIGGER: &str = r#"
-CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-  INSERT INTO symbols_fts(rowid, name) VALUES (new.id, new.name);
-END;
-"#;

@@ -191,7 +191,7 @@ fn cold_index_builds_a_working_fuzzy_index() {
     // a cold `--index` suspends per-row index upkeep and builds in bulk at the
     // end; a mid-word substring (not a prefix of the name) only resolves
     // through fuzzy recall, so this proves the bulk pass produced a usable index
-    let (dir, db) = scratch("coldfts");
+    let (dir, db) = scratch("coldindex");
     fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
     let (ok, out) = rq(&db, &dir, &["--index"]);
     assert!(ok, "index failed: {out}");
@@ -242,9 +242,9 @@ fn the_name_index_answers_fuzzy_queries_and_keeps_up_with_edits() {
 #[test]
 fn a_search_that_warms_a_cold_repo_leaves_a_working_fuzzy_index() {
     // the same, when the first contact is a search rather than `--index`: the
-    // budgeted warm it runs must leave FTS in step, both for this answer and
-    // for the next query
-    let (dir, db) = scratch("coldwarmfts");
+    // budgeted warm it runs must leave the name index usable, both for this
+    // answer and for the next query
+    let (dir, db) = scratch("coldwarm");
     fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
     fs::write(dir.join("b.rb"), "class BetaGadget\nend\n").unwrap();
     git_init_commit(&dir);

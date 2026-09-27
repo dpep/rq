@@ -520,25 +520,11 @@ fn run_index(
     drop(setup_span);
     let mut seen: HashSet<String> = HashSet::new();
 
-    // A cold repo (nothing indexed yet) suspends per-row FTS maintenance and
-    // indexes its rows in one bulk pass at the end — with the per-row trigger
-    // the writer, not parsing, bounds a cold pass. That includes the budgeted
-    // warm a first search runs: while warming, a search accepts only an exact
-    // or prefix match, which the name index serves without FTS, and the pass
-    // syncs FTS before it records coverage. Incremental passes touch a few
-    // files and keep the trigger.
-    let bulk_fts = stored.is_empty();
-    if bulk_fts {
-        store.defer_fts_insert()?;
-        // likewise the name index: rebuilt from every name at the end
+    // A cold repo (nothing indexed yet) suspends its name index and rebuilds
+    // it from every name at the end, rather than appending batch by batch.
+    // Incremental passes touch a few files and append as they write.
+    if stored.is_empty() {
         store.suspend_name_index(repo_id)?;
-    } else if store.fts_trigger_missing().unwrap_or(false) {
-        // A cold bulk index elsewhere dropped the trigger — either it crashed
-        // before its sync, or it's still running. Heal before writing more
-        // rows: the sync indexes what the trigger missed and restores it (a
-        // live bulk then pays per-row cost for its remainder — rare overlap,
-        // and its own sync at the end finds nothing left to add).
-        let _ = store.sync_fts();
     }
 
     // Active (branch) files first: always parsed and written, so the working set
@@ -691,12 +677,6 @@ fn run_index(
             write_time.as_millis(),
             parse_jobs(),
         );
-    }
-    if bulk_fts {
-        let t = crate::trace::Timer::start("fts bulk sync");
-        let _span = crate::profile::span("index: fts sync");
-        store.sync_fts()?;
-        drop(t);
     }
     {
         let mut span = crate::profile::span("index: name index");
