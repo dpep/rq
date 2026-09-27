@@ -189,16 +189,10 @@ pub(crate) fn score(
             value: 700.0 - (tail as f64).min(100.0),
         });
         true
-    } else if let Some(s) = subsequence_score(&q, &cand.name) {
-        // Same unmatched-tail penalty the prefix branch applies: the alignment
-        // score counts matched query chars, so a candidate's extra characters
-        // were free and `Validaton` scored `ValidationError` exactly as well as
-        // `Validations`. Capped, and gentle enough that an abbreviation still
-        // reaches a long name it barely covers (`apc` → `ApplicationController`).
-        let tail = cand.name.chars().count().saturating_sub(q.chars().count());
+    } else if let Some(value) = fuzzy_value(&q, &cand.name) {
         features.push(Feature {
             name: "fuzzy",
-            value: s.min(600.0) - (tail as f64).min(100.0),
+            value,
         });
         true
     } else if let Some(d) = near_miss
@@ -721,8 +715,10 @@ fn contiguous_highlight(positions: Vec<usize>, name: &str) -> Vec<usize> {
 }
 
 /// The kinds a path match alone can surface: a file's primary definitions.
+const PRIMARY_KINDS: [&str; 5] = ["class", "module", "struct", "enum", "trait"];
+
 fn is_primary_kind(kind: &str) -> bool {
-    matches!(kind, "class" | "module" | "struct" | "enum" | "trait")
+    PRIMARY_KINDS.contains(&kind)
 }
 
 /// Could [`score`] match this candidate at all? Recall asks before decoding a
@@ -745,6 +741,18 @@ fn in_order(query: &str, s: &str) -> bool {
         .filter(|c| c.is_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
         .all(|q| hay.any(|c| c == q))
+}
+
+/// A fuzzy match's value: the best alignment, less the same unmatched-tail
+/// charge the prefix branch applies. The alignment counts matched query chars,
+/// so without it a candidate's extra characters were free and `Validaton`
+/// scored `ValidationError` exactly as well as `Validations`. Capped, and gentle
+/// enough that an abbreviation still reaches a long name it barely covers
+/// (`apc` → `ApplicationController`).
+fn fuzzy_value(q: &str, name: &str) -> Option<f64> {
+    let s = subsequence_score(q, name)?;
+    let tail = name.chars().count().saturating_sub(q.chars().count());
+    Some(s.min(600.0) - (tail as f64).min(100.0))
 }
 
 /// Score `query` as a subsequence of `name` (the best alignment's score), or
