@@ -1485,7 +1485,9 @@ parent, as `--anchor`'s `proximity` does.
 `make recall BASE=main --anchored`: 0 sources moved, the top 10 changed in 1 of 2,372
 queries, anchored unchanged (351 #1, 439 top 10). The one is a hand-picked query,
 `ActionDispatch::Routing.draw`, which found nothing and now finds `RouteSet#draw` in
-`action_dispatch/routing/route_set.rb`.
+`action_dispatch/routing/route_set.rb`. Dogfooding trekr's source turned up the same miss for a Rust
+file stem: `files::key` failed with `found_in` naming a Ruby stub's `Hash#key`, and now
+finds `key` in `src/tree/files.rs` at confidence 1.00.
 
 *Rejected:*
 - **The innermost scope must be the file's own directory or stem.** Exact for Go, where a
@@ -1552,3 +1554,44 @@ rarely.
 *Reverses if:* a hand-written file carries the marker in its header (then require the
 marker's line to be the whole comment, Go's regexp), or generated code turns out to be the
 target people navigate to while a hand-written namesake exists.
+
+## D29 — Example, demo and docs apps take the test penalty
+
+**Adopted**, 2026-09-27. Language testers' corpora; recall harness (D12) against D28.
+
+*The weakness.* In excalidraw, `rq Excalidraw` ranked the library's
+`export const Excalidraw = React.memo(…)` (`packages/excalidraw/index.tsx`) third, behind a
+Next.js example's local `dynamic()` wrapper (`examples/with-nextjs/…`, `path` 45) and a docs
+site's scaffold (`dev-docs/…`, extent 22). Both are private, but `private` is −15, a
+tiebreaker. An example is code that shows the library rather than being it, which is what
+the test penalty already says about tests.
+
+*The rule.* A definition under a directory segment `examples`, `example`, `_examples` (Go's
+ignored-directory convention), `demo`, `demos`, `docs` or `dev-docs` takes the test-path
+penalty as `example_path`, after `test_path` and `generated` (one penalty at most). Not
+`doc`: ripgrep's `crates/core/flags/doc/` and tokio's `src/doc/` are library code.
+
+In the testers' corpora that is 20 files in tokio's `examples/`, 12 in excalidraw's
+`examples/` and 10 in `dev-docs/`, ripgrep's three `crates/*/examples/`, django's sphinx
+extensions under `docs/`, rails' two `activerecord/examples/` scripts and eight
+discourse files (`docs/developer-guides/`, and spec helpers under `spec/**/examples/`,
+already test code).
+
+| | per-language set #1 (31) | recall #1 / top 10 / found |
+|---|---|---|
+| before (D28) | 28 | 1,304 / 1,750 / 2,000 |
+| after | 29 (`Excalidraw`) | 1,304 / 1,750 / 2,000 |
+
+Recall: 1 source moved down within the top 10, top 10 changed in 2 of 2,372 queries;
+anchored unchanged (351 #1, 439 top 10).
+
+*Rejected: a heavier `private` (−15 → −30).* Asked for alongside, since both wrappers are
+private and the library's component is exported. Against this change: #1 1,304 → 1,292,
+top 10 1,750 → 1,746, 14 lost #1 and 9 lost top 10s. Visibility starts deciding between
+names that read as the query about equally well: `polmap` finds `polymorphic_mappings`
+over the private `polymorphic_mapping`, `quopar` `QuoteParamsPattern` over `quota_params`.
+A tiebreaker is what `private` measures well; the example directory is the evidence here.
+
+*Reverses if:* a library keeps its real code under one of these names (a `docs` package
+that is the product), or example code turns out to be what people navigate to beside the
+library's own definition.

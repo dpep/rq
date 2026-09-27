@@ -390,6 +390,9 @@ why a result ranked where it did:
 - **generated** — a file whose header declares it generated (`Code generated …
   DO NOT EDIT`, `@generated`, read at index time into `files.generated`) takes
   the test penalty, under its own name: secondary code the same way (D28)
+- **example path** — so does a definition under an example, demo or docs app
+  (`examples/`, `example/`, `_examples/`, `demo/`, `demos/`, `docs/`,
+  `dev-docs/`; not `doc/`, often a library's own package) — `example_path` (D29)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:

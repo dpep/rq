@@ -274,13 +274,16 @@ pub(crate) fn score(
     // its name evidence instead of the flat cliff: a test definition that reads
     // as the query clearly better still ranks above a weak match outside tests.
     //
-    // Generated code is secondary the same way, and takes the same penalty: a
-    // stringer `String()` or a protobuf message is rarely the definition meant
-    // when a hand-written one shares its name, and is the only answer when not.
+    // Generated code and example or docs apps are secondary the same way, and
+    // take the same penalty: a stringer `String()`, or a docs site's wrapper of
+    // the library's component, is rarely the definition meant when the library's
+    // own shares its name, and is the only answer when not.
     let secondary = if in_test_path(&cand.file) {
         Some("test_path")
     } else if cand.generated {
         Some("generated")
+    } else if in_example_path(&cand.file) {
+        Some("example_path")
     } else {
         None
     };
@@ -1302,6 +1305,20 @@ pub(super) fn joiners_eq(a: &str, b: &str) -> bool {
     }
 }
 
+/// Is this repo-relative path an example, demo or docs app — code that shows
+/// the library rather than being it? Whole directory segments, as for tests.
+/// Not `doc/`: in Go and Rust that's usually the library's own package
+/// (ripgrep's `flags/doc/`, tokio's `src/doc/`).
+fn in_example_path(file: &str) -> bool {
+    let dirs = file.rsplit_once('/').map_or("", |(d, _)| d);
+    dirs.split('/').any(|seg| {
+        matches!(
+            seg,
+            "example" | "examples" | "_examples" | "demo" | "demos" | "docs" | "dev-docs"
+        )
+    })
+}
+
 /// Does this repo-relative path look like test/spec code?
 ///
 /// Directory names are matched as whole segments, and only suffix conventions
@@ -1524,6 +1541,29 @@ mod tests {
         // penalized uniformly, so the ordering among those is untouched
         assert!(fixture > 0.0);
         assert_eq!(fixture, at("spec/models/widget_spec.rb"));
+    }
+
+    #[test]
+    fn example_and_docs_apps_rank_below_the_library() {
+        let at = |file: &str| SymbolRow {
+            file: file.into(),
+            ..row("Widget", "class", 1)
+        };
+        let total = |c: &SymbolRow| score("Widget", c, None, Boosts::default(), false).unwrap();
+        let library = total(&at("packages/widget/index.tsx")).total;
+        for file in [
+            "examples/with-next/src/pages/widget.tsx",
+            "dev-docs/src/theme/index.js",
+            "docs/_ext/widget.py",
+            "demo/widget.go",
+        ] {
+            let example = total(&at(file));
+            assert!(library > example.total, "{file}");
+            assert!(example.features.iter().any(|f| f.name == "example_path"));
+        }
+        // the library's own `doc` package, and a word merely containing one
+        assert!(!in_example_path("crates/core/flags/doc/help.rs"));
+        assert!(!in_example_path("lib/examples_helper.rb"));
     }
 
     #[test]

@@ -19,6 +19,11 @@ search in each repo starts it, and answers from the old index meanwhile.
   `DO NOT EDIT!`) now takes the test-path penalty (`generated` in
   `--explain`). It is still the answer when nothing hand-written shares its
   name.
+- **Example, demo and docs apps rank below the library.** In excalidraw,
+  `rq Excalidraw` put a Next.js example's wrapper and a docs site's scaffold
+  above the exported component in `packages/excalidraw/`. Definitions under
+  `examples/`, `example/`, `_examples/`, `demo/`, `demos/`, `docs/` and
+  `dev-docs/` take the test-path penalty too (`example_path`).
 - **A package or module scope finds its definitions.** `hugolib.HugoSites`,
   `gin.Context`, `django.db.models.QuerySet` and `mpsc::Sender` failed with
   `scope_not_found`, because only a recorded parent could answer a scope, and
