@@ -57,6 +57,9 @@ and aren't listed; see `git log` for those.
   rq processes opening a fresh (or older) database at once each tried to lay
   down the schema, and some exited 74 with "table already exists" or
   "database is locked". Now one does it and the rest wait for it.
+- **One background warm per repo, even when searches race.** Searches in
+  quick succession could each start a background `rq --warm` for the same
+  repo, which then fought over the database. Claiming the warm is now atomic.
 
 ## 0.54.1 — 2026-09-27
 

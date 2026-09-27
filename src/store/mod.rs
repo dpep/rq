@@ -785,24 +785,37 @@ impl Store {
         self.meta_set(&format!("git_ts_head:{repository_id}"), head)
     }
 
-    /// The detached-warm single-flight lock for a repo: `(pid, stamped_at)` of
-    /// the process that claimed it, if any. Liveness/staleness policy is the
-    /// caller's (the store just holds the record).
-    pub(crate) fn warm_lock(&self, identity: &str) -> Result<Option<(u32, i64)>> {
-        Ok(self
-            .meta_get(&format!("warm_lock:{identity}"))?
-            .and_then(|v| {
-                let (pid, ts) = v.split_once(':')?;
-                Some((pid.parse().ok()?, ts.parse().ok()?))
-            }))
-    }
-
-    /// Claim the detached-warm lock for this process.
-    pub(crate) fn set_warm_lock(&self, identity: &str, pid: u32) -> Result<()> {
-        self.meta_set(
-            &format!("warm_lock:{identity}"),
-            &format!("{pid}:{}", now_unix()),
-        )
+    /// Claim the detached-warm lock for this process unless `held` says the
+    /// current holder (pid, claimed-at) still has it. Read and write share one
+    /// write transaction, so of two warmers racing for it only one wins.
+    pub(crate) fn claim_warm_lock(
+        &mut self,
+        identity: &str,
+        pid: u32,
+        held: impl Fn(u32, i64) -> bool,
+    ) -> Result<bool> {
+        let key = format!("warm_lock:{identity}");
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let holder: Option<String> = tx
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let holder = holder.and_then(|v| {
+            let (pid, ts) = v.split_once(':')?;
+            Some((pid.parse().ok()?, ts.parse().ok()?))
+        });
+        if holder.is_some_and(|(p, ts)| p != pid && held(p, ts)) {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![key, format!("{pid}:{}", now_unix())],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Release the detached-warm lock.
@@ -1113,6 +1126,40 @@ mod tests {
         let written = store.replace_files(repo, &[file]);
         holder.join().unwrap();
         assert_eq!(written.unwrap(), (1, 1));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn one_of_several_racing_warmers_claims_the_lock() {
+        let path = std::env::temp_dir().join(format!("rq-warm-lock-{}.db", std::process::id()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        drop(Store::open(&path).unwrap());
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let claims: Vec<_> = (0..8u32)
+            .map(|pid| {
+                let (path, start) = (path.clone(), std::sync::Arc::clone(&start));
+                std::thread::spawn(move || {
+                    let mut store = Store::open(&path).unwrap();
+                    start.wait();
+                    // every holder counts as live: only an empty lock is claimable
+                    store.claim_warm_lock("repo", pid + 1, |_, _| true).unwrap()
+                })
+            })
+            .collect();
+        let won = claims
+            .into_iter()
+            .filter_map(|h| h.join().unwrap().then_some(()))
+            .count();
+        assert_eq!(won, 1);
+
+        // a holder the caller judges gone (dead pid, stale stamp) is taken over
+        let mut store = Store::open(&path).unwrap();
+        assert!(store.claim_warm_lock("repo", 99, |_, _| false).unwrap());
+        assert!(!store.claim_warm_lock("repo", 100, |_, _| true).unwrap());
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }

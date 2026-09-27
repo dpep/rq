@@ -1352,15 +1352,18 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     let identity = resolve_identity(&store, &root);
 
     // Single-flight: if another live rq is already warming this repo, bow out.
-    // A dead pid or a stale stamp is a crashed warmer — take over.
-    if let Ok(Some((pid, ts))) = store.warm_lock(&identity)
-        && pid != std::process::id()
-        && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
-        && now_unix() - ts < WARM_LOCK_TTL_SECS
+    // A dead pid or a stale stamp is a crashed warmer — take over. A claim that
+    // can't be made at all means another writer is busy; the next search retries.
+    let held = |pid: u32, ts: i64| {
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        alive && now_unix() - ts < WARM_LOCK_TTL_SECS
+    };
+    if !store
+        .claim_warm_lock(&identity, std::process::id(), held)
+        .unwrap_or(false)
     {
         return ExitCode::SUCCESS;
     }
-    let _ = store.set_warm_lock(&identity, std::process::id());
 
     // A search on a complete repo hands us the staleness check rather than
     // wait on `git status` itself, so most runs end here: nothing moved.
