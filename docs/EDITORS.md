@@ -6,20 +6,23 @@ Everything below is a thin wrapper around it.
 
 ## Native (works today)
 
-`rq -o/--open <query>` opens the best match for you (prompting to choose on a
-TTY with several). The launcher resolves
-`RQ_OPEN` (a template with `{file}`/`{line}`/`{}` = `path:line`; with none,
-`path:line` is appended) → `code` →
-`$VISUAL`/`$EDITOR` → printing the location. Simplest integration: bind a key to
-`rq -o`. The wrappers below remain useful for an interactive fzf picker or a
-custom flow.
+`rq -o/--open <query>` opens the best match (asking you to choose on a terminal
+with several). The launcher is `RQ_OPEN` → `code` → `$VISUAL`/`$EDITOR` →
+printing the location. `RQ_OPEN` is a template: `{file}` is the absolute path,
+`{line}` the line, `{}` both as `path:line`; a template with none of them gets
+`path:line` appended. Simplest integration: bind a key to `rq -o`. The wrappers
+below are for an interactive fzf picker or a custom flow.
+
+An editor that knows the cursor should pass it as `--anchor FILE:LINE[:COL]`:
+rq then ranks the definitions enclosing that line, then the same file and
+nearby directories, first. It reorders and never filters.
 
 ## Shell (works today)
 
 [`script/rq-open`](../script/rq-open) does search → pick → open:
 
 ```sh
-rq-open RefundProcessor
+rq-open WidgetProcessor
 ```
 
 It uses `fzf` to pick when available (auto-selecting a lone match), opens in VS
@@ -38,12 +41,12 @@ Marketplace; build and install the `.vsix` locally:
 ```sh
 cd editors/vscode
 npm install
-npm run package                               # → rq-0.1.0.vsix
-code --install-extension rq-0.1.0.vsix
+npm run package                               # → rq-<version>.vsix
+code --install-extension rq-*.vsix
 ```
 
-It needs `rq` on VS Code's `PATH`, or `rq.path` set. If rq can't be run, it says so once, with a
-button to the setting.
+It needs `rq` on VS Code's `PATH`, or `rq.path` set. If rq can't be run, it says
+so once, with a button to the setting.
 
 **How a click becomes a query.** The word under the cursor, plus the receiver
 written right before it — no parsing, just the characters on the line:
@@ -60,8 +63,11 @@ written right before it — no parsing, just the characters on the line:
 A lowercase receiver is a variable whose class the extension can't know, so it
 is dropped; a constant or a `::` path scopes the query, and the bare name is the
 fallback for an inherited or mixed-in method. `--lang` is set from the file's
-language (TypeScript and JavaScript together). Only exact, case-sensitive names
-are kept — rq's fuzzy neighbours are right for a search box, wrong for a jump.
+language (TypeScript and JavaScript together), and `--anchor` from the click, so
+a bare `save` inside `Widget` prefers `Widget#save`. An rq older than 0.53
+rejects `--anchor`; the extension notices once and asks without it from then
+on. Only exact, case-sensitive names are kept — rq's fuzzy neighbours are right
+for a search box, wrong for a jump.
 When one match remains or rq's top confidence is ≥ 0.8, the click jumps straight
 there; otherwise up to five candidates show as a peek list.
 
@@ -76,7 +82,7 @@ than an error. A request VS Code cancels kills its rq process.
 | Setting        | Default         | Meaning                                                  |
 | -------------- | --------------- | -------------------------------------------------------- |
 | `rq.path`      | `"rq"`          | The rq binary.                                           |
-| `rq.languages` | every rq language | Languages rq answers Go to Definition and Cmd-T for.   |
+| `rq.languages` | every rq language | Languages rq answers Go to Definition and Cmd-T for. An empty list turns both off; the command palette search still works. |
 | `rq.mode`      | `"fallback"`    | `fallback`: answer only where no other provider does. `always`: answer alongside them. |
 | `rq.workspaceSymbols` | `"dedupe"` | Cmd/Ctrl-T: `dedupe` adds only symbols no language server returned; `off` leaves it to them; `always` adds all. |
 
@@ -85,10 +91,16 @@ answers, and rq's ranges (the whole definition) never match a language server's
 (the name), so where both answer, every definition appears twice and a click
 opens a peek list instead of jumping. So by default rq asks the other providers
 first and answers only when they find nothing: a precise server (rust-analyzer,
-gopls, Pylance, TypeScript, Ruby LSP) keeps its answer, and rq fills the gaps —
-Ruby metaprogramming (`delegate`, `has_many`, `scope`), a file the server hasn't
-loaded, untyped code. The cost is waiting on the server first. Set `rq.mode` to
-`always` to have rq answer every time.
+gopls, Pylance, TypeScript, Ruby LSP, trekr) keeps its answer, and rq fills the
+gaps — Ruby metaprogramming (`delegate`, `has_many`, `scope`), a file the server
+hasn't loaded, untyped code. The cost is waiting on the server first. Set
+`rq.mode` to `always` to have rq answer every time. Cmd-T works the same way:
+`rq.workspaceSymbols: dedupe` adds only the symbols no server returned.
+
+For Ruby, [trekr](https://github.com/dpep/trekr) is the precise server: it
+resolves the receiver (`w = Widget.new; w.save` → `Widget#save`) where rq can
+only rank candidates by name. Run both with the defaults: trekr answers, and rq
+answers only where trekr returns nothing.
 
 **Also included.** Go to Symbol in Workspace (Cmd/Ctrl-T) from rq's ranked
 index, for the same languages, and **rq: Search Definitions** in the command
