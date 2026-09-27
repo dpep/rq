@@ -1026,9 +1026,11 @@ as warming.
 *Reverses if:* a caller shows up that needs two errors under one code told apart without
 JSON — split that code, never reuse `1` or `2`.
 
-## D23 — A name index for fuzzy recall: built, exact, opt-in until ranking catches up
+## D23 — A name index for fuzzy recall: built, exact, and the default since D24
 
-**Built behind `RQ_RECALL=scan`**, 2026-09-27. Not the default. Rails and discourse at the
+**Built behind `RQ_RECALL=scan`**, 2026-09-27; **the default** later that day, once D24
+fixed the ranking below (final numbers at the end of D24). `RQ_RECALL=fts` forces the
+old nets, which also remain the fallback while a repo's index is missing or rebuilding. Rails and discourse at the
 recall pins, release builds, every timing interleaved against main on a shared machine
 (load 5–20). How it works is in [NAME_INDEX.md](NAME_INDEX.md), along with the spike it came from.
 
@@ -1262,3 +1264,47 @@ as its capped net never held `dasherize` for this query. Anchored unchanged.
 
 *Rejected:* a penalty on names *without* the sigil. It says the same thing about the
 query as a bonus does, charged to every other candidate, and needs a size of its own.
+
+### The default flips to the name index
+
+With parts 1–4 in, `make recall BASE=main --anchored`, main's default (FTS) against the
+new default (the name index):
+
+| 2,314 sourced | source #1 | top 10 | found |
+|---|---|---|---|
+| main, FTS | 1,133 (49.0%) | 1,602 (69.2%) | 1,886 (81.5%) |
+| D23's scan, before D24 | 1,218 (52.6%) | 1,677 (72.5%) | 1,991 (86.0%) |
+| default now | 1,304 (56.4%) | 1,750 (75.6%) | 2,000 (86.4%) |
+
+481 up, 119 down. Anchored call sites unchanged (351 #1, 439 top 10 with `--anchor`).
+`--bench 5` on the hand-picked queries, load 9–25: query phase median 7.1 → 1.9 ms, first
+answer 9.1 → 3.2 ms; wall is the git check after the answer, as in D23. The FTS path gains
+too (1,207 #1, 1,648 top 10), so the escape hatch isn't a regression.
+
+The bar was no lost #1 or top 10 against main unless explained. 14 lose #1 and 6 the top
+10, every one read:
+- **Ambiguous by name, 15.** The new #1 reads as the query at least as well as the source;
+  the capped nets never held it. `fity`: `file_type` 96, `field_type` 92. `docbaspac` and
+  `dobapa`: `docker_base_packages` over `dockerfile_base_packages`. `cmpths`: `compute_has_more`.
+  `chngls`: `changeLightScheme` 116, `changeListener` 113. Likewise `tstlzy`, `rcrsvl`,
+  `chse`, `fltrty`, `ensy`, `mgrtps`, `fndprv`, `chatest`, `tstdlg`, and `tets_br`, where
+  `test_sub_regions` holds every letter in order (114) against the transposition's 102 —
+  D14's `twedele` case; `test_br` is #2 rather than gone.
+- **Near ties decided by side features, 3.** `tstwhr` (94 against 95), `dscvry` (78
+  against 83, the source private) and `deauco` (105 against 107, among several `DEFAULT_*`
+  names that read as well). Deciding these is what the scaled features are for.
+- **The test rule doing its job, 1.** `hscstm`: `has_custom_context?` (95) outranks the
+  page-object helper `has_custom_label?` (97) under `spec/`.
+- **A residual weakness, 1.** `has_icno?`: the test helper `has_icon?` (typo 128) keeps
+  0.6 of its evidence, 77, and `AdminPluginsShowHouseAdsIndexController` (fuzzy 74) passes
+  it on kind and extent. A class holding a query's letters that scattered shouldn't score 74;
+  that is `align`'s value, not a ranking feature, and is left for its own change.
+
+*Not yet done:* the FTS table and triggers stay, as the fallback above. Removing them needs
+recall that stands without them while an index is missing or rebuilding (a cold pass
+suspends it; `--all-repos` needs every repo's to be current).
+
+*Reverses if:* test definitions start displacing library ones on real use (the share is
+the lever: raise it toward the cliff), or the harness's sampled sources stop resembling
+what people navigate to — it samples test and library names alike, which favours
+anything that softens the test penalty.

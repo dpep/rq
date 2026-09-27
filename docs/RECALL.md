@@ -58,7 +58,7 @@ A loss is a question, not a verdict. Some queries are genuinely ambiguous
 deliberate rule doing its job (D12's test-path cases). Read each one; record
 the ones you accept in the decision.
 
-To compare two settings of one binary, such as `RQ_RECALL=scan` against the default,
+To compare two settings of one binary, such as `RQ_RECALL=fts` against the default,
 pass `--base-bin` and `--bin` a two-line `sh` wrapper that sets the variable and `exec`s
 rq. Wrap both sides: the wrapper's own start adds ~2 ms to `wall`, though not to `query`
 or `first answer`, which rq measures itself.
@@ -109,3 +109,11 @@ dates. The pinned harness reproduces them to within two queries per cell:
 |---|---|---|---|
 | before D14 (`05f93c8`) | 915 (39.5%) | 1,346 (58.2%) | 1,566 (67.7%) |
 | D14 + D15 + window (0.52.2) | 1,134 (49.0%) | 1,604 (69.3%) | 1,887 (81.5%) |
+
+Pinned-harness numbers since, from D23 and D24:
+
+| | source #1 | top 10 | found |
+|---|---|---|---|
+| name index, before D24 (`RQ_RECALL=scan`) | 1,218 (52.6%) | 1,677 (72.5%) | 1,991 (86.0%) |
+| D24, the name index as default | 1,304 (56.4%) | 1,750 (75.6%) | 2,000 (86.4%) |
+| D24 with `RQ_RECALL=fts` | 1,207 (52.2%) | 1,648 (71.2%) | 1,894 (81.8%) |

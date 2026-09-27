@@ -10,16 +10,16 @@ and aren't listed; see `git log` for those.
 ## Unreleased
 
 ### Added
-- **A name index for fuzzy recall, opt-in with `RQ_RECALL=scan`.** Each repo's
-  distinct symbol names and file names get a small signature of what a query
-  could match, so fuzzy recall screens every name and hands the scorer exactly
-  the names it accepts, instead of a capped net that missed some: on the recall
-  harness, sources found at all go from 81.5% to 86.0%, and recall's median
-  from ~9 ms to ~1 ms. It isn't the default yet, because complete
-  recall exposes ranking weaknesses the capped net hid (DECISIONS D23). The
-  index database gains two tables and grows by about a quarter; it migrates
-  itself, and each repo's index is built on its next index pass or search.
-  Nothing to do.
+- **Fuzzy recall reads a name index.** Each repo's distinct symbol names and
+  file names get a small signature of what a query could match, so fuzzy recall
+  screens every name and hands the scorer exactly the names it accepts, instead
+  of a capped net that missed some. With the ranking changes below, on the
+  recall harness the source ranks first for 56.4% of queries (was 49.0%), in the
+  top 10 for 75.6% (69.2%), and is found at all for 86.4% (81.5%); the query
+  phase's median drops from ~7 ms to ~2 ms (DECISIONS D23, D24). The index
+  database gains two tables and grows by about a quarter; it migrates itself,
+  and each repo's index is built on its next index pass or search. Nothing to
+  do. `RQ_RECALL=fts` forces the old nets, for now.
 
 ### Changed
 - **Fuzzy matches rank by how well the name reads.** A definition's kind, size,

@@ -188,9 +188,9 @@ fn a_wildcard_bridges_an_explicit_gap() {
 
 #[test]
 fn cold_index_builds_a_working_fuzzy_index() {
-    // a cold `--index` defers per-row FTS and indexes its rows in bulk at the
+    // a cold `--index` suspends per-row index upkeep and builds in bulk at the
     // end; a mid-word substring (not a prefix of the name) only resolves
-    // through that FTS recall, so this proves the bulk pass produced a usable index
+    // through fuzzy recall, so this proves the bulk pass produced a usable index
     let (dir, db) = scratch("coldfts");
     fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
     let (ok, out) = rq(&db, &dir, &["--index"]);
@@ -199,15 +199,15 @@ fn cold_index_builds_a_working_fuzzy_index() {
     // "widget" is mid-word in AlphaWidgetController — exact/prefix can't reach it
     let (ok, out) = rq(&db, &dir, &["widget"]);
     assert!(ok, "fuzzy recall should find it: {out}");
-    assert!(out.contains("AlphaWidgetController"), "fts recall: {out}");
+    assert!(out.contains("AlphaWidgetController"), "fuzzy recall: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn the_name_index_answers_fuzzy_queries_and_keeps_up_with_edits() {
-    // RQ_RECALL=scan reads fuzzy recall from the name index: built at the end
-    // of a cold index, then appended to as files are written
+    // fuzzy recall reads the name index: built at the end of a cold index,
+    // then appended to as files are written
     let (dir, db) = scratch("nameindex");
     fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
     fs::write(dir.join("connection_pool.rb"), "module Base\nend\n").unwrap();
@@ -219,7 +219,6 @@ fn the_name_index_answers_fuzzy_queries_and_keeps_up_with_edits() {
             .current_dir(&dir)
             .env("RQ_DB", &db)
             .env("RQ_WARM_DETACH", "0")
-            .env("RQ_RECALL", "scan")
             .output()
             .expect("run rq");
         String::from_utf8_lossy(&out.stdout).into_owned()

@@ -8,9 +8,10 @@ the survivors exactly, and fetches rows only for the names and files the scorer 
 accept. The decision and its numbers are D23 in [DECISIONS.md](DECISIONS.md); this is how it
 works, and the design spike it came from.
 
-It is read only with `RQ_RECALL=scan`, for now: complete recall finds 105 more sources on
-the harness but exposes ranking weaknesses the capped nets hid (D23). The index is built
-and maintained either way.
+It is the default recall since D24: complete recall finds 105 more sources on the harness,
+and exposed ranking weaknesses the capped nets hid (D23), which D24 fixed. The FTS nets
+remain the fallback while a repo's index is missing or being rebuilt, and `RQ_RECALL=fts`
+forces them.
 
 ## Why an index is possible
 

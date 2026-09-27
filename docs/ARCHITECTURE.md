@@ -213,9 +213,10 @@ Decisions worth calling out:
   could step across under `align`'s rules. Fuzzy recall screens every
   signature, verifies the survivors with the scorer's own match chain, and
   fetches rows only for the names it accepts, so its candidates are exactly
-  what `score` would take from any row (NAME_INDEX.md, D23). Behind
-  `RQ_RECALL=scan` until the ranking weaknesses complete recall exposes are
-  fixed; FTS below is the default and the fallback while an index is missing.
+  what `score` would take from any row (NAME_INDEX.md, D23). The default
+  since D24 fixed the ranking weaknesses complete recall exposed; FTS below is
+  the fallback while a repo's index is missing or being rebuilt, and
+  `RQ_RECALL=fts` forces it.
 - **Trigram FTS5** narrows millions of symbols to a small candidate set before
   any expensive scoring runs — the answer to "fuzzy + millions + 50 ms".
   Within each capped net, the scorer's own necessary condition
@@ -355,7 +356,7 @@ Staged, streaming, early-exit on confidence:
 | ----- | ---- | ----- |
 | 0 | parse query | case, separators, looks-like-a-path? |
 | 1 | exact / prefix symbol | indexed `name_lower`; fastest, highest confidence |
-| 2 | fuzzy symbol | trigram FTS candidate set (+ first-letter range for ≤ 6 chars) → abbreviation-aware scorer; an fst over names was slower (D21). With `RQ_RECALL=scan`, the name index's exact set instead (D23) |
+| 2 | fuzzy symbol | the name index's exact candidate set (D23) → abbreviation-aware scorer. Without a current index (or with `RQ_RECALL=fts`), the trigram FTS nets (+ first-letter range for ≤ 6 chars); an fst over names was slower (D21) |
 | 3 | path / filename | |
 | 4 | live scan | async, streamed when coverage is low |
 | 5 | opportunistic extraction | parse newly-seen files, persist for next time |

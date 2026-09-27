@@ -498,11 +498,10 @@ fn search_query(
     Ok(Matches { hits, total })
 }
 
-/// `RQ_RECALL=scan` reads fuzzy recall from the name index rather than the
-/// trigram nets. Not yet the default: complete recall exposes ranking
-/// weaknesses the capped nets hid (DECISIONS D23).
+/// Fuzzy recall reads the name index (DECISIONS D23); `RQ_RECALL=fts` falls
+/// back to the trigram nets it replaced.
 fn name_index_recall() -> bool {
-    std::env::var("RQ_RECALL").is_ok_and(|v| v == "scan")
+    !std::env::var("RQ_RECALL").is_ok_and(|v| v == "fts")
 }
 
 /// Recall's filter for `query`: [`score::could_match`], owning its strings so
