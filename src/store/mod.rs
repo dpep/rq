@@ -181,6 +181,24 @@ fn apply(conn: &Connection, step: &schema::Step) -> Result<()> {
     }
 }
 
+/// Switch to WAL. Two openers switching one fresh file at once can fail this
+/// with SQLITE_BUSY without busy_timeout ever being consulted; the mode is
+/// persistent, so a short retry finds it done by whoever won.
+fn wal(conn: &Connection) -> Result<()> {
+    let mut tries = 0;
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy && tries < 50 =>
+            {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            done => return done,
+        }
+    }
+}
+
 impl Store {
     /// Open (creating if needed) the database at `path`, enabling WAL and
     /// applying the schema.
@@ -203,10 +221,11 @@ impl Store {
         // pages in place rather than copying them through read(): fuzzy recall
         // materializes thousands of rows (see DECISIONS D8).
         // busy_timeout first: switching to WAL takes a lock of its own.
+        conn.execute_batch("PRAGMA busy_timeout=3000;")?;
+        wal(&conn)?;
         conn.execute_batch(
-            "PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; \
-             PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16384; \
-             PRAGMA mmap_size=268435456;",
+            "PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; \
+             PRAGMA cache_size=-16384; PRAGMA mmap_size=268435456;",
         )?;
         let user_version = |conn: &Connection| -> Result<i64> {
             conn.pragma_query_value(None, "user_version", |r| r.get(0))
@@ -1163,6 +1182,35 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
+    }
+
+    #[test]
+    fn a_burst_of_openers_shares_a_fresh_database() {
+        let path = std::env::temp_dir().join(format!("rq-burst-{}.db", std::process::id()));
+        let clean = || {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            }
+        };
+        for _ in 0..10 {
+            clean();
+            let start = std::sync::Arc::new(std::sync::Barrier::new(16));
+            let opens: Vec<_> = (0..16)
+                .map(|_| {
+                    let (path, start) = (path.clone(), std::sync::Arc::clone(&start));
+                    std::thread::spawn(move || {
+                        start.wait();
+                        Store::open(&path).map(drop)
+                    })
+                })
+                .collect();
+            for open in opens {
+                open.join()
+                    .unwrap()
+                    .expect("every opener gets a working store");
+            }
+        }
+        clean();
     }
 
     #[test]
