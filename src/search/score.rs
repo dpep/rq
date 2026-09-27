@@ -273,14 +273,25 @@ pub(crate) fn score(
     // A match the query only approximates (fuzzy or typo) gives up a share of
     // its name evidence instead of the flat cliff: a test definition that reads
     // as the query clearly better still ranks above a weak match outside tests.
-    if in_test_path(&cand.file) {
+    //
+    // Generated code is secondary the same way, and takes the same penalty: a
+    // stringer `String()` or a protobuf message is rarely the definition meant
+    // when a hand-written one shares its name, and is the only answer when not.
+    let secondary = if in_test_path(&cand.file) {
+        Some("test_path")
+    } else if cand.generated {
+        Some("generated")
+    } else {
+        None
+    };
+    if let Some(name) = secondary {
         let value = if features.iter().any(|f| matches!(f.name, "fuzzy" | "typo")) {
             (TEST_PATH_SHARE * name_evidence(&features).max(0.0)).min(TEST_PATH_PENALTY)
         } else {
             TEST_PATH_PENALTY
         };
         features.push(Feature {
-            name: "test_path",
+            name,
             value: -value,
         });
     }
@@ -1376,6 +1387,7 @@ mod tests {
             mtime: None,
             git_ts: None,
             visibility: None,
+            generated: false,
         }
     }
 
@@ -1512,6 +1524,19 @@ mod tests {
         // penalized uniformly, so the ordering among those is untouched
         assert!(fixture > 0.0);
         assert_eq!(fixture, at("spec/models/widget_spec.rb"));
+    }
+
+    #[test]
+    fn generated_code_ranks_below_hand_written_code() {
+        let hand = row("String", "method", 1);
+        let generated = SymbolRow {
+            generated: true,
+            ..row("String", "method", 1)
+        };
+        let total = |c: &SymbolRow| score("String", c, None, Boosts::default(), false).unwrap();
+        let g = total(&generated);
+        assert!(total(&hand).total > g.total);
+        assert!(g.features.iter().any(|f| f.name == "generated"));
     }
 
     #[test]

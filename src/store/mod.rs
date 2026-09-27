@@ -38,12 +38,19 @@ pub(crate) struct SymbolRow {
     /// Access level (`public`/`crate`/`private`/`protected`) when the language
     /// expresses one; `None` for unknown (or pre-v9 rows). A ranking hint.
     pub visibility: Option<String>,
+    /// The file declares itself generated. A ranking hint.
+    pub generated: bool,
 }
 
 impl SymbolRow {
     /// A row for a symbol parsed live rather than read from the index — the
     /// same shape, with no file times.
-    pub(crate) fn live(s: Symbol, repository_id: i64, repo_identity: &str) -> Self {
+    pub(crate) fn live(
+        s: Symbol,
+        repository_id: i64,
+        repo_identity: &str,
+        generated: bool,
+    ) -> Self {
         SymbolRow {
             name: s.name,
             kind: s.kind.as_str().to_string(),
@@ -57,6 +64,7 @@ impl SymbolRow {
             mtime: None,
             git_ts: None,
             visibility: s.visibility.map(str::to_string),
+            generated,
         }
     }
 }
@@ -64,7 +72,8 @@ impl SymbolRow {
 /// Column projection shared by the candidate queries. Column order is consumed
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
-    s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts, s.visibility";
+    s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts, s.visibility, \
+    fi.generated";
 const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
@@ -90,6 +99,8 @@ pub(crate) struct FileSymbols {
     pub language: String,
     pub mtime: Option<i64>,
     pub content_hash: String,
+    /// The file declares itself generated (`crate::index::is_generated`).
+    pub generated: bool,
     pub symbols: Vec<Symbol>,
 }
 
@@ -362,8 +373,9 @@ impl Store {
         Ok(map)
     }
 
-    /// Replace all symbols for one file — the single-file form of
+    /// Replace all symbols for one hand-written file — the single-file form of
     /// [`Store::replace_files`] (same upsert, hash-skip, and batching).
+    #[cfg(test)]
     pub(crate) fn replace_file_symbols(
         &mut self,
         repository_id: i64,
@@ -380,6 +392,7 @@ impl Store {
                 language: language.to_string(),
                 mtime,
                 content_hash: content_hash.to_string(),
+                generated: false,
                 symbols: symbols.to_vec(),
             }],
         )?;
@@ -411,13 +424,15 @@ impl Store {
             let (mut fresh, mut fresh_files) = (Vec::new(), Vec::new());
             {
                 let mut upsert = tx.prepare(
-                    "INSERT INTO files (repository_id, path, language, mtime, content_hash, indexed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    "INSERT INTO files
+                       (repository_id, path, language, mtime, content_hash, indexed_at, generated)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      ON CONFLICT(repository_id, path) DO UPDATE SET
                        language = excluded.language,
                        mtime = excluded.mtime,
                        content_hash = excluded.content_hash,
-                       indexed_at = excluded.indexed_at
+                       indexed_at = excluded.indexed_at,
+                       generated = excluded.generated
                      RETURNING id",
                 )?;
                 let mut current = tx.prepare(
@@ -459,7 +474,8 @@ impl Store {
                             f.language,
                             f.mtime,
                             f.content_hash,
-                            now
+                            now,
+                            f.generated
                         ],
                         |r| r.get(0),
                     )?;
@@ -1084,6 +1100,7 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             mtime: r.get(10)?,
             git_ts: r.get(11)?,
             visibility: r.get(12)?,
+            generated: r.get(13)?,
         },
     ))
 }
@@ -1194,6 +1211,7 @@ mod tests {
             language: "ruby".into(),
             mtime: Some(1),
             content_hash: "h".into(),
+            generated: false,
             symbols: vec![sym("User", Kind::Class, 1, None)],
         };
         let written = store.replace_files(repo, &[file]);
@@ -1396,49 +1414,57 @@ mod tests {
     }
 
     #[test]
-    fn v14_queues_constant_languages_for_re_extraction() {
-        let path = std::env::temp_dir().join(format!("rq-migrate-v14-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let file = |path: &str, language: &str| FileSymbols {
-            path: path.into(),
-            language: language.into(),
-            mtime: Some(1),
-            content_hash: "h".into(),
-            symbols: Vec::new(),
-        };
-        {
-            // a v13 index: one repo with Go beside Ruby, one Ruby-only
-            let mut store = Store::open(&path).unwrap();
-            let mixed = store.upsert_repository(&"local:/mixed", None).unwrap();
-            let ruby = store.upsert_repository(&"local:/ruby", None).unwrap();
-            store
-                .replace_files(mixed, &[file("a.go", "go"), file("b.rb", "ruby")])
-                .unwrap();
-            store.replace_files(ruby, &[file("c.rb", "ruby")]).unwrap();
-            store.set_coverage(mixed, 2, 2, "complete").unwrap();
-            store.set_coverage(ruby, 1, 1, "complete").unwrap();
-            store.conn.execute_batch("PRAGMA user_version=13;").unwrap();
+    fn an_upgrade_queues_every_file_for_re_extraction() {
+        // v14 queued the constant languages' files; v19 queues every file, to
+        // read its header, so an upgrade from either side re-parses them all
+        for from in [13, 18] {
+            let path = std::env::temp_dir()
+                .join(format!("rq-migrate-v19-{from}-{}.db", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let file = |path: &str, language: &str| FileSymbols {
+                path: path.into(),
+                language: language.into(),
+                mtime: Some(1),
+                content_hash: "h".into(),
+                generated: false,
+                symbols: Vec::new(),
+            };
+            {
+                let mut store = Store::open(&path).unwrap();
+                let mixed = store.upsert_repository(&"local:/mixed", None).unwrap();
+                let ruby = store.upsert_repository(&"local:/ruby", None).unwrap();
+                store
+                    .replace_files(mixed, &[file("a.go", "go"), file("b.rb", "ruby")])
+                    .unwrap();
+                store.replace_files(ruby, &[file("c.rb", "ruby")]).unwrap();
+                store.set_coverage(mixed, 2, 2, "complete").unwrap();
+                store.set_coverage(ruby, 1, 1, "complete").unwrap();
+                store
+                    .conn
+                    .execute_batch(&format!("PRAGMA user_version={from};"))
+                    .unwrap();
+            }
+            let store = Store::open(&path).unwrap();
+            let stat = |p: &str| -> (Option<i64>, Option<String>) {
+                store
+                    .conn
+                    .query_row(
+                        "SELECT mtime, content_hash FROM files WHERE path = ?1",
+                        [p],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .unwrap()
+            };
+            // both skips forgotten, so the next warm re-parses each file
+            for p in ["a.go", "b.rb", "c.rb"] {
+                assert_eq!(stat(p), (None, Some(String::new())), "{p} from v{from}");
+            }
+            let status = |id: &str| store.coverage_status(id).unwrap().unwrap();
+            assert_eq!(status("local:/mixed"), "warming");
+            assert_eq!(status("local:/ruby"), "warming");
+            drop(store);
+            let _ = std::fs::remove_file(&path);
         }
-        let store = Store::open(&path).unwrap();
-        let stat = |p: &str| -> (Option<i64>, Option<String>) {
-            store
-                .conn
-                .query_row(
-                    "SELECT mtime, content_hash FROM files WHERE path = ?1",
-                    [p],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap()
-        };
-        // both skips forgotten for the Go file, so the next warm re-parses it
-        assert_eq!(stat("a.go"), (None, Some(String::new())));
-        assert_eq!(stat("b.rb"), (Some(1), Some("h".into())));
-        // only the repo holding such files is swept again
-        let status = |id: &str| store.coverage_status(id).unwrap().unwrap();
-        assert_eq!(status("local:/mixed"), "warming");
-        assert_eq!(status("local:/ruby"), "complete");
-        drop(store);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

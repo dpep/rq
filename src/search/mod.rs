@@ -569,8 +569,11 @@ pub(crate) fn live_search(
     let scanned = files.len();
     let rows: Vec<SymbolRow> = files
         .into_iter()
-        .flat_map(|fs| fs.symbols)
-        .map(|s| SymbolRow::live(s, LIVE_REPO_ID, &identity))
+        .flat_map(|fs| {
+            let generated = fs.generated;
+            fs.symbols.into_iter().map(move |s| (s, generated))
+        })
+        .map(|(s, generated)| SymbolRow::live(s, LIVE_REPO_ID, &identity, generated))
         .collect();
     let rank = |q: &str| -> Vec<Hit> {
         rows.iter()
@@ -1205,6 +1208,7 @@ mod tests {
             mtime: None,
             git_ts: None,
             visibility: None,
+            generated: false,
         }
     }
 

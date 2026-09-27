@@ -9,7 +9,16 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+Upgrading re-reads every indexed file once, in the background: the first
+search in each repo starts it, and answers from the old index meanwhile.
+
 ### Fixed
+- **Generated code ranks below hand-written code.** In hugo, `rq String`
+  returned stringer's `*_string.go` files ten deep. A file whose header says
+  it's generated (`// Code generated … DO NOT EDIT.`, `@generated`, protoc's
+  `DO NOT EDIT!`) now takes the test-path penalty (`generated` in
+  `--explain`). It is still the answer when nothing hand-written shares its
+  name.
 - **A package or module scope finds its definitions.** `hugolib.HugoSites`,
   `gin.Context`, `django.db.models.QuerySet` and `mpsc::Sender` failed with
   `scope_not_found`, because only a recorded parent could answer a scope, and

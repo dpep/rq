@@ -306,6 +306,7 @@ mod tests {
             mtime: None,
             git_ts: None,
             visibility: None,
+            generated: false,
         };
         [false, true]
             .into_iter()
@@ -350,6 +351,7 @@ mod tests {
                 mtime: None,
                 git_ts: None,
                 visibility: None,
+                generated: false,
             };
             let truth = score(leaf, &row, None, Boosts::default(), true).is_some();
             let stem = score::path_stem(&row.file);

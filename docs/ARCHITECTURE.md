@@ -125,6 +125,7 @@ files (
   mtime INTEGER,                     -- unix *nanoseconds* (racy-edit protection)
   content_hash TEXT,                 -- staleness detection
   indexed_at INTEGER,
+  generated INTEGER NOT NULL DEFAULT 0, -- header declares it generated (v19)
   UNIQUE(repository_id, path)
 );
 
@@ -386,6 +387,9 @@ why a result ranked where it did:
   to prefix. A fuzzy or typo match gives up 0.4 × its name evidence instead, so a
   test definition that reads as the query clearly better still outranks a weak
   match elsewhere (D24)
+- **generated** — a file whose header declares it generated (`Code generated …
+  DO NOT EDIT`, `@generated`, read at index time into `files.generated`) takes
+  the test penalty, under its own name: secondary code the same way (D28)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:

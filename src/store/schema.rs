@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 18;
+pub(crate) const VERSION: i64 = 19;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -35,6 +35,7 @@ CREATE TABLE files (
   git_ts INTEGER,                    -- last git commit time touching this file
   content_hash TEXT,
   indexed_at INTEGER,
+  generated INTEGER NOT NULL DEFAULT 0, -- declares itself generated (a header marker)
   UNIQUE(repository_id, path)
 );
 
@@ -318,6 +319,20 @@ DROP TABLE IF EXISTS symbols_fts;
 DROP INDEX IF EXISTS idx_symbols_name_lower;
 "#;
 
+/// Migration v18 -> v19: files record whether they declare themselves
+/// generated, which only reading them can tell. Every file is queued for
+/// re-extraction the way v14 queued three languages: stat and hash forgotten,
+/// complete repos demoted to warming. Old rows answer as before meanwhile.
+const MIGRATION_V19: Step = Step::AddColumn {
+    table: "files",
+    column: "generated",
+    decl: "INTEGER NOT NULL DEFAULT 0",
+};
+pub(crate) const MIGRATION_V19_REQUEUE: &str = r#"
+UPDATE coverage SET status = 'warming' WHERE scope = 'full' AND status = 'complete';
+UPDATE files SET mtime = NULL, content_hash = '';
+"#;
+
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
@@ -333,7 +348,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 17] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 19] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -351,4 +366,6 @@ pub(crate) const MIGRATIONS: [(i64, Step); 17] = [
     (16, MIGRATION_V16),
     (17, Step::Sql(MIGRATION_V17)),
     (18, Step::Sql(MIGRATION_V18)),
+    (19, MIGRATION_V19),
+    (19, Step::Sql(MIGRATION_V19_REQUEUE)),
 ];
