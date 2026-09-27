@@ -405,6 +405,28 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
 }
 
 #[test]
+fn a_godoc_receiver_reads_as_its_type() {
+    // `(*Widget).Build` is how godoc names a method; the `*` is not a glob
+    let (dir, db) = scratch("godoc-receiver");
+    fs::write(
+        dir.join("widget.go"),
+        "package shop\n\ntype Widget struct{}\n\nfunc (w *Widget) Build() {}\n\ntype Gadget struct{}\n\nfunc (g *Gadget) Build() {}\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["(*Widget).Build", "--ndjson"]);
+    assert!(ok, "search failed: {out}");
+    assert!(
+        first_line(&out).contains("\"parent\":\"Widget\""),
+        "Widget's Build: {out}"
+    );
+    assert!(!out.contains("Gadget"), "not Gadget's: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn json_results_carry_the_definition_span() {
     // a result reports line..=end_line so a caller can read the exact span
     let (dir, db) = scratch("endline");

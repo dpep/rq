@@ -789,6 +789,9 @@ fn segment_count(s: &str) -> usize {
 pub(crate) fn segments(s: &str) -> Vec<String> {
     s.split("::")
         .flat_map(|p| p.split(['#', '.']))
+        // a scope is compared by its name, so receiver punctuation around it
+        // goes: Go's godoc `(*HugoSites).Build` names `HugoSites`
+        .map(|p| p.trim_matches(|c: char| !c.is_alphanumeric() && c != '_'))
         .filter(|p| !p.is_empty())
         .map(|p| p.to_ascii_lowercase())
         .collect()
@@ -1895,6 +1898,13 @@ mod tests {
         // a leading or trailing separator is not a qualifier
         assert_eq!(parse_qualified("::Bar"), ("::Bar", None));
         assert_eq!(parse_qualified("Foo::"), ("Foo::", None));
+    }
+
+    #[test]
+    fn a_receiver_in_parentheses_names_its_type() {
+        assert_eq!(segments("(*HugoSites)"), ["hugosites"]);
+        assert_eq!(segments("(*pkg.T)"), ["pkg", "t"]);
+        assert!(parent_boost("(*Widget)", Some("Widget"), false).is_some());
     }
 
     #[test]

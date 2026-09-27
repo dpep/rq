@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **Go's godoc receiver syntax reads as its type.** `rq '(*HugoSites).Build'`
+  searched for a glob (the `*`) and found unrelated files; it now means
+  `HugoSites.Build`. A scope is compared by its name, so punctuation around it
+  is dropped.
+
 ## 0.55.1 — 2026-09-27
 
 ### Fixed
