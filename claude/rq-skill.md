@@ -61,6 +61,9 @@ rq.
   it; a low value or several close results, disambiguate (add a kind, scope, or
   path).
 - `total` is how many matches the results were drawn from, before `-l`.
+- `source` is `live` when rq answered from a bounded scan of a directory it
+  doesn't index (outside a git repo), `index` otherwise. Asking there often?
+  `rq --index <dir>` once.
 - Fields that don't apply (`parent`, `visibility`, `end_line`, …) are omitted,
   never `null`. `declarations` and `also_in` appear when one name is declared in
   several places (a reopened module) and rq folded them into one result.

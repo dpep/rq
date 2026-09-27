@@ -23,6 +23,13 @@ and aren't listed; see `git log` for those.
   `rq --help` lists the table. Exit codes are public API, so the next release is a
   minor one.
 
+### Added
+- **A live-scan answer says so.** Outside a git repo, rq answers from a bounded
+  scan of the directory rather than the index, and that used to look identical.
+  Each JSON result now carries `source`: `index` or `live`. `-v` notes the scan
+  (files, time, budget), and `--usage` counts live answers in a new `live` field.
+  The index database migrates itself on first use; nothing to do.
+
 ## 0.53.0 — 2026-09-26
 
 ### Added

@@ -23,7 +23,7 @@ fn live_search_finds_symbols_without_an_index() {
     .unwrap();
 
     // No Store, no `rq index` — scan the directory live (unbounded, skip nothing).
-    let hits = search::live_search(
+    let scan = search::live_search(
         &dir,
         "refundproc",
         10,
@@ -33,8 +33,13 @@ fn live_search_finds_symbols_without_an_index() {
         &search::Context::default(),
     );
     assert_eq!(
-        hits.first().map(|h| h.name.as_str()),
+        scan.hits.first().map(|h| h.name.as_str()),
         Some("RefundProcessor")
+    );
+    assert_eq!(scan.files, 1, "counts the files it parsed");
+    assert!(
+        scan.hits.iter().all(|h| h.source == search::Source::Live),
+        "every result says it came from a live scan"
     );
 
     fs::remove_dir_all(&dir).ok();
@@ -56,7 +61,8 @@ fn live_search_skips_already_indexed_files() {
         None,
         false,
         &search::Context::default(),
-    );
+    )
+    .hits;
     assert!(alpha.is_empty(), "skipped file's symbols are not rescanned");
     // a file not in the skip set is still found
     let beta = search::live_search(
@@ -67,7 +73,8 @@ fn live_search_skips_already_indexed_files() {
         None,
         false,
         &search::Context::default(),
-    );
+    )
+    .hits;
     assert_eq!(beta.first().map(|h| h.name.as_str()), Some("Beta"));
 
     fs::remove_dir_all(&dir).ok();
@@ -87,7 +94,8 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
         None,
         true,
         &search::Context::default(),
-    );
+    )
+    .hits;
     assert_eq!(hit.first().map(|h| h.name.as_str()), Some("Alpha"));
 
     // "apa" is a subsequence of Alpha but not a substring — the pre-filter can't
@@ -103,6 +111,7 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
             true,
             &search::Context::default()
         )
+        .hits
         .is_empty(),
         "pre-filter can't see a fuzzy (non-substring) match"
     );
@@ -114,7 +123,8 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
         None,
         false,
         &search::Context::default(),
-    );
+    )
+    .hits;
     assert_eq!(full.first().map(|h| h.name.as_str()), Some("Alpha"));
 
     fs::remove_dir_all(&dir).ok();

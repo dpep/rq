@@ -176,6 +176,7 @@ usage_daily (
   misses INTEGER NOT NULL,          -- answered nothing, against a ready index
   warming INTEGER NOT NULL,         -- answered nothing because it wasn't ready
   on_complete INTEGER NOT NULL,     -- ran against a fully indexed repo
+  live INTEGER NOT NULL,            -- answered from a live scan, not the index
   PRIMARY KEY (day, source, flags)
 );
 
@@ -420,7 +421,9 @@ The index is **never assumed complete**.
 - A `warming` repo **blocks until answered** (see the indexing model), so
   incomplete coverage yields a delayed-but-correct answer rather than a
   confident-looking wrong one. An untracked (never-indexed, non-git) dir gets a
-  bounded in-memory live scan, merged with whatever the index offered.
+  bounded in-memory live scan, merged with whatever the index offered. Each
+  result carries its `source` (`index` or `live`), so a blended answer says
+  which parts were never persisted.
 - **Opportunistic extraction** grows coverage through normal use.
 - **Staleness:** a `content_hash` mismatch marks a file's symbols stale; search
   lazily validates only the **top-N** results (stat, re-parse if changed) before

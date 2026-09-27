@@ -373,12 +373,19 @@ fn requested_limit(limit: usize) -> usize {
 
 /// Count one search for `--usage`. Observability only: nothing reads it back
 /// into ranking.
-fn record_usage(store: &Store, args: &SearchArgs, status: &str, coverage: Option<&str>) {
+fn record_usage(
+    store: &Store,
+    args: &SearchArgs,
+    status: &str,
+    coverage: Option<&str>,
+    live: bool,
+) {
     let _ = store.record_search(&crate::store::SearchRecord {
         source: &crate::origin::detect(),
         flags: &flag_summary(args),
         status,
         coverage: coverage.unwrap_or("none"),
+        live,
     });
 }
 
@@ -1017,14 +1024,16 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Untracked non-git dir — nothing persisted, no warmer running — so scan it
     // live in-memory (substring, then fuzzy) and blend with whatever the index
     // gave. The only non-persisting scan left.
+    let mut live_scan = None;
     if !hits.iter().any(strong)
         && indexer.is_none()
         && coverage.is_none()
         && let Some(root) = &root
     {
-        let tail = live_fallback(root, query, rank_limit, &ctx);
+        let (tail, cost) = live_fallback(root, query, rank_limit, &ctx);
         hits = crate::search::merge(hits, tail, rank_limit);
         total = total.max(hits.len());
+        live_scan = Some(cost);
     }
 
     apply_gates(query, &mut hits);
@@ -1090,6 +1099,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 crate::search::scope_miss_owner(store, query, current, Some(id), &ctx)
             }
         };
+        if let (Some(cost), Some(root)) = (&live_scan, root.as_deref()) {
+            note_live_scan(root, cost, false);
+        }
         let code = no_match_code(out, query, interrupted, incomplete, elsewhere.as_deref());
         // Counted after the answer, and only here: whether this was a
         // definitive miss or a not-ready one is only known on this path, and
@@ -1100,8 +1112,19 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             args,
             if incomplete { "warming" } else { "miss" },
             coverage.as_deref(),
+            false,
         );
         return code;
+    }
+
+    // Live if any result the caller sees came from the scan; `hits` is
+    // already in its final order, so the first `want` are the ones shown.
+    let live = hits
+        .iter()
+        .take(want)
+        .any(|h| h.source == crate::search::Source::Live);
+    if let (Some(cost), Some(root)) = (&live_scan, root.as_deref()) {
+        note_live_scan(root, cost, live);
     }
 
     // A process's first write can stall for milliseconds on a busy machine
@@ -1111,7 +1134,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let counted_early = show || open || web;
     if counted_early {
         let _span = crate::profile::span("record usage");
-        record_usage(store, args, "hit", coverage.as_deref());
+        record_usage(store, args, "hit", coverage.as_deref(), live);
     }
 
     // Confidence first, while the runner-up is still in hand, then cut to the
@@ -1170,7 +1193,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // otherwise queue behind.
     if !counted_early {
         let _span = crate::profile::span("after: record usage");
-        record_usage(store, args, "hit", coverage.as_deref());
+        record_usage(store, args, "hit", coverage.as_deref(), live);
     }
 
     // Collect the refresh started back at setup. It ran alongside the search
@@ -1396,16 +1419,17 @@ fn live_fallback(
     query: &str,
     limit: usize,
     ctx: &crate::search::Context,
-) -> Vec<crate::search::Hit> {
-    crate::trace!("empty → live (in-memory) scan of an untracked dir");
-    let deadline = std::time::Instant::now() + live_fallback_budget();
-    let scan = |prefilter| {
-        let _span = crate::profile::span(if prefilter {
+) -> (Vec<crate::search::Hit>, LiveCost) {
+    let start = std::time::Instant::now();
+    let deadline = start + live_fallback_budget();
+    let mut files = 0;
+    let mut scan = |prefilter| {
+        let mut span = crate::profile::span(if prefilter {
             "live scan: prefiltered"
         } else {
             "live scan: unfiltered"
         });
-        crate::search::live_search(
+        let found = crate::search::live_search(
             root,
             query,
             limit,
@@ -1413,13 +1437,55 @@ fn live_fallback(
             Some(deadline),
             prefilter,
             ctx,
-        )
+        );
+        span.note(|| format!("{} files", found.files));
+        files += found.files;
+        found.hits
     };
-    let h = scan(true);
-    if !h.is_empty() {
-        return h;
+    let mut hits = scan(true);
+    if hits.is_empty() {
+        hits = scan(false);
     }
-    scan(false)
+    let cost = LiveCost {
+        files,
+        elapsed: start.elapsed(),
+    };
+    (hits, cost)
+}
+
+/// What a live scan cost, for its `-v` note.
+struct LiveCost {
+    files: usize,
+    elapsed: Duration,
+}
+
+/// Under `-v`, say that a live scan ran and whether the answer came from it —
+/// otherwise invisible, since a live result prints like an indexed one.
+fn note_live_scan(root: &std::path::Path, cost: &LiveCost, answered: bool) {
+    if !crate::trace::enabled() {
+        return;
+    }
+    let budget = live_fallback_budget();
+    let files = match cost.files {
+        1 => "1 file".to_string(),
+        n => format!("{n} files"),
+    };
+    let what = if answered {
+        "answered from a live scan of"
+    } else {
+        "no answer from a live scan of"
+    };
+    let cut = if cost.elapsed >= budget {
+        " (stopped at the budget)"
+    } else {
+        ""
+    };
+    crate::trace!(
+        "{what} {}: {files} in {} ms, budget {} ms{cut}",
+        crate::trace::abbrev(root),
+        cost.elapsed.as_millis(),
+        budget.as_millis(),
+    );
 }
 
 /// A high-confidence name match: exact or prefix (not fuzzy/path-only).
@@ -3055,11 +3121,18 @@ fn cmd_usage(out: Output) -> ExitCode {
             let misses: i64 = rows.iter().map(|r| r.misses).sum();
             let warming: i64 = rows.iter().map(|r| r.warming).sum();
             let complete: i64 = rows.iter().map(|r| r.on_complete).sum();
+            let live: i64 = rows.iter().map(|r| r.live).sum();
             let plural = if searches == 1 { "search" } else { "searches" };
+            // rare, and only outside a repo: named when it happened at all
+            let live = if live > 0 {
+                format!(" · {live} from a live scan")
+            } else {
+                String::new()
+            };
             // Counts, not a percentage: these totals are often small enough
             // that a percentage would read as more evidence than there is.
             println!(
-                "{searches} {plural} · {misses} missed · {warming} asked too early · {complete} on a complete index"
+                "{searches} {plural} · {misses} missed · {warming} asked too early · {complete} on a complete index{live}"
             );
         }
     }

@@ -131,6 +131,8 @@ pub(crate) struct SearchRecord<'a> {
     pub status: &'a str,
     /// Index state when the query arrived: `complete`, `warming`, or `none`.
     pub coverage: &'a str,
+    /// Answered from a live scan of an untracked directory, not the index.
+    pub live: bool,
 }
 
 /// A cached list of the files this branch is changing, plus the two things
@@ -164,6 +166,30 @@ pub(crate) struct UsageRow {
     pub warming: i64,
     /// Ran against a fully indexed repo, whatever the outcome.
     pub on_complete: i64,
+    /// Answered from a live scan of an untracked directory, not the index.
+    pub live: i64,
+}
+
+/// Run one migration step.
+fn apply(conn: &Connection, step: &schema::Step) -> Result<()> {
+    match *step {
+        schema::Step::Sql(sql) => conn.execute_batch(sql),
+        schema::Step::AddColumn {
+            table,
+            column,
+            decl,
+        } => {
+            let present: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+                params![table, column],
+                |r| r.get(0),
+            )?;
+            if present {
+                return Ok(());
+            }
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))
+        }
+    }
 }
 
 impl Store {
@@ -199,9 +225,9 @@ impl Store {
             conn.execute_batch(schema::FTS_INSERT_TRIGGER)?;
         } else {
             // cumulative migrations for existing databases
-            for (v, sql) in schema::MIGRATIONS {
+            for (v, step) in schema::MIGRATIONS {
                 if version < v {
-                    conn.execute_batch(sql)?;
+                    apply(&conn, &step)?;
                 }
             }
         }
@@ -680,24 +706,27 @@ impl Store {
         let miss = i64::from(rec.status == "miss");
         let warming = i64::from(rec.status == "warming");
         let on_complete = i64::from(rec.coverage == "complete");
+        let live = i64::from(rec.live);
         // Local date, not UTC: an evening search on the US west coast would
         // otherwise be filed under tomorrow, which makes a per-day report
         // quietly wrong for a third of the waking day.
         self.conn.execute(
-            "INSERT INTO usage_daily (day, source, flags, searches, misses, warming, on_complete)
-             VALUES (date(?1, 'unixepoch', 'localtime'), ?2, ?3, 1, ?4, ?5, ?6)
+            "INSERT INTO usage_daily (day, source, flags, searches, misses, warming, on_complete, live)
+             VALUES (date(?1, 'unixepoch', 'localtime'), ?2, ?3, 1, ?4, ?5, ?6, ?7)
              ON CONFLICT(day, source, flags) DO UPDATE SET
                searches = searches + 1,
                misses = misses + excluded.misses,
                warming = warming + excluded.warming,
-               on_complete = on_complete + excluded.on_complete",
+               on_complete = on_complete + excluded.on_complete,
+               live = live + excluded.live",
             params![
                 now_unix(),
                 rec.source,
                 rec.flags,
                 miss,
                 warming,
-                on_complete
+                on_complete,
+                live
             ],
         )?;
         Ok(())
@@ -706,7 +735,7 @@ impl Store {
     /// Usage counts, newest day first.
     pub(crate) fn usage_overview(&self) -> Result<Vec<UsageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT day, source, flags, searches, misses, warming, on_complete
+            "SELECT day, source, flags, searches, misses, warming, on_complete, live
              FROM usage_daily ORDER BY day DESC, searches DESC, source, flags",
         )?;
         let rows = stmt
@@ -719,6 +748,7 @@ impl Store {
                     misses: r.get(4)?,
                     warming: r.get(5)?,
                     on_complete: r.get(6)?,
+                    live: r.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -1268,6 +1298,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(usage, 1);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_added_column_survives_an_older_rq_resetting_the_version() {
+        let path = std::env::temp_dir().join(format!("rq-migrate-v16-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let live_columns = |store: &Store| -> i64 {
+            store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('usage_daily') WHERE name='live'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        {
+            // a v15 database gains the column
+            let store = Store::open(&path).unwrap();
+            store
+                .conn
+                .execute_batch("ALTER TABLE usage_daily DROP COLUMN live; PRAGMA user_version=15;")
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(live_columns(&store), 1);
+        // an older rq opens it and writes its own version back
+        store.conn.execute_batch("PRAGMA user_version=15;").unwrap();
+        drop(store);
+        let store = Store::open(&path).expect("the step re-runs as a no-op");
+        assert_eq!(live_columns(&store), 1);
         drop(store);
         let _ = std::fs::remove_file(&path);
     }

@@ -2930,3 +2930,52 @@ fn foo_dot_new_finds_the_class_outside_git_too() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_live_scan_answer_says_so() {
+    // never indexed and not a git repo, so the only answer is a live scan
+    let (dir, db) = scratch("live-source");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    let source = |out: &str| {
+        let row: serde_json::Value = serde_json::from_str(first_line(out)).expect("a JSON row");
+        row["source"].as_str().unwrap_or_default().to_string()
+    };
+
+    // quiet by default: the row says where it came from, stderr says nothing
+    let (code, out, err) = rq_full(&db, &dir, &["Widget", "-J"], &[], None);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(source(&out), "live", "{out}");
+    assert!(!err.contains("live scan"), "no note without -v: {err}");
+
+    // -v names the scan and what it cost; --profile shows its span
+    let (_, _, err) = rq_full(&db, &dir, &["Widget", "-J", "-v", "--profile"], &[], None);
+    assert!(
+        err.contains("answered from a live scan of") && err.contains("1 file in"),
+        "-v notes the live answer: {err}"
+    );
+    assert!(err.contains("live scan: prefiltered"), "profiled: {err}");
+
+    // a miss scans too, but answered nothing
+    let (code, _, err) = rq_full(&db, &dir, &["Gizmo", "-J", "-v"], &[], None);
+    assert_eq!(code, 1);
+    assert!(
+        !err.contains("answered from a live scan"),
+        "a miss isn't a live answer: {err}"
+    );
+
+    // --usage counts the live answers apart
+    let (_, usage, _) = rq_full(&db, &dir, &["--usage", "-J"], &[], None);
+    let live: i64 = usage
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|row| row["live"].as_i64())
+        .sum();
+    assert_eq!(live, 2, "two searches answered from a live scan: {usage}");
+
+    // once indexed, the same query answers from the index
+    rq(&db, &dir, &["--index"]);
+    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J"], &[], None);
+    assert_eq!(source(&out), "index", "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

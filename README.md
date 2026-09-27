@@ -140,6 +140,7 @@ that doesn't apply is **omitted**, never `null`.
 | `parent` | when nested | The enclosing scope, e.g. `ActiveRecord::Migration`. |
 | `visibility` | when the language expresses one | `public`, `crate`, `private` or `protected`. |
 | `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
+| `source` | search | `index`, or `live` when the result came from a live scan of a directory rq doesn't track (see [Staying current](#staying-current)). |
 | `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it. |
 | `features` | search | The scoring signals that fired, strongest first. |
 | `signature` | when the line is non-empty | The definition's first source line, trimmed. |
@@ -295,7 +296,10 @@ reconciling added and removed ones.
 
 A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
-it still answers at zero coverage. The index is a SQLite file at `$RQ_DB`
+it still answers at zero coverage. A live answer is marked `"source": "live"` in
+JSON, `-v` notes the files it scanned and how long it took against its budget
+(`RQ_FALLBACK_BUDGET_MS`, default 250 ms), and `--usage` counts these answers
+apart. The index is a SQLite file at `$RQ_DB`
 (default `~/.local/share/rq/rq.db`).
 
 ## Shell completions

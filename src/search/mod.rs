@@ -192,6 +192,16 @@ impl Context {
     }
 }
 
+/// Where a result was read from: the persisted index, or a live scan of a
+/// directory rq doesn't track. Carried per result, since the two blend.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Source {
+    #[default]
+    Index,
+    Live,
+}
+
 /// A ranked search result. Serializes for `--json` / `--ndjson`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct Hit {
@@ -217,6 +227,7 @@ pub(crate) struct Hit {
     pub visibility: Option<String>,
     #[serde(rename = "repo")]
     pub repo_identity: String,
+    pub source: Source,
     /// Raw additive score — the ranking key and the `--explain` breakdown source.
     /// Not serialized: JSON exposes the normalized `confidence` instead.
     #[serde(skip)]
@@ -552,10 +563,12 @@ pub(crate) fn live_search(
     deadline: Option<Instant>,
     prefilter: bool,
     ctx: &Context,
-) -> Vec<Hit> {
+) -> LiveScan {
     let needle = prefilter.then_some(query.as_bytes());
     let identity = crate::index::detect_identity(root).to_string();
-    let rows: Vec<SymbolRow> = crate::index::scan(root, skip, deadline, needle)
+    let files = crate::index::scan(root, skip, deadline, needle);
+    let scanned = files.len();
+    let rows: Vec<SymbolRow> = files
         .into_iter()
         .flat_map(|fs| fs.symbols)
         .map(|s| SymbolRow::live(s, LIVE_REPO_ID, &identity))
@@ -563,6 +576,10 @@ pub(crate) fn live_search(
     let rank = |q: &str| -> Vec<Hit> {
         rows.iter()
             .filter_map(|row| rank_one(q, row, Some(LIVE_REPO_ID), ctx.boosts(row, 0.0), false))
+            .map(|hit| Hit {
+                source: Source::Live,
+                ..hit
+            })
             .collect()
     };
     let mut hits = rank(query);
@@ -575,7 +592,16 @@ pub(crate) fn live_search(
         constructor_owner(&mut hits);
     }
     sort_and_truncate(&mut hits, limit);
-    hits
+    LiveScan {
+        hits,
+        files: scanned,
+    }
+}
+
+/// What a live scan found, and how many files it parsed to find it.
+pub(crate) struct LiveScan {
+    pub hits: Vec<Hit>,
+    pub files: usize,
 }
 
 /// Merge two ranked lists, de-duplicating by location and name (keeping the
@@ -721,6 +747,7 @@ fn rank_one(
         parent: c.parent.clone(),
         visibility: c.visibility.clone(),
         repo_identity: c.repo_identity.clone(),
+        source: Source::Index,
         score: scored.total,
         confidence: 0.0, // filled from the final result set before output
         features: scored.features,
@@ -755,6 +782,7 @@ mod tests {
             confidence: 0.5,
             signature: None,
             repo_identity: "local:/tmp/x".into(),
+            source: Source::Index,
             features: Vec::new(),
             body: None,
             declarations: 1,
@@ -993,6 +1021,7 @@ mod tests {
             parent: None,
             visibility: None,
             repo_identity: "r".into(),
+            source: Source::Index,
             score,
             confidence: 0.0,
             features: vec![],
@@ -1079,6 +1108,7 @@ mod tests {
             parent: None,
             visibility: None,
             repo_identity: "r".into(),
+            source: Source::Index,
             score: 1.0,
             confidence: 0.0,
             features: if in_scope {

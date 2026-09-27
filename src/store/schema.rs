@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 15;
+pub(crate) const VERSION: i64 = 16;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 /// The `symbols_ai` FTS-sync trigger lives in [`FTS_INSERT_TRIGGER`] (a cold
@@ -102,6 +102,7 @@ CREATE TABLE usage_daily (
   misses INTEGER NOT NULL,           -- answered nothing, against a ready index
   warming INTEGER NOT NULL,          -- answered nothing because it wasn't ready
   on_complete INTEGER NOT NULL,      -- ran against a fully indexed repo
+  live INTEGER NOT NULL DEFAULT 0,   -- answered from a live scan, not the index
   PRIMARY KEY (day, source, flags)
 );
 
@@ -281,23 +282,45 @@ CREATE VIRTUAL TABLE symbols_fts USING fts5(
 INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild');
 "#;
 
+/// Migration v15 -> v16: count the searches answered from a live scan of an
+/// untracked directory rather than from the index. Existing rows read zero.
+const MIGRATION_V16: Step = Step::AddColumn {
+    table: "usage_daily",
+    column: "live",
+    decl: "INTEGER NOT NULL DEFAULT 0",
+};
+
+/// One rung of the migration ladder.
+pub(crate) enum Step {
+    Sql(&'static str),
+    /// `ALTER TABLE … ADD COLUMN`, skipped when the column is already there.
+    /// SQL can't say `IF NOT EXISTS` here, and a step can run twice: an older
+    /// rq opening the database resets `user_version` to its own.
+    AddColumn {
+        table: &'static str,
+        column: &'static str,
+        decl: &'static str,
+    },
+}
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, &str); 14] = [
-    (2, MIGRATION_V2),
-    (3, MIGRATION_V3),
-    (4, MIGRATION_V4),
-    (5, MIGRATION_V5),
-    (6, MIGRATION_V6),
-    (7, MIGRATION_V7),
-    (8, MIGRATION_V8),
-    (9, MIGRATION_V9),
-    (10, MIGRATION_V10),
-    (11, MIGRATION_V11),
-    (12, MIGRATION_V12),
-    (13, MIGRATION_V13),
-    (14, MIGRATION_V14),
-    (15, MIGRATION_V15),
+pub(crate) const MIGRATIONS: [(i64, Step); 15] = [
+    (2, Step::Sql(MIGRATION_V2)),
+    (3, Step::Sql(MIGRATION_V3)),
+    (4, Step::Sql(MIGRATION_V4)),
+    (5, Step::Sql(MIGRATION_V5)),
+    (6, Step::Sql(MIGRATION_V6)),
+    (7, Step::Sql(MIGRATION_V7)),
+    (8, Step::Sql(MIGRATION_V8)),
+    (9, Step::Sql(MIGRATION_V9)),
+    (10, Step::Sql(MIGRATION_V10)),
+    (11, Step::Sql(MIGRATION_V11)),
+    (12, Step::Sql(MIGRATION_V12)),
+    (13, Step::Sql(MIGRATION_V13)),
+    (14, Step::Sql(MIGRATION_V14)),
+    (15, Step::Sql(MIGRATION_V15)),
+    (16, MIGRATION_V16),
 ];
 
 /// The `AFTER INSERT` FTS-sync trigger — defined once, applied with [`SCHEMA`]
