@@ -25,6 +25,16 @@ and aren't listed; see `git log` for those.
   rows directly (about 250 ms on a large repo, against ~2) until a pass inside
   it finished. A search now rebuilds an index whose pass is gone.
 
+### Upgrade note (correction to 0.55.0)
+- **An older rq can't index a migrated database at all.** 0.55.0's note said an
+  older rq fails fuzzy queries and a repo's first index. It fails every
+  `--index`, incremental ones too, with `cannot start a transaction within a
+  transaction` (exit 74), and a search it runs fails whenever it has no exact or
+  prefix match. Its failed passes write nothing; the next pass of a current rq
+  picks up the files they missed. If an older rq ran `--drop` or you'd rather
+  start clean, run `rq --drop` in the repo and then `rq --index`, both with the
+  current rq.
+
 ### Documented
 - **Exit codes of the non-search commands.** `--status`, `--index` and `--drop`
   exit 0 whenever they ran, even with nothing to show or drop; `--usage` exits 1
