@@ -145,6 +145,8 @@ export function parseResult(code: number, stdout: string, stderr = ""): RqResult
   try {
     json = JSON.parse(stdout);
   } catch {
+    // exit 2 is also a usage error (e.g. a flag an older rq doesn't know), with nothing on stdout
+    if (!stdout.trim() && stderr.trim()) return { status: "error", message: stderr.trim() };
     return { status: "error", message: `rq printed unparseable JSON: ${stdout.slice(0, 200)}` };
   }
   // A miss or a warming index is a `{"status": …}` object, not a result array.

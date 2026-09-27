@@ -130,6 +130,11 @@ describe("parseResult", () => {
     assert.equal(parseResult(0, "not json").status, "error");
   });
 
+  it("reads exit 2 with only stderr as a usage error, not a warming index", () => {
+    const res = parseResult(2, "", "error: unexpected argument '--anchor' found\n");
+    assert.deepEqual(res, { status: "error", message: "error: unexpected argument '--anchor' found" });
+  });
+
   it("skips rows without a location", () => {
     const res = parseResult(0, JSON.stringify([{ name: "x" }, { name: "y", file: "y.rb", line: 1, confidence: 1 }]));
     assert.equal(res.status === "ok" && res.hits.length, 1);

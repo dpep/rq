@@ -6,6 +6,8 @@ import { runRq, RunResult } from "./rq";
 
 let log: vscode.OutputChannel;
 let missingReported = false;
+// rq before 0.53 rejects --anchor; learned on first refusal, reset when rq.path changes
+let anchorUnsupported = false;
 // Positions whose definition we're asking the other providers for; the ask
 // re-enters our own provider, which must stay out of its answer.
 const asking = new Set<string>();
@@ -27,7 +29,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     { dispose: () => definitions?.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("rq.languages")) registerDefinitions();
-      if (e.affectsConfiguration("rq.path")) missingReported = false;
+      if (e.affectsConfiguration("rq.path")) missingReported = anchorUnsupported = false;
     }),
     vscode.languages.registerWorkspaceSymbolProvider({ provideWorkspaceSymbols }),
     vscode.commands.registerCommand("rq.search", search),
@@ -48,7 +50,7 @@ async function provideDefinition(
   const origin = new vscode.Range(pos.line, lookup.start, pos.line, lookup.end);
 
   for (const { query, names } of lookup.attempts) {
-    const res = await rq(query, ["-l", "10", "--lang", rqLangs([doc.languageId])], cwd, token);
+    const res = await rq(query, ["-l", "10", "--lang", rqLangs([doc.languageId])], cwd, token, anchorFor(doc, pos));
     if (res.status === "miss") continue;
     if (!("hits" in res)) return; // cancelled, or a failure already reported
 
@@ -152,12 +154,33 @@ async function search() {
 }
 
 /** Run rq, reporting failures once and quietly; callers see only usable results. */
-async function rq(query: string, extra: string[], cwd: string, token?: vscode.CancellationToken): Promise<RunResult> {
+/** `--anchor FILE:LINE` for a position: rq ranks the enclosing class and nearby files first. */
+function anchorFor(doc: vscode.TextDocument, pos: vscode.Position): string | undefined {
+  return doc.uri.scheme === "file" ? `${doc.uri.fsPath}:${pos.line + 1}` : undefined;
+}
+
+async function rq(
+  query: string,
+  extra: string[],
+  cwd: string,
+  token?: vscode.CancellationToken,
+  anchor?: string,
+): Promise<RunResult> {
   const abort = new AbortController();
   const sub = token?.onCancellationRequested(() => abort.abort());
   const bin = vscode.workspace.getConfiguration("rq").get<string>("path") || "rq";
   try {
-    const res = await runRq(bin, query, extra, cwd, abort.signal);
+    let res: RunResult;
+    if (anchor && !anchorUnsupported) {
+      res = await runRq(bin, query, [...extra, "--anchor", anchor], cwd, abort.signal);
+      if (res.status === "error" && res.message.includes("--anchor")) {
+        anchorUnsupported = true;
+        log.appendLine("rq doesn't know --anchor (older than 0.53); ranking without the click position");
+        res = await runRq(bin, query, extra, cwd, abort.signal);
+      }
+    } else {
+      res = await runRq(bin, query, extra, cwd, abort.signal);
+    }
     if (res.status === "missing") reportMissing(bin);
     if (res.status === "error") log.appendLine(`rq ${JSON.stringify(query)} in ${cwd}: ${res.message}`);
     return res;
