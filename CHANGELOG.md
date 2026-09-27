@@ -56,6 +56,11 @@ and aren't listed; see `git log` for those.
 - **`--explain` JSON reports whole points, as the text does.** Its values
   carried every float digit (`"extent": 33.67295829986474`). They are now rounded
   to the whole number the text shows. Ranking still sums the exact values.
+- **A search outside any repo stays within its live-scan budget.** Outside a
+  repo, rq scans the files around you directly (250 ms by default). Among
+  folders with no source files it could overrun: a search from `/tmp` took over
+  a second. It now stops on time, and `--profile` reports the scan as its own
+  line.
 
 ### Changed
 - **Errors under `--json`/`--ndjson` are JSON.** A failed structured run used to

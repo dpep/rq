@@ -289,10 +289,16 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
 
 /// A lazy, streaming filesystem walk of `roots` yielding file paths — the
 /// fallback when git can't enumerate (an explicit unbounded index, or a non-git
-/// dir). Honors `.gitignore`/hidden rules via the `ignore` crate.
-fn fs_walk_candidates(roots: Vec<std::path::PathBuf>) -> impl Iterator<Item = std::path::PathBuf> {
-    roots.into_iter().flat_map(|root| {
+/// dir). Honors `.gitignore`/hidden rules via the `ignore` crate. Stops
+/// descending at `deadline`: a caller can only check it between files, and a
+/// long run of directories without one (`/`, a temp dir) would outlast it.
+fn fs_walk_candidates(
+    roots: Vec<std::path::PathBuf>,
+    deadline: Option<Instant>,
+) -> impl Iterator<Item = std::path::PathBuf> {
+    roots.into_iter().flat_map(move |root| {
         WalkBuilder::new(&root)
+            .filter_entry(move |_| !past(deadline))
             .build()
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
@@ -373,6 +379,11 @@ fn stream_walk(
                     finished = false;
                     break;
                 }
+            }
+            // the filesystem walk ends early, not with an error, when it stops
+            // descending at the deadline — that's not a complete walk
+            if past(deadline) {
+                finished = false;
             }
             drop(path_tx); // close → workers drain and exit
             (seen, finished)
@@ -620,7 +631,7 @@ fn run_index(
         }
         let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
             Some(paths) => Box::new(paths.into_iter()),
-            None => Box::new(fs_walk_candidates(walk_roots)),
+            None => Box::new(fs_walk_candidates(walk_roots, deadline)),
         };
         let demanded = &demanded;
         let skipped = &skipped;
@@ -1043,7 +1054,7 @@ pub(crate) fn scan(
     let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> =
         match git_source_candidates(root).filter(|paths| !paths.is_empty()) {
             Some(paths) => Box::new(paths.into_iter()),
-            None => Box::new(fs_walk_candidates(vec![root.to_path_buf()])),
+            None => Box::new(fs_walk_candidates(vec![root.to_path_buf()], deadline)),
         };
     let mut out: Vec<crate::store::FileSymbols> = Vec::new();
     let keep = |rel: &str, _: &Path| !skip.contains(rel); // skip already-indexed
@@ -1553,6 +1564,19 @@ fn file_mtime(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_filesystem_walk_stops_descending_at_its_deadline() {
+        // the walk thread checks the deadline between files, so without this a
+        // tree of empty or unreadable dirs could hold it far past its budget
+        let dir = std::env::temp_dir().join(format!("rq-walk-deadline-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/b/x.rb"), "class X\nend\n").unwrap();
+        let files = |deadline| fs_walk_candidates(vec![dir.clone()], deadline).count();
+        assert_eq!(files(None), 1);
+        assert_eq!(files(Some(Instant::now())), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sweep_outcome_guards_against_a_failed_empty_walk() {

@@ -1392,6 +1392,11 @@ fn live_fallback(
     crate::trace!("empty → live (in-memory) scan of an untracked dir");
     let deadline = std::time::Instant::now() + live_fallback_budget();
     let scan = |prefilter| {
+        let _span = crate::profile::span(if prefilter {
+            "live scan: prefiltered"
+        } else {
+            "live scan: unfiltered"
+        });
         crate::search::live_search(
             root,
             query,
