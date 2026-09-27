@@ -348,16 +348,33 @@ pub(crate) fn score(
     //
     // The typo retry forgives a slip in the scope as it does in the name, so
     // `Widgit.new` still lands inside `Widget`.
+    //
+    // Scopes a language doesn't record as a parent — a Go package, a Python
+    // module, a Rust `mod` file — are spelled by the file's path instead, so the
+    // segments the parent doesn't hold may be found there (`path_scope`).
     if let Some(qual) = qualifier {
-        let (b, edits) = parent_boost(qual, cand.parent.as_deref(), near_miss)?;
-        features.push(Feature {
-            name: "parent",
-            value: b,
-        });
-        if edits > 0 {
+        if let Some((b, edits)) = parent_boost(qual, cand.parent.as_deref(), near_miss) {
             features.push(Feature {
-                name: "scope_typo",
-                value: -NEAR_MISS_STEP * edits as f64,
+                name: "parent",
+                value: b,
+            });
+            if edits > 0 {
+                features.push(Feature {
+                    name: "scope_typo",
+                    value: -NEAR_MISS_STEP * edits as f64,
+                });
+            }
+        } else {
+            let (owned, pathed, depth) = path_scope(qual, cand)?;
+            if owned > 0 {
+                features.push(Feature {
+                    name: "parent",
+                    value: parent_value(owned),
+                });
+            }
+            features.push(Feature {
+                name: "path_scope",
+                value: PATH_SCOPE_STEP * pathed as f64 * 0.5_f64.powi(depth as i32),
             });
         }
     }
@@ -420,6 +437,13 @@ const MAX_NONBOUNDARY_GAP: usize = 2;
 /// recently — that made ranking depend on file mtimes, so a fresh checkout
 /// ranked differently from a stale one.
 const CASE_MATCH: f64 = 150.0;
+
+/// Per qualifier segment found in the file's path rather than the recorded
+/// parent: half an owner segment's weight, since a directory claims less than a
+/// parent does. Halved again per directory between the scope and the file, so
+/// the code the scope holds directly outranks code in its subdirectories.
+/// `apply_scope_gate` keeps only the best-scoped results.
+const PATH_SCOPE_STEP: f64 = 30.0;
 
 /// Charged per edit in a mistyped scope.
 const NEAR_MISS_STEP: f64 = 40.0;
@@ -818,7 +842,58 @@ fn parent_boost(qualifier: &str, parent: Option<&str>, near_miss: bool) -> Optio
             edits += near_miss.then(|| near_miss_distance(qs, ps)).flatten()?;
         }
     }
-    (edits <= MAX_NEAR_MISS).then(|| ((120.0 + 60.0 * q.len() as f64).min(300.0), edits))
+    (edits <= MAX_NEAR_MISS).then(|| (parent_value(q.len()), edits))
+}
+
+/// What a qualifier earns for naming `segments` of a candidate's recorded
+/// parent: more segments are stronger evidence of intent.
+fn parent_value(segments: usize) -> f64 {
+    (120.0 + 60.0 * segments as f64).min(300.0)
+}
+
+/// A qualifier's scope found partly or wholly in the candidate's file path,
+/// for scopes a language names by where code lives rather than by a recorded
+/// parent. The innermost segments may still be the parent (`hugolib.HugoSites.Build`
+/// has `HugoSites` as parent); the rest must appear in order among the repo's
+/// name, the file's directories and its stem (`django.db.models` in
+/// `django/db/models/query.py`, `mpsc` in `tokio/src/sync/mpsc/bounded.rs`, and
+/// `gin` for a package at the root of the `gin` repo).
+///
+/// Returns how many segments the parent held, how many the path did, and how
+/// many directories sit between the innermost one the path held and the file:
+/// 0 when it names the file's own directory or stem. `gin.Default` is in
+/// `gin.go` at the root; `binding/binding.go`'s `Default` is only inside it.
+fn path_scope(qualifier: &str, cand: &SymbolRow) -> Option<(usize, usize, usize)> {
+    let q = segments(qualifier);
+    if q.is_empty() {
+        return None;
+    }
+    let p = cand.parent.as_deref().map(segments).unwrap_or_default();
+    let owned = q
+        .iter()
+        .rev()
+        .zip(p.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (last, outer) = q[..q.len() - owned].split_last()?;
+    let repo = cand.repo_identity.rsplit(['/', ':']).next();
+    let (dirs, _) = cand.file.rsplit_once('/').unwrap_or_default();
+    let chain: Vec<String> = repo
+        .into_iter()
+        .chain(dirs.split('/').filter(|d| !d.is_empty()))
+        .chain([path_stem(&cand.file)])
+        .map(str::to_lowercase)
+        .collect();
+    // in order, not contiguous: `tokio::sync` skips the `src` between them.
+    // Joiners are ignored, so `tokio_util` finds the `tokio-util` directory.
+    let mut at = 0;
+    for seg in outer {
+        at += chain[at..].iter().position(|c| joiners_eq(c, seg))? + 1;
+    }
+    // the innermost segment as near the file as it occurs
+    let inner = at + chain[at..].iter().rposition(|c| joiners_eq(c, last))?;
+    let own_dir = chain.len() - 2;
+    Some((owned, outer.len() + 1, own_dir.saturating_sub(inner)))
 }
 
 /// Trim a fuzzy match's highlight so it reads cleanly. We keep contiguous runs of
@@ -1930,6 +2005,49 @@ mod tests {
     }
 
     #[test]
+    fn a_scope_no_parent_records_is_found_in_the_path() {
+        let at = |file: &str, parent: Option<&str>| SymbolRow {
+            file: file.into(),
+            parent: parent.map(Into::into),
+            repo_identity: "github.com/org/shop".into(),
+            ..row("Widget", "class", 1)
+        };
+        let features = |q: &str, c: &SymbolRow| {
+            score(q, c, None, Boosts::default(), false).map(|s| {
+                s.features
+                    .iter()
+                    .filter(|f| matches!(f.name, "parent" | "path_scope"))
+                    .map(|f| (f.name, f.value))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let module = at("lib/shop/db/models/widget.py", None);
+        // directories in order, gaps allowed; the stem counts too
+        assert!(features("db.models.Widget", &module).is_some());
+        assert!(features("shop.models.Widget", &module).is_some());
+        assert!(features("models.widget.Widget", &module).is_some());
+        // out of order, or absent, is not a scope match
+        assert!(features("models.db.Widget", &module).is_none());
+        assert!(features("orders.Widget", &module).is_none());
+        // a package at the repo root is named by the repo; a file below the
+        // root is inside that scope, but only indirectly
+        let root = features("shop.Widget", &at("widget.go", None)).unwrap();
+        let below = features("shop.Widget", &at("orders/widget.go", None)).unwrap();
+        assert_eq!((root[0].1, below[0].1), (30.0, 15.0));
+        // a directory spelled with a joiner the scope leaves out
+        assert!(features("shop_util.Widget", &at("shop-util/src/a.rs", None)).is_some());
+        // the parent holds the innermost segments, the path the rest, and each
+        // segment the parent holds is worth more than one the path does
+        let method = at("pkg/widgets/widget.go", Some("Catalog"));
+        let mixed = features("widgets.Catalog.Widget", &method).unwrap();
+        assert_eq!(mixed, [("parent", 180.0), ("path_scope", 30.0)]);
+        let owned = features("Catalog.Widget", &method).unwrap();
+        let total = |f: &[(&str, f64)]| f.iter().map(|x| x.1).sum::<f64>();
+        let pathed = features("widgets.Widget", &method).unwrap();
+        assert!(total(&owned) > total(&pathed));
+    }
+
+    #[test]
     fn a_named_scope_excludes_candidates_outside_it() {
         // two classes both named `Bar`; the qualifier picks the one inside `Foo`
         let in_foo = SymbolRow {
@@ -1947,7 +2065,8 @@ mod tests {
         assert!(score("Foo::Bar", &in_foo, None, Boosts::default(), false).is_some());
         assert!(score("Foo::Bar", &in_baz, None, Boosts::default(), false).is_none());
         // nor does a top-level `Bar` answer `Foo::Bar` — no parent means not
-        // inside anything, which is precisely what the query ruled out
+        // inside anything, which is precisely what the query ruled out — unless
+        // its file sits under `foo`, which is how a package or module says so
         let top_level = row("Bar", "class", 1);
         assert!(score("Foo::Bar", &top_level, None, Boosts::default(), false).is_none());
         // unqualified, all three are candidates again

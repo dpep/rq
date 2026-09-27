@@ -10,6 +10,14 @@ and aren't listed; see `git log` for those.
 ## Unreleased
 
 ### Fixed
+- **A package or module scope finds its definitions.** `hugolib.HugoSites`,
+  `gin.Context`, `django.db.models.QuerySet` and `mpsc::Sender` failed with
+  `scope_not_found`, because only a recorded parent could answer a scope, and
+  no language records its packages or modules as one. A scope the parent
+  doesn't hold is now read off the file's path (`path_scope` in `--explain`):
+  the repo's name, its directories and the file's stem. A parent still wins
+  where one matches, and a scope's own directory over its subdirectories.
+  `found_in` now names only a definition of that exact name.
 - **Go's godoc receiver syntax reads as its type.** `rq '(*HugoSites).Build'`
   searched for a glob (the `*`) and found unrelated files; it now means
   `HugoSites.Build`. A scope is compared by its name, so punctuation around it

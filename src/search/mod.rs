@@ -499,8 +499,12 @@ fn search_query(
 /// in that scope matched — so a caller can be told "not there, but here"
 /// instead of a bare "no match".
 ///
-/// Returns `None` when the query named no scope, or when the bare name doesn't
-/// resolve either (an ordinary miss). Runs only on the miss path.
+/// Only a definition of that very name counts: a fuzzy or near-miss hit for the
+/// leaf is some other name, and reporting it as where "that name" lives sent
+/// callers to an unrelated symbol.
+///
+/// Returns `None` when the query named no scope, or when the bare name isn't
+/// defined anywhere either (an ordinary miss). Runs only on the miss path.
 pub(crate) fn scope_miss_owner(
     store: &Store,
     query: &str,
@@ -510,8 +514,12 @@ pub(crate) fn scope_miss_owner(
 ) -> Option<String> {
     let (leaf, qualifier) = score::parse_qualified(query);
     qualifier?;
-    let bare = search(store, leaf, current_repo_id, only_repo, ctx, 1).ok()?;
-    let hit = bare.hits.first()?;
+    // a few, not one: an exact name under a test path can rank below a prefix
+    let bare = search(store, leaf, current_repo_id, only_repo, ctx, 10).ok()?;
+    let hit = bare
+        .hits
+        .iter()
+        .find(|h| h.features.iter().any(|f| f.name == "exact"))?;
     Some(match &hit.parent {
         Some(parent) => format!("{parent} ({}:{})", hit.file, hit.line),
         None => format!("{}:{}", hit.file, hit.line),
@@ -615,24 +623,27 @@ pub(crate) fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize) -> Vec<Hit> {
     hits
 }
 
-/// Scope gate for a qualified query (`Foo::Bar#baz`). When the user names an
-/// enclosing scope and at least one result actually sits in it, drop the rest —
-/// a `baz` outside `Foo::Bar` is noise next to the one inside it, the same way
-/// the relevance gate drops fuzzy near-matches beside an exact hit. When
-/// *nothing* matches the scope, the list is left untouched: the scope was a
-/// hint, and the definition may simply live somewhere we didn't expect, so a
-/// `baz` elsewhere still surfaces rather than returning empty.
-///
-/// An in-scope result is one the scorer gave the `parent` feature — i.e. its
-/// recorded parent ends with the qualifier's scope chain.
+/// Scope gate for a qualified query (`Foo::Bar#baz`). The scorer keeps only
+/// results whose scope matched: by the recorded parent (`parent`), or by the
+/// file's path (`path_scope`), which is how a Go package, a Python module or a
+/// Rust `mod` file names a scope no parent records. Of those, only the results
+/// the scope matched best stay — the same way the relevance gate drops fuzzy
+/// near-matches beside an exact hit. A parent is a stronger claim than a
+/// directory, and a scope's own directory than one of its subdirectories: in
+/// `gin`, `gin.Default` is the one in `gin.go`, not `binding.Default`.
 pub(crate) fn apply_scope_gate(query: &str, hits: &mut Vec<Hit>) {
     if score::parse_qualified(query).1.is_none() {
         return; // unqualified query — nothing to gate on
     }
-    let in_scope = |h: &Hit| h.features.iter().any(|f| f.name == "parent");
-    if hits.iter().any(in_scope) {
-        hits.retain(in_scope);
-    }
+    let scoped = |h: &Hit| -> f64 {
+        h.features
+            .iter()
+            .filter(|f| matches!(f.name, "parent" | "path_scope" | "scope_typo"))
+            .map(|f| f.value)
+            .sum()
+    };
+    let best = hits.iter().map(scoped).fold(f64::NEG_INFINITY, f64::max);
+    hits.retain(|h| scoped(h) >= best);
 }
 
 /// Highest score first; ties broken toward shorter (more specific) names, then
@@ -1136,6 +1147,33 @@ mod tests {
         apply_scope_gate("Foo::Bar#baz", &mut hits);
         assert_eq!(hits.len(), 1, "out-of-scope baz methods are dropped");
         assert!(hits[0].features.iter().any(|f| f.name == "parent"));
+    }
+
+    #[test]
+    fn scope_gate_keeps_the_best_scoped_results() {
+        let scoped = |parts: &[(&'static str, f64)]| Hit {
+            features: parts
+                .iter()
+                .map(|&(name, value)| Feature { name, value })
+                .collect(),
+            ..hit("Default", false)
+        };
+        // a directory is a weaker claim than a parent
+        let mut hits = vec![
+            scoped(&[("parent", 180.0)]),
+            scoped(&[("path_scope", 30.0)]),
+        ];
+        apply_scope_gate("gin.Default", &mut hits);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].features[0].name, "parent");
+        // and a scope's own directory a stronger one than its subdirectory
+        let mut hits = vec![
+            scoped(&[("path_scope", 15.0)]),
+            scoped(&[("path_scope", 30.0)]),
+        ];
+        apply_scope_gate("gin.Default", &mut hits);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].features[0].value, 30.0);
     }
 
     #[test]

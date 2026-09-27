@@ -405,6 +405,46 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
 }
 
 #[test]
+fn a_package_or_module_scope_is_found_in_the_path() {
+    // Go packages and Python modules name a scope no parent records: the
+    // directory does. Two `Widget`s, one per package.
+    let (dir, db) = scratch("path-scope");
+    for (path, src) in [
+        ("shop/widget.go", "package shop\n\ntype Widget struct{}\n"),
+        ("store/widget.go", "package store\n\ntype Widget struct{}\n"),
+        ("pkg/db/models/query.py", "class Widget:\n    pass\n"),
+    ] {
+        let file = dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, src).unwrap();
+    }
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["store.Widget", "--ndjson"]);
+    assert!(ok, "package scope resolves: {out}");
+    assert!(first_line(&out).contains("store/widget.go"), "{out}");
+    assert!(
+        !out.contains("shop/"),
+        "the other package is out of scope: {out}"
+    );
+
+    let (ok, out) = rq(&db, &dir, &["pkg.db.models.Widget", "--ndjson"]);
+    assert!(ok && first_line(&out).contains("query.py"), "{out}");
+
+    // a scope neither a parent nor a path holds is still a miss, and the
+    // name's real home is reported only for that very name
+    let (ok, out) = rq(&db, &dir, &["orders.Widget", "--ndjson"]);
+    assert!(!ok && out.contains("found_in"), "{out}");
+    let (ok, out) = rq(&db, &dir, &["orders.Widgt", "--ndjson"]);
+    assert!(
+        !ok && !out.contains("found_in"),
+        "a fuzzy leaf is no home: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_godoc_receiver_reads_as_its_type() {
     // `(*Widget).Build` is how godoc names a method; the `*` is not a glob
     let (dir, db) = scratch("godoc-receiver");

@@ -1451,3 +1451,53 @@ work. Output was byte-identical on every query.
 
 *Reverses if:* the name index has to be rebuilt somewhere recall can't afford to wait for
 it, or a query shape appears that it can't screen, and a fallback earns its storage back.
+
+## D27 — A scope no parent records is read off the file's path
+
+**Adopted**, 2026-09-27. Language testers on hugo, gin, django and tokio; recall harness
+(D12) against main.
+
+*The weakness.* A qualifier matched only a recorded `parent`. Ruby and Python classes
+record theirs, but no language records its packages or modules as one, so every scope
+spelled as a package failed with `scope_not_found`: Go's `hugolib.HugoSites`,
+`gin.Context` and `page.Site`, Python's `django.db.models.QuerySet` and `models.QuerySet`,
+Rust's `mpsc::Sender`. `found_in` then named the bare name's #1, which for `mpsc::Sender`
+was oneshot's `Sender`, and for a leaf that only matched fuzzily, some other name.
+
+*The rule.* Where the parent doesn't answer the whole scope, the innermost segments it
+does hold count as before (`parent`), and the rest must appear in order in the file's
+path: the repo's name, its directories, the file's stem (`path_scope`). In order, not
+contiguous, so `tokio::sync::mpsc` skips `src`; joiners are ignored, so `tokio_util` finds
+`tokio-util/`. It is 30 per segment, half an owner segment, and halves per directory
+between the scope's innermost segment and the file. The scope gate then keeps only the
+best-scoped results, where it used to keep those with any `parent`: a parent over a
+path, and a scope's own directory over its subdirectories. That decides `gin.Default`:
+the repo name puts every file in gin inside `gin`, but only `gin.go` is directly in it,
+where `binding.Default` (extent 33 against 18) used to win. `found_in` reports only an
+exact definition of the leaf. Nothing here is per language: it reads the stored path and
+parent, as `--anchor`'s `proximity` does.
+
+| per-language set, 31 queries | #1 before | #1 after |
+|---|---|---|
+| all | 13 | 27 |
+| qualified (17) | 1 | 17 |
+
+`make recall BASE=main --anchored`: 0 sources moved, the top 10 changed in 1 of 2,372
+queries, anchored unchanged (351 #1, 439 top 10). The one is a hand-picked query,
+`ActionDispatch::Routing.draw`, which found nothing and now finds `RouteSet#draw` in
+`action_dispatch/routing/route_set.rb`.
+
+*Rejected:*
+- **The innermost scope must be the file's own directory or stem.** Exact for Go, where a
+  package is its directory, but Rust and Python re-export: `tokio::net::TcpStream` lives
+  in `net/tcp/stream.rs`. Graded distance ranks the direct one first without losing the
+  re-export.
+- **Contiguous segments.** `tokio::sync::mpsc` would need `src` spelled out.
+
+*Limits.* A crate or package whose name isn't a directory (`grep_searcher` in
+`crates/searcher/`) isn't found by it. A language that records modules as parents would
+answer through `parent` and never reach this.
+
+*Reverses if:* the path puts wrong definitions inside a scope in real use (a directory
+that happens to share a scope's name); then require the innermost segment to be close,
+not merely present.

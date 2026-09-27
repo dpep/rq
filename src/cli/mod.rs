@@ -1594,7 +1594,7 @@ fn no_match_code(
             "rq: still indexing — no match for {query:?} yet (run again, or `rq --index` to finish)"
         ),
         Output::Text if elsewhere.is_some() => eprintln!(
-            "rq: nothing matching {query:?} — that name is defined under {}",
+            "rq: nothing matching {query:?} in that scope — the name is defined elsewhere: {}",
             elsewhere.unwrap_or_default()
         ),
         Output::Text => eprintln!("no matches for {query:?}"),

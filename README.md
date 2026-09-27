@@ -284,7 +284,7 @@ src/cli/mod.rs:1873  method store · BranchRefresh
 - **visibility** — public API edges out private/protected helpers (Rust `pub`,
   Ruby `private` sections, Python `_underscore`, Go capitalization, TypeScript
   member modifiers and ESM `export`)
-- **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope; `Foo.new` finds the constructor, or the class itself when it inherits one
+- **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope; `Foo.new` finds the constructor, or the class itself when it inherits one. A package or module scope is read off the file's path, so `hugolib.HugoSites`, `models.QuerySet` and `mpsc::Sender` work too
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the repo you're in by default
   (`-a`/`--all-repos` to search every indexed repo)

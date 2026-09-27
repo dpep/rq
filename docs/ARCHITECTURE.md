@@ -394,7 +394,13 @@ why a result ranked where it did:
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`, `Foo.baz`; `::`,
   `#` and `.` are all scope separators) matches its leaf against the name and
   requires a `parent` ending with the named scope chain (`Bar` inside `Foo`) —
-  a candidate outside it drops out. `Foo.new` also matches the constructor a
+  a candidate outside it drops out. Scopes no parent records (a Go package, a
+  Python module, a Rust `mod` file) are read off the file's path instead: the
+  segments the parent doesn't hold must appear in order among the repo's name,
+  the file's directories and its stem (`path_scope`, halved per directory
+  between the scope and the file). Only the best-scoped results stay: a parent
+  over a path, a scope's own directory over its subdirectories (D27). Godoc's
+  `(*T).M` reads as `T.M`. `Foo.new` also matches the constructor a
   plugin names via `LanguagePlugin::constructor` (Ruby `initialize`, Python
   `__init__`, JS/TS `constructor`); when `Foo` declares none (inherited or
   implicit — rq doesn't track inheritance), the class itself answers, flagged
