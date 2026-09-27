@@ -470,6 +470,10 @@ const TEST_PATH_PENALTY: f64 = 400.0;
 /// one inside them once recall was complete (DECISIONS D24).
 const TEST_PATH_SHARE: f64 = 0.4;
 
+/// Per leading sigil character a query shares with a name: `align`'s credit
+/// for one matched letter.
+const SIGIL_CREDIT: f64 = 10.0;
+
 /// Penalty per skipped char between two matched chars. Strong enough that a
 /// closer match wins over a farther one — so the query's trailing chars don't
 /// straggle to a distant word boundary (the `r` of a query landing in `.rb`
@@ -880,6 +884,15 @@ fn in_order(query: &str, s: &str) -> bool {
 /// enough that an abbreviation still reaches a long name it barely covers
 /// (`apc` → `ApplicationController`).
 pub(super) fn fuzzy_value(q: &str, name: &str) -> Option<f64> {
+    // `align` reads only letters and digits, so `_dshrz` found the public
+    // `dasherize` first. A leading sigil the name shares is read as typed: both
+    // are aligned without it, so the name's first letter keeps its start bonus,
+    // and each sigil character earns what `align` credits a matched letter.
+    // Only the score moves; what matches is unchanged, as the name index needs.
+    let sigil = q.len() - q.trim_start_matches(|c: char| !c.is_alphanumeric()).len();
+    if sigil > 0 && name.get(..sigil) == Some(&q[..sigil]) {
+        return fuzzy_value(&q[sigil..], &name[sigil..]).map(|v| v + SIGIL_CREDIT * sigil as f64);
+    }
     let s = subsequence_score(q, name)?;
     let tail = name.chars().count().saturating_sub(q.chars().count());
     Some(s.min(600.0) - (tail as f64).min(100.0))
@@ -1456,6 +1469,28 @@ mod tests {
         };
         let lib = exact("lib/persistence.rb").total;
         assert_eq!(lib - exact("test/fake_models.rb").total, TEST_PATH_PENALTY);
+    }
+
+    #[test]
+    fn a_leading_underscore_asks_for_the_underscored_name() {
+        let fz = |q: &str, name: &str| {
+            let mut r = row(name, "method", 1);
+            r.visibility = Some(
+                if name.starts_with('_') {
+                    "private"
+                } else {
+                    "public"
+                }
+                .into(),
+            );
+            score(q, &r, None, Boosts::default(), false).unwrap().total
+        };
+        assert!(fz("_frmtr", "_formatter") > fz("_frmtr", "formatter"));
+        // without it, the public name still leads
+        assert!(fz("frmtr", "formatter") > fz("frmtr", "_formatter"));
+        // the sigil changes the score, never what matches
+        assert!(fuzzy_value("_zq", "_formatter").is_none());
+        assert!(fuzzy_value("_frmtr", "formatter").is_some());
     }
 
     #[test]

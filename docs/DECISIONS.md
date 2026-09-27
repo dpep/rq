@@ -1243,3 +1243,22 @@ No source lost #1 or the top 10 in either mode, and no hand-picked query's #1 ch
 places as near misses join the list: two stay in the top 10 (`updget` #3 → #8, `fedete`
 #5 → #6), and the rest were already past it. `tets_br` and `twedele` find their sources again. Anchored
 unchanged.
+
+### 4. A leading sigil is read as typed
+
+*The weakness.* `align` reads only a query's letters and digits, so `_dshrz` is `dshrz`,
+and the public `dasherize` (fuzzy 83) outranked `_dasherize` (62): its `d` sits at index
+0 and earns the start bonus, where `_dasherize`'s sits at 1. Typing the underscore is a
+deliberate request for the internal name.
+
+*The rule.* When the query and a name begin with the same run of non-alphanumeric
+characters, the fuzzy value aligns both without it and adds 10 per character, what `align`
+credits one matched letter. `_dasherize` scores 92 against `dasherize`'s 83. It changes the
+value only, never what matches, so the name index is untouched: the exhaustive
+index-against-`score` test still agrees on every harness query and name.
+
+*Result.* Scan: `_dshrz` back to #1 (1,303 → 1,304), nothing else moved. FTS: no change,
+as its capped net never held `dasherize` for this query. Anchored unchanged.
+
+*Rejected:* a penalty on names *without* the sigil. It says the same thing about the
+query as a bonus does, charged to every other candidate, and needs a size of its own.

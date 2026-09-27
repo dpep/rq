@@ -372,7 +372,9 @@ why a result ranked where it did:
 - **match quality** — exact > prefix > camel-hump abbreviation > subsequence
   A query may leave out the word joiners `_`, `-` and `.` and still match
   exactly, 50 behind the spelled-out name (`separators`). Any other character is
-  part of the name, so `save` is a prefix of `save!`, not an exact match (D19)
+  part of the name, so `save` is a prefix of `save!`, not an exact match (D19).
+  A fuzzy query that begins with a sigil (`_dshrz`) favours the names that
+  begin with it: it scores, but never decides what matches (D24)
 - **case** — a query carrying any uppercase rewards the candidate spelled the
   same way, so `Symbol` finds the type rather than a `symbol` method that
   matches case-insensitively. An all-lowercase query is how people type

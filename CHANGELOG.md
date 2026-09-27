@@ -33,6 +33,8 @@ and aren't listed; see `git log` for those.
 - **A typo reading is offered beside a name that holds the letters in order.**
   `tets_br` finds `test_br` again, ranked by how well each reads, where before
   the typo was dropped whenever an in-order name read better.
+- **A leading `_` in a fuzzy query favours the underscored name.** `_dshrz`
+  ranks `_dasherize` above the public `dasherize`.
 
 ## 0.54.1 — 2026-09-27
 
