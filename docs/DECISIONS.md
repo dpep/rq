@@ -897,5 +897,84 @@ doesn't shrink the file, and later writes reuse the freed pages.
   the last connection checkpoints and removes the WAL at close, and nothing in the
   profile waits on either.
 
+*Rejected, measured and not worth it:*
+- **Dropping `idx_symbols_name_lower`** (12% of the database, and 18% off the writer on a
+  cold rails index: 231 → 189 ms, overlapped with parsing). Every name query joins
+  `repositories`, so the planner already seeks `(repository_id, name_lower)` once per
+  repo, with or without planner stats. The one exception is the unscoped first-letter
+  net (`-a`, or a search outside any repo), whose inner query has no join. Without the
+  index it needs a skip-scan plus a sort to keep its name order. Output stayed
+  identical, but on the nine-repo index (7 interleaved reps) that net's recall got
+  slower: `usr` +5 ms, `acn` +6, `sleect` +4 to +8, `tes*lim` +12 to +16. Those
+  unscoped searches are already the slowest ones rq runs.
+- **Interning `kind`, `language`, `visibility`** as small integers. They're ~17 of a
+  symbol row's 89 bytes, so about 6% of the database. That would touch the write path,
+  the candidate decode, the path layer's `kind IN (…)` and the `rq_keep` signature, all
+  to shrink the database with no speed gain (D2: materializing a row costs ~1 µs of
+  which a column is noise).
+- **Dropping the `name_lower` column** for an index on `lower(name)` (~7%). SQLite's
+  `lower()` folds ASCII only and the indexer uses Rust's full Unicode `to_lowercase`,
+  so non-ASCII names would stop matching the same way. A custom collating function
+  would make the database unreadable to anything that hasn't registered it.
+- **`WITHOUT ROWID`.** The only key-only tables are `usage_daily` and `meta`, one page
+  each.
+- **Removing the trigram table.** After `detail=none` it's 3.6 of ~31 MB, and it's the
+  only fuzzy net for a query longer than six characters: the first-letter net stops
+  there, and D12 measured the scan alternatives at linear cost. D21 tried an fst
+  instead.
+
 *Reverses if:* a query needs a real substring or phrase `MATCH` (then `detail=column`
-buys nothing either: it measured 6.1 MB against 6.2).
+buys nothing either: it measured 6.1 MB against 6.2). The name index goes if unscoped
+fuzzy search gets a net that doesn't need name order across repos.
+
+## D21 — An fst over names as the fuzzy net: rejected, slower than FTS
+
+**Rejected**, 2026-09-26. Spike on branch `storage-fst`: rails + discourse at the pinned
+recall commits, release build, interleaved query by query against FTS (load 15–36, so
+the ratios are the result, not the milliseconds).
+
+*What was built.* One `fst::Map` per repo from `name_lower` to symbol ids (shared names
+point into a postings array). It was stored as a blob, built from the
+`(repository_id, name_lower)` index in name order, and walked with an automaton for
+today's two broad nets together: holds any of the query's trigrams, or starts with its
+first letter (≤ 6 characters). The ids then went through the same `rq_keep` filter and
+cap as today. The nets have no window, so this is today's recall minus truncation.
+
+*Recall is nearly the same.* 8 sources up, 6 down, the top 10 changed in 12 of 2,372
+queries. #1 held at 1,133, top 10 went 1,602 → 1,601, and found went 1,886 → 1,883.
+The one lost top 10 is `tes*tra` (#9 → gone). Its complete net passes more than 8,000
+rows through the filter, so the cap cuts in id order rather than the order the old
+window read. Anchored call sites were unchanged (351 #1, 439 top 10).
+
+*Latency is worse everywhere.* A trigram can sit anywhere in a name, so the automaton
+can prune nothing, and the walk visits every key. For rails (32k distinct names),
+streaming all of them costs as much as the whole FTS recall.
+
+| recall, median ms | FTS | fst |
+|---|---|---|
+| rails `usr` / `conpool` / `sleect` / `twdl` | 4.7 / 10.5 / 16.0 / 27.0 | 20.6 / 23.9 / 30.0 / 37.2 |
+| discourse `usr` / `conpool` / `sleect` / `twdl` | 10.1 / 11.0 / 29.8 / 10.4 | 47.5 / 44.4 / 50.8 / 41.4 |
+
+Output was byte-identical on all 16 of those queries. The cost is linear in the repo's
+distinct names, which gives up D3's property that recall doesn't grow with the corpus.
+FTS postings grow with the matches.
+
+*Size is a wash.* Rails' fst plus postings is 785 KB against 1.7 MB of trigram
+table after D20. That's ~7% of the database, for a slower net.
+
+*Freshness would add machinery.* An fst is immutable. Rebuilding one from the name index
+cost 76 ms for rails, paid by every warm that changes a file, and until then the names
+just edited, the likeliest query, are invisible to fuzzy recall. The workable design is
+a base fst plus a delta of symbols above a watermark id. That needs `AUTOINCREMENT`,
+since a re-indexed file otherwise reuses ids below the watermark, plus a background
+rebuild threshold. That's a second recall path for no gain.
+
+*Where an fst does win, and why it isn't enough.* A Levenshtein automaton prunes: at
+distance 1 it walked rails in 0.1–0.5 ms. But typos are already rq's best row (94.5% #1,
+97.6% top 10 through the trigram net), and prefix and exact are B-tree seeks that cost
+0.2–0.4 ms.
+
+*Reverses if:* a net that *can* prune (Levenshtein, or a prefix-anchored abbreviation
+automaton) replaces a broad net rather than joining it. Or the corpus grows until FTS's
+postings, not the row decode, dominate recall (D3's reversal), and a sharded or
+per-repo fst beats per-repo FTS tables.

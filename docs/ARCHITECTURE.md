@@ -321,7 +321,7 @@ Staged, streaming, early-exit on confidence:
 | ----- | ---- | ----- |
 | 0 | parse query | case, separators, looks-like-a-path? |
 | 1 | exact / prefix symbol | indexed `name_lower`; fastest, highest confidence |
-| 2 | fuzzy symbol | trigram FTS candidate set → abbreviation-aware scorer |
+| 2 | fuzzy symbol | trigram FTS candidate set (+ first-letter range for ≤ 6 chars) → abbreviation-aware scorer; an fst over names was slower (D21) |
 | 3 | path / filename | |
 | 4 | live scan | async, streamed when coverage is low |
 | 5 | opportunistic extraction | parse newly-seen files, persist for next time |
