@@ -66,4 +66,20 @@ export async function run() {
   assert.ok(ledger, `no Ledger in ${symbols.map((s) => s.name)}`);
   assert.equal(ledger.kind, vscode.SymbolKind.Class);
   assert.equal(ledger.containerName, "Account");
+
+  // dedupe: a language server's symbol isn't listed twice, and rq still adds what it lacks
+  const symbolServer = vscode.languages.registerWorkspaceSymbolProvider({
+    provideWorkspaceSymbols: () => [
+      new vscode.SymbolInformation("Ledger", vscode.SymbolKind.Class, "Account", ledger.location),
+    ],
+  });
+  try {
+    const both = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+      "vscode.executeWorkspaceSymbolProvider",
+      "Ledger",
+    );
+    assert.equal(both.filter((s) => s.name === "Ledger").length, 1, `one Ledger: ${both.map((s) => s.name)}`);
+  } finally {
+    symbolServer.dispose();
+  }
 }

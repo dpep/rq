@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { buildLookup, editorLanguages, findRepoRoot, Hit, hitPath, pickHits, rqLangs } from "./query";
+import { buildLookup, editorLanguages, findRepoRoot, Hit, hitPath, pickHits, rqLangs, symbolKeys, unseen } from "./query";
 import { runRq, RunResult } from "./rq";
 
 let log: vscode.OutputChannel;
@@ -75,17 +75,39 @@ async function othersAnswer(doc: vscode.TextDocument, pos: vscode.Position): Pro
   }
 }
 
+/** Where the other workspace-symbol providers (language servers) already point, for this query. */
+async function othersSymbols(query: string, key: string): Promise<Set<string>> {
+  asking.add(key);
+  try {
+    const found =
+      (await vscode.commands.executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query)) ??
+      [];
+    // a lazily resolved symbol may carry only its file, so it's matched by name
+    return new Set(
+      found.flatMap((s) => symbolKeys(s.location.uri.fsPath, s.location.range?.start.line, s.name)),
+    );
+  } finally {
+    asking.delete(key);
+  }
+}
+
 async function provideWorkspaceSymbols(
   query: string,
   token: vscode.CancellationToken,
 ): Promise<vscode.SymbolInformation[]> {
   const cwd = workspaceRoot();
   const langs = rqLangs(languages());
-  if (!query.trim() || !cwd || !langs) return [];
+  const how = symbolsMode();
+  if (!query.trim() || !cwd || !langs || how === "off") return [];
+  const key = `symbols:${query}`;
+  if (asking.has(key)) return []; // the re-entrant call below: the outer one answers
 
-  const res = await rq(query, ["-l", "50", "--lang", langs], cwd, token);
+  const [res, taken] = await Promise.all([
+    rq(query, ["-l", "50", "--lang", langs], cwd, token),
+    how === "dedupe" ? othersSymbols(query, key) : Promise.resolve(new Set<string>()),
+  ]);
   if (!("hits" in res)) return [];
-  return res.hits.map(
+  return unseen(cwd, res.hits, taken).map(
     (h) =>
       new vscode.SymbolInformation(
         h.name,
@@ -184,6 +206,10 @@ function workspaceRoot(): string | undefined {
 
 function languages(): string[] {
   return vscode.workspace.getConfiguration("rq").get<string[]>("languages") ?? [];
+}
+
+function symbolsMode(): "dedupe" | "off" | "always" {
+  return vscode.workspace.getConfiguration("rq").get<"dedupe" | "off" | "always">("workspaceSymbols") ?? "dedupe";
 }
 
 function mode(): "fallback" | "always" {

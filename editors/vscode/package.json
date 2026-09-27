@@ -2,7 +2,7 @@
   "name": "rq",
   "displayName": "rq — Reference Query",
   "description": "Go to definition, backed by the rq CLI.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "dpep",
   "license": "MIT",
   "repository": {
@@ -82,6 +82,21 @@
           ],
           "default": "fallback",
           "markdownDescription": "When rq answers Go to Definition."
+        },
+        "rq.workspaceSymbols": {
+          "type": "string",
+          "enum": [
+            "dedupe",
+            "off",
+            "always"
+          ],
+          "enumDescriptions": [
+            "Add only symbols no language server already returned (matched by file and line, or name within the file).",
+            "Leave Go to Symbol in Workspace (Cmd/Ctrl-T) to the language servers.",
+            "Always add rq's ranked symbols, duplicates included."
+          ],
+          "default": "dedupe",
+          "markdownDescription": "How rq contributes to Go to Symbol in Workspace (Cmd/Ctrl-T)."
         }
       }
     }

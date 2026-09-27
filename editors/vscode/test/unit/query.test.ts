@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { Hit, buildLookup, editorLanguages, findRepoRoot, hitPath, parseResult, pickHits, rqLangs } from "../../src/query";
+import { buildLookup, editorLanguages, findRepoRoot, Hit, hitPath, parseResult, pickHits, rqLangs, symbolKeys, unseen } from "../../src/query";
 
 // The cursor goes where `|` is; returns the queries tried, in order.
 function queries(text: string, lang = "ruby"): string[] | undefined {
@@ -163,6 +163,16 @@ describe("editorLanguages", () => {
       "javascript",
       "javascriptreact",
     ]);
+  });
+});
+
+describe("unseen", () => {
+  it("drops hits another provider already returned, by line or by name in the file", () => {
+    const root = path.resolve("/repo");
+    const a = path.join(root, "lib/a.rb");
+    const taken = new Set([...symbolKeys(a, 1, "Ledger"), ...symbolKeys(path.join(root, "lib/b.rb"), undefined, "Widget")]);
+    const hits = [hit("Ledger", 2, "lib/a.rb"), hit("Widget", 5, "lib/b.rb"), hit("save", 9, "lib/a.rb")];
+    assert.deepEqual(unseen(root, hits, taken).map((h) => h.name), ["save"]);
   });
 });
 

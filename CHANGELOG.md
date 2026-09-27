@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **The VS Code extension (0.3.0) no longer lists a symbol twice in Cmd/Ctrl-T.**
+  With `rq.workspaceSymbols: dedupe` (the default), rq adds only the symbols no
+  language server already returned — e.g. beside trekr for Ruby — and `off`
+  leaves workspace symbols to the servers entirely. The rq binary is unchanged.
+
 ## 0.52.4 — 2026-09-26
 
 ### Added

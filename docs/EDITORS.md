@@ -77,6 +77,7 @@ than an error. A request VS Code cancels kills its rq process.
 | `rq.path`      | `"rq"`          | The rq binary.                                           |
 | `rq.languages` | every rq language | Languages rq answers Go to Definition and Cmd-T for.   |
 | `rq.mode`      | `"fallback"`    | `fallback`: answer only where no other provider does. `always`: answer alongside them. |
+| `rq.workspaceSymbols` | `"dedupe"` | Cmd/Ctrl-T: `dedupe` adds only symbols no language server returned; `off` leaves it to them; `always` adds all. |
 
 **Living with language servers.** VS Code merges every definition provider's
 answers, and rq's ranges (the whole definition) never match a language server's

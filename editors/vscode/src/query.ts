@@ -174,6 +174,16 @@ export function hitPath(root: string, hit: Hit): string {
   return path.resolve(root, hit.file);
 }
 
+/** Keys another provider's symbol claims: its file with its line, and with its name. */
+export function symbolKeys(file: string, line0: number | undefined, name: string): string[] {
+  return line0 === undefined ? [`${file}#${name}`] : [`${file}:${line0}`, `${file}#${name}`];
+}
+
+/** Hits no other provider already returned — the same definition by file and line, or by name in that file. */
+export function unseen(root: string, hits: Hit[], taken: Set<string>): Hit[] {
+  return hits.filter((h) => !symbolKeys(hitPath(root, h), h.line - 1, h.name).some((k) => taken.has(k)));
+}
+
 const RQ_LANG: Record<string, string> = {
   ruby: "ruby",
   rust: "rust",

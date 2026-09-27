@@ -29,6 +29,7 @@ methods `attr_accessor`, `delegate`, `has_many` and friends define.
 | `rq.path`      | `"rq"`            | The rq binary.                                         |
 | `rq.languages` | every rq language | Languages rq answers Go to Definition and Cmd-T for.   |
 | `rq.mode`      | `"fallback"`      | `fallback`: answer only where no other provider does. `always`: answer alongside them. |
+| `rq.workspaceSymbols` | `"dedupe"` | Cmd/Ctrl-T: `dedupe` adds only symbols no language server returned; `off` leaves it to them; `always` adds all. |
 
 VS Code shows every definition provider's answers together, so where a language
 server also answers, each definition would appear twice. In the default
