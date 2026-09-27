@@ -1541,6 +1541,13 @@ rarely.
   language and per tool, and in the core; the header marker is what the tools agree on.
 - **A penalty of its own size.** Nothing distinguishes how secondary generated code is from
   how secondary test code is; a second constant would be tuned against nothing.
+- **No `path` bonus for a member** (a method or function with a parent), on the theory
+  that a file is named after a type, not its methods: `String` in `kind_string.go`
+  belongs to `Kind`. Against this change: #1 unchanged, top 10 1,750 → 1,748, 21 sources
+  up and 11 down, 3 lost top 10s, plain anchored top 10 432 → 431. In Ruby a file is
+  named after the module that owns a method, and shares its words:
+  `content_security_policy?` in `content_security_policy.rb`, `polymorphic_mapping` in
+  `polymorphic_routes.rb`. The generated penalty already settles the stringer case.
 
 *Reverses if:* a hand-written file carries the marker in its header (then require the
 marker's line to be the whole comment, Go's regexp), or generated code turns out to be the
