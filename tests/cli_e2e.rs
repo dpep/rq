@@ -1197,9 +1197,16 @@ fn web_links_the_newest_pushed_commit() {
         )
     };
 
-    // no remote → nothing to link to
+    // no remote → nothing to link to, but say what was picked and how else to
+    // reach it
     rq(&db, &dir, &["--index"]);
     assert!(!web().0, "a local-only repo has no URL");
+    let (_, _, err) = rq_both(&db, &dir, &["-w", "user"]);
+    assert!(err.contains("user.rb:2"), "names the match: {err}");
+    assert!(
+        err.contains("-o") && err.contains("git remote add"),
+        "{err}"
+    );
 
     git(&["remote", "add", "origin", "git@github.com:org/app.git"]);
     rq(&db, &dir, &["--drop"]);

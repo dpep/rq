@@ -25,6 +25,9 @@ and aren't listed; see `git log` for those.
   release is a minor one.
 
 ### Fixed
+- **`-w` on a repo with no git remote names the match.** The error used to name
+  only the repo identity. It now gives the `file:line` it picked and suggests
+  `-o` to open it locally, or `git remote add` to make it linkable.
 - **`RQ_OPEN` without a placeholder opens the match.** `RQ_OPEN=subl rq -o x`
   used to run `subl` with no file and exit 0. A template with no `{file}`,
   `{line}` or `{}` now gets `path:line` as its last argument.

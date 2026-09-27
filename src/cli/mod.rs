@@ -1755,8 +1755,9 @@ fn open_web(
             Output::Text,
             Failure::NoRemote,
             format_args!(
-                "rq --web: {} has no git remote to link to",
-                hit.repo_identity
+                "rq --web: {}:{} has no git remote to link to ({}) — open it \
+                 locally with -o, or add one with `git remote add origin <url>`",
+                hit.file, hit.line, hit.repo_identity
             ),
         );
     }
