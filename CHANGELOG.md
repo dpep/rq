@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.55.1 — 2026-09-27
 
 ### Fixed
 - **`--status` no longer says `never` for a repo that's being indexed.** A
