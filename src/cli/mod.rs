@@ -1674,9 +1674,9 @@ fn finish_open(
         return open_web(store, hit, current, root);
     }
 
-    // Results are repo-root-relative, so resolve against the root — the bare path
-    // wouldn't open from a subdirectory.
-    let target = match root {
+    // Results are relative to their own checkout, which under `--all-repos`
+    // needn't be the one we're in; the bare path wouldn't open from a subdir.
+    let target = match hit.root.as_deref().map(std::path::Path::new).or(root) {
         Some(r) => r.join(&hit.file),
         None => PathBuf::from(&hit.file),
     };

@@ -46,6 +46,9 @@ and aren't listed; see `git log` for those.
   does from then on. This showed most in a repo with no commits yet. There,
   every search also reindexed the repo and reported a miss as `warming`. Such
   a repo now behaves like one with commits.
+- **`-a -o` opens another repo's match where it is.** `--open` joined the match's
+  path onto the current checkout, so a hit from another repo opened a file that
+  didn't exist. It now uses the match's own `root`.
 
 ### Changed
 - **Errors under `--json`/`--ndjson` are JSON.** A failed structured run used to

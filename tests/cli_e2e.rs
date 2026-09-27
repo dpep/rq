@@ -1202,6 +1202,34 @@ fn open_launches_the_top_hit() {
 }
 
 #[test]
+fn open_resolves_a_hit_against_its_own_checkout() {
+    // under --all-repos the top hit can live in another repo; its file is
+    // relative to that checkout, not the one rq was run from
+    let (dir_a, db) = scratch("open-a");
+    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-open-b", std::process::id()));
+    let _ = fs::remove_dir_all(&dir_b);
+    fs::create_dir_all(&dir_b).unwrap();
+    fs::write(dir_a.join("a.rb"), "class Alpha\nend\n").unwrap();
+    fs::write(dir_b.join("b.rb"), "class Gadget\nend\n").unwrap();
+    rq(&db, &dir_a, &["--index"]);
+    rq(&db, &dir_b, &["--index"]);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["-a", "--open", "Gadget"])
+        .current_dir(&dir_a)
+        .env("RQ_DB", &db)
+        .env("RQ_OPEN", "echo {file}")
+        .output()
+        .expect("run rq");
+    let opened = String::from_utf8_lossy(&run.stdout).trim().to_string();
+    let expected = dir_b.canonicalize().unwrap().join("b.rb");
+    assert_eq!(opened, expected.to_string_lossy());
+
+    let _ = fs::remove_dir_all(&dir_a);
+    let _ = fs::remove_dir_all(&dir_b);
+}
+
+#[test]
 fn web_links_the_newest_pushed_commit() {
     let (dir, db) = scratch("web");
     fs::write(dir.join("user.rb"), "\nclass User\nend\n").unwrap();
