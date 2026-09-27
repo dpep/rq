@@ -202,12 +202,23 @@ impl Store {
         // wait briefly instead of erroring with "database is locked". mmap reads
         // pages in place rather than copying them through read(): fuzzy recall
         // materializes thousands of rows (see DECISIONS D8).
+        // busy_timeout first: switching to WAL takes a lock of its own.
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000; \
+            "PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; \
              PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16384; \
              PRAGMA mmap_size=268435456;",
         )?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let user_version = |conn: &Connection| -> Result<i64> {
+            conn.pragma_query_value(None, "user_version", |r| r.get(0))
+        };
+        let mut version = user_version(&conn)?;
+        // Schema work runs under the write lock, re-reading the version once it
+        // holds it: another opener may have laid the schema down meanwhile.
+        let upgrading = version < schema::VERSION;
+        if upgrading {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            version = user_version(&conn)?;
+        }
         if version == 0 {
             // fresh database — SCHEMA is already at the current version
             conn.execute_batch(schema::SCHEMA)?;
@@ -223,6 +234,9 @@ impl Store {
         // re-run migrations it had already applied.
         if version < schema::VERSION {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
+        }
+        if upgrading {
+            conn.execute_batch("COMMIT")?;
         }
         Ok(Store { conn })
     }

@@ -3066,3 +3066,40 @@ fn an_index_pass_whose_writes_fail_exits_instead_of_hanging() {
     let status = status.expect("rq --index hung after a failed write");
     assert!(!status.success(), "a failed write is an error, not success");
 }
+
+#[test]
+fn concurrent_first_queries_share_a_fresh_database() {
+    // Every opener of a new database used to read user_version 0 and lay down
+    // the schema itself, and the WAL switch ran before busy_timeout: some of a
+    // burst failed with "table already exists" or "database is locked".
+    let (dir, db) = scratch("fresh-burst");
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    let runs: Vec<_> = (0..16)
+        .map(|_| {
+            Command::new(env!("CARGO_BIN_EXE_rq"))
+                .args(["--no-wait", "--json", "Widget"])
+                .current_dir(&dir)
+                .env("RQ_DB", &db)
+                .env("RQ_WARM_DETACH", "0")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("run rq")
+        })
+        .collect();
+    let failures: Vec<String> = runs
+        .into_iter()
+        .map(|c| c.wait_with_output().unwrap())
+        .filter(|o| o.status.code() == Some(74))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stderr)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    let _ = fs::remove_dir_all(&dir);
+    assert!(failures.is_empty(), "{failures:?}");
+}

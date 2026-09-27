@@ -53,6 +53,10 @@ and aren't listed; see `git log` for those.
 - **Two index passes at once wait for each other instead of failing.** A
   batch write that lost a race with another writer failed immediately with
   "database is locked", ignoring the busy timeout; now it waits its turn.
+- **A burst of first searches against a new database all succeed.** Several
+  rq processes opening a fresh (or older) database at once each tried to lay
+  down the schema, and some exited 74 with "table already exists" or
+  "database is locked". Now one does it and the rest wait for it.
 
 ## 0.54.1 — 2026-09-27
 
