@@ -1,12 +1,20 @@
 // Fixture: a small, domain-neutral TypeScript file exercising the kinds the
 // plugin extracts (class, interface→trait, type, enum and its members, method,
-// function, an arrow assigned to a const, and constants).
+// function, an arrow assigned to a const, constants, and the properties of
+// classes, interfaces and object types).
 
 export const MAX_RETRIES = 3;
 
 export interface Renderer {
   render(): string;
 }
+
+export interface WidgetOptions {
+  color: WidgetColor;
+  defaultWidget?: Widget;
+}
+
+export const WIDGET_DEFAULTS = { label: "widget" };
 
 export type WidgetSize = {
   width: number;
@@ -20,6 +28,7 @@ export enum WidgetColor {
 
 export class Widget implements Renderer {
   static readonly DEFAULT_WIDTH = 1;
+  private owner?: string;
 
   constructor(private size: WidgetSize) {}
 

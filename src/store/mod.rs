@@ -1620,10 +1620,10 @@ mod tests {
                 })
                 .unwrap()
         };
-        for p in ["a.rs", "b.go"] {
+        for p in ["a.rs", "b.go", "d.ts"] {
             assert_eq!(hash(p), "", "{p}");
         }
-        for p in ["c.py", "d.ts", "e.rb"] {
+        for p in ["c.py", "e.rb"] {
             assert_eq!(hash(p), "h", "{p}");
         }
         assert_eq!(

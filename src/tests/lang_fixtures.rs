@@ -147,6 +147,32 @@ fn typescript_definitions_rank_and_classify() {
     assert_eq!(width.kind, "constant");
     assert_eq!(width.parent.as_deref(), Some("Widget"));
 
+    // an interface's, a class's and an object type's properties are fields
+    let color = top(&store, "color");
+    assert_eq!(
+        (color.kind.as_str(), color.parent.as_deref()),
+        ("field", Some("WidgetOptions"))
+    );
+    assert_eq!(top(&store, "WidgetSize.height").kind, "field");
+    let owner = top(&store, "Widget.owner");
+    assert_eq!(
+        (owner.kind.as_str(), owner.visibility.as_deref()),
+        ("field", Some("private"))
+    );
+    // a field ranks below the function it shares a name with
+    let build = search::search(&store, "defaultWidget", None, None, &Context::default(), 10)
+        .unwrap()
+        .hits;
+    let kinds: Vec<_> = build.iter().map(|h| h.kind.as_str()).collect();
+    assert_eq!(kinds, ["function", "field"]);
+    // an object literal's properties are values, not declarations
+    assert!(
+        search::search(&store, "label", None, None, &Context::default(), 10)
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+
     fs::remove_dir_all(&dir).ok();
 }
 

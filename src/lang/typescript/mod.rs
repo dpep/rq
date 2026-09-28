@@ -5,7 +5,9 @@
 //! Extracts `class` → class, `interface` → trait (a named contract, like Go's),
 //! `type` → type, `enum` → enum and its members → variant, `namespace` →
 //! module, `function` → function, and the members a class, interface, or object
-//! type declares → method. A
+//! type declares → method. A property a class, interface or type alias's object
+//! type declares → field; an object literal's properties are values, not
+//! declarations, and stay out. A
 //! `const f = () => …` is a function too — in modern JS that *is* how functions
 //! are declared — and so is `const C = memo((props) => …)`, a function literal
 //! handed to a wrapping call. Any other module- or namespace-level `const` → constant: the
@@ -285,13 +287,24 @@ fn walk(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
             }
 
             // `handleClick = () => …` in a class body: a method but for syntax;
-            // `static readonly LIMIT = …`: the class's constant
+            // `static readonly LIMIT = …`: the class's constant; any other
+            // declared property: a field
             "public_field_definition" | "field_definition" => {
                 if is_function(child.child_by_field_name("value")) {
                     push_member(ctx, out, child, Kind::Method, scope, false);
                 } else if has_token(child, "static") && has_token(child, "readonly") {
                     push_member(ctx, out, child, Kind::Constant, scope, false);
+                } else {
+                    push_field(ctx, out, child, scope);
                 }
+            }
+
+            // an interface's properties, and a type alias's own object type's;
+            // an object type anywhere else (a parameter's, a generic
+            // argument's) describes a value, not the named type
+            "property_signature" if declares_members(node) => {
+                push_field(ctx, out, child, scope);
+                walk(ctx, child, scope, out);
             }
 
             // never descend into a function body reached some other way (a
@@ -372,6 +385,59 @@ fn push_member(
         let name = raw.trim_start_matches('#');
         let stub = scope.ambient || overload;
         push(ctx, out, name, kind, node, scope.parent, vis, stub);
+    }
+}
+
+/// Emit a declared property as a field of the type. A quoted name loses its
+/// quotes, and an ES private name its `#`; a computed one (`[key]: …`) names
+/// nothing to look up.
+fn push_field(ctx: &Ctx, out: &mut Vec<Symbol>, node: Node, scope: Scope) {
+    let Some(name) = node
+        .child_by_field_name("name")
+        .filter(|n| n.kind() != "computed_property_name")
+        .and_then(|n| ctx.node_text(n))
+    else {
+        return;
+    };
+    let vis = member_visibility(ctx, node, &name);
+    let name = name
+        .trim_start_matches('#')
+        .trim_matches(|c| c == '"' || c == '\'');
+    if !name.is_empty() {
+        push(
+            ctx,
+            out,
+            name,
+            Kind::Field,
+            node,
+            scope.parent,
+            vis,
+            scope.ambient,
+        );
+    }
+}
+
+/// Whether the members of `body` are a named type's own: an interface's body,
+/// or the object type a type alias is (through unions, intersections and
+/// parentheses).
+fn declares_members(body: Node) -> bool {
+    match body.kind() {
+        "interface_body" => true,
+        "object_type" => {
+            let mut up = body.parent();
+            while let Some(n) = up.filter(|n| {
+                matches!(
+                    n.kind(),
+                    "union_type" | "intersection_type" | "parenthesized_type"
+                )
+            }) {
+                up = n.parent();
+            }
+            up.is_some_and(|n| {
+                matches!(n.kind(), "type_alias_declaration" | "interface_declaration")
+            })
+        }
+        _ => false,
     }
 }
 
@@ -747,9 +813,9 @@ class Widget {
         assert_eq!(size.visibility, Some("public"));
         assert_eq!(find(&syms, "SECRET").visibility, Some("private"));
 
-        // mutable statics and instance fields stay out
-        for absent in ["count", "id"] {
-            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        // mutable statics and instance fields are fields
+        for name in ["count", "id"] {
+            assert_eq!(find(&syms, name).kind, Kind::Field, "{name}");
         }
     }
 
@@ -936,7 +1002,51 @@ class Codec {
         let click = find(&syms, "handleClick");
         assert_eq!(click.kind, Kind::Method);
         assert_eq!(click.parent.as_deref(), Some("Widget"));
-        // a plain data field isn't a definition worth navigating to
-        assert!(!syms.iter().any(|s| s.name == "size"), "{syms:?}");
+        // a plain data property is a field
+        assert_eq!(find(&syms, "size").kind, Kind::Field);
+    }
+
+    #[test]
+    fn declared_properties_are_fields_of_their_type() {
+        let src = r#"
+interface Props { label: string; "aria-label"?: string; nested: { inner: number }; onClick(): void }
+type Size = { width: number } & ({ height: number });
+type Handler = (opts: { verbose: boolean }) => Promise<{ done: boolean }>;
+class Store { #tally = 0; protected cache: Map<string, number>; [key: string]: unknown; }
+const config = { port: 80 };
+"#;
+        let syms = extract(src);
+
+        let label = find(&syms, "label");
+        assert_eq!(
+            (label.kind, label.parent.as_deref()),
+            (Kind::Field, Some("Props"))
+        );
+        // a quoted name loses its quotes, a private name its `#`
+        assert_eq!(find(&syms, "aria-label").kind, Kind::Field);
+        let tally = find(&syms, "tally");
+        assert_eq!(
+            (tally.kind, tally.visibility),
+            (Kind::Field, Some("private"))
+        );
+        assert_eq!(find(&syms, "cache").visibility, Some("protected"));
+        // through an intersection and parentheses, the alias's own properties
+        for name in ["width", "height"] {
+            assert_eq!(find(&syms, name).parent.as_deref(), Some("Size"), "{name}");
+        }
+        // a property's own object type, a parameter's, a type argument's, an
+        // index signature and an object literal declare no field of a type
+        for absent in ["inner", "verbose", "done", "key", "port"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
+        assert_eq!(find(&syms, "onClick").kind, Kind::Method);
+    }
+
+    #[test]
+    fn an_ambient_class_field_is_a_stub_and_an_interface_property_is_not() {
+        let src = "declare class Remote { url: string }\ndeclare global { interface Window { remote: Remote } }\n";
+        let syms = extract(src);
+        assert!(find(&syms, "url").stub);
+        assert!(!find(&syms, "remote").stub);
     }
 }
