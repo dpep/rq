@@ -19,53 +19,42 @@ use crate::store::Store;
 #[command(
     name = "rq",
     version,
-    about = "Ranked definition lookup — the one place a symbol is defined, first.",
-    long_about = "rq finds where a symbol is defined and ranks the one you most \
-likely meant to the top — not every match.\n\n\
-Search is the default action; operations are flags, not subcommands, so every \
-word (including \"index\", \"status\", \"record\") stays searchable. Ranking favors \
-your current repo, recently-active files, and the files your branch changes. Run \
-`rq <query> --explain` to see the score behind each result.",
+    about = "rq finds the code you're looking for: type a name, get its definition.",
+    long_about = "rq finds the code you're looking for. Name a class, method, function, \
+struct or constant in Ruby, Rust, Go, Python, TypeScript or JavaScript, and rq shows \
+where it's defined.",
     after_help = "EXAMPLES:\n  \
-rq thing                  search for a definition named or like \"thing\"\n  \
-rq wibble --explain       same, plus the score behind each result\n  \
-rq thing --json           machine-readable results (for editors/agents)\n  \
-rq thing --no-wait        answer now from the committed index; don't block on a rebuild\n  \
-rq thing --wait 2s        ...or wait up to a bounded time for the index to warm\n  \
-rq thing app/web          restrict to a directory (rg-style)\n  \
-rq perform -k method      restrict to a symbol kind (c/mod/m/f/s/e/t/v, type, macro)\n  \
-rq class Widget           a leading kind keyword is shorthand for -k\n  \
-rq --symbols FILE         outline a file's definitions, in line order\n  \
-rq thing -x rust          restrict to a language (ruby/rust/go/python/ts/js)\n  \
-rq 'Foo::Bar'             qualify by scope — the surest way past an ambiguous name\n  \
-rq 'Foo#bar'              ...and by owner, for a method\n  \
-rq save --anchor w.rb:9   rank as if asked from line 9 of w.rb\n  \
-rq Foo.new                the constructor (initialize, __init__, ...)\n  \
-rq 'refund*proc'          wildcards: * (any run), ? (one char) — quote them\n  \
-rq -o thing               open the best match in your editor\n  \
-rq --index                index the current repository\n  \
-rq --status               show indexing coverage\n  \
-rq --usage                show how rq has been called (by caller and flags)\n  \
-rq --drop                 remove this repo's index (opposite of --index)\n\n\
+rq HashWithIndifferentAccess   the class's definition\n  \
+rq hwia                        the same class: fuzzy and abbreviation-aware\n  \
+rq 'Hash*Access'               wildcards: * any run, ? one char (quote them)\n  \
+rq ActiveRecord::Base          the Base inside ActiveRecord\n  \
+rq Persistence#save            the save inside Persistence\n  \
+rq hugolib.HugoSites           a package, module or directory scopes too\n  \
+rq Migration.new               its constructor (initialize, __init__, constructor)\n  \
+rq class Base                  classes named Base (same as -k class)\n  \
+rq perform activejob           the perform under activejob/\n  \
+rq save -o                     open the best match in your editor\n  \
+rq save --explain              the score behind each result\n  \
+rq save --json                 JSON, for editors, scripts and agents\n  \
+rq --symbols app/w.rb          outline a file, in line order\n\n\
 SHORT FLAGS (easy to misread):\n  \
--j = --json (not jobs; --jobs is long-only)   -l = --limit (not lang)   -x = --lang\n\n\
-The index is a SQLite file at $RQ_DB, an absolute path (default \
-~/.local/share/rq/rq.db); it warms \
-automatically on the first search in a git repo. On a large, cold repo a search \
-keeps indexing until it can answer rather than reporting a premature \"no \
-matches\" (an interactive run shows progress and stops on Ctrl-C).\n\n\
+-j is --json, not --jobs (long-only)   -l is --limit, not --lang (that's -x)\n\n\
+THE INDEX:\n  \
+One SQLite file for all repos, at $RQ_DB (an absolute path; default\n  \
+~/.local/share/rq/rq.db). On a cold repo, a search keeps indexing until it can\n  \
+answer instead of reporting a false \"no matches\"; --no-wait answers right away.\n\n\
 EXIT CODES:\n  \
-0   matched; --status, --index, --drop: ran, even with nothing to show or drop\n  \
-1   no match; --usage: nothing recorded yet\n  \
-2   no match yet: the index is still warming, or indexing was interrupted — ask again\n  \
-64  usage error: a bad flag, value or query — fix the command\n  \
-66  a file the command names doesn't exist\n  \
+0   matched; for --status, --index, --drop: ran, even with nothing to show or drop\n  \
+1   no match; for --usage: nothing recorded yet\n  \
+2   no match yet: the index is still warming or indexing was interrupted; ask again\n  \
+64  usage error: a bad flag, value or query\n  \
+66  a file named in the command doesn't exist\n  \
 69  no editor, browser or git remote to hand off to\n  \
 70  internal error (a bug)\n  \
-74  the index can't be opened, read or written"
+74  can't open, read or write the index"
 )]
 struct Cli {
-    /// Search query. With --drop, the repo path/identity to drop.
+    /// A name, abbreviation, `Scope::name`, or `'Glob*'`. With --drop, a repo.
     //
     // `Other` keeps shells from offering filenames here: a search query isn't a
     // path. The path-valued operations (--index, --symbols) carry their own
@@ -73,115 +62,146 @@ struct Cli {
     #[arg(value_name = "TARGET", value_hint = clap::ValueHint::Other)]
     target: Option<String>,
 
-    /// Directories to restrict results to (rg-style; same as repeated --path).
+    /// Search only under these directories (like rg; same as --path).
     #[arg(value_name = "PATH")]
     dirs: Vec<String>,
 
-    /// Show the score breakdown for each result.
-    #[arg(short = 'e', long)]
-    explain: bool,
-
-    /// Answer immediately from the committed index — never block waiting on a
-    /// background (re)index. For agents/scripts: a query issued mid-rebuild
-    /// returns at once (a miss reports `warming`, exit 2, so a caller can retry)
-    /// instead of blocking up to the wait budget. A repo with nothing indexed
-    /// yet is live-scanned instead. Shorthand for `--wait 0`; leftover warming
-    /// still detaches to a background child.
-    #[arg(long = "no-wait")]
-    no_wait: bool,
-
-    /// How long a query may wait for the index to warm before answering with
-    /// whatever's committed: a duration like `50ms`, `2s`, `1m`, or a bare number
-    /// of seconds. `0` doesn't wait at all (same as `--no-wait`). Overrides
-    /// `RQ_WAIT_BUDGET_MS` for this call (default 1 minute).
-    #[arg(long, value_name = "DUR", value_parser = parse_wait, conflicts_with = "no_wait")]
-    wait: Option<Duration>,
-
-    /// Open the best match in your editor.
-    /// On a terminal with several matches, prompts to choose. Launcher: `RQ_OPEN`
-    /// (a template with `{file}`/`{line}`/`{}` = path:line; with none of them,
-    /// path:line is appended), else VS Code (`code`), else `$VISUAL`/`$EDITOR`,
-    /// else prints the resolved path:line.
-    #[arg(short = 'o', long, conflicts_with_all = ["index", "status", "json", "ndjson"])]
-    open: bool,
-
-    /// Like --open, but in the browser: the match on its git host (GitHub-style
-    /// `blob/<sha>/<file>#L<line>` URL), pinned to the newest pushed commit in
-    /// HEAD's history so the link resolves and stays accurate. Launcher: `$BROWSER`, else `open`/`xdg-open`, else
-    /// prints the URL.
-    #[arg(short = 'w', long, conflicts_with_all = ["open", "index", "status", "json", "ndjson"])]
-    web: bool,
-
-    /// Print the definition's source, not just its location — but only when the
-    /// top match is confident; otherwise falls back to the ranked list. Pipe to a
-    /// pager (`rq --show foo | less`). JSON adds a `body` field.
-    #[arg(long, conflicts_with_all = ["open", "web", "index", "status", "symbols", "drop"])]
-    show: bool,
-
-    /// Emit results as a JSON array (for editors and scripts).
-    #[arg(short = 'j', long)]
-    json: bool,
-
-    /// Emit results as newline-delimited JSON, one object per line.
-    #[arg(short = 'J', long, conflicts_with = "json")]
-    ndjson: bool,
-
-    /// Restrict results to files under this repo-relative directory (repeatable).
-    #[arg(short = 'p', long, value_name = "DIR")]
+    // Narrow the search
+    /// Search only under this repo-relative directory (repeatable).
+    #[arg(
+        help_heading = "Narrow the search",
+        short = 'p',
+        long,
+        value_name = "DIR"
+    )]
     path: Vec<String>,
 
-    /// Maximum number of results to show; `0` shows every match.
-    #[arg(short = 'l', long, value_name = "N", default_value_t = DEFAULT_LIMIT)]
-    limit: usize,
-
-    /// Restrict to symbol kinds: class, module, method, function, struct, enum,
-    /// trait, constant, type, variant, macro (shortcuts: c, mod, m, f, s, e, t,
-    /// const, v; `interface` = trait, `alias` = type, `member` = variant, `type`
-    /// also takes structs). Repeatable or comma-separated.
-    #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
+    /// Limit to these kinds: class, method, function, struct, …
+    ///
+    /// All kinds: class, module, method, function, struct, enum, trait, constant,
+    /// type, variant, macro. Shortcuts: c, mod, m, f, s, e, t, const, v.
+    /// `interface` = trait, `alias` = type, `member` = variant; `type` also takes
+    /// structs. Repeatable or comma-separated.
+    #[arg(
+        help_heading = "Narrow the search",
+        short = 'k',
+        long,
+        value_name = "KIND",
+        value_delimiter = ','
+    )]
     kind: Vec<String>,
 
-    /// Restrict to languages: ruby, rust, go, python, typescript, javascript.
-    /// Prefix-matched, so `r` means ruby+rust and `p` means python; aliases rb,
-    /// rs, golang, ts, tsx, js, jsx. Repeatable or comma-separated.
-    #[arg(short = 'x', long = "lang", value_name = "LANG", value_delimiter = ',')]
+    /// Limit to these languages: ruby, rust, go, python, ts, js
+    ///
+    /// Prefix-matched, so `r` means ruby and rust, and `p` means python. Also
+    /// takes rb, rs, golang, typescript, tsx, javascript, jsx. Repeatable or
+    /// comma-separated.
+    #[arg(
+        help_heading = "Narrow the search",
+        short = 'x',
+        long = "lang",
+        value_name = "LANG",
+        value_delimiter = ','
+    )]
     lang: Vec<String>,
 
-    /// Search every indexed repository, not just the current one. By default a
-    /// search inside a repo returns only that repo's definitions.
-    #[arg(short = 'a', long = "all-repos")]
-    all_repos: bool,
-
-    /// The position the query is asked from — an editor's cursor, or the file
-    /// an agent is reading. Ranks definitions in the scopes enclosing that line,
-    /// then those in the same file and nearby directories, higher. Context,
-    /// never a filter. FILE is relative to the current directory; COL is
-    /// accepted and ignored.
-    #[arg(long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with_all = ["index", "status", "usage", "symbols", "drop", "warm"])]
+    /// Prefer definitions near this line: its scopes, then its file.
+    ///
+    /// Pass an editor's cursor, or the file an agent is reading. Definitions in
+    /// the scopes around that line come first, then ones in the same file and
+    /// nearby directories. It's context, not a filter. FILE is relative to the
+    /// current directory; COL is accepted and ignored.
+    #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with_all = ["index", "status", "usage", "symbols", "drop", "warm"])]
     anchor: Option<AnchorSpec>,
 
-    /// Index a repository (PATH, or the current directory).
-    #[arg(long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with = "status")]
-    index: Option<Option<String>>,
+    /// Search every indexed repo, not just this one.
+    #[arg(help_heading = "Narrow the search", short = 'a', long = "all-repos")]
+    all_repos: bool,
 
-    /// Show indexing coverage per known repository.
-    #[arg(long, conflicts_with = "index")]
-    status: bool,
+    /// Show at most N results; `0` shows them all.
+    #[arg(help_heading = "Narrow the search", short = 'l', long, value_name = "N", default_value_t = DEFAULT_LIMIT)]
+    limit: usize,
 
-    /// Show how rq has been used: searches per day, by caller and flags.
-    #[arg(long, conflicts_with_all = ["index", "status"])]
-    usage: bool,
+    // Output
+    /// Show the score behind each result.
+    #[arg(help_heading = "Output", short = 'e', long)]
+    explain: bool,
 
-    /// List the symbols defined in FILE, in line order — a structural outline,
-    /// not a ranked search. Honors -k/-x to filter by kind/language.
-    #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "drop", "open", "web"])]
+    /// Print results as JSON, for editors, scripts and agents.
+    #[arg(help_heading = "Output", short = 'j', long)]
+    json: bool,
+
+    /// Print results as NDJSON, one object per line.
+    #[arg(help_heading = "Output", short = 'J', long, conflicts_with = "json")]
+    ndjson: bool,
+
+    /// Print the definition's source, when the top match is clear.
+    ///
+    /// Otherwise prints the list. Pipe it to a pager: `rq --show foo | less`.
+    /// JSON adds a `body` field.
+    #[arg(help_heading = "Output", long, conflicts_with_all = ["open", "web", "index", "status", "symbols", "drop"])]
+    show: bool,
+
+    /// Open the best match in your editor.
+    ///
+    /// On a terminal with several matches, asks which one. Launcher: `RQ_OPEN` (a
+    /// template with `{file}`, `{line}`, or `{}` for path:line; with none of them,
+    /// path:line is appended), else VS Code (`code`), else `$VISUAL`/`$EDITOR`,
+    /// else prints path:line.
+    #[arg(help_heading = "Output", short = 'o', long, conflicts_with_all = ["index", "status", "json", "ndjson"])]
+    open: bool,
+
+    /// Open the best match on its git host, in the browser.
+    ///
+    /// A GitHub-style `blob/<sha>/<file>#L<line>` link, pinned to the newest
+    /// pushed commit in HEAD's history so it resolves and stays accurate.
+    /// Launcher: `$BROWSER`, else `open`/`xdg-open`, else prints the URL.
+    #[arg(help_heading = "Output", short = 'w', long, conflicts_with_all = ["open", "index", "status", "json", "ndjson"])]
+    web: bool,
+
+    // Waiting on the index
+    /// Answer now from what's indexed; never wait on a rebuild.
+    ///
+    /// For agents and scripts. A miss mid-rebuild reports `warming` (exit 2) so
+    /// the caller can retry. A repo with nothing indexed yet is scanned live
+    /// instead. Same as `--wait 0`; indexing carries on in the background.
+    #[arg(help_heading = "Waiting on the index", long = "no-wait")]
+    no_wait: bool,
+
+    /// Wait at most this long for the index to warm (default 1m).
+    ///
+    /// `50ms`, `2s`, `1m`, or a bare number of seconds; `0` is --no-wait.
+    /// Overrides `RQ_WAIT_BUDGET_MS` for this call.
+    #[arg(help_heading = "Waiting on the index", long, value_name = "DUR", value_parser = parse_wait, conflicts_with = "no_wait")]
+    wait: Option<Duration>,
+
+    // The index
+    /// List a file's definitions, in line order.
+    ///
+    /// Honors -k and -x.
+    #[arg(help_heading = "The index", long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "drop", "open", "web"])]
     symbols: Option<String>,
 
-    /// Drop a repository's index — the opposite of --index. Removes its symbols,
-    /// files, and coverage. TARGET is the repo's path (or the
-    /// current repo); a known identity string (as shown by --status) also works.
-    #[arg(long, conflicts_with_all = ["index", "status", "open", "web"])]
+    /// Index a repo now (PATH, or this one).
+    ///
+    /// Searches index on their own; this just does it up front.
+    #[arg(help_heading = "The index", long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with = "status")]
+    index: Option<Option<String>>,
+
+    /// Show what's indexed, per repo.
+    #[arg(help_heading = "The index", long, conflicts_with = "index")]
+    status: bool,
+
+    /// Forget a repo's index (the opposite of --index).
+    ///
+    /// TARGET is the repo's path (default: this one), or its identity as --status
+    /// shows it.
+    #[arg(help_heading = "The index", long, conflicts_with_all = ["index", "status", "open", "web"])]
     drop: bool,
+
+    /// Show searches per day, by caller and flags.
+    #[arg(help_heading = "The index", long, conflicts_with_all = ["index", "status"])]
+    usage: bool,
 
     /// Finish warming a repository's index in the background — the target a
     /// search re-execs after printing results, detached, so the shell never
@@ -189,25 +209,34 @@ struct Cli {
     #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "drop", "symbols", "open", "web", "show"])]
     warm: Option<Option<String>>,
 
-    /// Print a shell completion script (bash, zsh, fish, elvish, powershell).
-    #[arg(long, value_name = "SHELL")]
-    completions: Option<Shell>,
-
-    /// Trace what rq decides (root, coverage, warming, reconcile) to stderr —
-    /// for debugging. `RQ_LOG=1` does the same for an installed binary.
-    #[arg(short = 'v', long)]
+    // Debugging
+    /// Trace rq's decisions to stderr (`RQ_LOG=1` when installed).
+    ///
+    /// Root, coverage, warming and reconcile decisions.
+    #[arg(help_heading = "Debugging", short = 'v', long)]
     verbose: bool,
 
-    /// Report where a search spent its time, phase by phase, to stderr — as
-    /// JSON alongside --json, so a baseline can be stored and diffed.
-    /// `RQ_PROFILE=1` does the same for an installed binary.
-    #[arg(long)]
+    /// Time each search phase to stderr (`RQ_PROFILE=1` when installed).
+    ///
+    /// Prints JSON when used with --json, so you can store a baseline and diff
+    /// against it.
+    #[arg(help_heading = "Debugging", long)]
     profile: bool,
 
-    /// Parse worker threads the background indexer uses (0 = auto). (`-j` is
-    /// taken by `--json`, so this is `--jobs` only.) `RQ_JOBS` works too.
-    #[arg(long, value_name = "N", default_value_t = 0)]
+    /// Set parse threads for indexing; 0 = auto (or `RQ_JOBS`).
+    ///
+    /// Long-only, since `-j` is --json.
+    #[arg(
+        help_heading = "Debugging",
+        long,
+        value_name = "N",
+        default_value_t = 0
+    )]
     jobs: usize,
+
+    /// Print a shell completion script.
+    #[arg(help_heading = "Debugging", long, value_name = "SHELL")]
+    completions: Option<Shell>,
 }
 
 /// Parse arguments and dispatch. Returns the process exit code.
@@ -3364,6 +3393,31 @@ fn requested_output(args: impl IntoIterator<Item = std::ffi::OsString>) -> Outpu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_help_example_parses() {
+        let help = Cli::command().render_long_help().to_string();
+        let examples = help
+            .split("EXAMPLES:\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n\n").next())
+            .expect("--help has an EXAMPLES section");
+        let mut seen = 0;
+        for line in examples.lines() {
+            // the command, up to the gap before its description
+            let command = line.trim().split("   ").next().unwrap().trim();
+            let args: Vec<&str> = command
+                .split_whitespace()
+                .map(|w| w.trim_matches('\''))
+                .collect();
+            assert_eq!(args[0], "rq", "an example starts with rq: {line}");
+            if let Err(e) = Cli::try_parse_from(&args) {
+                panic!("example doesn't parse: {line}\n{e}");
+            }
+            seen += 1;
+        }
+        assert!(seen > 5, "found the examples: {examples}");
+    }
 
     #[test]
     fn the_database_path_is_refused_unless_it_is_an_absolute_file() {

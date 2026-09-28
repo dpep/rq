@@ -1,7 +1,7 @@
 rq — Reference Query
 ====================
 
-**rq finds the code you're looking for.** Name a class, method, function, struct or constant, and rq ranks its definition first.
+**rq finds the code you're looking for.** Name a class, method, function, struct or constant, and rq shows where it's defined.
 
 In a Rails checkout:
 
@@ -17,8 +17,7 @@ rq perform activejob          # → the perform under activejob/, ranked
 ```
 
 rq finds **names**, not behaviour. If you know what the code does but not what
-it's called, use semantic search ([contour](https://github.com/dpep/contour)) or
-text search (`rg`) instead.
+it's called, reach for text search (`rg`) instead.
 
 ## Why not grep / ctags / an LSP?
 

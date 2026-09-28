@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **`rq --help` is simpler.** Flags are grouped (narrow the search, output, waiting on
+  the index, the index, debugging), each with a one-line summary under `-h`, and
+  the examples match the README.
+
 ## 0.57.0 — 2026-09-27
 
 Upgrading re-reads every indexed Go, Python, TypeScript and JavaScript file
