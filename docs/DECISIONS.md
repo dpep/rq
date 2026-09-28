@@ -1651,9 +1651,10 @@ another class of the file and call the library's version (`unknown` in
 `decode_credentials`): D18's known limit, a call on another class asked as a bare name
 from a file that defines the name. Unanchored recall is untouched (0 sources moved).
 
-*Rejected: halving the penalty in the anchor's file.* −200 still outweighs `proximity`
-plus one level of `enclosing` (150), which is where a helper in the test's own class
-sits, so it keeps most of the misses it was meant to fix.
+*Rejected: halving the penalty in the anchor's file.* 356 #1 (265 in the anchor's file, 91
+elsewhere): half the losses and under two thirds of the gain. −200 still outweighs
+`proximity` plus one level of `enclosing` (150), which is where a helper in the test's own
+class sits.
 
 *Reverses if:* anchored use from tests shows the in-file fakes winning over library calls
 more often than the in-file helpers they were meant to find.
