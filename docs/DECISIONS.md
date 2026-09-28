@@ -2251,3 +2251,47 @@ the next result.
 
 *Reverses if:* callers are seen taking a 0.5 result as an answer (then the scale needs a
 word in the output, not only in the docs), or an N-way share that holds up anchored.
+
+## D45 — `block_on` stays at #9: no signal in reach picks `Runtime::block_on`
+
+**Left**, 2026-09-28. Revisits D35 with the scores on main (tokio, pinned):
+
+| # | definition | visibility | score |
+|---|---|---|---|
+| 1 | `future/block_on.rs` free fn | `pub(crate)` | 1255 (path 33, extent 22) |
+| 2–4, 7, 10 | `CurrentThread`, `CoreGuard`, `CachedParkThread`, `BlockingRegionGuard`, `MultiThread` | crate/private | 1221–1237 |
+| 5–6 | tokio-test's `block_on`, `LocalRuntime::block_on` | public | 1223 |
+| 8–9 | `Handle::block_on`, `Runtime::block_on` | public | 1221 |
+
+*Why nothing here fixes it.* The #1 leads by 34, from its file being named for it, so
+any visibility signal that clears it is D35's 30/40 setting, which cost Ruby 0.9 points
+of #1. The brief's narrower shape, public over `pub(crate)` only among exact ties, has
+no tie to act on: #1 isn't tied with anything. And the public definitions alone still
+don't order right: `LocalRuntime::block_on` and tokio-test's out-extent `Runtime`'s, and
+`LocalRuntime` is re-exported from `tokio::runtime` exactly as `Runtime` is, so even a
+crate-root export signal (D35's reverses-if) would tie them. What makes `Runtime` the
+answer is that it's the stable, documented entry point, which rq doesn't index.
+`Runtime::block_on` is #1 today, and that is the query to type.
+
+*Reverses if:* extraction records re-exports or stability (`cfg(tokio_unstable)`), and the
+two together separate `Runtime` from `LocalRuntime`.
+
+## D46 — `declare var process` is held back by `stub`, not by kind
+
+**Left**, 2026-09-28. DOGFOOD.md read the `@types/node` miss (`process` #3) as kind weight:
+`interface Process` has `kind` 15 and a declared `var` 0. On 0.58.1 (`@types/node`
+26.6.3) the gap is 189: `interface Process` 1403, `declare module "process"` 1214, the
+module's `var process` 1188, the global one in `globals.d.ts` 1155. Both values and the
+module take `stub` (−150, D38); the interface doesn't, since a declared type is its own
+definition. So a kind rule favouring values for a lowercase query would move the var 15
+points of 189, and would read intent into case on an all-lowercase query, which the
+`case` rule (and D40) decline to do.
+
+The miss is D38's sizing meeting a namesake that isn't its implementation: `stub` is sized
+to lose to the implementation of the same thing, and here it loses to a type whose name
+differs only in case. The fix, if one is wanted, is for `stub` to apply only when a non-stub
+of the same name is among the results, as D43 does for `top_level`. Not taken here: it's
+a change to D38's rule and wants its own measurement on TypeScript, where the harness
+has only excalidraw's regress cases.
+
+*Reverses if:* ambient globals show up as misses in real use more than once.
