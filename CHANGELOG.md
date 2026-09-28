@@ -9,6 +9,9 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+Upgrading re-reads every indexed Go, Python, TypeScript and JavaScript file
+once, in the background, so the symbols below appear without a `--drop`.
+
 ### Added
 - **Go: named types that aren't a struct or interface are indexed**, as
   `type`: `type HandlerFunc func(*Context)`, `type HandlersChain []HandlerFunc`,

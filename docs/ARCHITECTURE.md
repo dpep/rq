@@ -225,8 +225,9 @@ Decisions worth calling out:
   `content_hash` so neither skip keeps the old rows (the hash to `''`, not
   NULL, which the write path can't read), and demotes its repos' coverage to
   `warming` so the next search sweeps them. v14 did this for the Go, Python and
-  TS/JS constants, and v19's re-read of every file (for the `generated` flag)
-  also picked up Rust's variants, aliases, macros and macro-body items: users
+  TS/JS constants, v19's re-read of every file (for the `generated` flag)
+  also picked up Rust's variants, aliases, macros and macro-body items, and v20
+  re-reads Go, Python and TS/JS for their types, variants and nested defs: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to

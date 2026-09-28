@@ -1475,6 +1475,48 @@ mod tests {
     }
 
     #[test]
+    fn v20_queues_only_the_languages_whose_extraction_changed() {
+        let path = std::env::temp_dir().join(format!("rq-migrate-v20-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let file = |path: &str, language: &str| FileSymbols {
+            path: path.into(),
+            language: language.into(),
+            mtime: Some(1),
+            content_hash: "h".into(),
+            generated: false,
+            symbols: Vec::new(),
+        };
+        {
+            let mut store = Store::open(&path).unwrap();
+            let mixed = store.upsert_repository(&"local:/mixed", None).unwrap();
+            let rust = store.upsert_repository(&"local:/rust", None).unwrap();
+            store
+                .replace_files(mixed, &[file("a.py", "python"), file("b.rs", "rust")])
+                .unwrap();
+            store.replace_files(rust, &[file("c.rs", "rust")]).unwrap();
+            store.set_coverage(mixed, 2, 2, "complete").unwrap();
+            store.set_coverage(rust, 1, 1, "complete").unwrap();
+            store.conn.execute_batch("PRAGMA user_version=19;").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let hash = |p: &str| -> String {
+            store
+                .conn
+                .query_row("SELECT content_hash FROM files WHERE path = ?1", [p], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(hash("a.py"), "");
+        assert_eq!(hash("b.rs"), "h");
+        let status = |id: &str| store.coverage_status(id).unwrap().unwrap();
+        assert_eq!(status("local:/mixed"), "warming");
+        assert_eq!(status("local:/rust"), "complete");
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn v18_drops_the_trigram_table_and_recall_still_answers() {
         // 0.54.1 shipped v16; v17 only ever reached unreleased builds
         for from in [16, 17] {

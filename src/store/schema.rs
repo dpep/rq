@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 19;
+pub(crate) const VERSION: i64 = 20;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -334,6 +334,11 @@ UPDATE coverage SET status = 'warming' WHERE scope = 'full' AND status = 'comple
 UPDATE files SET mtime = NULL, content_hash = '';
 "#;
 
+/// Migration v19 -> v20: the Go, Python and TypeScript/JavaScript plugins
+/// emit the `type` and `variant` kinds, Python's nested defs and TS's wrapped
+/// components. Their files are queued for re-extraction as v14 queued them.
+pub(crate) const MIGRATION_V20: &str = MIGRATION_V14;
+
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
@@ -349,7 +354,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 19] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 20] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -369,4 +374,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 19] = [
     (18, Step::Sql(MIGRATION_V18)),
     (19, MIGRATION_V19),
     (19, Step::Sql(MIGRATION_V19_REQUEUE)),
+    (20, Step::Sql(MIGRATION_V20)),
 ];
