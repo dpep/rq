@@ -43,6 +43,20 @@ fn go_definitions_rank_and_classify() {
     );
     assert_eq!(top(&store, "ColorBlue").kind, "constant");
 
+    // a field is found by its name and its struct, and ranks below the struct
+    // and func whose names it shares (`Widget`, `BuildWidget` above)
+    let title = top(&store, "Title");
+    assert_eq!(
+        (title.kind.as_str(), title.parent.as_deref()),
+        ("field", Some("Frame"))
+    );
+    assert_eq!(top(&store, "Widget.Size").kind, "field");
+    let embedded = top(&store, "Frame.Widget");
+    assert_eq!(
+        (embedded.kind.as_str(), embedded.name.as_str()),
+        ("field", "Widget")
+    );
+
     fs::remove_dir_all(&dir).ok();
 }
 

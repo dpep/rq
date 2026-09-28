@@ -1,6 +1,6 @@
 // Fixture: a small, domain-neutral Go file exercising the kinds the plugin
-// extracts (struct, interface→trait, named type, method with receiver, free
-// func, const).
+// extracts (struct and its fields, interface→trait, named type, method with
+// receiver, free func, const).
 
 package widget
 
@@ -18,6 +18,14 @@ type Widget struct {
 }
 
 type RenderFunc func(w *Widget) string
+
+// Frame's fields share names with the struct and func they hold: an embedded
+// field goes by its type's name.
+type Frame struct {
+	*Widget
+	Title       string
+	BuildWidget func() *Widget
+}
 
 type Renderer interface {
 	Render() string

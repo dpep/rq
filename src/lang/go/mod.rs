@@ -2,7 +2,8 @@
 //! `type … struct` → struct, `type … interface` → trait (Go's interface is
 //! the same "named contract" concept), and any other named type or alias
 //! (`type HandlerFunc func(*Context)`, `type ID = string`) → type. Methods are qualified by their receiver
-//! type (`Handle · Server`); interface method signatures by the interface.
+//! type (`Handle · Server`); interface method signatures by the interface, and
+//! a struct's fields (embedded ones named by their type) → field of the struct.
 //! A package-level `const` (single or grouped, iota included) → constant. A
 //! package-level `var` is not: it's mutable state, and calling it a constant
 //! would mislabel it — even the `var ErrFoo = errors.New(…)` sentinels that are
@@ -60,6 +61,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                     match child.child_by_field_name("type").map(|t| t.kind()) {
                         Some("struct_type") => {
                             push(ctx, out, &name, Kind::Struct, child, parent);
+                            fields(ctx, child, &name, out);
                         }
                         Some("interface_type") => {
                             push(ctx, out, &name, Kind::Trait, child, parent);
@@ -106,6 +108,59 @@ fn constants(ctx: &Ctx, decl: Node, out: &mut Vec<Symbol>) {
             {
                 push(ctx, out, &name, Kind::Constant, spec, None);
             }
+        }
+    }
+}
+
+/// Emit each field a struct type declares, as a child of the struct. An
+/// embedded field (`*Base`, `pkg.Config`) is named by its type, as Go names it.
+/// A nested anonymous struct's fields stay out: they're reached through a field
+/// that is already here.
+fn fields(ctx: &Ctx, spec: Node, owner: &str, out: &mut Vec<Symbol>) {
+    let Some(list) = spec.child_by_field_name("type").and_then(|t| {
+        let mut cursor = t.walk();
+        t.named_children(&mut cursor)
+            .find(|c| c.kind() == "field_declaration_list")
+    }) else {
+        return;
+    };
+    let mut cursor = list.walk();
+    for decl in list.named_children(&mut cursor) {
+        if decl.kind() != "field_declaration" {
+            continue;
+        }
+        let mut names = decl.walk();
+        let named: Vec<String> = decl
+            .children_by_field_name("name", &mut names)
+            .filter_map(|n| ctx.node_text(n))
+            .collect();
+        let named = if named.is_empty() {
+            decl.child_by_field_name("type")
+                .and_then(|t| embedded_name(ctx, t))
+                .into_iter()
+                .collect()
+        } else {
+            named
+        };
+        for name in named.iter().filter(|n| *n != "_") {
+            push(ctx, out, name, Kind::Field, decl, Some(owner));
+        }
+    }
+}
+
+/// The name an embedded field goes by: its type's own name, without a pointer,
+/// package qualifier or type arguments (`*pkg.List[T]` → `List`).
+fn embedded_name(ctx: &Ctx, ty: Node) -> Option<String> {
+    match ty.kind() {
+        "type_identifier" => ctx.node_text(ty),
+        "qualified_type" => ctx.field_text(ty, "name"),
+        "generic_type" => ty
+            .child_by_field_name("type")
+            .and_then(|t| embedded_name(ctx, t)),
+        _ => {
+            let mut cursor = ty.walk();
+            ty.named_children(&mut cursor)
+                .find_map(|c| embedded_name(ctx, c))
         }
     }
 }
@@ -187,6 +242,39 @@ func Build() *Widget {
         assert_eq!(render.parent.as_deref(), Some("Renderer"));
 
         assert_eq!(build.language, "go");
+    }
+
+    #[test]
+    fn struct_fields_are_fields_embedded_ones_named_by_their_type() {
+        let src = r#"
+package widget
+
+type Frame struct {
+	*Base
+	pkg.Config
+	List[int]
+	X, Y  int
+	title string `json:"title"`
+	Inner struct{ Deep int }
+	_     int
+}
+"#;
+        let syms = extract(src);
+
+        for name in ["Base", "Config", "List", "X", "Y", "Inner"] {
+            let f = find(&syms, name);
+            assert_eq!(
+                (f.kind, f.parent.as_deref()),
+                (Kind::Field, Some("Frame")),
+                "{name}"
+            );
+            assert_eq!(f.visibility, Some("public"));
+        }
+        assert_eq!(find(&syms, "title").visibility, Some("private"));
+        // a nested anonymous struct's fields are reached through `Inner`
+        for absent in ["Deep", "_"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
     }
 
     #[test]
