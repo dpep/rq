@@ -572,6 +572,12 @@ const TEST_PATH_SHARE: f64 = 0.4;
 /// for one matched letter.
 const SIGIL_CREDIT: f64 = 10.0;
 
+/// Charged per whole word an alignment steps over (`braboost` →
+/// `BRANCH_DIR_BOOST` skips `DIR`), on top of the gap: more than a matched word
+/// start earns (25), so a reading that enters every word outranks one that
+/// leaves one out.
+const WORD_SKIP_PENALTY: f64 = 40.0;
+
 /// Penalty per skipped char between two matched chars. Strong enough that a
 /// closer match wins over a farther one — so the query's trailing chars don't
 /// straggle to a distant word boundary (the `r` of a query landing in `.rb`
@@ -622,8 +628,8 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     let n = chars.len();
     let lower: Vec<char> = chars.iter().copied().map(fold).collect();
     let boundary = boundaries(&chars);
-    // prefix count of word boundaries, so we can ask "is a whole word skipped
-    // between j and i?" in O(1) — the "only span adjacent words" rule
+    // prefix count of word boundaries, so we can ask "how many whole words
+    // are skipped between j and i?" in O(1)
     let mut bnd_prefix = vec![0usize; n + 1];
     for i in 0..n {
         bnd_prefix[i + 1] = bnd_prefix[i] + boundary[i] as usize;
@@ -632,7 +638,8 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     // Letters matched before the alignment first reaches a word start earn no
     // credit of their own: the `t…e` of `testag` inside `acTivE` is coincidence
     // until a word boundary confirms the reading. Only the first word can be
-    // entered mid-way (every later one must be entered at its start, below), so
+    // entered mid-way (every later one at its start, or past a dropped vowel,
+    // which no letter before a word start can reach), so
     // this charges exactly the query's leading letters spent inside a word it
     // didn't begin — the more of them, the less the match is worth.
     let credit = |anchored: bool, i: usize| {
@@ -683,14 +690,11 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
                     let gap = i - j - 1;
                     let crossed = bnd_prefix[i] - bnd_prefix[j + 1];
                     let crossed_word = crossed > 0;
-                    if boundary[i] {
-                        // entering a new word: only the *adjacent* one — reject if
-                        // a whole word boundary sits between j and i (a word skipped)
-                        if crossed_word {
-                            continue;
-                        }
-                    } else if past_vowel && crossed == 1 {
-                        // from anywhere in the word before, as a word start is
+                    // whole words between j and the word i enters
+                    let skipped = if boundary[i] {
+                        crossed
+                    } else if past_vowel && crossed_word {
+                        crossed - 1
                     } else if gap > MAX_NONBOUNDARY_GAP || crossed_word {
                         // a mid-word target may follow only a small same-word gap (a
                         // dropped vowel). A larger gap, or one that crosses into a
@@ -698,8 +702,10 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
                         // boundary, never mid-word (the `ees` of `employees`
                         // threading employee→b[e]fore→[s]tarting).
                         continue;
-                    }
-                    -(gap as f64) * GAP_PENALTY
+                    } else {
+                        0
+                    };
+                    -(gap as f64) * GAP_PENALTY - skipped as f64 * WORD_SKIP_PENALTY
                 };
                 for (pa, cell) in cells.iter().enumerate() {
                     let Some((pscore, _)) = cell else {
@@ -741,7 +747,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
 }
 
 /// Bump when [`transition_pairs`] or the name index's record layout changes.
-const PAIRS_VERSION: u32 = 2;
+const PAIRS_VERSION: u32 = 3;
 
 /// Stamped on every repo's name index: [`transition_pairs`]' version and the
 /// constant of [`align`] it encodes. An index written under another value is
@@ -764,29 +770,30 @@ pub(super) fn pair_code(c: char) -> Option<u8> {
 }
 
 /// Every pair of codes `(a, b)` a query could step across in `name`, as
-/// `a * PAIR_CODES + b`. [`align`] never skips a word and bounds a mid-word gap,
-/// so each consecutive pair of query letters lands on one of these: a later
-/// letter in the same word within the gap, or any letter of a word and the
-/// start of the next (or its second letter, after a [`droppable`] first). Alphanumerics adjacent across separators are added too,
-/// which is how an exact, prefix, separator-free or glob match steps. The name
+/// `a * PAIR_CODES + b`. [`align`] bounds a mid-word gap, so each consecutive
+/// pair of query letters lands on one of these: a later letter in the same word
+/// within the gap, or any earlier letter and a word start (or a word's second
+/// letter, after a [`droppable`] first). Alphanumerics adjacent across
+/// separators are added too, which is how an exact, prefix, separator-free or
+/// glob match steps. The name
 /// index keeps these per name, so a query missing any is rejected unread.
 pub(super) fn transition_pairs(chars: &[char], boundary: &[bool], out: &mut Vec<u16>) {
     let pair = |a: u8, b: u8| u16::from(a) * PAIR_CODES as u16 + u16::from(b);
     let codes: Vec<Option<u8>> = chars.iter().map(|&c| pair_code(c)).collect();
-    let (mut word, mut prev_word) = (0, None);
+    let mut word = 0;
     let mut last_alnum: Option<u8> = None;
     for i in 0..chars.len() {
         if boundary[i] {
-            prev_word = (i > 0).then_some(word);
             word = i;
         }
         let Some(b) = codes[i] else { continue };
         let past_vowel = i >= 2 && word == i - 1 && droppable(fold(chars[i - 1]));
-        let from = match (boundary[i], prev_word) {
-            (true, Some(start)) => start,
-            (true, None) => i,
-            (false, Some(start)) if past_vowel => start,
-            (false, _) => i.saturating_sub(MAX_NONBOUNDARY_GAP + 1).max(word),
+        // words may be skipped, so a word's start (or its second letter,
+        // past a vowel) follows any earlier character
+        let from = if (boundary[i] && i > 0) || past_vowel {
+            0
+        } else {
+            i.saturating_sub(MAX_NONBOUNDARY_GAP + 1).max(word)
         };
         out.extend(codes[from..i].iter().flatten().map(|&a| pair(a, b)));
         out.extend(last_alnum.map(|a| pair(a, b)));
@@ -846,12 +853,10 @@ pub(super) fn aligns(query: &[u8], name: &[u8], boundary: u128) -> bool {
         let near = (s << 1) | ((s << 2) & !(b << 1)) | ((s << 3) & !(b << 1) & !(b << 2));
         // a word start: any position the current word reaches, plus one —
         // `s` smeared forward through the positions that aren't word starts
-        let (mut g, mut p) = (s, inner);
-        for k in [1, 2, 4, 8, 16, 32, 64] {
-            g |= p & (g << k);
-            p &= p << k;
-        }
-        let starts = (g << 1) & b;
+        // a word start: any after the earliest position reached, since
+        // words may be skipped
+        let earliest = s.isolate_lowest_one();
+        let starts = b & !(earliest | (earliest - 1));
         let past_vowel = ((starts & vowels) << 1) & inner;
         s = (near & inner & m) | (starts & m) | (past_vowel & m);
     }
@@ -1941,8 +1946,9 @@ mod tests {
         assert!(subsequence_score("mxncls", "MAX_ENCLOSING").is_some());
         // a dropped consonant is not a skeleton
         assert!(subsequence_score("prsnchr", "parse_branchor").is_none());
-        // and the word dropped from must be the next one
-        assert!(subsequence_score("prsnch", "parse_x_anchor").is_none());
+        // entering the next word beats skipping one to reach it
+        let score = |name| subsequence_score("prsnch", name).unwrap();
+        assert!(score("parse_anchor") > score("parse_x_anchor"));
     }
 
     #[test]
@@ -1955,13 +1961,25 @@ mod tests {
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
             ]
         );
-        // the trailing `s` would have to skip the `x` word to reach `syy` — reject
-        assert!(subsequence_score("employees", "employee_x_syy").is_none());
-        // skipping a whole middle word isn't a match either
-        assert!(subsequence_score("rndsvc", "RefundProcessingService").is_none());
-        // adjacent-word abbreviations still match
+        // adjacent-word abbreviations match
         assert!(subsequence_score("refproc", "RefundProcessor").is_some());
         assert!(subsequence_score("refprocsvc", "RefundProcessingService").is_some());
+    }
+
+    #[test]
+    fn skipping_a_word_costs_more_than_entering_it() {
+        // `braboost` names BRANCH_DIR_BOOST by its first and last words
+        assert!(subsequence_score("braboost", "BRANCH_DIR_BOOST").is_some());
+        let score = |q, name| subsequence_score(q, name).unwrap();
+        // a skipped word costs its letters as a gap, and the skip itself
+        let skipped = score("paycontroller", "pay_runs_controller");
+        let adjacent = score("paycontroller", "pay_controller");
+        assert!(
+            adjacent - skipped >= WORD_SKIP_PENALTY,
+            "{adjacent} vs {skipped}"
+        );
+        // reading every word beats skipping one, even with more letters to cross
+        assert!(score("refsvc", "RefundService") > score("refsvc", "RefundProcessingService"));
     }
 
     #[test]
@@ -1980,9 +1998,9 @@ mod tests {
             match_positions("abc", "alpha_bravo_charlie"),
             vec![0, 6, 12] // a, b, c — each a word initial
         );
-        // but only *adjacent* words — skipping a whole word is not a match
-        assert!(subsequence_score("payrollcontroller", "payroll_runs_controller").is_none());
-        assert!(subsequence_score("apc", "alpha_bravo_charlie").is_none()); // alpha→charlie skips bravo
+        // skipping one (alpha→charlie over bravo) is charged
+        let score = |name| subsequence_score("apc", name).unwrap();
+        assert!(score("alpha_charlie") > score("alpha_bravo_charlie"));
     }
 
     #[test]
@@ -1990,12 +2008,15 @@ mod tests {
         // the reported scatter: `employeescontroller` threaded its `ees` through
         // employee → b[e]fore → [s]tarting (small gaps crossing word boundaries
         // into mid-word chars). You enter a new word at its boundary, not mid-word.
+        // It may reach `starting` by skipping `before`, and pays for the skip.
+        let scattered = "employee_before_starting_controller";
+        let positions = match_positions("employeescontroller", scattered);
         assert!(
-            subsequence_score("employeescontroller", "employee_before_starting_controller")
-                .is_none()
+            !positions.iter().any(|p| (9..15).contains(p)),
+            "{positions:?}"
         );
-        // the clean target still matches
-        assert!(subsequence_score("employeescontroller", "employees_controller").is_some());
+        let score = |name| subsequence_score("employeescontroller", name).unwrap();
+        assert!(score("employees_controller") - score(scattered) > WORD_SKIP_PENALTY);
         // and within-word vowel drops still match (the gap stays in one word)
         assert!(subsequence_score("usr", "user").is_some());
         assert!(subsequence_score("cfg", "config").is_some());

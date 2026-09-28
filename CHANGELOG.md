@@ -17,6 +17,10 @@ and aren't listed; see `git log` for those.
 - **A consonant skeleton may drop a word's first vowel.** `prsnch` finds
   `parse_anchor` and `mxncls` `MAX_ENCLOSING` (D41). The name index is rebuilt
   once per repo, on the first search after upgrading.
+- **A query may skip whole words.** `braboost` finds `BRANCH_DIR_BOOST` and
+  `maxbonus` `MAX_BODY_BONUS`; a name that enters every word still ranks first
+  (D42). Short queries match more names, so fuzzy searches take slightly longer
+  (first answer 3.3 → 3.9 ms median on rails and discourse).
 
 ### Fixed
 - **rq ignores an inherited `GIT_DIR`.** It picks a repo by walking up to its

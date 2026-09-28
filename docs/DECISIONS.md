@@ -2078,3 +2078,77 @@ The 10 lost #1s (2 on the dogfood set, both among them):
 
 *Reverses if:* skeleton matches through a vowel-initial word start show up as noise in
 real use.
+
+## D42 — A query may skip whole words, at a price
+
+**Adopted**, 2026-09-27. Same sets as D40, against D41; latency interleaved on the recall
+harness's 58 hand-picked queries.
+
+*The weakness.* `align` never skipped a word, so a query naming a name by its first and
+last words found nothing: `braboost` for `BRANCH_DIR_BOOST`, `maxbonus` for
+`MAX_BODY_BONUS`, `headelay` for `HEADS_UP_DELAY`. `first+last` was the harness's weakest
+row (46.3% #1, 51.2% top 10), and 172 of the dogfood set's 189 `first+last` misses were
+not found at all. NAME_INDEX.md had costed the fix at design time.
+
+*The rule.* A word start (or a word's second letter, past a dropped vowel, D41) may follow
+any earlier matched letter. Each whole word stepped over costs `WORD_SKIP_PENALTY` (40),
+on top of the gap its letters already cost: more than a matched word start earns (25), so
+a reading that enters every word outranks one that leaves one out. The name index follows:
+`transition_pairs` pairs every earlier character with each word start, and `aligns`
+reaches every word start after the earliest position it holds, which is simpler than the
+Kogge-Stone fill it replaces. `PAIRS_VERSION` 2 → 3. `make fuzz` (20,000 names, four
+seeds) and the exhaustive rails + discourse test show no disagreement.
+
+*Sizing the charge*, each against D41:
+
+| per skipped word | harness #1 | down | lost #1 | lost top 10 | dogfood #1 |
+|---|---|---|---|---|---|
+| 25 | 5,166 | 49 | 3 | 2 | 6,383 |
+| **40** | **5,158** | **25** | **2** | **0** | **6,380** |
+| 60 | 5,146 | 7 | 1 | 0 | 6,374 |
+
+With no charge beyond the gap (screened on the dogfood set), `vistno` and `visnode` lost
+`visit_statements_node` from the top 10 to `visit_def_node`, which skips the shorter word.
+25 lets a skip beat an adjacent reading on side features (`togsec` → `toggle_section`
+#5 → #15); 60 gives back 12 #1s to save one. 40 is the smallest charge that loses no
+top 10.
+
+| | #1 | top 10 | found |
+|---|---|---|---|
+| harness, D41 | 5,052 (74.1%) | 5,915 (86.7%) | 6,213 (91.1%) |
+| harness, this | 5,158 (75.6%) | 6,132 (89.9%) | 6,563 (96.2%) |
+| dogfood, D41 | 6,301 (88.1%) | 6,774 (94.7%) | 6,835 (95.6%) |
+| dogfood, this | 6,380 (89.2%) | 6,876 (96.1%) | 6,986 (97.7%) |
+
+`first+last` goes 46.7 → 59.9% #1 and 51.9 → 78.3% top 10. Ruby's found rate goes 89.9 →
+99.4%, Rust's 91.7 → 94.6%. Harness 356 up and 25 down, dogfood 151 up and none down.
+Anchored (213 / 359 #1, 432 / 439 top 10, plain / anchored) and the regress cases
+unchanged, plus a new one (`braboost`). The two lost #1s:
+- `tesfilfiewitdiruplwheraidiruplurlisnotdef` (a 41-letter `abbr3`): both it and the
+  name with an extra `tag` word saturate the alignment's 600 cap, so the skip's charge
+  never lands and side features decide. The cap's limit, not the skip's.
+- `admdembers` (a typo of `addMembers`): `AddJoinModeToChannelMemberships` now holds its
+  letters in order through a skip. D14's in-order-versus-near-miss competition, as in D41.
+
+*Latency.* More names match a short query, so recall fetches and scores more rows:
+`rsp` 858 → 2,213 candidates (query phase 7.2 → 16.7 ms), `hwia` 112 → 663, `apc` 562 →
+1,106. 7 interleaved reps × 58 queries, median / p90 of per-query medians, ms:
+
+| | query phase | first answer | wall |
+|---|---|---|---|
+| D41 | 2.2 / 14.6 | 3.3 / 16.1 | 16.7 / 34.1 |
+| this | 2.6 / 17.5 | 3.9 / 18.7 | 16.9 / 34.0 |
+| main (before D40) | 2.0 / 11.0 | 3.3 / 12.7 | 16.2 / 33.6 |
+| D40–D42 | 2.6 / 17.2 | 3.9 / 18.3 | 16.4 / 33.4 |
+
+Inside the 50 ms first-answer budget, and wall doesn't move (the git check after the
+answer dominates it, D23). Accepted for the recall it buys.
+
+*Not revisited: D30.* `fntfam` still ranks `FONT_FAMILY` fifth: its cost is the `_`
+counted as a one-character gap on a step that stays contiguous in letters, which neither
+the vowel nor the skip rule touches. D30's measurement stands.
+
+*Reverses if:* short queries' candidate counts show up in first-answer latency on a large
+repo. The simpler lever is then a bound on how many words one step may skip, which the
+pairs can encode; the rejected alternative is a skip allowed only into the last word,
+which is `first+last`'s recipe rather than a reading rule.

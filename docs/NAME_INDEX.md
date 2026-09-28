@@ -17,19 +17,21 @@ the only fuzzy recall: the trigram table and the nets are gone.
 D21 failed because the net it replaced ("shares any trigram") can't prune. But the scorer
 never asked for a plain subsequence. `align` accepts only this shape: the first query
 letter anywhere; each later letter either stays in the current word within a gap of 2
-(`MAX_NONBOUNDARY_GAP`), or lands on the *first letter of the next word* (or its second,
-when the first is a vowel a skeleton dropped, D41). No word may be skipped. So every
-consecutive query pair `(a, b)` must be a **transition pair** of the name:
+(`MAX_NONBOUNDARY_GAP`), or lands on the *first letter of a later word* (or its second,
+when the first is a vowel a skeleton dropped, D41). Words may be skipped, at a price in
+the score (D42), but a later word is never entered further in. So every consecutive query
+pair `(a, b)` must be a **transition pair** of the name:
 
 - `(name[j], name[i])`, `i` mid-word, `j` in the same word, `i - j <= 3`
-- `(name[j], name[i])`, `i` a word start, `j` anywhere in the word immediately before
+- `(name[j], name[i])`, `i` a word start, `j` anywhere before it
 - `(name[j], name[i])`, `i` the second letter of a word starting with a vowel, `j`
-  anywhere in the word immediately before
+  anywhere before that word
 - plus alphanumerics adjacent across separators, which is how an exact, prefix,
   separator-free (`joiners_eq`) or glob match steps
 
 With 37 codes (26 letters, 10 digits, "any other alphanumeric") there are 1,369 possible
-pairs, and a name holds ~37–51 of them, so a 7-letter query's 6 pairs are very selective.
+pairs. Before D42 a name held ~37–51 of them; skipping words roughly doubles that, and a
+7-letter query's 6 pairs stay selective.
 That is a prunable necessary condition, which D21's reversal clause asked for.
 
 `score::transition_pairs` generates the pairs, next to `align`, whose rules it encodes.
@@ -58,7 +60,7 @@ miss: a length within two, the first character right or swapped with the second,
 most two of the query's codes absent. Survivors are then **verified** by the scorer's own
 chain: prefix (which covers exact), `joiners_eq`, alignment, glob, or `near_miss_distance`.
 The alignment check is `score::aligns`, a bit-parallel reachability over the same
-transitions (u128 masks, a Kogge-Stone fill for "the next word's start"); a name longer
+transitions (u128 masks; a word start is reachable from any earlier position); a name longer
 than 128 bytes or not ASCII goes through `align` itself.
 
 The scorer folds a name's letters one at a time (`score::fold`) to meet a query lowercased
@@ -191,6 +193,7 @@ under the old nets. `transition_pairs` is the one piece they share, so postings 
 layered on the same pairs and verifier if a repo with a million names turns up.
 
 Costs accepted: the pair function encodes `align`'s transition rules, so changing those
-rules changes the index format (and rebuilds every repo's index). Allowing word skips, the
-obvious fix for `first+last`'s low rate, would mean pairs of "any earlier character → word
-initial", roughly twice the pairs per name, still selective.
+rules changes the index format (and rebuilds every repo's index). D42 did exactly that
+for word skips, the fix for `first+last`'s low rate: pairs of "any earlier character →
+word initial", and `aligns` reaches every word start after the earliest position it holds,
+which replaced its Kogge-Stone fill.
