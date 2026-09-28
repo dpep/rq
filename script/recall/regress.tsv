@@ -35,3 +35,7 @@ tokio	TryRecvError::Empty	^tokio/src/sync/(mpsc/error|broadcast).rs:\d+ Empty$
 tokio	select	^tokio/src/macros/select.rs:\d+ select$
 tokio	block_on	^tokio/src/runtime/(runtime|handle).rs:(325|300) block_on$
 tokio	Runtime::block_on	^tokio/src/runtime/runtime.rs:325 block_on$
+gin	HandlerFunc	^gin.go:58 HandlerFunc$
+gin	HandlersChain	^gin.go:64 HandlersChain$
+excalidraw	EVENT.MOUSE_MOVE	^packages/common/src/constants.ts:67 MOUSE_MOVE$
+django	deconstruct	^django/db/models/fields/__init__.py:606 deconstruct$

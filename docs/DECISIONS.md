@@ -702,7 +702,8 @@ with the rule each language's own syntax supports:
   casing**. Plus a class's `static readonly` field. Out: `let`/`var` (mutable,
   as in Go), destructuring (binds names, defines nothing), anything below module
   level, and enum members (the enum is the target; Rust doesn't index variants
-  either, and `Red`/`None`/`Default` would collide everywhere).
+  either, and `Red`/`None`/`Default` would collide everywhere). *Reversed by
+  D37:* members are now `variant`s, as Rust's are.
 
 *Why all `const`s in JS, not just `UPPER_SNAKE`.* In JS the keyword is the
 declaration. `export const router = createRouter()`, `const Button =
@@ -1805,12 +1806,13 @@ still wins), and above test code (−400). An `--anchor` inside the enclosing de
 back up to 270, so asked from there it still wins. The value is language-neutral; only
 Python emits it today.
 
-django: 41,194 → 42,279 symbols (+1,085, of which 809 under `tests/`). 24 names are both
-a nested def outside `tests/` and some other definition outside it. With the nested
-defs marked `private`, 4 of them ranked a nested def above its namesake: `_save`
-(`LayerMapping.save`'s over `FileSystemStorage._save`), `deconstruct`
-(`deconstructible.decorator`'s, carried by `path`, over `Field.deconstruct`), `_compile`
-and `asend` (#2 and #3 ahead of methods). With `local`, none do.
+Recall is in D37, measured with it. django: 41,194 → 42,279 symbols (+1,085, of which
+809 under `tests/`). 24 names are both a nested def outside `tests/` and some other
+definition outside it. With the nested defs marked `private`, 4 of them ranked a nested
+def above its namesake: `_save` (`LayerMapping.save`'s over `FileSystemStorage._save`),
+`deconstruct` (`deconstructible.decorator`'s, carried by `path`, over
+`Field.deconstruct`), `_compile` and `asend` (#2 and #3 ahead of methods). With `local`,
+none do.
 
 *Rejected:*
 - **`private`.** The four above: −15 is a tiebreaker, and a closure's larger body or a
@@ -1820,3 +1822,87 @@ and `asend` (#2 and #3 ahead of methods). With `local`, none do.
 
 *Reverses if:* closures turn out to be navigated to in preference to a same-named
 module-level definition (then drop `local` back to the `private` size).
+
+## D37 — Go, Python and TypeScript adopt the shared kinds
+
+**Adopted**, 2026-09-27. Language testers on hugo, gin, django and excalidraw; recall
+harness (D12) against main.
+
+*The weakness.* 0.56.0 gave the model `type` and `variant` for Rust, and the other
+plugins still spoke the old vocabulary. Go dropped every named type that wasn't a
+struct or interface: gin's `HandlerFunc` (`rq HandlerFunc` → `no_match`) and
+`HandlersChain`, hugo's `type GitInfo = gitmap.GitInfo`. TypeScript labelled type
+aliases `struct` and skipped enum members (`rq EVENT.MOUSE_MOVE` → `no_match`).
+Python's enums were classes of constants, and lowercase members were missed.
+
+*The rules.* All syntactic, each in its plugin:
+- **Go:** any `type_spec` that isn't a struct or interface, and every `type X = Y`
+  alias, is a `type`.
+- **TypeScript:** `type X = …` is a `type`. Each enum member is a `variant` of its
+  enum, with the enum's visibility; a quoted member loses its quotes.
+- **TypeScript/JavaScript:** a binding whose value is a call whose first argument is
+  (through nested calls) a function literal is a `function`: `memo((p) => …)`,
+  `React.forwardRef(function F() …)`, `memo(forwardRef(…))`. The callee's name isn't
+  read. `memo(BadgeBase)`, which wraps a name, stays a `constant`: the function it
+  wraps is indexed under its own name.
+- **Python:** a class with a base whose last dotted segment ends in `Enum`, `Flag` or
+  `Choices` is an `enum`, and each name its body assigns (with a value, no leading
+  underscore) is a `variant` of it.
+
+| corpus | symbols before | after | what changed |
+|---|---|---|---|
+| gin | 1,639 | 1,674 | 35 `type` |
+| hugo | 10,875 | 11,060 | 185 `type` |
+| excalidraw | 4,818 | 4,887 | 559 `struct` → `type`, 40 `variant`, 65 `constant` → `function` |
+| django (with D36) | 41,194 | 42,302 | 41 `enum` (15 outside `tests/`, all real enums), 129 `variant` |
+
+`HandlerFunc`, `HandlersChain`, `goBinaryStatus`, `EVENT.MOUSE_MOVE` and `_view_wrapper`
+now answer #1 (regress cases); hugo's `GitInfo` finds the alias first. Ranking barely
+moves: `variant`, `function` and `constant` carry no kind weight, and `type` weighs 12,
+so only a TS alias, 15 as a `struct`, loses 3. `make recall BASE=main` over this branch
+(D36 included): 0 sources up, 1 down, the top 10 changed in 13 of 6,879 queries, none
+lost #1 or the top 10. Ruby (56.4 / 75.6 / 86.4%) and Rust (81.2 / 89.3 / 90.0%) didn't
+move, nor did the regress set (33 of 36 on both; four cases added here take it to 34 of
+40 on main and 37 of 40 on this branch, `deconstruct` guarding D36) or the anchored set
+(213 / 359 #1, 432 / 439 top 10). The recall corpora hold TS and Python too: the one
+down is `res*fn`, discourse's TS alias `ResolveBlockFn`, #2 → #3, since `type` weighs 12
+where `struct` weighed 15; the other changes are further down a top 10, mostly the
+`script/*.py` nested helpers of rq and trekr (`rank`, `cut`, `dist`) appearing below the
+Rust definition of the same name.
+
+*D17's enum-member exclusion is reversed.* It rested on Rust not indexing variants
+(it does since 0.56.0) and on collisions. In excalidraw, 8 of the 40 members share a
+name with another definition; each ranks first only for its own spelling (`rq
+UPDATE` finds `WS_SUBTYPES.UPDATE`, `rq update` the methods, per D32).
+
+*Kept as they are:*
+- **An interface prints as `trait`.** A per-language display name (`interface` in Go
+  and TS) was weighed and turned down. `kind` is one vocabulary across text, JSON and
+  `-k`; a mixed-language result list would print one kind two ways; a script
+  grouping JSON by `kind` would have to know `interface` and `trait` are one; and a
+  display table keyed by language is a special case per language at the edge. The
+  input side already accepts `-k interface` and `rq interface X`, and the VS Code
+  extension maps `trait` to its Interface icon. Aliasing text alone would make text
+  and JSON disagree about the same hit. The skill and `--help` say `interface` =
+  `trait`.
+- **`@property`, `@classmethod` and `@staticmethod` stay `method`**, with no new field.
+  A property is navigated to like any method, and `-k method` should find it; a kind
+  per decorator would split one target by how it's called. A `decorators` or `detail`
+  field would need a column, a migration and an output field that no filter or
+  ranking signal reads. The decorator is on the line above the one rq returns.
+- **Go's iota constants aren't tied to their type.** `parent` is lexical nesting, and
+  a const isn't nested in its type: Go spells it `pkg.StateIdle`, never
+  `State.StateIdle`. Calling them `variant` would turn a convention into an enum.
+- **TypeScript overload signatures stay folded into the implementation**, which is
+  the one navigation target; emitting each signature would multiply results for
+  every overloaded function. A known gap, left open: a `declare function` with no
+  implementation (a `.d.ts`) is a `function_signature` too, and isn't indexed.
+- **No list of wrapper names** (`memo`, `forwardRef`, `observer`, …) for the
+  wrapped-function rule. It would catch `memo(BadgeBase)`, but it's a per-framework
+  list to maintain. The literal-argument rule also calls `computed(() => …)` a
+  function; kind carries no ranking weight between `function` and `constant`, so the
+  mislabel costs only `-k`.
+
+*Reverses if:* testers read `trait` for an interface as wrong in practice (then alias
+text output only, and record why text and JSON differ); or an agent needs to tell a
+property from a method without reading source (then a `detail` output field).
