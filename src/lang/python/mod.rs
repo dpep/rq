@@ -3,7 +3,9 @@
 //! `Inner · Outer`). Decorators are transparent — the wrapped def is what counts.
 //! A `def` nested in another (a closure, a decorator's wrapper) → function,
 //! qualified by its enclosing def, and `local`: nothing outside can reach it.
-//! Classes and assignments inside a def are locals and stay out.
+//! Classes and assignments inside a def are locals and stay out. A class whose
+//! base visibly is an enum (`Enum`, `IntFlag`, `models.TextChoices`) → enum,
+//! and each name its body assigns → variant.
 //! An `UPPER_SNAKE` assignment at module or class level → constant: Python has
 //! no `const`, so the naming convention is the only declaration of intent there
 //! is. A lowercase module variable is ordinary state and stays out.
@@ -46,6 +48,9 @@ impl LanguagePlugin for Python {
 enum Scope {
     Module,
     Class,
+    /// The body of a class that visibly subclasses an enum: its bindings are
+    /// members.
+    Enum,
     /// A def body: only nested defs are definitions here.
     Function,
 }
@@ -57,17 +62,22 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
         match child.kind() {
             "class_definition" if scope != Scope::Function => {
                 if let Some(name) = ctx.field_text(child, "name") {
-                    let mut s = ctx.symbol(&name, Kind::Class, child, parent);
+                    let (kind, body) = if is_enum(ctx, child) {
+                        (Kind::Enum, Scope::Enum)
+                    } else {
+                        (Kind::Class, Scope::Class)
+                    };
+                    let mut s = ctx.symbol(&name, kind, child, parent);
                     s.visibility = Some(name_visibility(&name));
                     out.push(s);
                     let qualified = qualify(parent, &name, ".");
-                    walk(ctx, child, Some(&qualified), Scope::Class, out);
+                    walk(ctx, child, Some(&qualified), body, out);
                 }
             }
             "function_definition" => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     let (kind, vis) = match scope {
-                        Scope::Class => (Kind::Method, name_visibility(&name)),
+                        Scope::Class | Scope::Enum => (Kind::Method, name_visibility(&name)),
                         Scope::Module => (Kind::Function, name_visibility(&name)),
                         Scope::Function => (Kind::Function, "local"),
                     };
@@ -80,6 +90,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
             }
             // a local class holds nothing reachable from outside the def
             "class_definition" => {}
+            "assignment" if scope == Scope::Enum => members(ctx, child, parent, out),
             "assignment" if scope != Scope::Function => constants(ctx, child, parent, out),
             // a decorated class/function: descend so the wrapped def is seen
             // in the same context
@@ -88,10 +99,48 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
     }
 }
 
-/// Emit the constant names an assignment binds: `X = …`, `X: int = …`, each
-/// name of `A, B = …`, and every target of a chained `A = B = …`.
+/// Whether a class visibly subclasses an enum: a base whose last dotted
+/// segment ends in `Enum`, `Flag` or `Choices` (`enum.Enum`, `IntFlag`,
+/// Django's `models.TextChoices`). Read off the source, so a subclass of an
+/// enum that doesn't say so in its name stays a class.
+fn is_enum(ctx: &Ctx, class: Node) -> bool {
+    let Some(bases) = class.child_by_field_name("superclasses") else {
+        return false;
+    };
+    let mut cursor = bases.walk();
+    bases
+        .named_children(&mut cursor)
+        .filter(|b| matches!(b.kind(), "identifier" | "attribute"))
+        .filter_map(|b| ctx.node_text(b))
+        .any(|b| {
+            let last = b.rsplit('.').next().unwrap_or(&b);
+            ["Enum", "Flag", "Choices"]
+                .iter()
+                .any(|s| last.ends_with(s))
+        })
+}
+
+/// Emit each member an enum body's assignment binds, as a variant. Names with
+/// a leading underscore are Enum's own (`_ignore_`) or private, not members,
+/// and a bare annotation (`size: int`) assigns nothing.
+fn members(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+    if assign.child_by_field_name("right").is_none() {
+        return;
+    }
+    bindings(assign, &mut |target| {
+        if let Some(name) = ctx.node_text(target)
+            && !name.starts_with('_')
+        {
+            let mut s = ctx.symbol(&name, Kind::Variant, assign, parent);
+            s.visibility = Some("public");
+            out.push(s);
+        }
+    });
+}
+
+/// Emit the constant names an assignment binds.
 fn constants(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
-    let mut emit = |target: Node| {
+    bindings(assign, &mut |target| {
         if let Some(name) = ctx.node_text(target)
             && is_constant_name(&name)
         {
@@ -99,7 +148,12 @@ fn constants(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol
             s.visibility = Some(name_visibility(&name));
             out.push(s);
         }
-    };
+    });
+}
+
+/// Hand `emit` each name an assignment binds: `X = …`, `X: int = …`, each
+/// name of `A, B = …`, and every target of a chained `A = B = …`.
+fn bindings(assign: Node, emit: &mut impl FnMut(Node)) {
     if let Some(left) = assign.child_by_field_name("left") {
         match left.kind() {
             "identifier" => emit(left),
@@ -107,7 +161,7 @@ fn constants(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol
                 let mut cursor = left.walk();
                 left.named_children(&mut cursor)
                     .filter(|n| n.kind() == "identifier")
-                    .for_each(&mut emit);
+                    .for_each(&mut *emit);
             }
             _ => {} // `obj.attr = …`, `x[i] = …`: not a new name
         }
@@ -115,7 +169,7 @@ fn constants(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol
     if let Some(right) = assign.child_by_field_name("right")
         && right.kind() == "assignment"
     {
-        constants(ctx, right, parent, out);
+        bindings(right, emit);
     }
 }
 
@@ -224,6 +278,63 @@ class Account:
         for absent in ["Local", "hidden", "LIMIT"] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
         }
+    }
+
+    #[test]
+    fn visible_enum_subclasses_are_enums_of_variants() {
+        let src = r#"
+import enum
+from django.db import models
+
+class Color(enum.Enum):
+    RED = 1
+    green = auto()
+    _ignore_ = ["tmp"]
+    size: int
+
+    def describe(self):
+        return self.name
+
+class Year(models.TextChoices):
+    FRESHMAN = "FR", _("Freshman")
+
+class Perm(IntFlag, metaclass=Meta):
+    READ = 4
+
+class Plain(Base):
+    LIMIT = 3
+"#;
+        let syms = extract(src);
+        for (name, parent) in [("Color", None), ("Year", None), ("Perm", None)] {
+            let s = find(&syms, name);
+            assert_eq!(
+                (s.kind, s.parent.as_deref()),
+                (Kind::Enum, parent),
+                "{name}"
+            );
+        }
+        for (name, parent) in [
+            ("RED", "Color"),
+            ("green", "Color"),
+            ("FRESHMAN", "Year"),
+            ("READ", "Perm"),
+        ] {
+            let s = find(&syms, name);
+            assert_eq!(
+                (s.kind, s.parent.as_deref()),
+                (Kind::Variant, Some(parent)),
+                "{name}"
+            );
+        }
+        assert_eq!(find(&syms, "describe").kind, Kind::Method);
+
+        // not members: Enum's own names and a bare annotation
+        for absent in ["_ignore_", "size"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
+        // a base that doesn't say enum leaves a class of constants
+        assert_eq!(find(&syms, "Plain").kind, Kind::Class);
+        assert_eq!(find(&syms, "LIMIT").kind, Kind::Constant);
     }
 
     #[test]

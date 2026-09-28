@@ -59,6 +59,18 @@ fn python_definitions_rank_and_classify() {
 
     assert_eq!(top(&store, "build_account").kind, "function");
 
+    // an enum.Enum subclass is an enum of variants, found through its scope
+    let status = top(&store, "AccountStatus");
+    assert_eq!(
+        (status.name.as_str(), status.kind.as_str()),
+        ("AccountStatus", "enum")
+    );
+    let open = top(&store, "AccountStatus.OPEN");
+    assert_eq!(
+        (open.name.as_str(), open.kind.as_str()),
+        ("OPEN", "variant")
+    );
+
     // a closure ranks below the module-level function it shares a name with,
     // and says why
     let audits = search::search(&store, "_audit", None, None, &Context::default(), 10)

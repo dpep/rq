@@ -18,10 +18,17 @@ and aren't listed; see `git log` for those.
   parent is the enclosing def (`_wrapper · _multi_decorate`). Its
   visibility is the new value `local`, and it ranks below every same-named
   definition outside a function body (`local` in `--explain`).
+- **Python: enum classes are `enum`s of `variant`s.** A class whose base
+  visibly is an enum (`enum.Enum`, `IntFlag`, `models.TextChoices`) is kind
+  `enum`, and each name its body assigns is a `variant`: `rq Color.RED`,
+  `-k variant`. Lowercase members, never constants, are now found too.
 - **TypeScript: enum members are indexed**, as `variant`s of their enum:
   `rq EVENT.MOUSE_MOVE` and `rq MOUSE_MOVE -k variant` find them.
 
 ### Changed
+- **Python enum classes print as `enum`, and their members as `variant`**,
+  where they were `class` and `constant`. `-k class` no longer lists them;
+  `-k enum` and `-k variant` do.
 - **TypeScript type aliases are kind `type`, not `struct`.** `type Size = …`
   now prints and serializes as `type`, like Rust's and Go's. `-k type` finds
   them as before; `-k struct` no longer does.

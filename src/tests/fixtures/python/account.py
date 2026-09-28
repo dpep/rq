@@ -1,8 +1,19 @@
 """Fixture: a small, domain-neutral Python file exercising class, method,
-free-function, nested-function, and constant extraction."""
+free-function, nested-function, enum, and constant extraction."""
+
+import enum
 
 MAX_RETRIES = 3
 default_currency = "XYZ"
+
+
+class AccountStatus(enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+def account_status_for(account):
+    return AccountStatus.OPEN
 
 
 class Account:
