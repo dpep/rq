@@ -253,6 +253,12 @@ function symbolKind(kind: string): vscode.SymbolKind {
       return vscode.SymbolKind.Enum;
     case "trait":
       return vscode.SymbolKind.Interface;
+    case "type":
+      return vscode.SymbolKind.Class;
+    case "variant":
+      return vscode.SymbolKind.EnumMember;
+    case "constant":
+      return vscode.SymbolKind.Constant;
     default:
       return vscode.SymbolKind.Function;
   }
