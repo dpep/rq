@@ -390,6 +390,10 @@ why a result ranked where it did:
   query about equally well. Each is scaled by the match quality, so they keep
   full weight between two exact matches and shrink to about a third on a fuzzy
   one, where they used to outweigh the name itself (D24)
+- **top level** — for an unqualified query, a type with no enclosing scope earns
+  10 (`top_level`) when a type of the same name is nested somewhere among the
+  results, so `Account` answers the top-level model before a
+  `Billing::Providers::Account` that `depth` leaves tied with it (D43)
 - **test path** — a definition under `test/`, `spec/` and the like, or in a
   `_test`/`_spec` file, takes −400 on a literal match, enough to cross from exact
   to prefix. A fuzzy or typo match gives up 0.4 × its name evidence instead, so a

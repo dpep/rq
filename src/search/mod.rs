@@ -368,6 +368,35 @@ fn constructor_owner(hits: &mut Vec<Hit>) {
     }
 }
 
+/// Asked for by name alone, a type nothing encloses is the one its name means
+/// when the same name is also nested somewhere: `Account` the model over
+/// `Billing::Providers::Account`, which `depth` leaves tied (DECISIONS D43).
+/// Relative to the results, not a bonus for any top-level type: in Rust or Go
+/// every type is top-level, and a flat bonus ranked `Copy` over `copy`.
+/// Types only, since a function's parent is its owner, not a namespace.
+fn top_level(hits: &mut [Hit]) {
+    let is_type = |h: &Hit| score::PRIMARY_KINDS.contains(&h.kind.as_str());
+    let nested: std::collections::HashSet<String> = hits
+        .iter()
+        .filter(|h| is_type(h) && h.parent.is_some())
+        .map(|h| h.name.clone())
+        .collect();
+    for h in hits.iter_mut() {
+        if is_type(h) && h.parent.is_none() && nested.contains(&h.name) {
+            let value = TOP_LEVEL_BONUS * score::match_quality(&h.features);
+            h.features.push(score::Feature {
+                name: "top_level",
+                value,
+            });
+            h.score += value;
+        }
+    }
+}
+
+/// Sized below a kind step (15): past that, Ruby's reopened builtins (`class
+/// String` in a core extension) outrank the real namespaced classes.
+const TOP_LEVEL_BONUS: f64 = 10.0;
+
 /// Anything above zero is worth showing; below it, only a wrong answer.
 fn found(m: &Matches) -> bool {
     m.hits.iter().any(|h| h.score > 0.0)
@@ -474,6 +503,9 @@ fn search_query(
         if !retried.is_empty() {
             hits = retried;
         }
+    }
+    if qualifier.is_none() {
+        top_level(&mut hits);
     }
     let n_hits = hits.len();
     let t_score = t.elapsed();
@@ -1369,6 +1401,76 @@ mod tests {
         let hits = search(&store, "save", None, None, &ctx, 10).unwrap();
         assert_eq!(hits[0].parent.as_deref(), Some("Shop::Widget"));
         assert!(hits[0].features.iter().any(|f| f.name == "enclosing"));
+    }
+
+    #[test]
+    fn a_bare_type_name_prefers_the_top_level_definition() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/x"), None)
+            .unwrap();
+        // the nested ones have the bigger bodies, which used to decide it
+        let account = |parent: Option<&str>, end_line| Symbol {
+            parent: parent.map(str::to_string),
+            end_line,
+            ..sym("Account", Kind::Class)
+        };
+        for (file, parent, end_line) in [
+            (
+                "app/services/billing/providers/account.rb",
+                Some("Billing::Providers"),
+                12,
+            ),
+            ("app/models/account.rb", None, 6),
+            ("lib/admin/account.rb", Some("Admin"), 9),
+        ] {
+            store
+                .replace_file_symbols(repo, file, "ruby", None, "h", &[account(parent, end_line)])
+                .unwrap();
+        }
+
+        let plain = search(&store, "Account", None, None, &Context::default(), 10).unwrap();
+        assert_eq!(plain[0].file, "app/models/account.rb");
+        assert!(plain[0].features.iter().any(|f| f.name == "top_level"));
+
+        // a named scope asks for a nested one, and gets it
+        let scoped = search(
+            &store,
+            "Admin::Account",
+            None,
+            None,
+            &Context::default(),
+            10,
+        )
+        .unwrap();
+        assert_eq!(scoped[0].parent.as_deref(), Some("Admin"));
+        assert!(
+            scoped
+                .iter()
+                .all(|h| h.features.iter().all(|f| f.name != "top_level"))
+        );
+
+        // so does a query asked from inside the namespace
+        let defs = [
+            row("Billing", None, "app/services/billing/charge.rb", (1, 20)),
+            row(
+                "Providers",
+                Some("Billing"),
+                "app/services/billing/charge.rb",
+                (2, 19),
+            ),
+        ];
+        let ctx = Context {
+            anchor: Some(Anchor::new(
+                "local:/tmp/x".into(),
+                "app/services/billing/charge.rb".into(),
+                5,
+                &defs,
+            )),
+            ..Context::default()
+        };
+        let anchored = search(&store, "Account", None, None, &ctx, 10).unwrap();
+        assert_eq!(anchored[0].parent.as_deref(), Some("Billing::Providers"));
     }
 
     #[test]

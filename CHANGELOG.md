@@ -7,6 +7,15 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- **A bare type name answers the top-level definition first.** `rq Account` ranks
+  `class Account < ApplicationRecord` above a `Billing::Providers::Account`, which
+  used to tie with it and win on body length. It applies only when the same name is
+  also nested somewhere; a qualified query (`Admin::Account`) or an `--anchor`
+  inside the namespace still gets the nested one (DECISIONS D43).
+
 ## 0.58.1 — 2026-09-27
 
 ### Changed

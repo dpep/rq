@@ -46,3 +46,6 @@ excalidraw	png-chunk-text.decode	^packages/excalidraw/global.d.ts:42 decode$
 django	RelatedManager	^django/db/models/fields/related_descriptors.py:722 RelatedManager$
 rq	prsnch	^src/cli/mod.rs:610 parse_anchor$
 rq	braboost	^src/search/mod.rs:3[57] BRANCH_(DIR|FILE)_BOOST$
+discourse	UsersController	^app/controllers/users_controller.rb:3 UsersController$
+discourse	MutedUser	^app/models/muted_user.rb:3 MutedUser$
+rails	ActiveModel	^activemodel/lib/active_model.rb:32 ActiveModel$

@@ -2152,3 +2152,69 @@ the vowel nor the skip rule touches. D30's measurement stands.
 repo. The simpler lever is then a bound on how many words one step may skip, which the
 pairs can encode; the rejected alternative is a skip allowed only into the last word,
 which is `first+last`'s recipe rather than a reading rule.
+
+## D43 — A top-level type outranks its nested namesakes
+
+**Adopted**, 2026-09-28. User report; recall harness, anchored set and dogfood set against
+main (0.58.1), plus a screen of every name defined both at the top level and nested.
+
+*The report.* In a Rails app, `rq Account` ranked `class Account < ApplicationRecord` #2,
+behind a `Billing::Providers::Account`, at confidence 0.50 each. `depth` charges nothing
+up to two levels (`FREE_DEPTH`), so the model and its nested namesakes tie on every
+feature but `extent`, which decides by whichever class is longer.
+
+*The rule.* For an unqualified query, a type (`class`, `module`, `struct`, `enum`,
+`trait`) with no parent earns `top_level`, 10 × match quality, when a type of the same
+name among the results has one. It is relative to the results, applied after scoring
+beside `constructor_owner`, because a per-candidate bonus is a bonus for *languages*: Rust
+and Go record no module as a parent, so every type there is top-level. The first cut gave
+any parentless type 10 and lost 30 #1s, all Rust: `copy` → the `Copy` trait over `fn copy`,
+`tick` → `Tick`, `linnum` → `LineNumber` over `line_number`. That is `FREE_DEPTH`'s
+`.esm.js` lesson again. Types only: a method's parent is its owner, not a namespace, so a
+free function is no more canonical than a method (and `block_on`'s crate-internal free
+function would have gained). A named scope or an anchor says which one is meant:
+`Admin::Account` never carries it, and `--anchor`'s `enclosing` (60 a level) outweighs it.
+
+*Sizing.* 568 names are defined both ways in rails, discourse, tokio and django. Where
+their #1 lands, by bonus:
+
+| bonus | #1 top-level | changed |
+|---|---|---|
+| 0 (main) | 375 | |
+| 5 | 419 | 44 |
+| **10** | **434** | **59** |
+| 15 | 451 | 76 |
+| 25 | 466 | 91 |
+
+At 10 the changes read as intended: `UsersController`, `GroupsController` and
+`EmailController` over their `Admin::` twins, the `MutedUser` and `UserFieldOption` models
+over the importer's copies, `lib/search.rb`'s `Search` over `Tags::Search`, rails'
+`ActiveModel` module over a generator's class, tokio's `FastRand` over a private copy in
+`tokio-stream`. Ten are cross-language (a JS model over a namespaced Ruby one, rails'
+actioncable `Connection` over `ActiveRecord::TypeCaster::Connection`); neither side is
+more canonical, and main's pick was the longer body. 15 adds reopened builtins (core
+extensions' `class String`, `Date`, `Numeric`) over `ActiveModel::Type::String` and the
+like; 25 adds `Digest`, `File` and `Method`. The rest of both steps are test classes.
+
+| | #1 | top 10 | found |
+|---|---|---|---|
+| harness, main | 5,158 (75.6%) | 6,132 (89.9%) | 6,563 (96.2%) |
+| harness, this | 5,158 | 6,131 | 6,563 |
+| dogfood, main and this | 6,380 (89.2%) | 6,876 (96.1%) | 6,986 (97.7%) |
+
+The harness ranks by name, so it can't see an order among namesakes: 2 up, 14 down, no
+lost #1. The one lost top 10, `dscrsp` (`DiscoursePluginRegistry` #7 → #12), is the
+feature on a fuzzy match: `DiscourseRssPolling`, a namespace module also nested as
+`Jobs::DiscourseRssPolling`, gains 4 points in a near tie. The dogfood set changes 14 top
+10s and no source. Anchored call sites are unchanged (213 / 359 #1, 432 / 439 top 10,
+plain / anchored). Regress 44 of 47 before, plus three new cases that main fails
+(`UsersController`, `MutedUser`, `ActiveModel`).
+
+*Rejected:*
+- **A bonus for any definition with no parent**, the report's own wording. Free functions
+  in every language but Ruby would outrank methods, which `FREE_DEPTH` exists to prevent.
+- **Charging per level from zero.** The same language penalty, per level.
+
+*Reverses if:* a language starts recording modules as parents (then every type in it is
+nested, and the rule reads that language's namespaces as it reads Ruby's), or top-level
+declarations that only reopen a class (Ruby core extensions) show up winning in real use.

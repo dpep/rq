@@ -307,6 +307,44 @@ fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
 }
 
 #[test]
+fn a_bare_class_name_answers_the_top_level_class_first() {
+    // a nested one has the bigger body, which used to decide it
+    let (dir, db) = scratch("top-level");
+    for (path, src) in [
+        (
+            "app/models/account.rb",
+            "class Account < ApplicationRecord\n  has_many :users\n  has_many :invoices\nend\n",
+        ),
+        (
+            "app/services/billing/providers/account.rb",
+            "module Billing\n  module Providers\n    class Account\n      def charge\n        1\n      end\n    end\n  end\nend\n",
+        ),
+        (
+            "app/reports/types/account.rb",
+            "module Reports\n  module Types\n    class Account\n    end\n  end\nend\n",
+        ),
+    ] {
+        let file = dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, src).unwrap();
+    }
+    rq(&db, &dir, &["--index"]);
+
+    let (ok, out) = rq(&db, &dir, &["Account", "--json"]);
+    assert!(ok, "search failed: {out}");
+    let hits: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(hits[0]["file"], "app/models/account.rb", "{out}");
+    assert!(
+        hits[0]["features"]
+            .as_array()
+            .unwrap()
+            .contains(&"top_level".into())
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn foo_dot_new_finds_the_constructor() {
     // `Widget.new` runs `initialize` (Ruby) / `__init__` (Python) — the name
     // the user typed is not the name the definition carries.
