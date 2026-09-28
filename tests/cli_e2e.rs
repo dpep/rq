@@ -2544,6 +2544,14 @@ fn symbols_outlines_a_file_in_line_order() {
         "class filtered out: {out}"
     );
 
+    // a file that defines nothing (of that kind) is a miss, as a search's is
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["--symbols", "other.rb", "-k", "method", "--json"],
+    );
+    assert!(!ok && out.contains("\"status\": \"no_match\""), "{out}");
+
     let _ = fs::remove_dir_all(&dir);
 }
 

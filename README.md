@@ -260,6 +260,11 @@ minute) for that call.
 structural outline, not a ranked search. Honors `-k/--kind` and `-x/--lang`, and
 emits the same fields as a search result, minus the scoring ones.
 
+A file with no definitions — none at all, none of the kinds asked for, or in a
+language rq doesn't parse — is a miss like a search's: `{"status": "no_match"}`,
+exit 1, so `rq --symbols f && …` reads as "it defines something". A file that
+doesn't exist is an error (`not_found`, 66).
+
 ```sh
 rq --symbols src/search/score.rs
 rq --symbols src/store/mod.rs -k struct,enum --json
