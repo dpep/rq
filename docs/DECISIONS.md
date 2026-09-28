@@ -1595,3 +1595,34 @@ A tiebreaker is what `private` measures well; the example directory is the evide
 *Reverses if:* a library keeps its real code under one of these names (a `docs` package
 that is the product), or example code turns out to be what people navigate to beside the
 library's own definition.
+
+## D30 — Upper-snake abbreviations: diagnosed, not changed
+
+**Rejected**, 2026-09-27. Recall harness (D12) against D29.
+
+*The report.* In excalidraw, `fontfam` never finds `FONT_FAMILY`, where `EVT` finds `EVENT`.
+It read as `align` not crediting `_` boundaries the way it credits camel humps.
+
+*Two causes, neither that one.* `_` does start a word (`boundaries` marks the letter after
+any separator), so `FONT_FAMILY` and `FontFamily` have the same word starts.
+- **`fontfam` is a literal prefix** of `FontFamilyHeadingIcon` and six other camelCase
+  names, and not of `font_family`, since a prefix keeps its separators (D19). A prefix hit
+  suppresses the fuzzy tail, and `FONT_FAMILY` is only fuzzy. That is D19's rejected
+  "separators left out of a prefix too", whose numbers stand: it trades found queries
+  (`setview` then finds only `set_view_paths`, never `setup_view`), and here it would also
+  have to run fuzzy recall under every prefix hit, since no store range holds `font_family`
+  for `fontfam`.
+- **Across `_`, the step is a gap.** For `fntfam`, `T→F` is contiguous in `FontFamily`
+  (+10) and a one-character gap in `FONT_FAMILY` (−3), 13 points, so `FONT_FAMILY` (fuzzy
+  129) ranks fifth behind `FontFamilyKeys` (139).
+
+*Measured: a separator is not a gap.* `align` scoring a step across separators alone as
+contiguous: #1 1,304 → 1,299, top 10 1,750 → 1,748, 48 up and 52 down, 11 lost #1.
+The gap is doing work: `forlin` → `bullet_for_li_node` over `format_line`, `stpo` →
+`set_pool` over `StatementPool`, `addmmb` → `add_members` over `addMembers`. Crediting
+a run that continues into the next word rewards reading a query across a word break the
+user didn't type. Scoring only, so the name index (D23) would have been untouched.
+
+*Reverses if:* a corpus where upper-snake constants are the usual target shows the gap
+costing them first place (then try it for all-caps names alone, which needs its own
+harness); or D19's prefix reversal is taken up on its own merits.
