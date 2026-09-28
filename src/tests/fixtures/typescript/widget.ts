@@ -32,6 +32,15 @@ export class Widget implements Renderer {
   }
 }
 
+/** Resizes every widget to one size. */
+export function resizeAll(widgets: Widget[], width: number): void;
+export function resizeAll(widgets: Widget[], size: WidgetSize): void;
+export function resizeAll(widgets: Widget[], size: number | WidgetSize): void {
+  for (const w of widgets) {
+    w.resize(typeof size === "number" ? size : size.width);
+  }
+}
+
 export function buildWidget(): Widget {
   return new Widget({ width: 1, height: 1 });
 }

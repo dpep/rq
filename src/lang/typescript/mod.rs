@@ -15,6 +15,13 @@
 //! A class's `static readonly` field → constant of the class. `parent` is
 //! `.`-joined, so a method renders as `deposit · Account`.
 //!
+//! Ambient declarations (`declare …`, and everything in a `.d.ts`) are
+//! extracted like the definitions they describe, as public stubs: a `declare
+//! module "fs"` is a module named `fs`, `declare global` adds to the top level,
+//! and a declared `let`/`var` is a constant, the definition of a global. An
+//! overload signature is a stub of the same name, and folds into the
+//! implementation after it at search time.
+//!
 //! Visibility: a class member takes its `private`/`protected` modifier (or `#`
 //! prefix); anything module-level reads public when `export`ed and private when
 //! not. That last convention is ESM's — a CommonJS file (`module.exports = …`)
@@ -86,9 +93,54 @@ fn tsx() -> Grammar {
 }
 
 fn run(language: &'static str, (key, grammar): Grammar, file: &str, source: &str) -> Vec<Symbol> {
+    let scope = Scope {
+        parent: None,
+        exported: false,
+        ambient: is_declaration_file(file),
+    };
     extract_with_key(key, language, grammar, file, source, |ctx, root, out| {
-        walk(ctx, root, None, false, out)
+        walk(ctx, root, scope, out)
     })
+}
+
+/// Whether `file` is a declaration file (`.d.ts`, `.d.mts`, `.d.cts`), where
+/// everything is ambient whether or not it says `declare`.
+fn is_declaration_file(file: &str) -> bool {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    [".d.ts", ".d.mts", ".d.cts"]
+        .iter()
+        .any(|ext| name.len() > ext.len() && name.to_ascii_lowercase().ends_with(ext))
+}
+
+/// Where a walk is: the enclosing qualified name, whether under an `export`,
+/// and whether under a `declare` (or in a `.d.ts`), whose definitions are
+/// public stubs of what is implemented elsewhere.
+#[derive(Clone, Copy)]
+struct Scope<'a> {
+    parent: Option<&'a str>,
+    exported: bool,
+    ambient: bool,
+}
+
+impl<'a> Scope<'a> {
+    fn within(self, parent: Option<&'a str>) -> Self {
+        Scope {
+            parent,
+            exported: false,
+            ..self
+        }
+    }
+
+    /// ESM's convention, where the module's own visibility applies: what a
+    /// module exports is its public API. A declaration describes API that
+    /// exists, so an ambient one is public.
+    fn visibility(self) -> &'static str {
+        if self.exported || self.ambient {
+            "public"
+        } else {
+            "private"
+        }
+    }
 }
 
 /// Whether `file` is a `.tsx` — the JSX-bearing dialect of TypeScript.
@@ -98,14 +150,68 @@ fn is_tsx(file: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("tsx"))
 }
 
-/// Recursively collect definitions. `parent` is the enclosing qualified name;
-/// `exported` is set while walking under an `export`.
-fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut Vec<Symbol>) {
+/// Recursively collect definitions.
+fn walk(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
+    let parent = scope.parent;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             // `export …` isn't a definition; it marks the one that follows public
-            "export_statement" => walk(ctx, child, parent, true, out),
+            "export_statement" => walk(
+                ctx,
+                child,
+                Scope {
+                    exported: true,
+                    ..scope
+                },
+                out,
+            ),
+
+            // `declare …`: what follows is implemented elsewhere. `declare
+            // global { … }` adds to the top level, so it's no scope.
+            "ambient_declaration" => {
+                let ambient = Scope {
+                    ambient: true,
+                    ..scope
+                };
+                let global = has_token(child, "global");
+                walk(
+                    ctx,
+                    child,
+                    if global {
+                        ambient.within(None)
+                    } else {
+                        ambient
+                    },
+                    out,
+                );
+            }
+
+            // `declare module "fs" { … }`: a module named by its string. A
+            // wildcard (`"*.svg"`) or bodiless one declares nothing to visit.
+            "module" => {
+                let name = ctx.field_text(child, "name");
+                let name = name
+                    .as_deref()
+                    .map(|n| n.trim_matches(|c| c == '"' || c == '\''));
+                if let Some(name) = name.filter(|n| !n.contains('*'))
+                    && child.child_by_field_name("body").is_some()
+                {
+                    let vis = scope.visibility();
+                    push(
+                        ctx,
+                        out,
+                        name,
+                        Kind::Module,
+                        child,
+                        parent,
+                        vis,
+                        scope.ambient,
+                    );
+                    let qualified = qualify(parent, name, ".");
+                    walk(ctx, child, scope.within(Some(&qualified)), out);
+                }
+            }
 
             // a named type (or namespace): emit it, then descend so whatever
             // members it declares are qualified by it. `type Foo = { run(): … }`
@@ -125,23 +231,31 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
                         "internal_module" => Kind::Module,
                         _ => Kind::Class,
                     };
-                    let vis = module_visibility(exported);
-                    push(ctx, out, &name, kind, child, parent, vis);
+                    let vis = scope.visibility();
+                    // a namespace merged into the function or class before it
+                    // (`function f` + `namespace f { … }`) adds members to that
+                    // definition, and isn't another one
+                    if !(kind == Kind::Module && merges_into(out, &name, parent)) {
+                        push(ctx, out, &name, kind, child, parent, vis, scope.ambient);
+                    }
                     let qualified = qualify(parent, &name, ".");
                     if kind == Kind::Enum {
-                        members(ctx, child, &qualified, vis, out);
+                        members(ctx, child, &qualified, vis, scope.ambient, out);
                         continue;
                     }
                     // members carry their own visibility; a namespace body
                     // re-declares `export` for what it re-exports
-                    walk(ctx, child, Some(&qualified), false, out);
+                    walk(ctx, child, scope.within(Some(&qualified)), out);
                 }
             }
 
-            "function_declaration" | "generator_function_declaration" => {
+            // an overload signature is a stub of the implementation after it,
+            // and folds into it; a `declare function` is a stub of one elsewhere
+            "function_declaration" | "generator_function_declaration" | "function_signature" => {
                 if let Some(name) = ctx.field_text(child, "name") {
-                    let vis = module_visibility(exported);
-                    push(ctx, out, &name, Kind::Function, child, parent, vis);
+                    let stub = scope.ambient || child.kind() == "function_signature";
+                    let vis = scope.visibility();
+                    push(ctx, out, &name, Kind::Function, child, parent, vis, stub);
                 }
                 // bodies hold locals and callbacks, not navigation targets
             }
@@ -149,21 +263,23 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
             // `const handler = () => …` — the modern function declaration —
             // and, at module level, `const LIMIT = …`
             "lexical_declaration" | "variable_declaration" => {
-                declarations(ctx, child, parent, module_visibility(exported), out);
+                declarations(ctx, child, scope, out);
             }
 
-            // class and interface members
+            // class and interface members. In a class, a bodiless signature is
+            // an overload of the method that follows it.
             "method_definition" | "abstract_method_signature" | "method_signature" => {
-                push_member(ctx, out, child, Kind::Method, parent);
+                let overload = child.kind() == "method_signature" && node.kind() == "class_body";
+                push_member(ctx, out, child, Kind::Method, scope, overload);
             }
 
             // `handleClick = () => …` in a class body: a method but for syntax;
             // `static readonly LIMIT = …`: the class's constant
             "public_field_definition" | "field_definition" => {
                 if is_function(child.child_by_field_name("value")) {
-                    push_member(ctx, out, child, Kind::Method, parent);
+                    push_member(ctx, out, child, Kind::Method, scope, false);
                 } else if has_token(child, "static") && has_token(child, "readonly") {
-                    push_member(ctx, out, child, Kind::Constant, parent);
+                    push_member(ctx, out, child, Kind::Constant, scope, false);
                 }
             }
 
@@ -171,14 +287,48 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
             // callback argument, an IIFE) — its locals aren't definitions
             "arrow_function" | "function_expression" | "function" => {}
 
-            _ => walk(ctx, child, parent, exported, out),
+            // `global { … }` inside a module, which the grammar doesn't know:
+            // it adds to the top level
+            "statement_block" if is_global_block(ctx, child) => {
+                walk(ctx, child, scope.within(None), out)
+            }
+
+            _ => walk(ctx, child, scope, out),
         }
     }
 }
 
+/// Whether a definition a namespace named `name` would merge into — a
+/// function, class or enum of that name in the same scope — is already out.
+fn merges_into(out: &[Symbol], name: &str, parent: Option<&str>) -> bool {
+    out.iter().rev().any(|s| {
+        s.name == name
+            && s.parent.as_deref() == parent
+            && matches!(s.kind, Kind::Function | Kind::Class | Kind::Enum)
+    })
+}
+
+/// Whether `block` is the body of a `global { … }` nested in a module, which
+/// the grammar recovers as `global` (an ERROR, or a statement missing its
+/// `;`) followed by a bare block.
+fn is_global_block(ctx: &Ctx, block: Node) -> bool {
+    block
+        .prev_sibling()
+        .filter(|p| matches!(p.kind(), "ERROR" | "expression_statement"))
+        .and_then(|p| ctx.node_text(p))
+        .is_some_and(|t| t.trim() == "global")
+}
+
 /// Each member of an enum, as a variant of it with the enum's visibility.
 /// A quoted name (`"kebab-case" = 1`) is indexed without its quotes.
-fn members(ctx: &Ctx, node: Node, qualified: &str, vis: &'static str, out: &mut Vec<Symbol>) {
+fn members(
+    ctx: &Ctx,
+    node: Node,
+    qualified: &str,
+    vis: &'static str,
+    stub: bool,
+    out: &mut Vec<Symbol>,
+) {
     let Some(body) = node.child_by_field_name("body") else {
         return;
     };
@@ -191,32 +341,36 @@ fn members(ctx: &Ctx, node: Node, qualified: &str, vis: &'static str, out: &mut 
         };
         if let Some(name) = name.and_then(|n| ctx.node_text(n)) {
             let name = name.trim_matches(|c| c == '"' || c == '\'');
-            push(ctx, out, name, Kind::Variant, m, Some(qualified), vis);
+            push(ctx, out, name, Kind::Variant, m, Some(qualified), vis, stub);
         }
     }
 }
 
 /// Emit a member of a type. An ES private name (`#tally`) is indexed without
 /// its `#`, so it's found by the name you'd think to search.
-fn push_member(ctx: &Ctx, out: &mut Vec<Symbol>, node: Node, kind: Kind, parent: Option<&str>) {
+fn push_member(
+    ctx: &Ctx,
+    out: &mut Vec<Symbol>,
+    node: Node,
+    kind: Kind,
+    scope: Scope,
+    overload: bool,
+) {
     if let Some(raw) = ctx.field_text(node, "name") {
         let vis = member_visibility(ctx, node, &raw);
         let name = raw.trim_start_matches('#');
-        push(ctx, out, name, kind, node, parent, vis);
+        let stub = scope.ambient || overload;
+        push(ctx, out, name, kind, node, scope.parent, vis, stub);
     }
 }
 
 /// Emit the definitions a `const`/`let`/`var` statement makes: each
 /// function-valued declarator as a function, and — for a module-level `const`
-/// only — every other simply-named, non-`require` one as a constant.
-fn declarations(
-    ctx: &Ctx,
-    node: Node,
-    parent: Option<&str>,
-    visibility: &'static str,
-    out: &mut Vec<Symbol>,
-) {
-    let constants = node.child(0).is_some_and(|k| k.kind() == "const") && at_module_level(node);
+/// only — every other simply-named, non-`require` one as a constant. A
+/// declared (ambient) binding is a global's definition, whatever its keyword.
+fn declarations(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
+    let binding = scope.ambient || node.child(0).is_some_and(|k| k.kind() == "const");
+    let constants = binding && at_module_level(ctx, node);
     let mut cursor = node.walk();
     for d in node.children(&mut cursor) {
         if d.kind() != "variable_declarator" {
@@ -236,21 +390,43 @@ fn declarations(
             && let Some(name) = ctx.node_text(name)
         {
             // span the whole statement, so `end_line` covers the closing brace
-            push(ctx, out, &name, kind, node, parent, visibility);
+            let vis = scope.visibility();
+            push(
+                ctx,
+                out,
+                &name,
+                kind,
+                node,
+                scope.parent,
+                vis,
+                scope.ambient,
+            );
         }
     }
 }
 
 /// Whether a declaration statement sits directly in a module or a namespace
-/// body (through an `export`), not in a block, callback, or static block.
-fn at_module_level(stmt: Node) -> bool {
+/// body (through an `export` or `declare`), not in a block, callback, or
+/// static block.
+fn at_module_level(ctx: &Ctx, stmt: Node) -> bool {
     let mut up = stmt.parent();
-    if up.is_some_and(|n| n.kind() == "export_statement") {
-        up = up.and_then(|n| n.parent());
+    while let Some(n) =
+        up.filter(|n| matches!(n.kind(), "export_statement" | "ambient_declaration"))
+    {
+        up = n.parent();
     }
     up.is_some_and(|n| match n.kind() {
         "program" => true,
-        "statement_block" => n.parent().is_some_and(|m| m.kind() == "internal_module"),
+        // a namespace's, an ambient module's, or `global`'s body
+        "statement_block" => {
+            is_global_block(ctx, n)
+                || n.parent().is_some_and(|m| {
+                    matches!(
+                        m.kind(),
+                        "internal_module" | "module" | "ambient_declaration"
+                    )
+                })
+        }
         _ => false,
     })
 }
@@ -293,6 +469,7 @@ fn is_function(value: Option<Node>) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one call shape shared by every arm
 fn push(
     ctx: &Ctx,
     out: &mut Vec<Symbol>,
@@ -301,15 +478,12 @@ fn push(
     node: Node,
     parent: Option<&str>,
     visibility: &'static str,
+    stub: bool,
 ) {
     let mut s = ctx.symbol(name, kind, node, parent);
     s.visibility = Some(visibility);
+    s.stub = stub;
     out.push(s);
-}
-
-/// ESM's convention: what a module exports is its public API.
-fn module_visibility(exported: bool) -> &'static str {
-    if exported { "public" } else { "private" }
 }
 
 /// A member's declared access: the TypeScript modifier if it has one, else the
@@ -611,6 +785,131 @@ export const store = createStore({ size: 1 });
         // a wrapped identifier or a call without a function stays a constant
         assert_eq!(find(&syms, "Aliased").kind, Kind::Constant);
         assert_eq!(find(&syms, "store").kind, Kind::Constant);
+    }
+
+    #[test]
+    fn ambient_declarations_are_public_stubs() {
+        let src = r#"
+declare function setup(name: string): void;
+export declare function teardown(): void;
+declare const VERSION: string;
+declare let counter: number;
+declare var process: Process;
+declare class Store {
+  get(key: string): string;
+}
+declare namespace Widgets {
+  function build(): Widget;
+  const LIMIT: number;
+}
+declare module "widget-store" {
+  export function open(path: string): Store;
+  export namespace open {
+    function sync(): void;
+  }
+  global {
+    function reset(): void;
+    var registry: Store;
+  }
+}
+declare module "*.svg";
+declare module "side-effect";
+declare global {
+  interface Window {
+    app: App;
+  }
+  function track(event: string): void;
+  var DEBUG: boolean;
+}
+"#;
+        let syms = extract(src);
+        let at = |name: &str| {
+            let s = find(&syms, name);
+            (s.kind, s.parent.as_deref(), s.visibility, s.stub)
+        };
+        let top = |kind| (kind, None, Some("public"), true);
+        assert_eq!(at("setup"), top(Kind::Function));
+        assert_eq!(at("teardown"), top(Kind::Function));
+        // a declared binding is a global's definition, whatever its keyword
+        for name in ["VERSION", "counter", "process", "DEBUG"] {
+            assert_eq!(at(name), top(Kind::Constant), "{name}");
+        }
+        assert_eq!(at("Store"), top(Kind::Class));
+        assert_eq!(
+            at("get"),
+            (Kind::Method, Some("Store"), Some("public"), true)
+        );
+        assert_eq!(at("Widgets"), top(Kind::Module));
+        assert_eq!(
+            at("build"),
+            (Kind::Function, Some("Widgets"), Some("public"), true)
+        );
+        assert_eq!(
+            at("LIMIT"),
+            (Kind::Constant, Some("Widgets"), Some("public"), true)
+        );
+        // a module named by a string is named without its quotes
+        assert_eq!(at("widget-store"), top(Kind::Module));
+        // a namespace merged into a function adds to it, and isn't another
+        let open: Vec<_> = syms.iter().filter(|s| s.name == "open").collect();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].kind, Kind::Function);
+        assert_eq!(at("sync").1, Some("widget-store.open"));
+        // `global` in a module is the top level too
+        assert_eq!(at("reset"), top(Kind::Function));
+        assert_eq!(at("registry"), top(Kind::Constant));
+        // `global` is the top level, not a scope
+        assert_eq!(at("Window"), top(Kind::Trait));
+        assert_eq!(at("track"), top(Kind::Function));
+        // a wildcard or bodiless module declares no definition
+        assert!(!syms.iter().any(|s| s.name.contains("svg")), "{syms:?}");
+        assert!(!syms.iter().any(|s| s.name == "side-effect"), "{syms:?}");
+    }
+
+    #[test]
+    fn a_declaration_file_is_ambient_without_declare() {
+        let src = "export default function isReady(): boolean;\nexport class Pool {\n  size(): number;\n}\n";
+        let syms = TypeScript.extract("types/index.d.ts", src);
+        for name in ["isReady", "Pool", "size"] {
+            let s = find(&syms, name);
+            assert!(s.stub, "{name}");
+            assert_eq!(s.visibility, Some("public"), "{name}");
+        }
+        // the same class in a source file is its own definition
+        let src = "export class Pool {\n  size(): number { return 1; }\n}\n";
+        assert!(!find(&extract(src), "Pool").stub);
+    }
+
+    #[test]
+    fn overload_signatures_are_stubs_of_the_implementation() {
+        let src = r#"
+/** Parses a widget. */
+export function parse(input: string): Widget;
+export function parse(input: Buffer): Widget;
+export function parse(input: string | Buffer): Widget {
+  return build(input);
+}
+
+class Codec {
+  encode(value: string): string;
+  encode(value: number): string;
+  encode(value: unknown): string {
+    return String(value);
+  }
+}
+"#;
+        let syms = extract(src);
+        for name in ["parse", "encode"] {
+            let all: Vec<_> = syms.iter().filter(|s| s.name == name).collect();
+            let stubs: Vec<_> = all.iter().map(|s| s.stub).collect();
+            assert_eq!(stubs, [true, true, false], "{name}: {all:?}");
+            // one kind and scope, so they fold into the implementation
+            assert!(
+                all.iter()
+                    .all(|s| (s.kind, &s.parent) == (all[2].kind, &all[2].parent))
+            );
+        }
+        assert_eq!(find(&syms, "parse").visibility, Some("public"));
     }
 
     #[test]

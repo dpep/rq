@@ -5,11 +5,12 @@
 use std::fs;
 
 use crate::search::{self, Context};
-use crate::tests::support::{indexed, top};
+use crate::tests::support::{indexed, indexed_files, top};
 
 const WIDGET_GO: &str = include_str!("fixtures/go/widget.go");
 const ACCOUNT_PY: &str = include_str!("fixtures/python/account.py");
 const WIDGET_TS: &str = include_str!("fixtures/typescript/widget.ts");
+const WIDGET_KIT_TS: &str = include_str!("fixtures/typescript/widget-kit.d.ts");
 const ACCOUNT_JSX: &str = include_str!("fixtures/javascript/account.jsx");
 
 #[test]
@@ -131,6 +132,47 @@ fn typescript_definitions_rank_and_classify() {
     let width = top(&store, "DEFAULT_WIDTH");
     assert_eq!(width.kind, "constant");
     assert_eq!(width.parent.as_deref(), Some("Widget"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn typescript_declarations_rank_below_implementations() {
+    let (store, dir) = indexed_files(
+        "ts-ambient",
+        &[("widget.ts", WIDGET_TS), ("widget-kit.d.ts", WIDGET_KIT_TS)],
+    );
+    let hits = |q: &str| {
+        search::search(&store, q, None, None, &Context::default(), 10)
+            .unwrap()
+            .hits
+    };
+
+    // the implementation first, and its declaration still found
+    let build = hits("buildWidget");
+    let files: Vec<_> = build.iter().map(|h| h.file.as_str()).collect();
+    assert_eq!(files, ["widget.ts", "widget-kit.d.ts"]);
+    assert!(build[1].features.iter().any(|f| f.name == "stub"));
+
+    // overload signatures fold into the implementation that follows them
+    let resize = hits("resizeAll");
+    assert_eq!(resize.len(), 1, "{resize:?}");
+    assert_eq!(resize[0].declarations, 3);
+    assert!(resize[0].end_line > Some(resize[0].line + 1), "the body");
+
+    // declaration-only API is found, scoped by its module, and folds too
+    let open = top(&store, "widget-kit.openStore");
+    assert_eq!((open.kind.as_str(), open.declarations), ("function", 2));
+    assert_eq!(
+        top(&store, "openStore.sync").parent.as_deref(),
+        Some("widget-kit.openStore")
+    );
+    assert_eq!(top(&store, "widget-kit.Store").kind, "class");
+
+    // `declare global` adds to the top level
+    let debug = top(&store, "WIDGET_DEBUG");
+    assert_eq!((debug.kind.as_str(), debug.parent), ("constant", None));
+    assert_eq!(top(&store, "trackWidget").kind, "function");
 
     fs::remove_dir_all(&dir).ok();
 }

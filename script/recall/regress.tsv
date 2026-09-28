@@ -39,3 +39,7 @@ gin	HandlerFunc	^gin.go:58 HandlerFunc$
 gin	HandlersChain	^gin.go:64 HandlersChain$
 excalidraw	EVENT.MOUSE_MOVE	^packages/common/src/constants.ts:67 MOUSE_MOVE$
 django	deconstruct	^django/db/models/fields/__init__.py:606 deconstruct$
+excalidraw	useOnAppStateChange	^packages/excalidraw/hooks/useAppStateValue.ts:140 useOnAppStateChange$
+excalidraw	encode	^packages/excalidraw/data/encode.ts:99 encode$
+excalidraw	extract	^packages/excalidraw/global.d.ts:49 extract$
+excalidraw	png-chunk-text.decode	^packages/excalidraw/global.d.ts:42 decode$

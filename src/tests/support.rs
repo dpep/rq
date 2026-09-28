@@ -20,10 +20,17 @@ use crate::store::Store;
 /// fixture mid-index. Keep tags unique across every caller, not just within a
 /// file.
 pub(crate) fn indexed(tag: &str, name: &str, source: &str) -> (Store, PathBuf) {
+    indexed_files(tag, &[(name, source)])
+}
+
+/// [`indexed`] for a repo of several files.
+pub(crate) fn indexed_files(tag: &str, files: &[(&str, &str)]) -> (Store, PathBuf) {
     let dir = std::env::temp_dir().join(format!("rq-fixture-{tag}-{}", std::process::id()));
     fs::remove_dir_all(&dir).ok();
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(name), source).unwrap();
+    for (name, source) in files {
+        fs::write(dir.join(name), source).unwrap();
+    }
 
     let mut store = Store::open_in_memory().unwrap();
     index::index_path(&mut store, &dir).unwrap();

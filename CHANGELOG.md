@@ -9,10 +9,28 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+Upgrading re-reads every indexed TypeScript and JavaScript file once, in the
+background, so the declarations below appear without a `--drop`.
+
+### Added
+- **TypeScript: ambient declarations are indexed.** `declare function`,
+  `declare const`/`let`/`var`, `declare class`, `declare namespace`,
+  `declare module "name" { … }` (a module named without its quotes, holding its
+  members) and `declare global { … }` (added to the top level), with or without
+  `export`, and everything in a `.d.ts`. A declaration-only API such as a
+  vendored library's `.d.ts` is now found. Where a declaration and its
+  implementation share a name, the implementation ranks first (`stub` in
+  `--explain`).
+
 ### Changed
 - **`rq --help` is simpler.** Flags are grouped (narrow the search, output, waiting on
   the index, the index, debugging), each with a one-line summary under `-h`, and
   the examples match the README.
+- **Overload signatures fold into their implementation.** A TypeScript
+  function with overloads is one result at the implementation, with
+  `declarations` counting the signatures and `also_in` listing them. More
+  generally, a top-level name declared twice in one file (Rust `#[cfg]`
+  alternatives) now folds the way a reopened module does.
 
 ## 0.57.0 — 2026-09-27
 
