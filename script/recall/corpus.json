@@ -28,5 +28,25 @@
     "url": "https://github.com/dpep/trekr.git",
     "sha": "087f2381e8f4d9f4bc7e5bed8010bcfc8cee8945",
     "language": "rust"
+  },
+  "hugo": {
+    "url": "https://github.com/gohugoio/hugo.git",
+    "sha": "c7f9999309a2e7a12d24c03fe639008ddc4565f8",
+    "language": "go"
+  },
+  "gin": {
+    "url": "https://github.com/gin-gonic/gin.git",
+    "sha": "1bd0ecf2d3e08da37efa270bb7be20c1eddb0d68",
+    "language": "go"
+  },
+  "django": {
+    "url": "https://github.com/django/django.git",
+    "sha": "9e06baf2e4dd17834b5deaf3a3e6ae3bff2fcf26",
+    "language": "python"
+  },
+  "excalidraw": {
+    "url": "https://github.com/excalidraw/excalidraw.git",
+    "sha": "438d89861f53d8a90ad566113ecac1b83761098f",
+    "language": "typescript"
   }
 }

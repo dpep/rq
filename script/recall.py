@@ -19,6 +19,7 @@ cached) and a run takes minutes.
 import argparse
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -140,6 +141,23 @@ def load_queries(path):
     return rows
 
 
+def load_regress():
+    """Hand-written cases with a known answer: `expect` is a regex on the #1
+    result's `file:line name`, or with a leading `!`, one it must not match."""
+    with open(DATA / "regress.tsv") as f:
+        header = f.readline().rstrip("\n").split("\t")
+        return [dict(zip(header, line.rstrip("\n").split("\t"))) for line in f if line.strip()]
+
+
+def regress_rank(hits, expect):
+    """Rank of the first hit matching `expect`, or for `!expect`, 1 if the #1
+    doesn't match (the case holds) and None if it does."""
+    keys = [f"{h['file']}:{h['line']} {h['name']}" for h in hits]
+    if expect.startswith("!"):
+        return 1 if keys and not re.search(expect[1:], keys[0]) else None
+    return next((i + 1 for i, k in enumerate(keys) if re.search(expect, k)), None)
+
+
 def isolated_env(db):
     """Never the user's index. RQ_WARM_DETACH=0 leaves no background child writing
     to a DB about to be deleted. One parse worker, because parallel workers commit
@@ -148,8 +166,9 @@ def isolated_env(db):
     return dict(os.environ, RQ_DB=db, RQ_WARM_DETACH="0", RQ_JOBS="1")
 
 
-def measure(label, binary, corpus, queries, jobs):
-    """Index the corpus into a throwaway DB and run every query through `binary`."""
+def measure(label, binary, corpus, queries, regress, jobs):
+    """Index the corpus into a throwaway DB and run every query and regress case
+    through `binary`."""
     with tempfile.TemporaryDirectory(prefix="rq-recall-db-") as tmp:
         env = isolated_env(os.path.join(tmp, "rq.db"))
         t = time.monotonic()
@@ -171,12 +190,21 @@ def measure(label, binary, corpus, queries, jobs):
             top = [(h.get("name"), h.get("file"), h.get("line")) for h in hits[:10]]
             return {"rank": rank, "top": top}
 
+        def case(row):
+            p = subprocess.run([str(binary), row["query"], "--json", "--no-wait", "--limit", "0"],
+                               cwd=corpus[row["repo"]], env=env, capture_output=True, text=True)
+            hits = json.loads(p.stdout) if p.stdout.strip() else []
+            hits = hits if isinstance(hits, list) else []
+            return {"rank": regress_rank(hits, row["expect"]),
+                    "first": f"{hits[0]['file']}:{hits[0]['line']} {hits[0]['name']}" if hits else None}
+
         t = time.monotonic()
         with ThreadPoolExecutor(jobs) as ex:
             results = list(ex.map(one, queries))
+            cases = list(ex.map(case, regress))
         query_s = time.monotonic() - t
     return {"label": label, "bin": str(binary), "index_s": round(index_s, 1),
-            "query_s": round(query_s, 1), "results": results}
+            "query_s": round(query_s, 1), "results": results, "regress": cases}
 
 
 # ----- anchored -----
@@ -267,9 +295,11 @@ def tally(rows):
             "first_pct": pct(c["first"]), "top10_pct": pct(c["top10"]), "found_pct": pct(c["found"])}
 
 
-def summarize(run_, queries, pins):
+def summarize(run_, queries, pins, regress):
     sourced = [(q, r) for q, r in zip(queries, run_["results"]) if q["source"]]
     out = {k: run_[k] for k in ("label", "bin", "index_s", "query_s")}
+    out["regress"] = {"n": len(regress), "first": sum(c["rank"] == 1 for c in run_["regress"]),
+                      "cases": [{**row, **c} for row, c in zip(regress, run_["regress"])]}
     out.update(tally([r for _, r in sourced]))
     out["by_type"] = {t: tally([r for q, r in sourced if q["type"] == t]) for t in TYPES}
     out["by_repo"] = {repo: tally([r for q, r in sourced if q["repo"] == repo])
@@ -333,6 +363,16 @@ def print_report(report):
                   + "  ".join(f"{r[key][repo]['first_pct']:>11.1f}%" for r in runs) + "  "
                   + "  ".join(f"{r[key][repo]['top10_pct']:>14.1f}%" for r in runs) + "  "
                   + "  ".join(f"{r[key][repo]['found_pct']:>14.1f}%" for r in runs))
+
+    if runs[0]["regress"]["n"]:
+        print("\nregress (#1 is the expected definition): "
+              + ", ".join(f"{r['label']} {r['regress']['first']} of {r['regress']['n']}" for r in runs))
+        rank = lambda x: "-" if x is None else f"#{x}"  # noqa: E731
+        for i, c in enumerate(runs[-1]["regress"]["cases"]):
+            before = runs[0]["regress"]["cases"][i]["rank"]
+            if c["rank"] != 1 or before != 1:
+                was = f"{rank(before):>4} -> " if len(runs) > 1 else ""
+                print(f"  {c['repo']:<10} {c['query']!r:<30} {was}{rank(c['rank']):<4}  #1: {c['first']}")
 
     if report.get("misses") is not None:
         rank = lambda x: "-" if x is None else f"#{x}"  # noqa: E731
@@ -422,6 +462,8 @@ def main():
                          "(the binary under test only)")
     ap.add_argument("--queries", metavar="TSV", default=str(DATA / "queries.tsv"),
                     help="the query set (default script/recall/queries.tsv); only its repos are indexed")
+    ap.add_argument("--no-regress", action="store_true",
+                    help="skip script/recall/regress.tsv (and the corpora only it needs)")
     ap.add_argument("--misses", action="store_true",
                     help="list every sourced query whose source isn't #1 for the binary under test")
     ap.add_argument("--jobs", type=int, default=4, help="queries in flight at once (default 4)")
@@ -438,7 +480,8 @@ def main():
     pins = json.loads((DATA / "corpus.json").read_text())
     cache = cache_dir(args.cache)
     queries = load_queries(args.queries)
-    wanted = {q["repo"] for q in queries}
+    regress = [] if args.no_regress else load_regress()
+    wanted = {q["repo"] for q in queries} | {c["repo"] for c in regress}
     pins = {repo: p for repo, p in pins.items() if repo in wanted}
     corpus = {repo: checkout(cache, repo, p["url"], p["sha"]) for repo, p in pins.items()}
 
@@ -453,11 +496,11 @@ def main():
     raw = []
     for label, path in bins:
         note(f"{label}: indexing and running {len(queries)} queries ({path})")
-        raw.append(measure(label, path, corpus, queries, args.jobs))
+        raw.append(measure(label, path, corpus, queries, regress, args.jobs))
 
     report = {"corpus": pins, "queries": len(queries),
               "sourced": sum(1 for q in queries if q["source"]),
-              "runs": [summarize(r, queries, pins) for r in raw]}
+              "runs": [summarize(r, queries, pins, regress) for r in raw]}
     if len(raw) == 2:
         report["diff"] = diff(raw[0], raw[1], queries)
     if args.misses:
@@ -480,7 +523,9 @@ def main():
         print_report(report)
 
     d = report.get("diff")
-    if args.fail_on_loss and (d["lost_first"] or d["lost_top10"]):
+    lost_case = any(a["rank"] == 1 and b["rank"] != 1 for a, b in
+                    zip(report["runs"][0]["regress"]["cases"], report["runs"][-1]["regress"]["cases"]))
+    if args.fail_on_loss and (d["lost_first"] or d["lost_top10"] or lost_case):
         sys.exit(1)
 
 

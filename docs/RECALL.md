@@ -27,8 +27,8 @@ Every query was derived from a real symbol name, and that name, the query's
 source ranks **#1**, in the **top 10**, or is **found** at all (`--limit 0`).
 Rank is by name, so any definition of the source counts.
 
-6,879 queries over six corpora, reported per language and per repo as well as
-in total. A ranking change has to hold up on each language, not just on the
+6,879 queries over six corpora (plus the regress cases below, over four more),
+reported per language and per repo as well as in total. A ranking change has to hold up on each language, not just on the
 mixed total.
 
 - **Ruby**: rails and discourse, 2,372 queries. 58 are hand-picked (no source,
@@ -70,6 +70,18 @@ The set lives in [`script/recall/queries.tsv`](../script/recall/queries.tsv)
 [`derive.py`](../script/recall/derive.py) generates the Rust rows
 (`sample` for tokio and ripgrep, `touched --rev <pin>` for rq and trekr, seed 1).
 The Ruby rows came from an earlier, uncommitted version of the same recipes.
+
+## Regress cases
+
+[`script/recall/regress.tsv`](../script/recall/regress.tsv) holds hand-written cases
+that have one right answer. Each row gives a query and the `file:line name` its #1
+must match (a regex). With a leading `!`, the #1 must *not* match it. They come
+from the language testers (Go on hugo and gin, Python on django, TypeScript on
+excalidraw, Rust on tokio and ripgrep) and from Rust extraction gaps
+(`JoinHandle`, `TryRecvError::Empty`, `select`, `block_on`). Every run reports how
+many hold #1 per binary, and lists each case that isn't #1 or changed. A case that
+held and no longer does fails `--fail-on-loss`. The four corpora only this set uses
+are pinned like the rest and indexed only when it runs. `--no-regress` skips them.
 
 ## Reading the report
 
