@@ -269,11 +269,8 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
         .iter()
         .flat_map(|p| p.extensions().iter().map(|e| format!("*.{e}")))
         .collect();
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(root)
-        .args(["ls-files", "-z", "--cached", "--"])
-        .args(&globs);
+    let mut cmd = git(root);
+    cmd.args(["ls-files", "-z", "--cached", "--"]).args(&globs);
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
@@ -1190,9 +1187,7 @@ pub(crate) fn head_state(root: &Path) -> Option<String> {
 /// and `git status` still refreshes the index so a touched-but-unchanged file
 /// doesn't read as dirty. Empty when git can't say — no evidence of an edit.
 pub(crate) fn dirty_files(root: &Path) -> Vec<String> {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
+    git(root)
         .args(["status", "--porcelain", "-z", "--untracked-files=no"])
         .output()
         .ok()
@@ -1527,9 +1522,7 @@ pub(crate) fn current_definitions(
 /// The newest commit in HEAD's history that a remote has — HEAD itself once
 /// it's pushed — so a git host can serve it. `None` when nothing is pushed.
 pub(crate) fn pushed_head(root: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = git(root)
         .args(["rev-list", "--boundary", "HEAD", "--not", "--remotes", "--"])
         .output()
         .ok()?;
@@ -1568,14 +1561,22 @@ pub(crate) fn detect_identity(root: &Path) -> RepoIdentity {
     RepoIdentity::local(&abs.to_string_lossy())
 }
 
+/// A git command aimed at `root`. rq picked `root` by walking up to its `.git`,
+/// so an inherited `GIT_DIR` (as `git rebase --exec` exports) must not send git
+/// to a different repository.
+fn git(root: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .arg("-C")
+        .arg(root);
+    cmd
+}
+
 /// Run a git command in `root`, returning trimmed stdout on success.
 fn git_output(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
+    let out = git(root).args(args).output().ok()?;
     if !out.status.success() {
         return None;
     }

@@ -26,6 +26,9 @@ fn scratch(label: &str) -> (PathBuf, PathBuf) {
 /// racing the test's asserts/cleanup); the detach path has its own test.
 fn rq(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(args)
         .current_dir(cwd)
         .env("RQ_DB", db)
@@ -42,6 +45,9 @@ fn rq(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
 /// stderr so stdout stays exactly the machine-readable result.
 fn rq_both(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(args)
         .current_dir(cwd)
         .env("RQ_DB", db)
@@ -64,6 +70,9 @@ fn first_line(s: &str) -> &str {
 /// same check to a child (`rq --warm`), which would race the assert.
 fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["-v", query])
         .current_dir(cwd)
         .env("RQ_DB", db)
@@ -76,6 +85,9 @@ fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
 /// `git init` a directory (no commits needed) so it reads as a git repo.
 fn git_init(dir: &Path) {
     let _ = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .arg("init")
         .arg("-q")
         .current_dir(dir)
@@ -87,7 +99,13 @@ fn git_init(dir: &Path) {
 fn git_init_commit(dir: &Path) {
     git_init(dir);
     let git = |args: &[&str]| {
-        let _ = Command::new("git").args(args).current_dir(dir).output();
+        let _ = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(args)
+            .current_dir(dir)
+            .output();
     };
     git(&["add", "-A"]);
     git(&[
@@ -215,6 +233,9 @@ fn the_name_index_answers_fuzzy_queries_and_keeps_up_with_edits() {
     assert!(ok, "index failed: {out}");
     let scan = |query: &str| {
         let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args([query, "--json"])
             .current_dir(&dir)
             .env("RQ_DB", &db)
@@ -769,6 +790,9 @@ fn two_clones_of_one_repo_each_read_their_own_files() {
         fs::write(dir.join("w.rb"), format!("class Widget # {tag}\nend\n")).unwrap();
         git_init_commit(dir);
         let _ = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args([
                 "remote",
                 "add",
@@ -807,6 +831,9 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
 
     let warm = |dir: &Path| {
         let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args(["-v", "--warm"])
             .current_dir(dir)
             .env("RQ_DB", &db)
@@ -827,6 +854,9 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
 
     // last: the child this hit spawns holds the single-flight lock a while
     let hit = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["Widget", "--profile", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -846,6 +876,9 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
 /// it spawned the detached warm child.
 fn spawned_warm(db: &Path, cwd: &Path, env: &[(&str, &str)]) -> bool {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["-v", "Widget"])
         .current_dir(cwd)
         .env("RQ_DB", db)
@@ -860,6 +893,9 @@ fn spawned_warm(db: &Path, cwd: &Path, env: &[(&str, &str)]) -> bool {
 /// Run `rq --warm` to completion, as the detached child would.
 fn warm_now(db: &Path, cwd: &Path) {
     Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .arg("--warm")
         .current_dir(cwd)
         .env("RQ_DB", db)
@@ -904,6 +940,9 @@ fn staging_or_committing_voids_the_verdict_but_a_bare_edit_waits() {
     );
 
     let _ = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["add", "c.rb"])
         .current_dir(&dir)
         .output();
@@ -933,6 +972,9 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
         "an indexed edit (and a non-source one) must not re-warm"
     );
     let miss = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["Nonexistent"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -953,6 +995,9 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
 
 fn git_checkout_file(dir: &Path, file: &str) {
     let _ = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["checkout", "--", file])
         .current_dir(dir)
         .output();
@@ -1115,6 +1160,9 @@ fn an_anchor_ranks_the_enclosing_class_first() {
 
     // every line of a batch is asked from the same place
     let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["-J", "-k", "method", "--anchor", at])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -1284,6 +1332,9 @@ fn open_launches_the_top_hit() {
 
     // RQ_OPEN runs `true` — exits 0, no editor needed; non-TTY takes the top hit
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["--open", "user"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -1296,6 +1347,9 @@ fn open_launches_the_top_hit() {
     // one with a placeholder gets exactly what it asked for
     let launched = |template: &str| {
         let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args(["--open", "user"])
             .current_dir(&dir)
             .env("RQ_DB", &db)
@@ -1313,6 +1367,9 @@ fn open_launches_the_top_hit() {
 
     // with no launcher and no editor, --open prints the resolved path:line
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["--open", "user"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -1344,6 +1401,9 @@ fn open_resolves_a_hit_against_its_own_checkout() {
     rq(&db, &dir_b, &["--index"]);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["-a", "--open", "Gadget"])
         .current_dir(&dir_a)
         .env("RQ_DB", &db)
@@ -1365,6 +1425,9 @@ fn web_links_the_newest_pushed_commit() {
     git_init_commit(&dir);
     let git = |args: &[&str]| {
         let out = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args(args)
             .current_dir(&dir)
             .output()
@@ -1374,6 +1437,9 @@ fn web_links_the_newest_pushed_commit() {
     // BROWSER=echo stands in for the browser, so the URL lands on stdout
     let web = || {
         let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args(["-w", "user"])
             .current_dir(&dir)
             .env("RQ_DB", &db)
@@ -2398,6 +2464,9 @@ fn a_cold_repo_blocks_to_an_answer_instead_of_a_false_miss() {
     git_init_commit(&dir);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["Widget", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -2425,6 +2494,9 @@ fn an_interactive_cold_repo_shows_progress_and_finds_the_answer() {
     git_init_commit(&dir);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["Widget"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -2456,6 +2528,9 @@ fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
     git_init_commit(&dir);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["Nonexistent", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -2497,6 +2572,9 @@ fn a_cold_search_finds_a_symbol_beyond_what_one_pass_parses() {
     git_init_commit(&dir);
 
     let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["M19#render_totals", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -2536,6 +2614,9 @@ fn no_wait_returns_without_blocking_on_a_rebuild() {
         let mut args = vec!["Nonexistent", "--json"];
         args.extend_from_slice(flags);
         let run = Command::new(env!("CARGO_BIN_EXE_rq"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args(&args)
             .current_dir(&dir)
             .env("RQ_DB", &db)
@@ -2668,6 +2749,9 @@ fn symbols_outlines_its_file_on_a_cold_repo_too_big_for_one_pass() {
     git_init_commit(&dir);
 
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["--symbols", "m19.rb", "--ndjson"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -2715,6 +2799,9 @@ fn detached_warm_finishes_coverage_in_the_background() {
     // child inherits the cap, so it needs several passes — exercising its
     // sweep-until-complete loop too.
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["K00"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -2749,6 +2836,9 @@ fn detached_warm_finishes_coverage_in_the_background() {
 fn rq_stdin(db: &Path, cwd: &Path, args: &[&str], stdin: &str) -> (bool, String) {
     use std::io::Write;
     let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(args)
         .current_dir(cwd)
         .env("RQ_DB", db)
@@ -2838,7 +2928,10 @@ fn rq_full(
 ) -> (i32, String, String) {
     use std::io::Write;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rq"));
-    cmd.args(args)
+    cmd.env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(args)
         .current_dir(cwd)
         .env("RQ_DB", db)
         .env("RQ_WARM_DETACH", "0")
@@ -3266,6 +3359,9 @@ fn an_index_pass_whose_writes_fail_exits_instead_of_hanging() {
         .unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["--index", "."])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -3304,6 +3400,9 @@ fn concurrent_first_queries_share_a_fresh_database() {
     let runs: Vec<_> = (0..16)
         .map(|_| {
             Command::new(env!("CARGO_BIN_EXE_rq"))
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
                 .args(["--no-wait", "--json", "Widget"])
                 .current_dir(&dir)
                 .env("RQ_DB", &db)
@@ -3334,6 +3433,9 @@ fn concurrent_first_queries_share_a_fresh_database() {
 fn an_empty_query_points_at_the_outline() {
     let (dir, db) = scratch("empty-query");
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["", "-k", "interface", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", &db)
@@ -3354,6 +3456,9 @@ fn an_empty_query_points_at_the_outline() {
 fn a_relative_rq_db_is_a_usage_error() {
     let (dir, _) = scratch("relative-db");
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["Widget", "--json"])
         .current_dir(&dir)
         .env("RQ_DB", "dbs/rq.db")
@@ -3375,6 +3480,9 @@ fn an_empty_rq_db_means_the_default_and_a_directory_is_refused() {
     let (dir, _) = scratch("empty-db");
     let run = |db: &str| {
         Command::new(env!("CARGO_BIN_EXE_rq"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args(["--status", "--json"])
             .current_dir(&dir)
             .env("RQ_DB", db)

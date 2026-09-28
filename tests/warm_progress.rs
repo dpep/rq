@@ -41,6 +41,9 @@ fn scratch() -> (PathBuf, PathBuf) {
         }
     }
     let _ = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["init", "-q"])
         .current_dir(&dir)
         .output();
@@ -51,6 +54,9 @@ fn scratch() -> (PathBuf, PathBuf) {
 /// Detached warming is off so no child races the next assertion.
 fn warm_pass(db: &Path, dir: &Path) {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["Nonexistent"])
         .current_dir(dir)
         .env("RQ_DB", db)
@@ -70,6 +76,9 @@ fn warm_pass(db: &Path, dir: &Path) {
 /// Files this repo has indexed so far, per `rq --status`.
 fn indexed_files(db: &Path, dir: &Path) -> usize {
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(["--status", "--ndjson"])
         .current_dir(dir)
         .env("RQ_DB", db)

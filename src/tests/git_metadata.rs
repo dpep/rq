@@ -20,11 +20,20 @@ fn scratch(label: &str) -> PathBuf {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let _ = Command::new("git").args(args).current_dir(dir).output();
+    let _ = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(args)
+        .current_dir(dir)
+        .output();
 }
 
 fn rev_parse(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .args(args)
         .current_dir(dir)
         .output()

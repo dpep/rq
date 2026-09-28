@@ -191,6 +191,9 @@ fn warm_and_full_index_skip_the_same_hidden_files() {
     fs::write(dir.join(".config.js"), "function gizmo() {}\n").unwrap();
     let git = |args: &[&str]| {
         std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .args(args)
             .current_dir(&dir)
             .output()

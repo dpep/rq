@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **rq ignores an inherited `GIT_DIR`.** It picks a repo by walking up to its
+  `.git`; under `git rebase --exec` (which exports `GIT_DIR`) its git calls
+  went to the rebasing repo instead, and could index or report the wrong one.
+
 ## 0.58.0 — 2026-09-27
 
 Upgrading re-reads every indexed Python, TypeScript and JavaScript file once,

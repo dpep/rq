@@ -42,6 +42,9 @@ fn indexes_a_directory_of_ruby_end_to_end() {
 
 fn git(dir: &PathBuf, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .arg("-C")
         .arg(dir)
         .args(args)
