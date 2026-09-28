@@ -343,7 +343,8 @@ pub(crate) const MIGRATION_V20: &str = MIGRATION_V14;
 /// Migration v20 -> v21: symbols record whether they are stubs, declarations
 /// whose body lives elsewhere (TypeScript's ambient `declare` and overload
 /// signatures, which were not indexed before). TS/JS files are queued for
-/// re-extraction as v14 queued them; other rows read 0, which they are.
+/// re-extraction as v14 queued them, and Python's for its local classes;
+/// other rows read 0, which they are.
 const MIGRATION_V21: Step = Step::AddColumn {
     table: "symbols",
     column: "stub",
@@ -353,9 +354,10 @@ pub(crate) const MIGRATION_V21_REQUEUE: &str = r#"
 UPDATE coverage SET status = 'warming'
   WHERE scope = 'full' AND status = 'complete'
     AND repository_id IN (
-      SELECT repository_id FROM files WHERE language IN ('typescript', 'javascript'));
+      SELECT repository_id FROM files
+      WHERE language IN ('python', 'typescript', 'javascript'));
 UPDATE files SET mtime = NULL, content_hash = ''
-  WHERE language IN ('typescript', 'javascript');
+  WHERE language IN ('python', 'typescript', 'javascript');
 "#;
 
 /// One rung of the migration ladder.

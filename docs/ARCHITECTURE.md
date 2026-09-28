@@ -230,7 +230,8 @@ Decisions worth calling out:
   TS/JS constants, v19's re-read of every file (for the `generated` flag)
   also picked up Rust's variants, aliases, macros and macro-body items, and v20
   re-reads Go, Python and TS/JS for their types, variants and nested defs, and v21
-  re-reads TS/JS for ambient declarations and overload signatures: users
+  re-reads TS/JS for ambient declarations and overload signatures and Python
+  for its local classes: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to

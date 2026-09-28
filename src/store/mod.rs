@@ -1523,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn v21_queues_typescript_and_keeps_stubs() {
+    fn v21_queues_python_and_typescript_and_keeps_stubs() {
         let path = std::env::temp_dir().join(format!("rq-migrate-v21-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let stub = Symbol {
@@ -1546,7 +1546,7 @@ mod tests {
                     repo,
                     &[
                         file("a.d.ts", "typescript", vec![stub]),
-                        file("b.py", "python", vec![]),
+                        file("b.rs", "rust", vec![]),
                     ],
                 )
                 .unwrap();
@@ -1563,7 +1563,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(hash("a.d.ts"), "");
-        assert_eq!(hash("b.py"), "h");
+        assert_eq!(hash("b.rs"), "h");
         assert_eq!(
             store.coverage_status("local:/mixed").unwrap().unwrap(),
             "warming"

@@ -3,7 +3,8 @@
 //! `Inner · Outer`). Decorators are transparent — the wrapped def is what counts.
 //! A `def` nested in another (a closure, a decorator's wrapper) → function,
 //! qualified by its enclosing def, and `local`: nothing outside can reach it.
-//! Classes and assignments inside a def are locals and stay out. A class whose
+//! So is a class inside a def, whose own body stays out, as do a def's
+//! assignments. A class whose
 //! base visibly is an enum (`Enum`, `IntFlag`, `models.TextChoices`) → enum,
 //! and each name its body assigns → variant.
 //! An `UPPER_SNAKE` assignment at module or class level → constant: Python has
@@ -88,8 +89,15 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
                     walk(ctx, child, Some(&qualified), Scope::Function, out);
                 }
             }
-            // a local class holds nothing reachable from outside the def
-            "class_definition" => {}
+            // a class local to a def; what it holds is reachable only
+            // through an instance the def makes, and stays out
+            "class_definition" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    let mut s = ctx.symbol(&name, Kind::Class, child, parent);
+                    s.visibility = Some("local");
+                    out.push(s);
+                }
+            }
             "assignment" if scope == Scope::Enum => members(ctx, child, parent, out),
             "assignment" if scope != Scope::Function => constants(ctx, child, parent, out),
             // a decorated class/function: descend so the wrapped def is seen
@@ -237,7 +245,7 @@ def build():
     }
 
     #[test]
-    fn nested_defs_are_private_functions_of_their_enclosing_def() {
+    fn nested_defs_and_classes_are_local_to_their_enclosing_def() {
         let src = r#"
 def _multi_decorate(decorators, method):
     def _wrapper(self, *args):
@@ -274,8 +282,14 @@ class Account:
         assert_eq!(helper.kind, Kind::Function);
         assert_eq!(helper.parent.as_deref(), Some("Account.deposit"));
 
-        // locals of a def: a class (and its methods) and an assignment
-        for absent in ["Local", "hidden", "LIMIT"] {
+        // a class in a def is local to it, like a nested def
+        let local = find(&syms, "Local");
+        assert_eq!(local.kind, Kind::Class);
+        assert_eq!(local.parent.as_deref(), Some("_multi_decorate"));
+        assert_eq!(local.visibility, Some("local"));
+
+        // but its body, and a def's assignments, are locals' locals
+        for absent in ["hidden", "LIMIT"] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
         }
     }

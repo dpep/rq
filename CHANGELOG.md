@@ -9,8 +9,8 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
-Upgrading re-reads every indexed TypeScript and JavaScript file once, in the
-background, so the declarations below appear without a `--drop`.
+Upgrading re-reads every indexed Python, TypeScript and JavaScript file once,
+in the background, so the definitions below appear without a `--drop`.
 
 ### Added
 - **TypeScript: ambient declarations are indexed.** `declare function`,
@@ -21,6 +21,11 @@ background, so the declarations below appear without a `--drop`.
   vendored library's `.d.ts` is now found. Where a declaration and its
   implementation share a name, the implementation ranks first (`stub` in
   `--explain`).
+- **Python: a class defined inside a def is indexed**, as a `class` whose
+  parent is the def and whose visibility is `local`, like a nested def:
+  django's `RelatedManager` (built inside
+  `create_reverse_many_to_one_manager`) used to be unfindable. Its body stays
+  out.
 
 ### Changed
 - **`rq --help` is simpler.** Flags are grouped (narrow the search, output, waiting on
