@@ -677,7 +677,7 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) -> usize {
     total
 }
 
-/// Fold repeat declarations of one qualified name into a single result.
+/// Fold repeat declarations of one name into a single result.
 ///
 /// Ruby reopens a module across files and Rust spreads `impl` blocks the same
 /// way, so a name can be declared a dozen times: `rq Middleware` spent its whole
@@ -685,24 +685,24 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) -> usize {
 /// six-line autoload stub. Four rows, one answer — the opposite of what a
 /// navigation tool is for.
 ///
-/// The survivor is the best-ranked declaration, which `extent` already biases
-/// toward the one with a real body; the rest are recorded on it so nothing is
-/// lost. Only *qualified* names fold, deliberately: two unqualified `Widget`s
-/// are the same reopened class in Ruby but two unrelated types in Rust, and
-/// showing one row too many is the cheaper mistake.
+/// The survivor is the best-ranked declaration, which `extent` and `stub`
+/// already bias toward the one with a real body; the rest are recorded on it so
+/// nothing is lost. An unqualified name folds only within one file: two
+/// top-level `Widget`s are the same reopened class in Ruby but two unrelated
+/// types in Rust, and showing one row too many is the cheaper mistake. In one
+/// file they are one definition declared more than once: TypeScript's overload
+/// signatures, Rust's `#[cfg]` alternatives.
 fn collapse_declarations(hits: &mut Vec<Hit>) {
     use std::collections::HashMap;
-    let mut first: HashMap<(String, String, String, String), usize> = HashMap::new();
+    type Key = (String, Option<String>, Option<String>, String, String);
+    let mut first: HashMap<Key, usize> = HashMap::new();
     let mut folded: Vec<Vec<String>> = vec![Vec::new(); hits.len()];
     let mut keep = Vec::with_capacity(hits.len());
     for (i, hit) in hits.iter().enumerate() {
-        let Some(parent) = hit.parent.clone() else {
-            keep.push(true);
-            continue;
-        };
         let key = (
             hit.repo_identity.clone(),
-            parent,
+            hit.parent.clone(),
+            hit.parent.is_none().then(|| hit.file.clone()),
             hit.name.clone(),
             hit.kind.clone(),
         );
@@ -776,9 +776,11 @@ mod tests {
         // length, so every earlier tiebreak ties. Without a final total order
         // the winner is whatever order the rows arrived in — and the same query
         // answers differently between runs.
+        // two kinds, so the pair in one file stays two results rather than
+        // folding into one declaration
         let hit = |file: &str, line: i64| Hit {
             name: "Transaction".into(),
-            kind: "class".into(),
+            kind: if line == 9 { "module" } else { "class" }.into(),
             language: "ruby".into(),
             file: file.into(),
             root: None,
@@ -1172,6 +1174,26 @@ mod tests {
             total: 0,
             explain: None,
         }
+    }
+
+    #[test]
+    fn unqualified_declarations_fold_only_within_a_file() {
+        let at = |file: &str, line: i64, score: f64| Hit {
+            file: file.into(),
+            line,
+            score,
+            ..hit("encode", false)
+        };
+        // overload signatures and their implementation, in one file
+        let mut hits = vec![at("a.ts", 9, 3.0), at("a.ts", 2, 2.0), at("a.ts", 5, 1.0)];
+        collapse_declarations(&mut hits);
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].line, hits[0].declarations), (9, 3));
+        assert_eq!(hits[0].also_in, ["a.ts:2", "a.ts:5"]);
+        // the same top-level name in two files is two definitions
+        let mut hits = vec![at("a.ts", 9, 2.0), at("b.ts", 9, 1.0)];
+        collapse_declarations(&mut hits);
+        assert_eq!(hits.len(), 2);
     }
 
     #[test]
