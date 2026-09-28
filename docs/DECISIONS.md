@@ -1675,18 +1675,26 @@ those rows.
 
 `make recall` against the commit before it: 31 sources up and 2 down. Rust goes
 81.0 → 81.1% #1, 88.7 → 89.4% top 10 and 89.3 → 90.0% found. The `case` type goes
-88.4 → 90.1% #1 and 88.9 → 95.1% top 10. Ruby didn't move (56.4 / 75.6 / 86.4) and
-nothing lost the top 10. The two that lost #1 are tokio's `chunks_timeout` and
-`buf_writer`, now #2 behind `ChunksTimeout` and `BufWriter`. Each struct sits in a
-file named after the query, and that path bonus (50) plus kind and extent outweighs
-`separators` (−50).
+88.4 → 90.1% #1 and 88.9 → 95.1% top 10. Ruby's derived queries didn't move
+(56.4 / 75.6 / 86.4).
 
-*Considered and dropped:* doubling `separators` when the query typed a separator the
-name lacks, on the grounds that `chunks_timeout` asks for the fn. It wins back those
-two on tokio but not in general: path, extent and kind together are worth up to 115, so
-only a penalty that large makes the literal spelling always win. That is a rule for one
-case rather than a graded signal. The struct is a real answer, #2 is where the Rust
-tester asked for it, and the literal fn wins whenever the evidence is even.
+The anchored set did move, and it exposed the price. Ruby's `schema_creation` went #1
+→ #5 plain, because five `SchemaCreation` classes each sit in a `schema_creation.rb`.
+The path bonus (50) plus extent (up to 50) and kind (15) outweighed `separators`
+(−50). The same happened on tokio, where `chunks_timeout` and `buf_writer` lost #1 to
+`ChunksTimeout` and `BufWriter`. Anchored #1 went 213 → 208 plain and 351 → 348
+with `--anchor`. So `separators` is now −150, more than those three can add
+together. The spelling the query typed wins whenever it exists, and the other
+convention ranks right behind it. Measured against the test-scope commit that
+follows: anchored is back to main's 213 / 351 / 432, with 438 top 10 against main's
+439 (`url_for` in `routing_test.rb`, #8 → #11 with `--anchor`, behind `UrlFor`
+modules outside tests). Derived queries moved 1 up and 1 down, and none lost #1 or the
+top 10. The unit test that pins `parsefile` → `parse_file` over `parse_files` still
+holds: 850 against a prefix's 699.
+
+*Considered and dropped:* doubling the penalty only when the query typed a separator
+the name lacks. It is a condition where a size will do, and Ruby's `schema_creation`
+needs the larger gap either way.
 
 Latency: the fast path now pays one name-index scan. Literal queries on rails
 (`save`, `find_by`, `render`, `ActiveRecord`, single runs) went from 0.3–2.2 ms to

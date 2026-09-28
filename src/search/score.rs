@@ -471,8 +471,11 @@ const NEAR_MISS_STEP: f64 = 40.0;
 const MAX_NEAR_MISS: usize = 2;
 
 /// What a separator-insensitive exact match gives up to a literal one, so
-/// `parse_file` still wins when the query spells it out.
-const SEPARATOR_PENALTY: f64 = 50.0;
+/// `parse_file` still wins when the query spells it out. Sized above what a
+/// definition's shape can add (path 50, extent 50, kind 15): Rails'
+/// `SchemaCreation` classes each sit in a `schema_creation.rb`, and at 50 they
+/// outranked the `schema_creation` method the query spelled.
+const SEPARATOR_PENALTY: f64 = 150.0;
 
 /// Per natural-log line of a definition's body. Small and log-scaled — this
 /// separates an implementation from a stub, not a big file from a small one.
