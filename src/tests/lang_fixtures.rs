@@ -129,6 +129,12 @@ fn javascript_definitions_rank_and_classify() {
     assert_eq!(top(&store, "buildAccount").kind, "function");
     // a JSX-returning component in a `.jsx` file still parses
     assert_eq!(top(&store, "AccountBadge").kind, "function");
+    // so is a component wrapped in `memo(…)`, over a longer name it prefixes
+    let row = top(&store, "AccountRow");
+    assert_eq!(
+        (row.name.as_str(), row.kind.as_str()),
+        ("AccountRow", "function")
+    );
 
     // a camelCase const is a constant too, and outranks a longer function
     let default = top(&store, "defaultAccount");

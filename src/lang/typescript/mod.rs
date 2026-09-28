@@ -7,7 +7,8 @@
 //! module, `function` → function, and the members a class, interface, or object
 //! type declares → method. A
 //! `const f = () => …` is a function too — in modern JS that *is* how functions
-//! are declared. Any other module- or namespace-level `const` → constant: the
+//! are declared — and so is `const C = memo((props) => …)`, a function literal
+//! handed to a wrapping call. Any other module- or namespace-level `const` → constant: the
 //! keyword is the declaration of intent, whatever the casing, and a camelCase
 //! `const router = createRouter()` is as much a jump target as `MAX_RETRIES`. A
 //! `require(…)` binding is an import, not a definition; `let`/`var` are mutable.
@@ -278,12 +279,18 @@ fn has_token(node: Node, kw: &str) -> bool {
     node.children(&mut cursor).any(|c| c.kind() == kw)
 }
 
-/// Whether a declarator's value is a function in some spelling.
+/// Whether a declarator's value is a function in some spelling: a function
+/// literal, or one passed first to a wrapping call, as React's
+/// `memo((props) => …)` and `forwardRef(…)` do. The wrapper's name isn't read.
 fn is_function(value: Option<Node>) -> bool {
-    matches!(
-        value.map(|v| v.kind()),
-        Some("arrow_function" | "function_expression" | "function")
-    )
+    match value.map(|v| (v, v.kind())) {
+        Some((_, "arrow_function" | "function_expression" | "function")) => true,
+        Some((call, "call_expression")) => is_function(
+            call.child_by_field_name("arguments")
+                .and_then(|args| args.named_child(0)),
+        ),
+        _ => false,
+    }
 }
 
 fn push(
@@ -584,6 +591,26 @@ const enum Hidden {
         }
         assert_eq!(find(&syms, "Inner").visibility, Some("private"));
         assert_eq!(syms.len(), 6, "{syms:?}");
+    }
+
+    #[test]
+    fn a_function_passed_to_a_wrapping_call_is_a_function() {
+        let src = r#"
+export const Badge = memo((props: Props) => <div />);
+export const Field = React.forwardRef<Ref, Props>(function Field(props, ref) {
+  return <input ref={ref} />;
+});
+export const Nested = memo(forwardRef((props, ref) => null));
+export const Aliased = memo(BadgeBase, areEqual);
+export const store = createStore({ size: 1 });
+"#;
+        let syms = TypeScript.extract("badge.tsx", src);
+        for name in ["Badge", "Field", "Nested"] {
+            assert_eq!(find(&syms, name).kind, Kind::Function, "{name}");
+        }
+        // a wrapped identifier or a call without a function stays a constant
+        assert_eq!(find(&syms, "Aliased").kind, Kind::Constant);
+        assert_eq!(find(&syms, "store").kind, Kind::Constant);
     }
 
     #[test]

@@ -21,6 +21,11 @@ and aren't listed; see `git log` for those.
 - **TypeScript type aliases are kind `type`, not `struct`.** `type Size = …`
   now prints and serializes as `type`, like Rust's and Go's. `-k type` finds
   them as before; `-k struct` no longer does.
+- **TypeScript/JavaScript: a component wrapped in a call is a `function`.**
+  `const Badge = memo((props) => …)` and `forwardRef(…)` were `constant`, so
+  `-k function` missed memoized components. A function literal passed first to
+  any call now makes the binding a function; `memo(BadgeBase)`, which wraps a
+  name, stays a constant.
 
 ## 0.56.0 — 2026-09-27
 
