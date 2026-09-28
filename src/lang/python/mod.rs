@@ -9,7 +9,9 @@
 //! and each name its body assigns → variant.
 //! An `UPPER_SNAKE` assignment at module or class level → constant: Python has
 //! no `const`, so the naming convention is the only declaration of intent there
-//! is. A lowercase module variable is ordinary state and stays out.
+//! is. A lowercase module variable is ordinary state and stays out. Any other
+//! name a class body binds or annotates (a dataclass or model field) → field of
+//! the class; an instance's `self.x = …` in a method is not a declaration.
 
 use tree_sitter::Node;
 
@@ -99,7 +101,8 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
                 }
             }
             "assignment" if scope == Scope::Enum => members(ctx, child, parent, out),
-            "assignment" if scope != Scope::Function => constants(ctx, child, parent, out),
+            "assignment" if scope == Scope::Class => attributes(ctx, child, parent, out),
+            "assignment" if scope == Scope::Module => constants(ctx, child, parent, out),
             // a decorated class/function: descend so the wrapped def is seen
             // in the same context
             _ => walk(ctx, child, parent, scope, out),
@@ -156,6 +159,28 @@ fn constants(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol
             s.visibility = Some(name_visibility(&name));
             out.push(s);
         }
+    });
+}
+
+/// Emit the names a class body's assignment binds: an `UPPER_SNAKE` one is a
+/// constant, any other a field (`name = models.CharField()`, a dataclass's
+/// `size: int = 0`, a bare `size: int`). A dunder (`__slots__`, `__hash__ =
+/// None`) is the protocol's, not the class's own.
+fn attributes(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
+    bindings(assign, &mut |target| {
+        let Some(name) = ctx.node_text(target) else {
+            return;
+        };
+        let kind = if is_constant_name(&name) {
+            Kind::Constant
+        } else if name.starts_with("__") && name.ends_with("__") {
+            return;
+        } else {
+            Kind::Field
+        };
+        let mut s = ctx.symbol(&name, kind, assign, parent);
+        s.visibility = Some(name_visibility(&name));
+        out.push(s);
     });
 }
 
@@ -393,7 +418,51 @@ class Account:
         assert_eq!(default.parent.as_deref(), Some("Account"));
 
         // not constants: a TypeVar, lowercase state, a def's locals and attrs
-        for absent in ["T", "default_widget", "kind", "LOCAL_CAP", "LIMIT"] {
+        for absent in ["T", "default_widget", "LOCAL_CAP", "LIMIT"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
+        // a lowercase class attribute is a field
+        assert_eq!(find(&syms, "kind").kind, Kind::Field);
+    }
+
+    #[test]
+    fn class_attributes_are_fields_of_their_class() {
+        let src = r#"
+@dataclass
+class Point:
+    x: int
+    y: int = 0
+    _cache = None
+    left, right = 1, 2
+    __slots__ = ("x", "y")
+    ORIGIN = 0
+
+    class Meta:
+        ordering = ["x"]
+
+    def move(self, dx):
+        self.moved = True
+        step = dx
+"#;
+        let syms = extract(src);
+
+        for name in ["x", "y", "left", "right"] {
+            let f = find(&syms, name);
+            assert_eq!(
+                (f.kind, f.parent.as_deref()),
+                (Kind::Field, Some("Point")),
+                "{name}"
+            );
+            assert_eq!(f.visibility, Some("public"));
+        }
+        assert_eq!(find(&syms, "_cache").visibility, Some("private"));
+        assert_eq!(find(&syms, "ORIGIN").kind, Kind::Constant);
+        assert_eq!(
+            find(&syms, "ordering").parent.as_deref(),
+            Some("Point.Meta")
+        );
+        // the protocol's dunders, an instance's attributes and a def's locals
+        for absent in ["__slots__", "moved", "step"] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
         }
     }

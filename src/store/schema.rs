@@ -360,17 +360,17 @@ UPDATE files SET mtime = NULL, content_hash = ''
   WHERE language IN ('python', 'typescript', 'javascript');
 "#;
 
-/// Migration v21 -> v22: the Rust, Go and TypeScript/JavaScript plugins emit
-/// fields. Their files are queued for re-extraction as v14 queued three
-/// languages.
+/// Migration v21 -> v22: the Rust, Go, Python and TypeScript/JavaScript
+/// plugins emit fields. Their files are queued for re-extraction as v14 queued
+/// three languages; Ruby's are untouched, having nothing new to emit.
 pub(crate) const MIGRATION_V22: &str = r#"
 UPDATE coverage SET status = 'warming'
   WHERE scope = 'full' AND status = 'complete'
     AND repository_id IN (
       SELECT repository_id FROM files
-      WHERE language IN ('rust', 'go', 'typescript', 'javascript'));
+      WHERE language IN ('rust', 'go', 'python', 'typescript', 'javascript'));
 UPDATE files SET mtime = NULL, content_hash = ''
-  WHERE language IN ('rust', 'go', 'typescript', 'javascript');
+  WHERE language IN ('rust', 'go', 'python', 'typescript', 'javascript');
 "#;
 
 /// One rung of the migration ladder.

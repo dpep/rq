@@ -105,6 +105,33 @@ fn python_definitions_rank_and_classify() {
     assert_eq!(default.kind, "constant");
     assert_eq!(default.parent.as_deref(), Some("Account"));
 
+    // class attributes, annotated or assigned, are fields of their class; an
+    // instance's `self.x = …` is not a declaration
+    for (query, name) in [
+        ("owner", "owner"),
+        ("Account.status", "status"),
+        ("currency", "currency"),
+    ] {
+        let f = top(&store, query);
+        assert_eq!(
+            (f.name.as_str(), f.kind.as_str()),
+            (name, "field"),
+            "{query}"
+        );
+        assert_eq!(f.parent.as_deref(), Some("Account"));
+    }
+    let settings = search::search(&store, "deposit", None, None, &Context::default(), 10)
+        .unwrap()
+        .hits;
+    let kinds: Vec<_> = settings.iter().map(|h| h.kind.as_str()).collect();
+    assert_eq!(kinds, ["method", "field"], "the method before the field");
+    assert!(
+        search::search(&store, "last_deposit", None, None, &Context::default(), 10)
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+
     fs::remove_dir_all(&dir).ok();
 }
 

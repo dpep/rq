@@ -1582,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn v22_queues_the_languages_that_emit_fields() {
+    fn v22_queues_every_language_that_emits_fields_but_ruby() {
         let path = std::env::temp_dir().join(format!("rq-migrate-v22-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let file = |path: &str, language: &str| FileSymbols {
@@ -1620,12 +1620,10 @@ mod tests {
                 })
                 .unwrap()
         };
-        for p in ["a.rs", "b.go", "d.ts"] {
+        for p in ["a.rs", "b.go", "c.py", "d.ts"] {
             assert_eq!(hash(p), "", "{p}");
         }
-        for p in ["c.py", "e.rb"] {
-            assert_eq!(hash(p), "h", "{p}");
-        }
+        assert_eq!(hash("e.rb"), "h");
         assert_eq!(
             store.coverage_status("local:/mixed").unwrap().unwrap(),
             "warming"

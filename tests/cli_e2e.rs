@@ -3543,3 +3543,57 @@ fn an_empty_rq_db_means_the_default_and_a_directory_is_refused() {
     assert_eq!(err["kind"], "usage");
     assert!(!dir_made, "nothing is created for a refused path");
 }
+
+#[test]
+fn kind_field_selects_fields_across_languages() {
+    let (dir, db) = scratch("kind-field");
+    fs::write(
+        dir.join("hit.rs"),
+        "pub struct Hit {\n    pub score: f64,\n}\n\nimpl Hit {\n    pub fn score(&self) -> f64 {\n        self.score\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("item.go"),
+        "package item\n\ntype Item struct {\n\tLabel string\n}\n\nfunc Label() string { return \"\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("item.ts"),
+        "export interface Item {\n  weight: number;\n}\n\nexport function weight() {\n  return 1;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("item.py"),
+        "class Item:\n    price: int = 0\n\ndef price():\n    return 0\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    for (query, lang, owner) in [
+        ("score", "rust", "Hit"),
+        ("Label", "go", "Item"),
+        ("weight", "typescript", "Item"),
+        ("price", "python", "Item"),
+    ] {
+        // the method or function the field shares a name with ranks first
+        let (_, all) = rq(&db, &dir, &[query, "--ndjson"]);
+        let first = all.lines().next().unwrap_or_default();
+        assert!(!first.contains("\"kind\":\"field\""), "{lang}: {all}");
+
+        for args in [vec![query, "-k", "field"], vec!["field", query]] {
+            let (ok, out) = rq(&db, &dir, &[&args[..], &["--ndjson"]].concat());
+            assert!(ok, "{lang} field search failed: {out}");
+            assert!(
+                out.contains(&format!("\"kind\":\"field\",\"language\":\"{lang}\"")),
+                "{lang} field kept: {out}"
+            );
+            assert!(
+                out.contains(&format!("\"parent\":\"{owner}\"")),
+                "{lang}: {out}"
+            );
+            assert_eq!(out.lines().count(), 1, "{lang}: {out}");
+        }
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
