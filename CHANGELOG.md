@@ -36,6 +36,9 @@ search in each repo starts it, and answers from the old index meanwhile.
   searched for a glob (the `*`) and found unrelated files; it now means
   `HugoSites.Build`. A scope is compared by its name, so punctuation around it
   is dropped.
+- **An empty query says what to do instead.** `rq '' -k interface` reads as a
+  request to list every interface, which rq doesn't do: it navigates to a
+  name. The usage error now points at `rq --symbols FILE`, the listing it has.
 
 ## 0.55.1 — 2026-09-27
 

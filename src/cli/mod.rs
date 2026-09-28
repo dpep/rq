@@ -255,8 +255,16 @@ fn dispatch(cli: Cli) -> ExitCode {
         return cmd_drop(cli.target, out);
     }
     let out = output_format(&cli);
+    // Kind-only browsing (`rq '' -k trait`) is listing, not navigation, and a
+    // partial index would list partially; a file's outline is the listing rq has.
     if cli.target.as_deref().is_some_and(|t| t.trim().is_empty()) {
-        return fail(out, Failure::Usage, format_args!("rq: empty query"));
+        return fail(
+            out,
+            Failure::Usage,
+            format_args!(
+                "rq: empty query — name the definition to find; `rq --symbols FILE` lists a file's (-k to filter)"
+            ),
+        );
     }
     // Reject an unknown --kind/--lang rather than filtering everything away: a
     // typo used to come back as `no_match`, exit 1 — the one code a script is

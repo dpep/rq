@@ -3263,6 +3263,26 @@ fn concurrent_first_queries_share_a_fresh_database() {
 }
 
 #[test]
+fn an_empty_query_points_at_the_outline() {
+    let (dir, db) = scratch("empty-query");
+    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .args(["", "-k", "interface", "--json"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .output()
+        .expect("run rq");
+    let _ = fs::remove_dir_all(&dir);
+
+    assert_eq!(out.status.code(), Some(64));
+    let err: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error json");
+    assert_eq!(err["kind"], "usage");
+    assert!(
+        err["error"].as_str().unwrap().contains("--symbols"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_relative_rq_db_is_a_usage_error() {
     let (dir, _) = scratch("relative-db");
     let out = Command::new(env!("CARGO_BIN_EXE_rq"))
