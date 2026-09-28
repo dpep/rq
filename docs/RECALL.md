@@ -172,6 +172,20 @@ never been measured.
 | rq | 826 (90.3%) | 866 (94.6%) | 867 (94.8%) |
 | trekr | 736 (87.3%) | 803 (95.3%) | 810 (96.1%) |
 
-tokio's `found` rate is low because definitions were missing from the index,
+After Rust extraction and D32–D33 (against main at `a406932`, whose Rust numbers
+equal the baseline):
+
+| | source #1 | top 10 | found |
+|---|---|---|---|
+| rust, all four corpora | 3,658 (81.2%) | 4,027 (89.3%) | 4,055 (90.0%) |
+| tokio | 1,285 (73.1%) | 1,472 (83.7%) | 1,489 (84.7%) |
+| ripgrep | 805 (81.2%) | 883 (89.1%) | 885 (89.3%) |
+| rq | 831 (90.8%) | 869 (95.0%) | 871 (95.2%) |
+| trekr | 737 (87.4%) | 803 (95.3%) | 810 (96.1%) |
+
+Ruby is unchanged at 1,304 / 1,750 / 2,000. The regress cases go from 30 to 33 of
+36.
+
+tokio's baseline `found` rate was low because definitions were missing from the index,
 not because they ranked badly. Items inside `cfg_*! { … }` blocks,
 `macro_rules!`, enum variants and `type` aliases were not extracted.
