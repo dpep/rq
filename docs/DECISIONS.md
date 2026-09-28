@@ -1990,3 +1990,42 @@ definition.
 
 *Reverses if:* crate-qualified queries into workspaces with abbreviated crate directories
 show up in daily use (DOGFOOD.md), or another feature needs the package name anyway.
+
+## D40 — A capital typed into an approximate match counts
+
+**Adopted**, 2026-09-27. Recall harness (6,879 queries, regress cases), the anchored set
+and the dogfood set (7,152 queries from the last 300 commits of rq and trekr), against
+main at 9b74bed.
+
+*The weakness.* A typed capital is a deliberate signal on an exact match (`case`, +150:
+`Symbol` means the type). Nothing read it anywhere else, so a near miss that carried case
+ranked the two spellings on kind and extent: `COUNTESR` answered `counters` over
+`COUNTERS`, `Plaec` `place` over `Place`, `Geenrated` `generated`. 72 of the dogfood
+set's 985 misses were the source's other-case twin, most of them typos.
+
+*The rule.* When the query carries case, a prefix, fuzzy or near-miss match earns `case`
+of 150 × *the share of the query's cased letters whose case the aligned letter shares* ×
+match quality. The share is graded evidence (`JAVASCRPIT` agrees with `JavaScript` on 2
+of 10 letters, with `JAVASCRIPT` on all), and the quality scale is the one D24 gives every
+feature an approximate match earns, so it decides between readings of the same letters
+without outweighing the letters. A near miss aligns its common subsequence with the name,
+as its score does. An all-lowercase query stays casual, as on an exact match: `fraem`
+keeps ranking `Frame` over `frame` on kind, the same answer `frame` gets.
+
+| | #1 | top 10 | found |
+|---|---|---|---|
+| harness, main | 4,963 (72.8%) | 5,777 (84.7%) | 6,055 (88.8%) |
+| harness, this | 4,976 (73.0%) | 5,777 | 6,055 |
+| dogfood, main | 6,167 (86.2%) | 6,653 (93.0%) | 6,714 (93.9%) |
+| dogfood, this | 6,198 (86.7%) | 6,653 | 6,714 |
+
+13 up and 0 down on the harness, 31 and 0 on the dogfood set, all in the `typo` row
+(90.4 → 91.7%, 90.1 → 92.9%). Ruby, the anchored set and the regress cases don't move:
+their queries are lowercase or exact.
+
+*Considered:* the near-miss tier alone. It scored the same on both sets, which carry
+case only in derived typos; the rule is the exact tier's, so it applies to every tier
+that approximates a name.
+
+*Reverses if:* people type capitals casually into approximate queries (a sentence-case
+habit), which would show up as the other-case twin losing in DOGFOOD.md.

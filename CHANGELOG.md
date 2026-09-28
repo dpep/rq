@@ -9,6 +9,12 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Changed
+- **A capital typed into a near miss, prefix or fuzzy query counts.** `COUNTESR`
+  ranks `COUNTERS` over `counters`, and `Plaec` `Place` over `place`, graded by
+  how many of the query's capitals the name shares. An all-lowercase query
+  stays case-blind (DECISIONS D40).
+
 ### Fixed
 - **rq ignores an inherited `GIT_DIR`.** It picks a repo by walking up to its
   `.git`; under `git rebase --exec` (which exports `GIT_DIR`) its git calls

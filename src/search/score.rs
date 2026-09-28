@@ -221,6 +221,25 @@ pub(crate) fn score(
     // outweighed the name itself on an approximate match (DECISIONS D24).
     let quality = match_quality(&features);
 
+    // A capital typed into a query that the name only approximates says the
+    // same thing it does on an exact match (`case` above): `Fraem` means the
+    // type `Frame`, not the function `frame`. Graded by how many of the query's
+    // cased letters the name agrees with, and scaled like the other features
+    // an approximate match earns.
+    if leaf != q {
+        let matched = match features.first().map(|f| f.name) {
+            Some("typo") => Some(common_subsequence(leaf, &cand.name)),
+            Some("prefix" | "fuzzy") => Some(leaf.to_string()),
+            _ => None,
+        };
+        if let Some(share) = matched.and_then(|m| case_agreement(&m, &cand.name)) {
+            features.push(Feature {
+                name: "case",
+                value: CASE_MATCH * share * quality,
+            });
+        }
+    }
+
     // Layer 3: path / filename matching (same glob/fuzzy split as the name).
     let stem = path_stem(&cand.file);
     let path_match = if wildcard {
@@ -1001,6 +1020,25 @@ pub(super) fn fuzzy_value(q: &str, name: &str) -> Option<f64> {
     Some(s.min(600.0) - (tail as f64).min(100.0))
 }
 
+/// The share of `query`'s cased letters whose case the letter they align with
+/// in `name` shares, or `None` without an alignment or a cased letter.
+fn case_agreement(query: &str, name: &str) -> Option<f64> {
+    let positions = align(query, name)?.positions;
+    let chars: Vec<char> = name.chars().collect();
+    let (mut agree, mut cased) = (0usize, 0usize);
+    for (c, &i) in query
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .zip(&positions)
+    {
+        if c.is_uppercase() || c.is_lowercase() {
+            cased += 1;
+            agree += usize::from(c.is_uppercase() == chars[i].is_uppercase());
+        }
+    }
+    (cased > 0).then(|| agree as f64 / cased as f64)
+}
+
 /// Score `query` as a subsequence of `name` (the best alignment's score), or
 /// `None` if it isn't a subsequence.
 pub(super) fn subsequence_score(query: &str, name: &str) -> Option<f64> {
@@ -1732,6 +1770,21 @@ mod tests {
         assert!(upper > lower, "{upper} > {lower}");
         // by enough to outweigh the whole recency range, or mtime decides again
         assert!(upper - lower > 120.0, "margin {} too small", upper - lower);
+    }
+
+    #[test]
+    fn a_typed_capital_counts_on_an_approximate_match_too() {
+        let typo = |q: &str, name: &str| {
+            score(q, &row(name, "function", 1), None, Boosts::default(), true)
+                .unwrap()
+                .total
+        };
+        assert!(typo("Fraem", "Frame") > typo("Fraem", "frame"));
+        assert!(typo("FRAEM", "FRAME") > typo("FRAEM", "Frame"));
+        assert!(total("Widg", "WidgetBox") > total("Widg", "widget_box"));
+        assert!(total("WdgBx", "WidgetBox") > total("WdgBx", "widget_box"));
+        // lowercase stays casual here as well
+        assert_eq!(typo("fraem", "Frame"), typo("fraem", "frame"));
     }
 
     #[test]
