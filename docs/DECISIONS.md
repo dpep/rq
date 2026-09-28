@@ -1731,3 +1731,55 @@ down) with no loss of #1. `glob` gained most, 83.2 → 85.2%.
 
 *Reverses if:* a language routinely names non-test scopes `test` or `*_tests` in
 lowercase.
+
+## D34 — A Rust module file as a module symbol: measured, not adopted
+
+**Rejected**, 2026-09-27. `mod store;` is a pointer, and Rust extraction rightly skips
+it. But nothing takes its place, so a module has no symbol. `rq store` finds only
+`Store`, and before D33 `rq clock` found `tests · clock`, a path match surfacing the
+file's test module. The trial emitted one `module` symbol per module file: `store`
+for `src/store/mod.rs` or `src/store.rs`, spanning the file, with no parent, and
+skipping `main.rs`, `lib.rs`, `build.rs` and comment-only files.
+
+`make recall` against D33: 209 sources up and 91 down. Rust went 81.2 → 84.2% #1,
+89.3 → 93.2% top 10 and 90.0 → 93.9% found, and `exact` went 90.7 → 96.9%. Ruby, the
+anchored set and the regress cases didn't move. Much of that gain is ground truth
+that counts `mod x;` as a definition of `x`. The 41 that lost #1 are one shape: a
+type and the module file named for it (`frame.rs` holding `Frame`), where the
+module's whole-file extent carries it.
+
+It also broke three of `ranking_aspirations`: `store` → the module over `Store`,
+`search` → the module over `fn search`, and `budgeted` → the `budgeted_index` module
+by prefix over `index_budgeted`. A one-line span (no extent) fixes the first two. But
+every file stem then becomes a name that exact and prefix matches can reach, so
+`budgeted` still lands on the module. Keeping it would take a rule that a file's
+module ranks below the definitions in it. That is an exception, not a signal, and the
+aspirations say the definitions are what people want.
+
+*Reverses if:* modules get a container notion in the model (a symbol that other
+symbols in the file belong to), so "the definition over its container" is a real
+signal rather than a special case. Or daily use shows module names being searched for
+and missed (DOGFOOD.md).
+
+## D35 — `pub(crate)` takes no visibility penalty: measured, left out
+
+**Rejected**, 2026-09-27. The Rust tester found tokio's internal `pub(crate)
+block_on`s ranked above the public `Runtime::block_on` and `Handle::block_on` (#7 and
+#8 of 12). Only Rust emits `crate` visibility, and today it carries no penalty.
+private and protected get −15. Three settings, measured against D33 with the same
+binary through an environment switch:
+
+| crate / private | Rust #1 | Rust top 10 | Ruby #1 | up / down | `block_on` |
+|---|---|---|---|---|---|
+| 0 / 15 (kept) | 81.2% | 89.3% | 56.4% | | #9 |
+| 8 / 15 | 81.2% (+3) | 89.4% | 56.4% | 36 / 28 | #7 |
+| 15 / 15 | 81.1% (−5) | 89.4% | 56.4% | 56 / 52 | #7 |
+| 30 / 40 | 80.6% | 89.3% | 55.5% | 133 / 172 | #4 |
+
+None fixes `block_on`. `future/block_on.rs`'s `pub(crate) fn block_on` earns a path
+bonus (33) and more extent, which is a bigger gap than any penalty a tie-breaker
+should carry. The mild setting is +3 queries of 4,507, with 13 losing #1: churn, not
+signal. Raising private too costs Ruby.
+
+*Reverses if:* a signal lifts public API in general (re-exports at a crate root, say),
+and `crate` becomes one input to it rather than a penalty of its own.
