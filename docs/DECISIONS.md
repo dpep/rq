@@ -1897,6 +1897,7 @@ UPDATE` finds `WS_SUBTYPES.UPDATE`, `rq update` the methods, per D32).
   the one navigation target; emitting each signature would multiply results for
   every overloaded function. A known gap, left open: a `declare function` with no
   implementation (a `.d.ts`) is a `function_signature` too, and isn't indexed.
+  (Closed by D38: signatures are indexed as stubs and fold at search time.)
 - **No list of wrapper names** (`memo`, `forwardRef`, `observer`, …) for the
   wrapped-function rule. It would catch `memo(BadgeBase)`, but it's a per-framework
   list to maintain. The literal-argument rule also calls `computed(() => …)` a
@@ -1906,3 +1907,86 @@ UPDATE` finds `WS_SUBTYPES.UPDATE`, `rq update` the methods, per D32).
 *Reverses if:* testers read `trait` for an interface as wrong in practice (then alias
 text output only, and record why text and JSON differ); or an agent needs to tell a
 property from a method without reading source (then a `detail` output field).
+
+## D38 — Declarations defined elsewhere are indexed, as stubs
+
+**Adopted**, 2026-09-27. TypeScript tester on excalidraw, `@types/node`; recall harness
+(D12) against main.
+
+*The weakness.* A `.d.ts` declaration with no implementation in the repo had no symbol:
+`declare function`, the members of `declare module "png-chunk-text" { … }` (excalidraw's
+`extract`, `decode`), `declare global` additions, a declared `var`. D37 left this open. An
+overload signature was dropped too, which was harmless only because the implementation
+answered for it.
+
+*The rules.*
+- **TypeScript extracts ambient declarations** like the definitions they describe:
+  `declare` anything, with or without `export`, and everything in a `.d.ts`/`.d.mts`/
+  `.d.cts`. `declare module "fs"` is a module named `fs` holding its members (a wildcard
+  or bodiless one declares nothing); `declare global`, and the `global { … }` nested in a
+  module that the grammar recovers as an error, add to the top level; a declared
+  `let`/`var` is a constant, a global's definition; a namespace merged into a same-named
+  function (`export namespace readFile`) adds members to it and isn't a result of its
+  own. Ambient declarations read public: they describe API that exists.
+- **A stub is a declaration whose body lives elsewhere**, a language-neutral flag
+  (`symbols.stub`, schema v21): an ambient value and an overload signature. It takes
+  `stub`, −150 scaled by match quality, the size of `local` (D36) for the same reason:
+  past what path, extent, kind and visibility add together, so the implementation wins
+  wherever it's indexed, and below the exact-to-prefix gap, so a declaration that is the
+  only exact match still beats a longer name.
+- **A declared interface or type alias is no stub.** A type has nothing elsewhere to be a
+  declaration of; declared, it is the definition. The first cut marked them, and
+  discourse's `declare global { interface Window }` lost `wnidow` (#1 → #2) and `wndw`
+  (#2 → #32) to `windows`.
+- **An unqualified name folds within one file.** `collapse_declarations` folded only
+  qualified names, since two top-level `Widget`s in two files are unrelated in Rust. In
+  one file they are one definition declared more than once, so overload signatures fold
+  into their implementation (the stub penalty makes it the survivor), as class-method
+  overloads already did through their parent. excalidraw's `useOnAppStateChange` is one
+  result at line 140 with `declarations: 4`.
+
+The vendored-library shape is what needs the flag: a CommonJS `index.js` reads private
+(ESM's convention), and its `.d.ts` declares the class public, as long, and in a file
+named for it, so path, extent and visibility all favoured the declaration.
+
+| | recall #1 / top 10 / found | regress | anchored #1 / top 10 |
+|---|---|---|---|
+| main | 4,962 / 5,777 / 6,055 | 39 of 44 | 213 / 432 plain, 359 / 439 anchored |
+| fold alone | 4,962 / 5,777 / 6,055 (10 up, 0 down) | 37 of 40 | unchanged |
+| this change | 4,963 / 5,777 / 6,055 (11 up, 0 down) | 41 of 44 | unchanged |
+
+No source lost #1 or the top 10. The regress gains are `extract` and
+`png-chunk-text.decode`; `encode` (the implementation over two ambient `encode`s) and
+`useOnAppStateChange` are guards. `@types/node` indexes 6,525 symbols, where it had
+interfaces and namespaces only.
+
+*Rejected:*
+- **The test penalty (−400) for stubs.** A declaration that is the only exact match would
+  lose to a prefix match of another name.
+- **Spanning the overload group as one symbol** (first signature to the implementation's
+  end), which would put the doc comment above the first signature directly above `line`.
+  It lands a jump on a signature rather than the body, and class-method overloads
+  already fold; one mechanism for both. The comment stays outside the span, as a leading
+  comment does in every language, and `also_in` names the first signature below it.
+- **Stubs for all bodyless signatures** (interface and trait methods, abstract methods).
+  Those are the contract's own definition, often the one meant.
+
+*Reverses if:* a declaration turns out to be the navigation target beside an indexed
+implementation (a library whose `.d.ts` carries the docs people jump to); then the
+penalty shrinks toward a tiebreaker.
+
+## D39 — Package names from manifests: weighed, not done
+
+**Rejected**, 2026-09-27. D27's limit: a Rust crate named other than its directory
+(`grep_searcher::Searcher`, in ripgrep's `crates/searcher/`) answers `scope_not_found`.
+The fix considered: read each file's nearest manifest at index time (`Cargo.toml`
+`[package] name`, `go.mod` module, `package.json` name, a Python package) and let
+`path_scope` match a segment against it. It needs four manifest formats in the indexer,
+a column, and a re-read of every file, for a gain in the testers' corpora confined to
+ripgrep's six `grep-*` crates. Go's module path ends in the repo name, which the scope
+already reads; npm and Python packages are almost always their directory. The miss is
+already graceful: `found_in` names `crates/searcher/src/searcher/mod.rs`, the right
+definition.
+
+*Reverses if:* crate-qualified queries into workspaces with abbreviated crate directories
+show up in daily use (DOGFOOD.md), or another feature needs the package name anyway.

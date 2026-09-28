@@ -18,7 +18,9 @@
 //! Ambient declarations (`declare …`, and everything in a `.d.ts`) are
 //! extracted like the definitions they describe, as public stubs: a `declare
 //! module "fs"` is a module named `fs`, `declare global` adds to the top level,
-//! and a declared `let`/`var` is a constant, the definition of a global. An
+//! and a declared `let`/`var` is a constant, the definition of a global. A
+//! declared interface or type alias is no stub: types have nothing elsewhere
+//! to be a declaration of. An
 //! overload signature is a stub of the same name, and folds into the
 //! implementation after it at search time.
 //!
@@ -235,8 +237,13 @@ fn walk(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
                     // a namespace merged into the function or class before it
                     // (`function f` + `namespace f { … }`) adds members to that
                     // definition, and isn't another one
+                    // a type has no implementation to be a stub of: declared
+                    // (`declare global { interface Window … }`), it is the
+                    // definition, and so are its members
+                    let is_type = matches!(kind, Kind::Trait | Kind::Type);
+                    let stub = scope.ambient && !is_type;
                     if !(kind == Kind::Module && merges_into(out, &name, parent)) {
-                        push(ctx, out, &name, kind, child, parent, vis, scope.ambient);
+                        push(ctx, out, &name, kind, child, parent, vis, stub);
                     }
                     let qualified = qualify(parent, &name, ".");
                     if kind == Kind::Enum {
@@ -245,7 +252,11 @@ fn walk(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
                     }
                     // members carry their own visibility; a namespace body
                     // re-declares `export` for what it re-exports
-                    walk(ctx, child, scope.within(Some(&qualified)), out);
+                    let inner = Scope {
+                        ambient: stub,
+                        ..scope.within(Some(&qualified))
+                    };
+                    walk(ctx, child, inner, out);
                 }
             }
 
@@ -817,6 +828,7 @@ declare module "side-effect";
 declare global {
   interface Window {
     app: App;
+    focusApp(): void;
   }
   function track(event: string): void;
   var DEBUG: boolean;
@@ -858,8 +870,13 @@ declare global {
         // `global` in a module is the top level too
         assert_eq!(at("reset"), top(Kind::Function));
         assert_eq!(at("registry"), top(Kind::Constant));
-        // `global` is the top level, not a scope
-        assert_eq!(at("Window"), top(Kind::Trait));
+        // `global` is the top level, not a scope; a declared type is the
+        // definition, with nothing elsewhere to be a stub of
+        assert_eq!(at("Window"), (Kind::Trait, None, Some("public"), false));
+        assert_eq!(
+            at("focusApp"),
+            (Kind::Method, Some("Window"), Some("public"), false)
+        );
         assert_eq!(at("track"), top(Kind::Function));
         // a wildcard or bodiless module declares no definition
         assert!(!syms.iter().any(|s| s.name.contains("svg")), "{syms:?}");

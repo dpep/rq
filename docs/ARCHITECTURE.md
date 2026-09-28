@@ -411,7 +411,8 @@ why a result ranked where it did:
   definition (Python's nested `def`) takes a larger one, `local`, which ranks
   it below every same-named definition outside a function body (D36)
 - **stub** — a declaration whose body is elsewhere (TypeScript's ambient
-  `declare` and `.d.ts` entries, overload signatures; `symbols.stub`) takes the
+  `declare` and `.d.ts` values, overload signatures; `symbols.stub`; a
+  declared interface or type is the definition, not a stub) takes the
   same size as `local`: the implementation ranks first when it's indexed, and
   the declaration is the answer when it isn't (D38)
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`, `Foo.baz`; `::`,
