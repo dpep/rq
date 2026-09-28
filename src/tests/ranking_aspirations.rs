@@ -58,7 +58,7 @@ fn aspirational_queries() {
     let wants = [
         ("lp", "LanguagePlugin", "trait"), // acronym across a camel hump
         ("recency_b", "recency_boost", "function"), // prefix of the helper
-        ("recency", "recency", "field"),   // a literal name over a longer one's prefix (D43)
+        ("recency", "recency", "field"),   // a literal name over a longer one's prefix (D48)
         ("budgeted", "index_budgeted", "function"), // a trailing word
         ("parsefile", "parse_file", "function"), // snake target, no separator typed
         ("search", "search", "function"),  // the fn, not the bare `mod search;`

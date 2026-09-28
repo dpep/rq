@@ -112,14 +112,20 @@ each means one thing:
   `constructor`), or the class itself when the constructor is inherited.
 - **Kind.** `rq save -k method`, or the shorthand `rq method save`. Kinds are
   `class`/`module`/`method`/`function`/`struct`/`enum`/`trait`/`constant`/
-  `type`/`variant`/`macro` (shortcuts `c`/`mod`/`m`/`f`/`s`/`e`/`t`/`const`/`v`,
-  comma-separable: `-k m,f`; `interface`, `alias` and `member` work too).
+  `type`/`variant`/`macro`/`field` (shortcuts `c`/`mod`/`m`/`f`/`s`/`e`/`t`/`const`/`v`,
+  comma-separable: `-k m,f`; `interface`, `alias`, `member` and `property` work too).
   The kinds are shared across languages: a Go or TypeScript interface is a
   `trait`, a named type or alias (`type HandlerFunc func(…)`, `type Size = …`)
   a `type`, an enum member (Rust, TypeScript, a Python `Enum`) a `variant`, and
   a component wrapped in `memo(…)` a `function`. `-k type` also covers
   `struct`. A Python def nested in another is a `function` with `visibility`
   `local`, ranked below any same-named definition outside a function.
+  A `field` is a named slot a type declares, parented by it: a Rust or Go
+  struct field (an embedded Go field goes by its type's name), a TypeScript
+  class or interface property, a Python class attribute (a dataclass or model
+  field; not `self.x = …`). Fields rank below any same-named method, function
+  or type, so ask with the owner to land on one: `rq Hit.also_in`,
+  `rq User::email`, `rq -k field name`.
 - **Directory.** `rq save app/models` (rg-style trailing path, repeatable) or
   `--path`.
 - **Count.** `-l 1` for just the best hit, larger to survey, `-l 0` for every

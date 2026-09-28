@@ -49,3 +49,10 @@ rq	braboost	^src/search/mod.rs:3[57] BRANCH_(DIR|FILE)_BOOST$
 discourse	UsersController	^app/controllers/users_controller.rb:3 UsersController$
 discourse	MutedUser	^app/models/muted_user.rb:3 MutedUser$
 rails	ActiveModel	^activemodel/lib/active_model.rb:32 ActiveModel$
+rq	also_in	^src/search/mod.rs:262 also_in$
+rq	Hit.also_in	^src/search/mod.rs:262 also_in$
+hugo	CommonDirs.PublishDir	^config/commonConfig.go:49 PublishDir$
+hugo	RootConfig.BaseURL	^config/allconfig/allconfig.go:603 BaseURL$
+excalidraw	AppState.zenModeEnabled	^packages/excalidraw/types.ts:515 zenModeEnabled$
+django	Permission.codename	^django/contrib/auth/models.py:69 codename$
+django	AbstractUser.email	^django/contrib/auth/models.py:475 email$

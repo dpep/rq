@@ -7,6 +7,22 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+Upgrading re-reads every indexed Rust, Go, Python, TypeScript and JavaScript
+file once, in the background, so fields appear without a `--drop`.
+
+### Added
+- **Fields are indexed, as a new `field` kind** parented by their type: Rust and
+  Go struct fields (an embedded Go field named by its type), TypeScript/JavaScript
+  class properties and interface and object-type-alias properties, and Python
+  class attributes (dataclass, pydantic, TypedDict and model fields; not
+  `self.x = …`). `rq Hit.also_in`, `rq -k field email` or `rq field email` find
+  one. A field ranks below any same-named method, function or type, so
+  `rq name` still answers with the definition first (DECISIONS D48). `-k field`
+  also takes `property` and `prop`; `kind` in JSON may now be `field`. The VS
+  Code extension shows fields with the Field icon.
+
 ## 0.58.2 — 2026-09-28
 
 ### Changed

@@ -78,7 +78,8 @@ that have one right answer. Each row gives a query and the `file:line name` its 
 must match (a regex). With a leading `!`, the #1 must *not* match it. They come
 from the language testers (Go on hugo and gin, Python on django, TypeScript on
 excalidraw, Rust on tokio and ripgrep) and from Rust extraction gaps
-(`JoinHandle`, `TryRecvError::Empty`, `select`, `block_on`). Every run reports how
+(`JoinHandle`, `TryRecvError::Empty`, `select`, `block_on`), and fields in four
+languages (`Hit.also_in`, `AppState.zenModeEnabled`, D48). Every run reports how
 many hold #1 per binary, and lists each case that isn't #1 or changed. A case that
 held and no longer does fails `--fail-on-loss`. The four corpora only this set uses
 are pinned like the rest and indexed only when it runs. `--no-regress` skips them.

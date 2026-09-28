@@ -2327,3 +2327,102 @@ top 10s fails D42's bar. 5 per word is too little to move `fntfam`.
 
 *Reverses if:* a query set drawn from real use (not recipes) shows complete readings
 losing to longer names; then the charge sized against it.
+
+## D48 — Fields are indexed, as a `field` kind ranked below its namesakes
+
+**Adopted**, 2026-09-28. Recall harness (D12) with the anchored set and regress cases,
+against main at 2467823; symbol counts and index time on the ten pinned corpora.
+
+*The weakness.* No plugin emitted a field, so a struct field, an interface property or a
+model field had no symbol: `rq also_in` (rq's `Hit.also_in`, the source of a JSON field)
+answered `no_match`, as did `AppState.zenModeEnabled`, `Permission.codename` and
+`CommonDirs.PublishDir`. Earlier plugin tests asserted the gap on purpose ("a plain data
+field isn't a definition worth navigating to"), so this reverses a stance, not an
+oversight.
+
+*The rules.* A new language-neutral `core::Kind`, `field`: a named slot a type declares,
+parented by the type's qualified name. All syntactic, each in its plugin:
+- **Rust:** each named field of a struct or union, with its own `pub`. Not a tuple
+  struct's positions, nor a struct variant's fields (the variant is the target).
+- **Go:** each field of a named struct type; an embedded field goes by its type's name
+  (`*pkg.List[T]` → `List`), as Go names it. A nested anonymous struct's fields stay out,
+  reached through the field that holds them.
+- **TypeScript/JavaScript:** a class's property declarations, an interface's property
+  signatures, and the properties of the object type a type alias *is* (through unions,
+  intersections, parentheses). Not an object literal's properties (values, as D17 kept
+  them out), a parameter's or type argument's object type, a property's own nested type,
+  a computed name. An arrow-valued property stays a method and `static readonly` a
+  constant.
+- **Python:** any name a class body binds or annotates, unless `UPPER_SNAKE` (a constant)
+  or in an enum (a variant). Not a dunder, not `self.x = …`, nothing inside a def.
+- **Ruby:** nothing new. `attr_*` and the schema DSLs already emit methods, which is what
+  Ruby navigates to. `Struct.new(:major)`'s members stay unindexed (the constant naming it
+  is found); a field kind would mislabel what Ruby exposes as accessor methods.
+
+*Ranking.* A field takes a kind weight of −150 × match quality, the size of `local` (D36)
+and `stub` (D38): past what path, extent and kind add together, so it ranks below any
+same-named definition that isn't a field; above test code (−400); and, as the only literal
+match of its name, above another name's prefix (the exact-to-prefix gap is ~300).
+`Type.field`, `Type::field` and `Type#field` scope to the parent as for methods.
+
+*The flood.* Symbols per corpus, main → fields (index file size):
+
+| corpus | symbols | added | DB |
+|---|---|---|---|
+| rails | 50,993 → 50,993 | 0 | 11.6 → 11.6 MB |
+| discourse | 74,812 → 79,114 | +4,302 (+6%) | 17.4 → 18.0 MB |
+| django | 44,675 → 54,253 | +9,578 (+21%) | 9.2 → 10.4 MB |
+| hugo | 11,060 → 15,083 | +4,023 (+36%) | 2.0 → 2.5 MB |
+| excalidraw | 4,919 → 7,136 | +2,217 (+45%) | 1.2 → 1.5 MB |
+| tokio | 8,319 → 9,701 | +1,382 (+17%) | 1.4 → 1.5 MB |
+| ripgrep | 3,463 → 4,150 | +687 (+20%) | 0.6 → 0.6 MB |
+| gin | 1,674 → 1,990 | +316 (+19%) | 0.4 → 0.4 MB |
+| rq, trekr (pinned) | 4,429 → 5,220 | +791 (+18%) | 0.9 → 1.0 MB |
+
+The most repeated names: discourse's Ember injections (`@service router;` 219 times,
+`currentUser` 124, 2,770 `@service` lines in all), django's `name` (599), `ordering` (174,
+mostly `Meta`), `operations` and `dependencies` (migrations), tokio's `inner` (110).
+
+*Burial, measured directly.* For every name outside test paths that is both a field and
+some other definition (208 in django, 531 hugo, 559 discourse, 193 tokio, 1,907 over nine
+corpora), `rq <name>` ranked a field first on 17. Each is a field over a namesake that
+takes a penalty of its own: a test-scoped or test-path definition (ripgrep's `prev` in
+`mod tests`, discourse's `hide_profile` in a page object), or another field.
+
+*Recall.* Against main: #1 5,158 → 5,160, top 10 6,132 → 6,149, found 6,563 → 6,583; 22
+sources up, 14 down, Ruby unchanged. The gains are not evidence for fields: ground truth is
+items only, and rank is by name, so a field that shares a source's name (tokio's `uring`,
+rq's `lang`) now counts as finding it. The losses are the real signal:
+- `binimplicit` (ripgrep): `binary_implicit`, a field, over `binary_detection_implicit`
+  #1 → #2. It reads as the query better; ambiguous.
+- `src` (rq): `Source` #2 → out of the top 10, behind the fields literally named `src`.
+- Anchored: plain top 10 432 → 431; `modal` (discourse) #10 → #62 plain, behind 52
+  `@service modal;` injections, since the Ruby truth sits in a spec path (−400). Anchored
+  it is unchanged, as is every anchored number (213 / 359 #1, 439 top 10).
+- Regress: 44 → 51 of 54, the seven new field cases (`also_in`, `Hit.also_in`,
+  `CommonDirs.PublishDir`, `RootConfig.BaseURL`, `AppState.zenModeEnabled`,
+  `Permission.codename`, `AbstractUser.email`); none lost.
+
+*Cost.* Index time unchanged within noise (median of 5 interleaved, load ~50: django 1.56
+→ 1.49 s, discourse 2.43 → 2.54 s, hugo 0.51 → 0.49 s). Query latency on the 58 hand-picked
+queries, 5 reps: first answer 4.7 / 24.3 → 4.7 / 25.6 ms (median / p90).
+
+*Rejected:*
+- **Not indexing fields.** The measurement above is the case against the flood: a field
+  takes #1 from a real namesake almost never, and the one plain top 10 lost is to test
+  code. Without them, `rg` is the only way to a JSON field's or a model column's source.
+- **A −400 field weight** (the test-path size, so an exact field loses to another name's
+  prefix). Against −150: recall 1 fewer #1 and 6 fewer top 10 (all name-coincidence
+  sources, as above), and on real queries it answers the wrong thing: django's
+  `verbose_name` gives `verbose_name_raw`, a method the query only begins, where the field
+  is what was typed. rq's `recency` is the same shape; the aspiration test now asks for
+  the field there and keeps the helper under `recency_b`.
+- **Dropping bare decorated class fields** (`@service modal;`), which would cut most of
+  discourse's 4,302. It needs a rule that also drops `@tracked count;` state, or a list of
+  decorator names, a per-framework list as D37 turned down.
+- **Instance attributes (`self.x = …`, `this.x = …`).** An assignment in a method body is
+  a use as often as a declaration, and each one would be another symbol per method.
+
+*Reverses if:* field noise shows up in daily use where a namesake exists (DOGFOOD.md; then
+the weight moves toward −400, with `verbose_name` as the price), or Ember-style injections
+dominate a JS codebase's results (then the bare-decorated rule).

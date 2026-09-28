@@ -37,7 +37,7 @@ Symbol {
   repository   # which repo it belongs to
   language     # ruby, go, ts, ...
   name         # RefundProcessor, perform, User
-  kind         # class | module | method | function | struct | enum | trait | constant | type | macro | variant
+  kind         # class | module | method | function | struct | enum | trait | constant | type | macro | variant | field
   file         # repo-relative path
   line         # 1-based
   parent       # enclosing symbol (cheap nesting, NOT a call graph)
@@ -91,7 +91,8 @@ trait LanguagePlugin {
 
 A registry maps file extension → plugin. Adding Java/C# is a new
 plugin. The one shared thing a language may extend is the `core::Kind`
-vocabulary — Rust added `struct`/`enum`/`trait`, then `type`/`macro`/`variant` — which generalizes the model
+vocabulary — Rust added `struct`/`enum`/`trait`, then `type`/`macro`/`variant`, and
+`field` came to four languages at once (D48) — which generalizes the model
 rather than leaking a language into `index`/`search`/scoring.
 
 ## SQLite schema
@@ -135,7 +136,7 @@ symbols (
   file_id INTEGER NOT NULL REFERENCES files(id),
   name TEXT NOT NULL,
   name_lower TEXT NOT NULL,          -- prefix / ranking
-  kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait|constant|type|macro|variant
+  kind TEXT NOT NULL,                -- class|module|method|function|struct|enum|trait|constant|type|macro|variant|field
   language TEXT NOT NULL,
   line INTEGER NOT NULL,
   end_line INTEGER,                  -- 1-based last line of the definition body
@@ -231,7 +232,7 @@ Decisions worth calling out:
   also picked up Rust's variants, aliases, macros and macro-body items, and v20
   re-reads Go, Python and TS/JS for their types, variants and nested defs, and v21
   re-reads TS/JS for ambient declarations and overload signatures and Python
-  for its local classes: users
+  for its local classes, and v22 re-reads every language but Ruby for fields: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to
