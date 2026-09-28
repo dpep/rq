@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.58.2 — 2026-09-28
 
 ### Changed
 - **A bare type name answers the top-level definition first.** `rq Account` ranks
