@@ -36,6 +36,27 @@ fn ranks_the_named_type_first_and_classifies_kinds() {
 }
 
 #[test]
+fn a_field_is_found_by_name_and_scope_below_a_same_named_method() {
+    let (store, dir) = indexed("fields", "widget.rs", WIDGET_RS);
+
+    // the field is the only exact `size`: it beats `resize`
+    let size = top(&store, "size");
+    assert_eq!((size.name.as_str(), size.kind.as_str()), ("size", "field"));
+    assert_eq!(size.parent.as_deref(), Some("Widget"));
+    assert_eq!(top(&store, "Widget::size").kind, "field");
+    assert_eq!(top(&store, "Widget.size").kind, "field");
+
+    // the accessor is what `label` means; its field is still found, second
+    let label = search::search(&store, "label", None, None, &Context::default(), 10)
+        .unwrap()
+        .hits;
+    let kinds: Vec<_> = label.iter().map(|h| h.kind.as_str()).collect();
+    assert_eq!(kinds, ["method", "field"]);
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn kind_filter_narrows_to_struct() {
     let (store, dir) = indexed("kinds", "widget.rs", WIDGET_RS);
 

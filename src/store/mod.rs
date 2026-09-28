@@ -1495,13 +1495,13 @@ mod tests {
         {
             let mut store = Store::open(&path).unwrap();
             let mixed = store.upsert_repository(&"local:/mixed", None).unwrap();
-            let rust = store.upsert_repository(&"local:/rust", None).unwrap();
+            let ruby = store.upsert_repository(&"local:/ruby", None).unwrap();
             store
-                .replace_files(mixed, &[file("a.py", "python"), file("b.rs", "rust")])
+                .replace_files(mixed, &[file("a.py", "python"), file("b.rb", "ruby")])
                 .unwrap();
-            store.replace_files(rust, &[file("c.rs", "rust")]).unwrap();
+            store.replace_files(ruby, &[file("c.rb", "ruby")]).unwrap();
             store.set_coverage(mixed, 2, 2, "complete").unwrap();
-            store.set_coverage(rust, 1, 1, "complete").unwrap();
+            store.set_coverage(ruby, 1, 1, "complete").unwrap();
             store.conn.execute_batch("PRAGMA user_version=19;").unwrap();
         }
         let store = Store::open(&path).unwrap();
@@ -1514,10 +1514,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(hash("a.py"), "");
-        assert_eq!(hash("b.rs"), "h");
+        assert_eq!(hash("b.rb"), "h");
         let status = |id: &str| store.coverage_status(id).unwrap().unwrap();
         assert_eq!(status("local:/mixed"), "warming");
-        assert_eq!(status("local:/rust"), "complete");
+        assert_eq!(status("local:/ruby"), "complete");
         drop(store);
         let _ = std::fs::remove_file(&path);
     }
@@ -1546,7 +1546,7 @@ mod tests {
                     repo,
                     &[
                         file("a.d.ts", "typescript", vec![stub]),
-                        file("b.rs", "rust", vec![]),
+                        file("b.rb", "ruby", vec![]),
                     ],
                 )
                 .unwrap();
@@ -1563,7 +1563,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(hash("a.d.ts"), "");
-        assert_eq!(hash("b.rs"), "h");
+        assert_eq!(hash("b.rb"), "h");
         assert_eq!(
             store.coverage_status("local:/mixed").unwrap().unwrap(),
             "warming"
@@ -1577,6 +1577,57 @@ mod tests {
             )
             .unwrap();
         assert!(stub);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v22_queues_the_languages_that_emit_fields() {
+        let path = std::env::temp_dir().join(format!("rq-migrate-v22-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let file = |path: &str, language: &str| FileSymbols {
+            path: path.into(),
+            language: language.into(),
+            mtime: Some(1),
+            content_hash: "h".into(),
+            generated: false,
+            symbols: Vec::new(),
+        };
+        {
+            let mut store = Store::open(&path).unwrap();
+            let repo = store.upsert_repository(&"local:/mixed", None).unwrap();
+            store
+                .replace_files(
+                    repo,
+                    &[
+                        file("a.rs", "rust"),
+                        file("b.go", "go"),
+                        file("c.py", "python"),
+                        file("d.ts", "typescript"),
+                        file("e.rb", "ruby"),
+                    ],
+                )
+                .unwrap();
+            store.set_coverage(repo, 5, 5, "complete").unwrap();
+            store.conn.execute_batch("PRAGMA user_version=21;").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let hash = |p: &str| -> String {
+            store
+                .conn
+                .query_row("SELECT content_hash FROM files WHERE path = ?1", [p], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(hash("a.rs"), "");
+        for p in ["b.go", "c.py", "d.ts", "e.rb"] {
+            assert_eq!(hash(p), "h", "{p}");
+        }
+        assert_eq!(
+            store.coverage_status("local:/mixed").unwrap().unwrap(),
+            "warming"
+        );
         drop(store);
         let _ = std::fs::remove_file(&path);
     }

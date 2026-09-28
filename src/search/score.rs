@@ -383,6 +383,9 @@ pub(crate) fn score(
     let kind = match cand.kind.as_str() {
         "class" | "struct" | "trait" => 15.0,
         "module" | "enum" | "type" => 12.0,
+        // a slot of a type, rarely meant when its name also names a
+        // definition: sized as `local`, so it ranks below any same-named one
+        "field" => -LOCAL_PENALTY,
         _ => 0.0,
     };
     if kind != 0.0 {

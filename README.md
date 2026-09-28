@@ -47,7 +47,7 @@ rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
 rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path)
-rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait|constant|type|macro|variant
+rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait|constant|type|macro|variant|field
 rq KIND <query>             # a leading kind keyword is shorthand for -k (rq class Widget)
 rq Scope::name              # scope-aware: only the name defined inside Scope (or Scope#method)
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
@@ -130,7 +130,7 @@ that doesn't apply is **omitted**, never `null`.
 | Field | Present | Meaning |
 | --- | --- | --- |
 | `name` | always | The symbol's name. |
-| `kind` | always | `class`, `module`, `method`, `function`, `struct`, `enum`, `trait` or `constant`. |
+| `kind` | always | `class`, `module`, `method`, `function`, `struct`, `enum`, `trait`, `constant`, `type`, `macro`, `variant` or `field`. |
 | `language` | always | `ruby`, `rust`, `go`, `python`, `typescript` or `javascript`. |
 | `file` | always | Path relative to `root`. |
 | `root` | when rq knows a checkout for the repo (always for `--symbols`) | Absolute checkout root. Per result, because `-a` spans repos: join `root` and `file` to read it. |
@@ -171,7 +171,7 @@ query, an index that can't be opened, a `--symbols` file that doesn't exist —
 stdout carries one object instead of results:
 
 ```json
-{ "error": "rq: unknown --kind \"widget\" (class, module, method, function, struct, enum, trait, constant, type, macro, variant)", "kind": "usage", "code": 64 }
+{ "error": "rq: unknown --kind \"widget\" (class, module, method, function, struct, enum, trait, constant, type, macro, variant, field)", "kind": "usage", "code": 64 }
 ```
 
 `kind` is stable, and `code` is the exit code. The message also goes to stderr.

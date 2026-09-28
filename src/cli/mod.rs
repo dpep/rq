@@ -79,9 +79,9 @@ struct Cli {
     /// Limit to these kinds: class, method, function, struct, …
     ///
     /// All kinds: class, module, method, function, struct, enum, trait, constant,
-    /// type, variant, macro. Shortcuts: c, mod, m, f, s, e, t, const, v.
-    /// `interface` = trait, `alias` = type, `member` = variant; `type` also takes
-    /// structs. Repeatable or comma-separated.
+    /// type, variant, macro, field. Shortcuts: c, mod, m, f, s, e, t, const, v.
+    /// `interface` = trait, `alias` = type, `member` = variant, `property` =
+    /// field; `type` also takes structs. Repeatable or comma-separated.
     #[arg(
         help_heading = "Narrow the search",
         short = 'k',
@@ -308,7 +308,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                     out,
                     Failure::Usage,
                     format_args!(
-                        "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant, type, macro, variant)"
+                        "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant, type, macro, variant, field)"
                     ),
                 );
             }
@@ -2684,7 +2684,7 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
 fn keyword_kind(token: &str) -> Option<&'static [&'static str]> {
     match token.to_ascii_lowercase().as_str() {
         "class" | "module" | "method" | "function" | "fn" | "struct" | "type" | "enum"
-        | "trait" | "interface" | "constant" | "const" | "macro" | "variant" => {
+        | "trait" | "interface" | "constant" | "const" | "macro" | "variant" | "field" => {
             canonical_kind(token)
         }
         _ => None,
@@ -2736,6 +2736,7 @@ fn canonical_kind(s: &str) -> Option<&'static [&'static str]> {
         "const" | "constant" => &["constant"],
         "macro" | "macro_rules" => &["macro"],
         "v" | "variant" | "member" | "enum_member" => &["variant"],
+        "field" | "property" | "prop" => &["field"],
         _ => return None,
     })
 }
@@ -3607,6 +3608,7 @@ mod tests {
         assert_eq!(canonical_kind("type"), Some(&["type", "struct"][..]));
         assert_eq!(canonical_kind("alias"), Some(&["type"][..]));
         assert_eq!(canonical_kind("member"), Some(&["variant"][..]));
+        assert_eq!(canonical_kind("property"), Some(&["field"][..]));
         assert_eq!(canonical_kind("macro"), Some(&["macro"][..]));
         assert_eq!(canonical_kind("const"), Some(&["constant"][..]));
         assert_eq!(canonical_kind("banana"), None);

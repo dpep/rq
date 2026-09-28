@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 21;
+pub(crate) const VERSION: i64 = 22;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -360,6 +360,18 @@ UPDATE files SET mtime = NULL, content_hash = ''
   WHERE language IN ('python', 'typescript', 'javascript');
 "#;
 
+/// Migration v21 -> v22: the Rust plugin emits fields. Its files are queued for
+/// re-extraction as v14 queued three languages.
+pub(crate) const MIGRATION_V22: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND repository_id IN (
+      SELECT repository_id FROM files
+      WHERE language IN ('rust'));
+UPDATE files SET mtime = NULL, content_hash = ''
+  WHERE language IN ('rust');
+"#;
+
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
@@ -375,7 +387,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 22] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 23] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -398,4 +410,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 22] = [
     (20, Step::Sql(MIGRATION_V20)),
     (21, MIGRATION_V21),
     (21, Step::Sql(MIGRATION_V21_REQUEUE)),
+    (22, Step::Sql(MIGRATION_V22)),
 ];

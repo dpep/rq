@@ -27,6 +27,9 @@ pub(crate) enum Kind {
     Type,
     /// One case of an enum: a Rust variant, a TypeScript or Python enum member.
     Variant,
+    /// A named slot a type declares, parented by the type: a Rust or Go struct
+    /// field, a TypeScript property, a Python class attribute.
+    Field,
 }
 
 impl Kind {
@@ -44,6 +47,7 @@ impl Kind {
             Kind::Macro => "macro",
             Kind::Type => "type",
             Kind::Variant => "variant",
+            Kind::Field => "field",
         }
     }
 }
@@ -103,5 +107,6 @@ mod tests {
         assert_eq!(Kind::Macro.as_str(), "macro");
         assert_eq!(Kind::Type.as_str(), "type");
         assert_eq!(Kind::Variant.as_str(), "variant");
+        assert_eq!(Kind::Field.as_str(), "field");
     }
 }

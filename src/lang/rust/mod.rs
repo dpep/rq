@@ -2,7 +2,8 @@
 //!
 //! Extracts the definitions you navigate to: `fn` (free → function, inside an
 //! `impl`/`trait` → method), `struct`, `enum` and its variants, `trait`, `mod`,
-//! `type` aliases, `macro_rules!`, and `const`/`static` (→ constant). `parent`
+//! `type` aliases, `macro_rules!`, `const`/`static` (→ constant), and a
+//! struct's named fields (→ field, parented by the struct). `parent`
 //! carries the enclosing qualified name (`::`-joined) so a method renders as
 //! `bar · Foo` and a nested type as `outer · mod`. `impl` blocks aren't symbols
 //! themselves; they just supply the parent for the methods inside them.
@@ -64,6 +65,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
             "struct_item" | "union_item" => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     push(ctx, out, &name, Kind::Struct, child, parent);
+                    fields(ctx, child, &qualify(parent, &name, "::"), out);
                 }
             }
             "enum_item" => {
@@ -159,6 +161,27 @@ fn variants(ctx: &Ctx, node: Node, qualified: &str, out: &mut Vec<Symbol>) {
         {
             let mut s = ctx.symbol(&name, Kind::Variant, v, Some(qualified));
             s.visibility = Some(vis);
+            out.push(s);
+        }
+    }
+}
+
+/// Each named field of a struct or union, as a child of it with its own
+/// visibility. A tuple struct's fields are positions, not names to look up.
+fn fields(ctx: &Ctx, node: Node, qualified: &str, out: &mut Vec<Symbol>) {
+    let Some(body) = node
+        .child_by_field_name("body")
+        .filter(|b| b.kind() == "field_declaration_list")
+    else {
+        return;
+    };
+    let mut cursor = body.walk();
+    for f in body.named_children(&mut cursor) {
+        if f.kind() == "field_declaration"
+            && let Some(name) = ctx.field_text(f, "name")
+        {
+            let mut s = ctx.symbol(&name, Kind::Field, f, Some(qualified));
+            s.visibility = Some(visibility(ctx, f));
             out.push(s);
         }
     }
@@ -450,7 +473,37 @@ not_items! { a => b, c }
         assert_eq!(block_on.parent.as_deref(), Some("Runtime"));
         assert_eq!(block_on.line, 15);
         // a body that isn't items yields nothing rather than noise
-        assert_eq!(syms.len(), 3, "{syms:?}");
+        assert_eq!(syms.len(), 4, "{syms:?}");
+        assert_eq!(find(&syms, "raw").kind, Kind::Field);
+    }
+
+    #[test]
+    fn named_struct_fields_are_fields_of_their_struct() {
+        let src = r#"
+mod search {
+    pub struct Hit {
+        pub also_in: Vec<String>,
+        pub(crate) score: f64,
+        rank: usize,
+    }
+}
+pub struct Meters(pub u32);
+pub union Bits { word: u32 }
+pub enum Shape { Rect { width: u32 } }
+"#;
+        let syms = extract(src);
+
+        let also_in = find(&syms, "also_in");
+        assert_eq!(
+            (also_in.kind, also_in.parent.as_deref(), also_in.visibility),
+            (Kind::Field, Some("search::Hit"), Some("public"))
+        );
+        assert_eq!(find(&syms, "score").visibility, Some("crate"));
+        assert_eq!(find(&syms, "rank").visibility, Some("private"));
+        assert_eq!(find(&syms, "word").parent.as_deref(), Some("Bits"));
+        // a tuple struct's positions and a struct variant's fields aren't here
+        let fields = syms.iter().filter(|s| s.kind == Kind::Field).count();
+        assert_eq!(fields, 4, "{syms:?}");
     }
 
     #[test]

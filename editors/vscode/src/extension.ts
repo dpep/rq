@@ -257,6 +257,8 @@ function symbolKind(kind: string): vscode.SymbolKind {
       return vscode.SymbolKind.Class;
     case "variant":
       return vscode.SymbolKind.EnumMember;
+    case "field":
+      return vscode.SymbolKind.Field;
     case "constant":
       return vscode.SymbolKind.Constant;
     default:
