@@ -2029,3 +2029,52 @@ that approximates a name.
 
 *Reverses if:* people type capitals casually into approximate queries (a sentence-case
 habit), which would show up as the other-case twin losing in DOGFOOD.md.
+
+## D41 — A word may be entered past a dropped vowel
+
+**Adopted**, 2026-09-27. Same sets as D40, against D40.
+
+*The weakness.* `align` enters every word after the first at its start. A consonant
+skeleton drops vowels, including one that starts a word, so `prsnch` never found
+`parse_anchor`: its `n` sits one letter into `anchor`. `hdspdl` (`HEADS_UP_DELAY`),
+`mxncls` (`MAX_ENCLOSING`) and `lvrpd` (`LIVE_REPO_ID`) failed the same way. 162 of the
+dogfood set's `consonants` misses were not found at all; 123 of them only for this.
+
+*The rule.* A word whose first letter is a vowel (`a e i o u`) may be entered at its
+second letter, from anywhere in the word before, as its start may. That is
+`MAX_NONBOUNDARY_GAP`'s own reason (a dropped vowel) applied at a word start. A word
+starting with a consonant is still entered at its start: dropping a consonant is not how
+anyone abbreviates, and allowing it read coincidence into names. Measured as a screen on
+the dogfood set, any first letter found 20 more #1s, all in `first+last` queries it read
+by accident (`teslimits` stepping through f[l]oat into l[i]mits), and lost 7 #1s to 2.
+
+The name index encodes it: `transition_pairs` adds the pairs from the word before to
+the second letter, and `aligns` a shifted word-start mask over the vowels.
+`PAIRS_VERSION` 1 → 2 rebuilds every repo's index once, on first need (D25). `make fuzz`
+(20,000 names, three seeds) and the exhaustive rails + discourse test (2,372 queries,
+77k names) show no disagreement.
+
+| | #1 | top 10 | found |
+|---|---|---|---|
+| harness, D40 | 4,976 (73.0%) | 5,777 (84.7%) | 6,055 (88.8%) |
+| harness, this | 5,052 (74.1%) | 5,915 (86.7%) | 6,213 (91.1%) |
+| dogfood, D40 | 6,198 (86.7%) | 6,653 (93.0%) | 6,714 (93.9%) |
+| dogfood, this | 6,301 (88.1%) | 6,774 (94.7%) | 6,835 (95.6%) |
+
+`consonants` goes 48.3 → 56.0% #1 and 71.4 → 84.4% top 10 on the harness, 67.9 → 77.5% and
+84.1 → 95.2% on the dogfood set. Every language gains: Ruby 56.4 → 57.3% #1, Rust 81.5 →
+82.7%. Harness 159 up, 73 down; no source leaves the top 10. Anchored and regress
+unchanged, plus a new regress case (`prsnch`).
+
+The 10 lost #1s (2 on the dogfood set, both among them):
+- **Another name reads as the skeleton, 6.** `tstkpn` → `test_keep_and_…` (k, p, [a]n),
+  `tstmxn` → `test_mixed_encoding`, `tstgrd`, `nwthrd`, `addlcl` → `addUlClasses`,
+  `accenc` → `AcceptedAnswerCache`. The competitor holds the query's consonants in order
+  now that its vowel-initial words count; the source is #2 or #3.
+- **An in-order reading beats a near miss, 4.** `wriet` → `written_at` over `write`,
+  `liens` → `line_anchor_start`, `runnign?` → `running_in_rack?`, `Fraem` →
+  `FramedImpl`. D14's competition: a name that holds every letter in order outranks a
+  transposition whose letters agree less. The source stays #2.
+
+*Reverses if:* skeleton matches through a vowel-initial word start show up as noise in
+real use.

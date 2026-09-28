@@ -14,6 +14,9 @@ and aren't listed; see `git log` for those.
   ranks `COUNTERS` over `counters`, and `Plaec` `Place` over `place`, graded by
   how many of the query's capitals the name shares. An all-lowercase query
   stays case-blind (DECISIONS D40).
+- **A consonant skeleton may drop a word's first vowel.** `prsnch` finds
+  `parse_anchor` and `mxncls` `MAX_ENCLOSING` (D41). The name index is rebuilt
+  once per repo, on the first search after upgrading.
 
 ### Fixed
 - **rq ignores an inherited `GIT_DIR`.** It picks a repo by walking up to its

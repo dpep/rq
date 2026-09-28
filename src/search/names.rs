@@ -669,7 +669,11 @@ mod tests {
                 let (harness, repos, corpora, bad) = (&harness, &repos, &corpora, &bad);
                 scope.spawn(move || {
                     for (i, (query, _)) in harness.iter().enumerate().skip(t).step_by(threads) {
-                        let names = &corpora.iter().find(|(r, _)| *r == repos[i]).unwrap().1;
+                        // the harness spans more corpora than these two
+                        let corpus = repos
+                            .get(i)
+                            .and_then(|repo| corpora.iter().find(|(r, _)| r == repo));
+                        let Some((_, names)) = corpus else { continue };
                         let found = disagreements(score::parse_qualified(query).0, names);
                         bad.lock().unwrap().extend(found);
                     }

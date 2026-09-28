@@ -17,11 +17,14 @@ the only fuzzy recall: the trigram table and the nets are gone.
 D21 failed because the net it replaced ("shares any trigram") can't prune. But the scorer
 never asked for a plain subsequence. `align` accepts only this shape: the first query
 letter anywhere; each later letter either stays in the current word within a gap of 2
-(`MAX_NONBOUNDARY_GAP`), or lands on the *first letter of the next word*. No word may be
-skipped. So every consecutive query pair `(a, b)` must be a **transition pair** of the name:
+(`MAX_NONBOUNDARY_GAP`), or lands on the *first letter of the next word* (or its second,
+when the first is a vowel a skeleton dropped, D41). No word may be skipped. So every
+consecutive query pair `(a, b)` must be a **transition pair** of the name:
 
 - `(name[j], name[i])`, `i` mid-word, `j` in the same word, `i - j <= 3`
 - `(name[j], name[i])`, `i` a word start, `j` anywhere in the word immediately before
+- `(name[j], name[i])`, `i` the second letter of a word starting with a vowel, `j`
+  anywhere in the word immediately before
 - plus alphanumerics adjacent across separators, which is how an exact, prefix,
   separator-free (`joiners_eq`) or glob match steps
 

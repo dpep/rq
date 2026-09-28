@@ -44,3 +44,4 @@ excalidraw	encode	^packages/excalidraw/data/encode.ts:99 encode$
 excalidraw	extract	^packages/excalidraw/global.d.ts:49 extract$
 excalidraw	png-chunk-text.decode	^packages/excalidraw/global.d.ts:42 decode$
 django	RelatedManager	^django/db/models/fields/related_descriptors.py:722 RelatedManager$
+rq	prsnch	^src/cli/mod.rs:610 parse_anchor$
