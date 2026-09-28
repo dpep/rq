@@ -392,7 +392,9 @@ why a result ranked where it did:
   the test penalty, under its own name: secondary code the same way (D28)
 - **example path** — so does a definition under an example, demo or docs app
   (`examples/`, `example/`, `_examples/`, `demo/`, `demos/`, `docs/`,
-  `dev-docs/`; not `doc/`, often a library's own package) — `example_path` (D29)
+  `dev-docs/`; not `doc/`, often a library's own package) — `example_path` (D29).
+  None of the three applies in the `--anchor`'s own file: asked from inside a
+  test, that file's definitions are the context (D31)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:

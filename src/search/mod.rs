@@ -178,12 +178,14 @@ pub(crate) struct Context {
 impl Context {
     /// The context-dependent boosts for one candidate.
     fn boosts(&self, c: &SymbolRow, recency: f64) -> Boosts {
-        let (enclosing, proximity) = self.anchor.as_ref().map_or((0.0, 0.0), |a| {
-            (
-                a.enclosing(c.parent.as_deref()),
-                a.proximity(&c.repo_identity, &c.file),
-            )
-        });
+        let (enclosing, proximity, anchor_file) =
+            self.anchor.as_ref().map_or((0.0, 0.0, false), |a| {
+                (
+                    a.enclosing(c.parent.as_deref()),
+                    a.proximity(&c.repo_identity, &c.file),
+                    a.identity == c.repo_identity && a.file == c.file,
+                )
+            });
         Boosts {
             recency,
             branch: if self.active.is_empty() {
@@ -193,6 +195,7 @@ impl Context {
             },
             enclosing,
             proximity,
+            anchor_file,
         }
     }
 }

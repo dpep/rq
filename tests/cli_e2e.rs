@@ -1151,6 +1151,38 @@ fn an_anchor_ranks_the_enclosing_class_first() {
 }
 
 #[test]
+fn an_anchor_in_a_test_file_waives_that_files_test_penalty() {
+    let (dir, db) = scratch("anchor-test-file");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::create_dir_all(dir.join("tests/helpers")).unwrap();
+    fs::write(
+        dir.join("lib/api.ts"),
+        "export class Api {\n  request() {\n    return 1;\n  }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("tests/helpers/api.ts"),
+        "export class FakeApi {\n  request() {\n    return 2;\n  }\n}\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (_, plain) = rq(&db, &dir, &["request", "--ndjson"]);
+    assert_eq!(top_file(&plain), "lib/api.ts", "baseline: {plain}");
+    // asked from inside the test helper, its own method is the context
+    let (ok, out) = rq(
+        &db,
+        &dir,
+        &["request", "--anchor", "tests/helpers/api.ts:3", "--ndjson"],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(top_file(&out), "tests/helpers/api.ts", "{out}");
+    assert!(!first_line(&out).contains("test_path"), "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_anchor_file_the_index_has_not_seen_is_read_live() {
     // A file created after indexing, reopening Widget: nothing about it is in
     // the index, so only a live read knows line 3 sits inside Widget.

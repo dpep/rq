@@ -104,6 +104,8 @@ pub(crate) struct Boosts {
     pub enclosing: f64,
     /// Anchor signal: the candidate's file is the anchor's, or near it.
     pub proximity: f64,
+    /// The candidate is in the anchor's own file.
+    pub anchor_file: bool,
 }
 
 /// Score `cand` for `query`. Returns `None` when the candidate doesn't match at
@@ -287,7 +289,9 @@ pub(crate) fn score(
     } else {
         None
     };
-    if let Some(name) = secondary {
+    // Asked from inside a test (or generated, or example) file, that file's
+    // own definitions are the context, not secondary to it.
+    if let Some(name) = secondary.filter(|_| !boosts.anchor_file) {
         let value = if features.iter().any(|f| matches!(f.name, "fuzzy" | "typo")) {
             (TEST_PATH_SHARE * name_evidence(&features).max(0.0)).min(TEST_PATH_PENALTY)
         } else {

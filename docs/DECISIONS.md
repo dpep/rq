@@ -1626,3 +1626,34 @@ user didn't type. Scoring only, so the name index (D23) would have been untouche
 *Reverses if:* a corpus where upper-snake constants are the usual target shows the gap
 costing them first place (then try it for all-caps names alone, which needs its own
 harness); or D19's prefix reversal is taken up on its own merits.
+
+## D31 — The anchor's own file isn't secondary to itself
+
+**Adopted**, 2026-09-27. Anchored call sites (D18) and the recall harness, against D29.
+
+*The weakness.* With `--anchor tests/helpers/api.ts:120`, the method defined on that line
+ranked #3. It took the test penalty (−400), and the anchor can add at most 270 (`proximity`
+90, `enclosing` 180), so a library definition of the same name always won. Asked from
+inside a test, that test file's definitions are the context, not a distraction from it.
+
+*The rule.* A candidate in the anchor's own file takes no secondary penalty (`test_path`,
+`generated`, `example_path`). Only that file: the rest of the test tree keeps its penalty,
+and `proximity` already grades how near it is.
+
+| 446 call sites, with `--anchor` | #1 | top 10 | #1, truth in anchor file | #1, truth elsewhere |
+|---|---|---|---|---|
+| before (D29) | 351 | 439 | 258 | 93 |
+| waived in the anchor's file | 359 | 439 | 270 | 89 |
+
+172 up, 14 down. The four new losses are all Ruby tests that define a same-named fake in
+another class of the file and call the library's version (`unknown` in
+`broadcast_logger_test.rb`, `build_from_database` twice in `attribute_set_test.rb`,
+`decode_credentials`): D18's known limit, a call on another class asked as a bare name
+from a file that defines the name. Unanchored recall is untouched (0 sources moved).
+
+*Rejected: halving the penalty in the anchor's file.* −200 still outweighs `proximity`
+plus one level of `enclosing` (150), which is where a helper in the test's own class
+sits, so it keeps most of the misses it was meant to fix.
+
+*Reverses if:* anchored use from tests shows the in-file fakes winning over library calls
+more often than the in-file helpers they were meant to find.
