@@ -135,8 +135,9 @@ struct Cli {
     limit: usize,
 
     /// Restrict to symbol kinds: class, module, method, function, struct, enum,
-    /// trait, constant (shortcuts: c, mod, m, f, s, e, t, const; `interface` =
-    /// trait, `type` = struct). Repeatable or comma-separated.
+    /// trait, constant, type, variant, macro (shortcuts: c, mod, m, f, s, e, t,
+    /// const, v; `interface` = trait, `alias` = type, `member` = variant, `type`
+    /// also takes structs). Repeatable or comma-separated.
     #[arg(short = 'k', long, value_name = "KIND", value_delimiter = ',')]
     kind: Vec<String>,
 

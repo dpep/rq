@@ -106,11 +106,14 @@ each means one thing:
 - **Scope.** `rq Billing::WidgetProcessor`, or `rq WidgetProcessor#perform` (or
   `.perform`) for a method inside a class — rq keeps only definitions in that
   scope, so use it when the surrounding code tells you the enclosing
-  class. `rq Account.new` finds the constructor (`initialize`, `__init__`,
+  class. A scope that isn't a class matches the path instead: a Go package
+  (`hugolib.HugoSites`), a Python module (`django.db.models.QuerySet`), a Rust
+  module (`mpsc::Sender`). `rq Account.new` finds the constructor (`initialize`, `__init__`,
   `constructor`), or the class itself when the constructor is inherited.
 - **Kind.** `rq save -k method`, or the shorthand `rq method save`. Kinds are
-  `class`/`module`/`method`/`function`/`struct`/`enum`/`trait`/`constant`
-  (shortcuts `c`/`mod`/`m`/`f`/`s`/`e`/`t`/`const`, comma-separable: `-k m,f`).
+  `class`/`module`/`method`/`function`/`struct`/`enum`/`trait`/`constant`/
+  `type`/`variant`/`macro` (shortcuts `c`/`mod`/`m`/`f`/`s`/`e`/`t`/`const`/`v`,
+  comma-separable: `-k m,f`; `interface`, `alias` and `member` work too).
 - **Directory.** `rq save app/models` (rg-style trailing path, repeatable) or
   `--path`.
 - **Count.** `-l 1` for just the best hit, larger to survey, `-l 0` for every
