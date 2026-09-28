@@ -2295,3 +2295,35 @@ a change to D38's rule and wants its own measurement on TypeScript, where the ha
 has only excalidraw's regress cases.
 
 *Reverses if:* ambient globals show up as misses in real use more than once.
+
+## D47 — Words a fuzzy match never enters: measured, not charged
+
+**Rejected**, 2026-09-28. Revisits D30's `fntfam` → `FONT_FAMILY` (#5) with a rule shaped
+differently from its rejected one, which scored a step across `_` as contiguous.
+
+*The idea.* `FONT_FAMILY` is the only candidate `fntfam` reads completely: `FontFamilyKeys`
+leaves `Keys` untouched and `FontFamilyHeadingIcon` two words. Between matched letters a
+skipped word already costs 40 (D42); before the first and after the last it costs only
+its letters, through the unmatched-tail charge. So: charge each whole word the alignment
+never enters, in `fuzzy_value`. It changes the value only, never what matches, so the name
+index (D23) is untouched.
+
+*Measured*, the same binary through an environment switch, against the charge at 0:
+
+| per word | harness #1 | top 10 | lost #1 | lost top 10 | dogfood #1 | `fntfam` |
+|---|---|---|---|---|---|---|
+| 0 | 5,158 | 6,132 | | | 6,380 | #5 |
+| 5 | | | | | | #2 |
+| 10, leading and trailing | 5,210 | 6,136 | 11 | 18 | 6,404 (1 lost) | #1 |
+| 10, trailing only | 5,198 | 6,128 | 12 | 21 | 6,400 (4 lost) | #1 |
+
+The gain is where the recipe covers every word by construction: `abbr2` 73.8 → 76.5%,
+`abbr3` 87.4 → 88.1%. The losses are where a query stops before the name does, which is
+also how people type: `consonants` keeps six letters, and its top 10 falls 84.4 → 83.3%.
+`ismtch` loses `is_match_at` #2 → #14 to `is_match`, `dblctn` `db_location_from` to
+`db_location`, `updget` `update_digest_and_get` #9 → #96. Both effects are the sampler's
+shape more than the rule's merit, so the net +52 isn't evidence either way, and 18 lost
+top 10s fails D42's bar. 5 per word is too little to move `fntfam`.
+
+*Reverses if:* a query set drawn from real use (not recipes) shows complete readings
+losing to longer names; then the charge sized against it.
