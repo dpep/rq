@@ -1,6 +1,7 @@
 //! Go plugin. Extracts `func` (free → function, with a receiver → method),
-//! `type … struct` → struct, and `type … interface` → trait (Go's interface is
-//! the same "named contract" concept). Methods are qualified by their receiver
+//! `type … struct` → struct, `type … interface` → trait (Go's interface is
+//! the same "named contract" concept), and any other named type or alias
+//! (`type HandlerFunc func(*Context)`, `type ID = string`) → type. Methods are qualified by their receiver
 //! type (`Handle · Server`); interface method signatures by the interface.
 //! A package-level `const` (single or grouped, iota included) → constant. A
 //! package-level `var` is not: it's mutable state, and calling it a constant
@@ -65,8 +66,13 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                             // interface method signatures are methods of it
                             walk(ctx, child, Some(&name), out);
                         }
-                        _ => {}
+                        _ => push(ctx, out, &name, Kind::Type, child, parent),
                     }
+                }
+            }
+            "type_alias" => {
+                if let Some(name) = ctx.field_text(child, "name") {
+                    push(ctx, out, &name, Kind::Type, child, parent);
                 }
             }
             // only at package level — a func body's consts are locals
@@ -181,6 +187,37 @@ func Build() *Widget {
         assert_eq!(render.parent.as_deref(), Some("Renderer"));
 
         assert_eq!(build.language, "go");
+    }
+
+    #[test]
+    fn named_types_and_aliases_are_types() {
+        let src = r#"
+package widget
+
+type HandlerFunc func(*Widget)
+type HandlersChain []HandlerFunc
+type state int
+type Info = other.Info
+type (
+	Size  int
+	Label = string
+)
+type Stack[T any] []T
+"#;
+        let syms = extract(src);
+        for name in [
+            "HandlerFunc",
+            "HandlersChain",
+            "Info",
+            "Size",
+            "Label",
+            "Stack",
+        ] {
+            let s = find(&syms, name);
+            assert_eq!(s.kind, Kind::Type, "{name}");
+            assert_eq!(s.visibility, Some("public"), "{name}");
+        }
+        assert_eq!(find(&syms, "state").visibility, Some("private"));
     }
 
     #[test]

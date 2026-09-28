@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Added
+- **Go: named types that aren't a struct or interface are indexed**, as
+  `type`: `type HandlerFunc func(*Context)`, `type HandlersChain []HandlerFunc`,
+  `type Celsius float64` and aliases (`type GitInfo = gitmap.GitInfo`). They
+  used to be dropped, so `rq HandlerFunc` found nothing in gin.
+
 ## 0.56.0 — 2026-09-27
 
 Upgrading re-reads every indexed file once, in the background: the first

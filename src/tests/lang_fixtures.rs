@@ -26,6 +26,13 @@ fn go_definitions_rank_and_classify() {
 
     assert_eq!(top(&store, "BuildWidget").kind, "function");
 
+    // a named func type outranks a function whose name only starts with it
+    let render = top(&store, "RenderFunc");
+    assert_eq!(
+        (render.name.as_str(), render.kind.as_str()),
+        ("RenderFunc", "type")
+    );
+
     // the const outranks a function whose name only starts with it
     let max = top(&store, "MaxRetries");
     assert_eq!(

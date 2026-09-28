@@ -1,5 +1,6 @@
 // Fixture: a small, domain-neutral Go file exercising the kinds the plugin
-// extracts (struct, interface→trait, method with receiver, free func, const).
+// extracts (struct, interface→trait, named type, method with receiver, free
+// func, const).
 
 package widget
 
@@ -16,6 +17,8 @@ type Widget struct {
 	Size int
 }
 
+type RenderFunc func(w *Widget) string
+
 type Renderer interface {
 	Render() string
 }
@@ -31,4 +34,8 @@ func BuildWidget() *Widget {
 func MaxRetriesFor(w *Widget) int {
     const limit = MaxRetries
     return limit
+}
+
+func RenderFuncFor(w *Widget) RenderFunc {
+	return nil
 }
