@@ -271,6 +271,16 @@ pub(crate) fn score(
         });
     }
 
+    // A stub declares what is defined elsewhere (a `.d.ts` entry, an overload
+    // signature): the implementation is the answer when it's indexed, and the
+    // stub when it isn't. Sized as `local` is, for the same reason.
+    if cand.stub {
+        features.push(Feature {
+            name: "stub",
+            value: -STUB_PENALTY * quality,
+        });
+    }
+
     // Test/spec path — a fixture or a test double is rarely the definition you
     // meant, and on a large repo they collide head-on with the real ones: Rails
     // has 64 definitions of `save`, half of them fake models under `test/`,
@@ -504,6 +514,9 @@ const FREE_DEPTH: usize = 2;
 
 /// A definition local to another's body. See the visibility block in `score`.
 const LOCAL_PENALTY: f64 = 150.0;
+
+/// A declaration whose body is elsewhere. See the stub block in `score`.
+const STUB_PENALTY: f64 = 150.0;
 
 /// Per level of enclosing scope beyond [`FREE_DEPTH`]. Small: this exists to
 /// order results that are otherwise identical, not to outweigh how well a name
@@ -1456,6 +1469,7 @@ mod tests {
             mtime: None,
             git_ts: None,
             visibility: None,
+            stub: false,
             generated: false,
         }
     }
@@ -1512,6 +1526,33 @@ mod tests {
         assert!(span(9) > span(3), "a real body should outrank a stub");
         // log-scaled and capped — a huge class can't outweigh match quality
         assert!(span(4000) - span(40) < CASE_MATCH);
+    }
+
+    #[test]
+    fn an_implementation_outranks_its_declaration_elsewhere() {
+        // the vendored-library shape: a `.d.ts` declares the class with every
+        // shape signal in its favour — public, as long, in a file named for it —
+        // against a CommonJS implementation that reads private
+        let declared = SymbolRow {
+            file: "types/widget.d.ts".into(),
+            end_line: Some(200),
+            visibility: Some("public".into()),
+            stub: true,
+            ..row("Widget", "class", 1)
+        };
+        let implemented = SymbolRow {
+            file: "lib/index.js".into(),
+            end_line: Some(40),
+            visibility: Some("private".into()),
+            ..row("Widget", "class", 1)
+        };
+        let total = |q: &str, c: &SymbolRow| score(q, c, None, Boosts::default(), false);
+        let stub = total("Widget", &declared).unwrap();
+        assert!(total("Widget", &implemented).unwrap().total > stub.total);
+        assert!(stub.features.iter().any(|f| f.name == "stub"));
+        // but a declaration that is the only exact match still beats a prefix
+        let longer = row("WidgetBuilder", "class", 1);
+        assert!(stub.total > total("Widget", &longer).unwrap().total);
     }
 
     #[test]

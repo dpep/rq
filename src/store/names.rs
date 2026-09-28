@@ -505,6 +505,7 @@ mod tests {
             end_line: 1,
             parent: None,
             visibility: None,
+            stub: false,
         }
     }
 

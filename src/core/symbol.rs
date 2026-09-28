@@ -80,6 +80,10 @@ pub(crate) struct Symbol {
     /// can reach it: a closure). `None` when unknown. A ranking hint (private
     /// helpers sit below public API), never a filter.
     pub visibility: Option<&'static str>,
+    /// Declares a definition whose body lives elsewhere: a TypeScript ambient
+    /// `declare` or `.d.ts` entry, an overload signature. A ranking hint (the
+    /// implementation outranks it), never a filter.
+    pub stub: bool,
 }
 
 #[cfg(test)]

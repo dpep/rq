@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 20;
+pub(crate) const VERSION: i64 = 21;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -50,9 +50,10 @@ CREATE TABLE symbols (
   line INTEGER NOT NULL,
   end_line INTEGER,                  -- 1-based last line of the definition body
   parent TEXT,
-  visibility TEXT                    -- public|crate|private|protected|local;
+  visibility TEXT,                   -- public|crate|private|protected|local;
                                      -- NULL when unknown (pre-v9 rows
                                      -- backfill lazily)
+  stub INTEGER NOT NULL DEFAULT 0    -- declares what is defined elsewhere
 );
 CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
@@ -339,6 +340,24 @@ UPDATE files SET mtime = NULL, content_hash = '';
 /// components. Their files are queued for re-extraction as v14 queued them.
 pub(crate) const MIGRATION_V20: &str = MIGRATION_V14;
 
+/// Migration v20 -> v21: symbols record whether they are stubs, declarations
+/// whose body lives elsewhere (TypeScript's ambient `declare` and overload
+/// signatures, which were not indexed before). TS/JS files are queued for
+/// re-extraction as v14 queued them; other rows read 0, which they are.
+const MIGRATION_V21: Step = Step::AddColumn {
+    table: "symbols",
+    column: "stub",
+    decl: "INTEGER NOT NULL DEFAULT 0",
+};
+pub(crate) const MIGRATION_V21_REQUEUE: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND repository_id IN (
+      SELECT repository_id FROM files WHERE language IN ('typescript', 'javascript'));
+UPDATE files SET mtime = NULL, content_hash = ''
+  WHERE language IN ('typescript', 'javascript');
+"#;
+
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
@@ -354,7 +373,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 20] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 22] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -375,4 +394,6 @@ pub(crate) const MIGRATIONS: [(i64, Step); 20] = [
     (19, MIGRATION_V19),
     (19, Step::Sql(MIGRATION_V19_REQUEUE)),
     (20, Step::Sql(MIGRATION_V20)),
+    (21, MIGRATION_V21),
+    (21, Step::Sql(MIGRATION_V21_REQUEUE)),
 ];

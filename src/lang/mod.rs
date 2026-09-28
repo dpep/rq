@@ -54,6 +54,7 @@ impl Ctx<'_> {
             end_line: (self.row_offset + node.end_position().row) as u32 + 1,
             parent: parent.map(str::to_string),
             visibility: None, // plugins that know it set it on the result
+            stub: false,
         }
     }
 }

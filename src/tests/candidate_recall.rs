@@ -16,6 +16,7 @@ fn sym(name: &str) -> Symbol {
         end_line: 1,
         parent: None,
         visibility: None,
+        stub: false,
     }
 }
 

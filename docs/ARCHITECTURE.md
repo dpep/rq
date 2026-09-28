@@ -142,9 +142,11 @@ symbols (
                                      -- (NULL for rows indexed before v4)
   parent TEXT,                       -- enclosing symbol's qualified NAME
                                      -- (lexical nesting only), e.g. Foo::Bar
-  visibility TEXT                    -- public|crate|private|protected|local;
+  visibility TEXT,                   -- public|crate|private|protected|local;
                                      -- NULL when unknown (pre-v9 rows
                                      -- backfill lazily)
+  stub INTEGER NOT NULL DEFAULT 0    -- declares what is defined elsewhere
+                                     -- (a .d.ts entry, an overload signature)
 );
 -- exact and prefix recall: every name query is scoped by repository, even
 -- unscoped (`-a`) ones, which seek it once per repo through `repositories`
@@ -406,6 +408,10 @@ why a result ranked where it did:
   capitalization, TypeScript member modifiers and ESM `export`. A `local`
   definition (Python's nested `def`) takes a larger one, `local`, which ranks
   it below every same-named definition outside a function body (D36)
+- **stub** — a declaration whose body is elsewhere (TypeScript's ambient
+  `declare` and `.d.ts` entries, overload signatures; `symbols.stub`) takes the
+  same size as `local`: the implementation ranks first when it's indexed, and
+  the declaration is the answer when it isn't (D38)
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`, `Foo.baz`; `::`,
   `#` and `.` are all scope separators) matches its leaf against the name and
   requires a `parent` ending with the named scope chain (`Bar` inside `Foo`) —

@@ -40,6 +40,8 @@ pub(crate) struct SymbolRow {
     pub visibility: Option<String>,
     /// The file declares itself generated. A ranking hint.
     pub generated: bool,
+    /// Declares a definition whose body lives elsewhere ([`Symbol::stub`]).
+    pub stub: bool,
 }
 
 impl SymbolRow {
@@ -64,6 +66,7 @@ impl SymbolRow {
             mtime: None,
             git_ts: None,
             visibility: s.visibility.map(str::to_string),
+            stub: s.stub,
             generated,
         }
     }
@@ -73,7 +76,7 @@ impl SymbolRow {
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
     s.end_line, s.parent, s.repository_id, r.identity, fi.mtime, fi.git_ts, s.visibility, \
-    fi.generated";
+    fi.generated, s.stub";
 const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN files fi ON fi.id = s.file_id \
     JOIN repositories r ON r.id = s.repository_id";
@@ -446,8 +449,8 @@ impl Store {
                 let mut insert = tx.prepare(
                     "INSERT INTO symbols
                        (repository_id, file_id, name, name_lower, kind, language, line, end_line,
-                        parent, visibility)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        parent, visibility, stub)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )?;
                 // names new to the repo, for its name index; asked before a
                 // file's own rows are cleared, so a rewrite isn't mistaken for one
@@ -501,6 +504,7 @@ impl Store {
                             s.end_line,
                             s.parent,
                             s.visibility,
+                            s.stub,
                         ])?;
                     }
                     files_written += 1;
@@ -1107,6 +1111,7 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             mtime: r.get(10)?,
             git_ts: r.get(11)?,
             visibility: r.get(12)?,
+            stub: r.get(14)?,
             generated: r.get(13)?,
         },
     ))
@@ -1188,6 +1193,7 @@ mod tests {
             end_line: line,
             parent: parent.map(String::from),
             visibility: None,
+            stub: false,
         }
     }
 
@@ -1512,6 +1518,65 @@ mod tests {
         let status = |id: &str| store.coverage_status(id).unwrap().unwrap();
         assert_eq!(status("local:/mixed"), "warming");
         assert_eq!(status("local:/rust"), "complete");
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v21_queues_typescript_and_keeps_stubs() {
+        let path = std::env::temp_dir().join(format!("rq-migrate-v21-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let stub = Symbol {
+            stub: true,
+            ..sym("readFile", Kind::Function, 1, None)
+        };
+        let file = |path: &str, language: &str, symbols: Vec<Symbol>| FileSymbols {
+            path: path.into(),
+            language: language.into(),
+            mtime: Some(1),
+            content_hash: "h".into(),
+            generated: false,
+            symbols,
+        };
+        {
+            let mut store = Store::open(&path).unwrap();
+            let repo = store.upsert_repository(&"local:/mixed", None).unwrap();
+            store
+                .replace_files(
+                    repo,
+                    &[
+                        file("a.d.ts", "typescript", vec![stub]),
+                        file("b.py", "python", vec![]),
+                    ],
+                )
+                .unwrap();
+            store.set_coverage(repo, 2, 2, "complete").unwrap();
+            store.conn.execute_batch("PRAGMA user_version=20;").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let hash = |p: &str| -> String {
+            store
+                .conn
+                .query_row("SELECT content_hash FROM files WHERE path = ?1", [p], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(hash("a.d.ts"), "");
+        assert_eq!(hash("b.py"), "h");
+        assert_eq!(
+            store.coverage_status("local:/mixed").unwrap().unwrap(),
+            "warming"
+        );
+        let stub: bool = store
+            .conn
+            .query_row(
+                "SELECT stub FROM symbols WHERE name = 'readFile'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(stub);
         drop(store);
         let _ = std::fs::remove_file(&path);
     }

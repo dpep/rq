@@ -840,6 +840,7 @@ mod tests {
             end_line: 1,
             parent: None,
             visibility: None,
+            stub: false,
         }
     }
 
@@ -1237,6 +1238,7 @@ mod tests {
             mtime: None,
             git_ts: None,
             visibility: None,
+            stub: false,
             generated: false,
         }
     }

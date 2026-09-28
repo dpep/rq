@@ -306,6 +306,7 @@ mod tests {
             mtime: None,
             git_ts: None,
             visibility: None,
+            stub: false,
             generated: false,
         };
         [false, true]
@@ -351,6 +352,7 @@ mod tests {
                 mtime: None,
                 git_ts: None,
                 visibility: None,
+                stub: false,
                 generated: false,
             };
             let truth = score(leaf, &row, None, Boosts::default(), true).is_some();
