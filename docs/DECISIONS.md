@@ -2213,7 +2213,8 @@ plain / anchored). Regress 44 of 47 before, plus three new cases that main fails
 *Rejected:*
 - **A bonus for any definition with no parent**, the report's own wording. Free functions
   in every language but Ruby would outrank methods, which `FREE_DEPTH` exists to prevent.
-- **Charging per level from zero.** The same language penalty, per level.
+- **Charging per level from zero.** The same language penalty, per level. Measured in D49,
+  with a relative form: none beats this rule.
 
 *Reverses if:* a language starts recording modules as parents (then every type in it is
 nested, and the rule reads that language's namespaces as it reads Ruby's), or top-level
@@ -2426,3 +2427,87 @@ queries, 5 reps: first answer 4.7 / 24.3 → 4.7 / 25.6 ms (median / p90).
 *Reverses if:* field noise shows up in daily use where a namesake exists (DOGFOOD.md; then
 the weight moves toward −400, with `verbose_name` as the price), or Ember-style injections
 dominate a JS codebase's results (then the bare-decorated rule).
+
+## D49 — Nesting charged per level: measured, and D43 stays
+
+**Rejected**, 2026-09-28. Asked after D43: rather than a bonus for one case, why not a small
+charge for every level of nesting beyond the one queried? D43 had measured only "+10 for
+any parentless type" and rejected per-level charging by argument. These are the numbers.
+
+*Method.* One index per screen, built once; each variant a throwaway build reading the
+constants from the environment, so every row ranks the same rows. Against main (0.59.0,
+D43 on): the recall harness (sourced queries, Ruby and Rust) with regress and the anchored
+set, the dogfood set (rq and trekr, Rust), and D43's 568 names defined both top-level and
+nested in rails, discourse, tokio and django.
+
+*Variants.* D43 off in all of them, since each is meant to subsume it.
+- **A, absolute:** `depth` charged from level 0 or 1 (`FREE_DEPTH`) at 5, 10 or 15 a level.
+  The literal reading: an unqualified query asks for depth 0.
+- **B, relative:** each result charged per level deeper than the shallowest same-named
+  result. A qualified query's results all sit under its scope, so the shallowest is the
+  queried depth.
+- **C:** B for types only (`Ct`); B replacing `depth` (`Cr`); `Ct` capped at one or two
+  steps.
+
+| variant | #1 | Ruby / Rust #1 | top 10 | lost / won #1 | regress | anchored #1 plain / anchored | dogfood #1 (lost) | names top-level (changed) | discourse JS #1 |
+|---|---|---|---|---|---|---|---|---|---|
+| **main (D43)** | **5,160** | **1,360 / 3,800** | **6,148** | | **54 / 57** | **213 / 359** | **6,380** | **434** | **274** |
+| D43 off | 5,160 | 1,360 / 3,800 | 6,149 | 0 / 0 | 51 | 213 / 359 | 6,380 (0) | 375 (59) | 275 |
+| A, from 0, 5 | 5,149 | 1,356 / 3,793 | 6,149 | 30 / 19 | 53 | 216 / 359 | 6,388 (8) | 417 (20) | 280 |
+| A, from 0, 10 | 5,147 | 1,351 / 3,796 | 6,143 | 34 / 21 | 54 | 214 / 359 | 6,387 (13) | 443 (11) | 287 |
+| A, from 0, 15 | 5,128 | 1,339 / 3,789 | 6,135 | 57 / 25 | 54 | 217 / 360 | 6,390 (18) | 459 (26) | 301 |
+| A, from 1, 5 | 5,159 | 1,359 / 3,800 | 6,149 | 11 / 10 | 51 | 216 / 359 | 6,380 (0) | 374 (63) | 275 |
+| A, from 1, 10 | 5,155 | 1,355 / 3,800 | 6,144 | 9 / 4 | 53 | 214 / 359 | 6,380 (0) | 392 (45) | 280 |
+| A, from 1, 15 | 5,151 | 1,351 / 3,800 | 6,141 | 14 / 5 | 53 | 217 / 360 | 6,380 (0) | 399 (49) | 282 |
+| B, 5 | 5,158 | 1,359 / 3,799 | 6,148 | 6 / 4 | 54 | 217 / 358 | 6,377 (3) | 426 (11) | 277 |
+| B, 10 | 5,149 | 1,356 / 3,793 | 6,147 | 15 / 4 | 54 | 217 / 359 | 6,377 (3) | 443 (10) | 278 |
+| B, 15 | 5,148 | 1,355 / 3,793 | 6,146 | 17 / 5 | 54 | 218 / 360 | 6,377 (3) | 460 (28) | 278 |
+| Cr (B, no `depth`), 5 | 5,157 | 1,358 / 3,799 | 6,156 | 16 / 13 | 53 | 216 / 359 | 6,377 (3) | 417 (20) | 270 |
+| Cr, 10 | 5,149 | 1,356 / 3,793 | 6,156 | 24 / 13 | 54 | 215 / 359 | 6,377 (3) | 443 (11) | 271 |
+| Cr, 15 | 5,148 | 1,355 / 3,793 | 6,154 | 26 / 14 | 54 | 217 / 360 | 6,377 (3) | 459 (26) | 271 |
+| Ct (B, types), 5 | 5,161 | 1,360 / 3,801 | 6,149 | 1 / 2 | 54 | 213 / 359 | 6,380 (0) | 426 (11) | 276 |
+| Ct, 10 | 5,161 | 1,360 / 3,801 | 6,149 | 1 / 2 | 54 | 213 / 359 | 6,380 (0) | 443 (10) | 277 |
+| Ct, 15 | 5,161 | 1,360 / 3,801 | 6,149 | 1 / 2 | 54 | 213 / 359 | 6,380 (0) | 460 (27) | 277 |
+| Ct, 5 capped at 10 | 5,161 | 1,360 / 3,801 | 6,149 | 1 / 2 | 54 | 213 / 359 | 6,380 (0) | 425 (10) | 276 |
+| Ct, 10 capped at 10 | 5,161 | 1,360 / 3,801 | 6,149 | 1 / 2 | 54 | 213 / 359 | 6,380 (0) | 434 (0) | 277 |
+
+Found is unchanged everywhere (6,583 harness, 7,008 dogfood); lost / won is against main.
+More top-level namesakes is not better past D43's 434: that is where reopened builtins
+start to win (D43's sizing).
+
+*A, from level 0,* is `FREE_DEPTH`'s language penalty back again. Every method has an
+owner, so it loses to a free function or a type in a language that leaves those at the
+top: `tick` → the `Tick` struct, `linnum` → `LineNumber`, `member` → `Member`, trekr's
+`place` → `Place`, and in discourse a Ruby method → a JS helper (`to_array` → `toArray`,
+`flrtyp` → `FilterTypeValueSuggester`). JS takes discourse's #1 on 6 to 27 more queries.
+Ruby loses #1 at every setting. The dogfood set gains (+7 to +10) because rq's and trekr's
+own free functions win there, but it also loses 8 to 18.
+*A, from level 1,* leaves Rust alone (a method sits at level 1) but can't see D43's case:
+`Admin::UsersController` is at level 1 too. It fails one to three regress cases D43 passes,
+puts 374 to 399 namesakes at the top level against D43's 434, and still loses Ruby #1s.
+
+*B* is the same penalty in relative form. Where a free function and methods share a name,
+every method is one level deeper: tokio's `schedule` loses to the `Schedule` trait, and
+ripgrep's `shortest_match` methods to `shortest_match_at`, charged for a test's free
+`shortest_match`. D43's "a function's parent is its owner, not a namespace", measured.
+Dropping `depth` for it (Cr) is worse.
+
+*Ct,* types only, is clean on every screen but the namesakes. Its one lost #1 is a typo's
+near tie: `sleect` → the `select` method over `ActionView::Helpers::Tags::Select`, charged
+for being deeper than a test's `ReservedWordTest::Select`. Per level, it is D43 at another
+size: at 5 it misses the `Admin::` controllers D43 fixed; at 10 or 15 it charges
+`ActiveModel::Type::String` two levels and ranks the core extensions' `class String`,
+`Date`, `Numeric` and `Method` above the real classes, the step D43 sized to stop short of.
+The second level buys two right answers D43 misses, where the nested namesake's longer
+body outweighs 10 (`AboutController` over `Admin::Config::AboutController`, the
+`AiToolAction` model over `DiscourseAi::Automation`'s), against four builtins and three
+test classes flipped the other way. Capped at one step, Ct is D43 restated as a penalty:
+the same 434 namesakes, +1 net #1 on the harness (one lost, two won, fuzzy near ties).
+
+*So:* no per-level charge beats D43. The one that matches it is a flat step, the same size,
+charged to every type deeper than its shallowest namesake instead of credited to the top
+level. That is a rewording with one lost source, not a simpler rule, so D43 stays.
+
+*Reverses if:* a language records its modules as parents (D43's own reverses-if). Then
+nothing is top-level there, and the capped relative form (a type one or more levels deeper
+than its shallowest namesake: −10 × match quality) is the drop-in, measured here as equal.
