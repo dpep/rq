@@ -1094,6 +1094,16 @@ mod tests {
     }
 
     #[test]
+    fn a_test_beside_the_code_ranks_below_the_code() {
+        // a longer body and an earlier row would otherwise carry the test
+        let mut in_tests = nested("widget_totals", Kind::Function, "tests");
+        in_tests.end_line = 30;
+        let store = store_with(&[in_tests, sym("WidgetTotals", Kind::Struct)]);
+        let hits = search(&store, "widtot", None, None, &Context::default(), 10).unwrap();
+        assert_eq!(names(&hits), ["WidgetTotals", "widget_totals"]);
+    }
+
+    #[test]
     fn qualified_query_ranks_the_definition_in_the_named_scope() {
         let store = store_with(&[
             nested("Config", Kind::Class, "Baz"),

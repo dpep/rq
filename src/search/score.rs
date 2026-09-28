@@ -279,9 +279,12 @@ pub(crate) fn score(
     // Generated code and example or docs apps are secondary the same way, and
     // take the same penalty: a stringer `String()`, or a docs site's wrapper of
     // the library's component, is rarely the definition meant when the library's
-    // own shares its name, and is the only answer when not.
+    // own shares its name, and is the only answer when not. So are tests that
+    // live beside the code, in a scope named for them (Rust's `mod tests`).
     let secondary = if in_test_path(&cand.file) {
         Some("test_path")
+    } else if in_test_scope(cand.parent.as_deref(), &cand.name, &cand.kind) {
+        Some("test_scope")
     } else if cand.generated {
         Some("generated")
     } else if in_example_path(&cand.file) {
@@ -1367,6 +1370,17 @@ fn in_test_path(file: &str) -> bool {
         || stem.ends_with(".spec")
 }
 
+/// Whether a definition is test code by its enclosing scope rather than its
+/// file: inside a scope named `tests`, `test` or `*_tests`, or such a module
+/// itself. Only a lowercase segment counts, so a type or module that is part of
+/// an API about testing (Ruby's `ActiveSupport::Testing`, `Minitest::Test`)
+/// never does.
+fn in_test_scope(parent: Option<&str>, name: &str, kind: &str) -> bool {
+    let test = |seg: &str| matches!(seg, "tests" | "test") || seg.ends_with("_tests");
+    parent.is_some_and(|p| p.split("::").flat_map(|s| s.split(['#', '.'])).any(test))
+        || (kind == "module" && test(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1394,6 +1408,27 @@ mod tests {
             "lib/latest.rb",
         ] {
             assert!(!in_test_path(p), "should not be a test path: {p}");
+        }
+    }
+
+    #[test]
+    fn recognizes_test_scopes_by_their_lowercase_name() {
+        for (parent, name, kind) in [
+            (Some("tests"), "helper", "function"),
+            (Some("store::tests"), "fixture", "function"),
+            (Some("resolve::surface_tests"), "case", "function"),
+            (None, "tests", "module"),
+        ] {
+            assert!(in_test_scope(parent, name, kind), "{parent:?} {name}");
+        }
+        for (parent, name, kind) in [
+            (Some("Minitest::Test"), "assert", "method"),
+            (Some("ActiveSupport::Testing"), "travel", "method"),
+            (Some("testing"), "helper", "function"),
+            (None, "tests", "function"),
+            (None, "latest", "module"),
+        ] {
+            assert!(!in_test_scope(parent, name, kind), "{parent:?} {name}");
         }
     }
 

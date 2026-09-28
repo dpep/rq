@@ -66,6 +66,10 @@ search in each repo starts it, and answers from the old index meanwhile.
   `rq abort_handle` used to list only the `abort_handle` methods. It now also
   shows the `AbortHandle` struct, and `rq ThreadId` also shows `thread_id`. The
   spelling you typed still wins when the evidence is otherwise even.
+- **Tests beside the code rank as tests.** A definition inside a `mod tests`
+  (or `test`, or `*_tests`) now takes the same penalty as one under a `tests/`
+  directory, so Rust unit tests stop outranking the code they test. `--explain`
+  shows it as `test_scope`.
 
 ## 0.55.1 — 2026-09-27
 

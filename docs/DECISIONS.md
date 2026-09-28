@@ -1685,9 +1685,9 @@ The path bonus (50) plus extent (up to 50) and kind (15) outweighed `separators`
 `ChunksTimeout` and `BufWriter`. Anchored #1 went 213 → 208 plain and 351 → 348
 with `--anchor`. So `separators` is now −150, more than those three can add
 together. The spelling the query typed wins whenever it exists, and the other
-convention ranks right behind it. Measured against the test-scope commit that
-follows: anchored is back to main's 213 / 351 / 432, with 438 top 10 against main's
-439 (`url_for` in `routing_test.rb`, #8 → #11 with `--anchor`, behind `UrlFor`
+convention ranks right behind it. Measured with the test-scope change (D33, which
+moves no Ruby query) applied: anchored is back to main's 213 / 351 / 432, with 438
+top 10 against main's 439 (`url_for` in `routing_test.rb`, #8 → #11 with `--anchor`, behind `UrlFor`
 modules outside tests). Derived queries moved 1 up and 1 down, and none lost #1 or the
 top 10. The unit test that pins `parsefile` → `parse_file` over `parse_files` still
 holds: 850 against a prefix's 699.
@@ -1703,3 +1703,31 @@ Latency: the fast path now pays one name-index scan. Literal queries on rails
 
 *Reverses if:* the scan shows up in first-answer latency on a large repo. A
 `name_joined` column indexed like `name_lower` would then make this a seek.
+
+## D33 — Tests beside the code take the test penalty
+
+**Adopted**, 2026-09-27. The test penalty (D12, sized in D24, widened by D28 and D29)
+reads the path and a generated header, so Rust's unit tests never got it: they live in the file they test, inside `mod tests`.
+In the dogfood set, `braboost` found `branch_boost_adds_to_the_score` ahead of
+`BRANCH_DIR_BOOST`. `rq clock` answered with `tests · clock`, the test module a path
+match surfaced as clock.rs's primary definition. A definition now counts as test code
+when a segment of its parent scope is `tests`, `test` or ends in `_tests`, or when it
+is a module of that name. It is one more arm of the secondary-penalty chain, under the
+feature `test_scope`: at most one secondary penalty applies, and D31's anchor-file
+waiver covers it. The rule is about scope names, not Rust. It applies to
+any plugin that records a lowercase test scope as a parent. Only lowercase segments
+count, so Ruby's `Minitest::Test` and `ActiveSupport::Testing` are untouched. In the
+Rust corpora the in-file test modules are named `tests` (107), `test` (2) and
+`*_tests` (7, in trekr).
+
+`make recall` against D32: 21 sources up and 7 down. rq goes 90.4 → 90.8% #1, trekr
+87.3 → 87.4% and tokio 73.3 → 73.0%. Ruby didn't move, and neither did the anchored
+set. All five queries that lost #1 and both that lost the top 10 have a source that is
+itself test code outside a `#[cfg(test)]`-gated file tail. tokio's `run_test` and
+`test_slot_for` live in `#[cfg(all(test, …))] mod tests`, which the query derivation
+counts as source. These are the losses D12 accepts. The full dogfood set (7,152
+queries from the last 300 commits of rq and trekr) went 85.9 → 86.2% #1 (39 up, 6
+down) with no loss of #1. `glob` gained most, 83.2 → 85.2%.
+
+*Reverses if:* a language routinely names non-test scopes `test` or `*_tests` in
+lowercase.
