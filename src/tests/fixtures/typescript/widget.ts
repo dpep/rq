@@ -1,6 +1,6 @@
 // Fixture: a small, domain-neutral TypeScript file exercising the kinds the
-// plugin extracts (class, interface→trait, type→struct, enum, method, function,
-// an arrow assigned to a const, and constants).
+// plugin extracts (class, interface→trait, type, enum and its members, method,
+// function, an arrow assigned to a const, and constants).
 
 export const MAX_RETRIES = 3;
 

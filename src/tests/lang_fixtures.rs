@@ -81,8 +81,16 @@ fn typescript_definitions_rank_and_classify() {
     assert_eq!(widget.language, "typescript");
 
     assert_eq!(top(&store, "Renderer").kind, "trait");
-    assert_eq!(top(&store, "WidgetSize").kind, "struct");
+    assert_eq!(top(&store, "WidgetSize").kind, "type");
     assert_eq!(top(&store, "WidgetColor").kind, "enum");
+
+    // an enum member is found by its own name and scoped by its enum
+    let green = top(&store, "WidgetColor.Green");
+    assert_eq!(
+        (green.name.as_str(), green.kind.as_str()),
+        ("Green", "variant")
+    );
+    assert_eq!(green.parent.as_deref(), Some("WidgetColor"));
 
     let resize = top(&store, "resize");
     assert_eq!(resize.kind, "method");

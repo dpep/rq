@@ -14,6 +14,13 @@ and aren't listed; see `git log` for those.
   `type`: `type HandlerFunc func(*Context)`, `type HandlersChain []HandlerFunc`,
   `type Celsius float64` and aliases (`type GitInfo = gitmap.GitInfo`). They
   used to be dropped, so `rq HandlerFunc` found nothing in gin.
+- **TypeScript: enum members are indexed**, as `variant`s of their enum:
+  `rq EVENT.MOUSE_MOVE` and `rq MOUSE_MOVE -k variant` find them.
+
+### Changed
+- **TypeScript type aliases are kind `type`, not `struct`.** `type Size = …`
+  now prints and serializes as `type`, like Rust's and Go's. `-k type` finds
+  them as before; `-k struct` no longer does.
 
 ## 0.56.0 — 2026-09-27
 

@@ -3,9 +3,9 @@
 //! `-x ts` / `-x js` still mean what you'd expect.
 //!
 //! Extracts `class` → class, `interface` → trait (a named contract, like Go's),
-//! `type` → struct (a named shape), `enum` → enum, `namespace` → module,
-//! `function` → function, and the members a class, interface, or object type
-//! declares → method. A
+//! `type` → type, `enum` → enum and its members → variant, `namespace` →
+//! module, `function` → function, and the members a class, interface, or object
+//! type declares → method. A
 //! `const f = () => …` is a function too — in modern JS that *is* how functions
 //! are declared. Any other module- or namespace-level `const` → constant: the
 //! keyword is the declaration of intent, whatever the casing, and a camelCase
@@ -109,7 +109,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
             // a named type (or namespace): emit it, then descend so whatever
             // members it declares are qualified by it. `type Foo = { run(): … }`
             // holds methods exactly like `interface Foo` does, so it's the same
-            // arm — an enum body simply has nothing we extract.
+            // arm, and an enum's body holds its members.
             "class_declaration"
             | "abstract_class_declaration"
             | "interface_declaration"
@@ -119,7 +119,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
                 if let Some(name) = ctx.field_text(child, "name") {
                     let kind = match child.kind() {
                         "interface_declaration" => Kind::Trait,
-                        "type_alias_declaration" => Kind::Struct,
+                        "type_alias_declaration" => Kind::Type,
                         "enum_declaration" => Kind::Enum,
                         "internal_module" => Kind::Module,
                         _ => Kind::Class,
@@ -127,6 +127,10 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
                     let vis = module_visibility(exported);
                     push(ctx, out, &name, kind, child, parent, vis);
                     let qualified = qualify(parent, &name, ".");
+                    if kind == Kind::Enum {
+                        members(ctx, child, &qualified, vis, out);
+                        continue;
+                    }
                     // members carry their own visibility; a namespace body
                     // re-declares `export` for what it re-exports
                     walk(ctx, child, Some(&qualified), false, out);
@@ -167,6 +171,26 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, exported: bool, out: &mut V
             "arrow_function" | "function_expression" | "function" => {}
 
             _ => walk(ctx, child, parent, exported, out),
+        }
+    }
+}
+
+/// Each member of an enum, as a variant of it with the enum's visibility.
+/// A quoted name (`"kebab-case" = 1`) is indexed without its quotes.
+fn members(ctx: &Ctx, node: Node, qualified: &str, vis: &'static str, out: &mut Vec<Symbol>) {
+    let Some(body) = node.child_by_field_name("body") else {
+        return;
+    };
+    let mut cursor = body.walk();
+    for m in body.named_children(&mut cursor) {
+        let name = match m.kind() {
+            "enum_assignment" => m.child_by_field_name("name"),
+            "property_identifier" | "string" => Some(m),
+            _ => None, // a comment, or a computed name
+        };
+        if let Some(name) = name.and_then(|n| ctx.node_text(n)) {
+            let name = name.trim_matches(|c| c == '"' || c == '\'');
+            push(ctx, out, name, Kind::Variant, m, Some(qualified), vis);
         }
     }
 }
@@ -339,7 +363,7 @@ export const makeWidget = () => new Widget();
         let syms = extract(src);
 
         assert_eq!(find(&syms, "Renderer").kind, Kind::Trait);
-        assert_eq!(find(&syms, "Size").kind, Kind::Struct);
+        assert_eq!(find(&syms, "Size").kind, Kind::Type);
         assert_eq!(find(&syms, "Color").kind, Kind::Enum);
 
         let widget = find(&syms, "Widget");
@@ -375,7 +399,7 @@ export const makeWidget = () => new Widget();
         // just as navigable through either
         let src = "type Renderer = {\n  render(): string;\n};\n";
         let syms = extract(src);
-        assert_eq!(find(&syms, "Renderer").kind, Kind::Struct);
+        assert_eq!(find(&syms, "Renderer").kind, Kind::Type);
         let render = find(&syms, "render");
         assert_eq!(render.kind, Kind::Method);
         assert_eq!(render.parent.as_deref(), Some("Renderer"));
@@ -531,10 +555,35 @@ class Widget {
         assert_eq!(size.visibility, Some("public"));
         assert_eq!(find(&syms, "SECRET").visibility, Some("private"));
 
-        // mutable statics, instance fields, and enum members stay out
-        for absent in ["count", "id", "Red"] {
+        // mutable statics and instance fields stay out
+        for absent in ["count", "id"] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
         }
+    }
+
+    #[test]
+    fn enum_members_are_variants_of_their_enum() {
+        let src = r#"
+export enum EVENT {
+  MOUSE_MOVE = "mousemove",
+  // a comment between members
+  "key-down" = "keydown",
+  Wheel,
+}
+
+const enum Hidden {
+  Inner = 1,
+}
+"#;
+        let syms = extract(src);
+        for name in ["MOUSE_MOVE", "key-down", "Wheel"] {
+            let m = find(&syms, name);
+            assert_eq!(m.kind, Kind::Variant, "{name}");
+            assert_eq!(m.parent.as_deref(), Some("EVENT"), "{name}");
+            assert_eq!(m.visibility, Some("public"), "{name}");
+        }
+        assert_eq!(find(&syms, "Inner").visibility, Some("private"));
+        assert_eq!(syms.len(), 6, "{syms:?}");
     }
 
     #[test]
