@@ -138,7 +138,7 @@ that doesn't apply is **omitted**, never `null`.
 | `line` | always | 1-based first line of the definition. |
 | `end_line` | when known | Last line: `line..=end_line` is the whole definition. |
 | `parent` | when nested | The enclosing scope, e.g. `ActiveRecord::Migration`. |
-| `visibility` | when the language expresses one | `public`, `crate`, `private` or `protected`. |
+| `visibility` | when the language expresses one | `public`, `crate`, `private`, `protected` or `local` (a function nested in another). |
 | `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
 | `source` | search | `index`, or `live` when the result came from a live scan of files on disk because no index pass has finished for this directory yet: one rq doesn't track, or a repo asked with `--no-wait` before its first index (or after `--drop`). The hit is real; only its ranking is provisional. See [Staying current](#staying-current). |
 | `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it. |
@@ -288,7 +288,8 @@ src/cli/mod.rs:1873  method store · BranchRefresh
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence
 - **visibility** — public API edges out private/protected helpers (Rust `pub`,
   Ruby `private` sections, Python `_underscore`, Go capitalization, TypeScript
-  member modifiers and ESM `export`)
+  member modifiers and ESM `export`), and a function nested in another ranks
+  below every same-named definition that isn't (`local`)
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope; `Foo.new` finds the constructor, or the class itself when it inherits one. A package or module scope is read off the file's path, so `hugolib.HugoSites`, `models.QuerySet` and `mpsc::Sender` work too
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the repo you're in by default

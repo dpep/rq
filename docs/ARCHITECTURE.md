@@ -142,8 +142,9 @@ symbols (
                                      -- (NULL for rows indexed before v4)
   parent TEXT,                       -- enclosing symbol's qualified NAME
                                      -- (lexical nesting only), e.g. Foo::Bar
-  visibility TEXT                    -- public|crate|private|protected; NULL when
-                                     -- unknown (pre-v9 rows backfill lazily)
+  visibility TEXT                    -- public|crate|private|protected|local;
+                                     -- NULL when unknown (pre-v9 rows
+                                     -- backfill lazily)
 );
 -- exact and prefix recall: every name query is scoped by repository, even
 -- unscoped (`-a`) ones, which seek it once per repo through `repositories`
@@ -401,7 +402,9 @@ why a result ranked where it did:
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:
   Rust `pub`, Ruby access sections, Python underscore convention, Go
-  capitalization, TypeScript member modifiers and ESM `export`
+  capitalization, TypeScript member modifiers and ESM `export`. A `local`
+  definition (Python's nested `def`) takes a larger one, `local`, which ranks
+  it below every same-named definition outside a function body (D36)
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo::Bar#baz`, `Foo.baz`; `::`,
   `#` and `.` are all scope separators) matches its leaf against the name and
   requires a `parent` ending with the named scope chain (`Bar` inside `Foo`) —

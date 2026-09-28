@@ -1783,3 +1783,40 @@ signal. Raising private too costs Ruby.
 
 *Reverses if:* a signal lifts public API in general (re-exports at a crate root, say),
 and `crate` becomes one input to it rather than a penalty of its own.
+
+## D36 — Python's nested defs are indexed, as `local`
+
+**Adopted**, 2026-09-27. Python tester on django; recall harness (D12) against main.
+
+*The weakness.* A `def` body was never walked, so a closure had no symbol:
+`_wrapper` in `_multi_decorate` (`django/utils/decorators.py`), the `_view_wrapper`s
+of every view decorator, `decorator` inside `user_passes_test`. `rq _view_wrapper`
+answered `no_match`.
+
+*The rule.* A `def` inside a `def` is a `function` whose parent is the enclosing def's
+qualified name (`_multi_decorate`, `Signal.send`, `user_passes_test.decorator`), at any
+depth. A class or assignment inside a def is a local and stays out, as does everything
+inside a local class. Its visibility is a new value, `local`: nothing outside the
+enclosing body can reach it, which is narrower than `private`. `local` scores −150
+(`local` in `--explain`) where `private` scores −15, sized as `separators` was in D32:
+past what `path`, extent and kind can add together, so a nested def ranks below every
+same-named definition outside a function body, above a prefix match (a literal name
+still wins), and above test code (−400). An `--anchor` inside the enclosing def adds
+back up to 270, so asked from there it still wins. The value is language-neutral; only
+Python emits it today.
+
+django: 41,194 → 42,279 symbols (+1,085, of which 809 under `tests/`). 24 names are both
+a nested def outside `tests/` and some other definition outside it. With the nested
+defs marked `private`, 4 of them ranked a nested def above its namesake: `_save`
+(`LayerMapping.save`'s over `FileSystemStorage._save`), `deconstruct`
+(`deconstructible.decorator`'s, carried by `path`, over `Field.deconstruct`), `_compile`
+and `asend` (#2 and #3 ahead of methods). With `local`, none do.
+
+*Rejected:*
+- **`private`.** The four above: −15 is a tiebreaker, and a closure's larger body or a
+  matching filename outweighs it.
+- **Local classes too.** django defines models inside test methods by the hundred; a
+  local class is no more reachable than a local def, and nothing asked for it.
+
+*Reverses if:* closures turn out to be navigated to in preference to a same-named
+module-level definition (then drop `local` back to the `private` size).

@@ -76,7 +76,8 @@ pub(crate) struct Symbol {
     /// Enclosing symbol name, if any (lexical nesting only).
     pub parent: Option<String>,
     /// Access level when the language expresses one: `public`, `crate`,
-    /// `private`, or `protected`. `None` when unknown. A ranking hint (private
+    /// `private`, `protected`, or `local` (only its enclosing definition's body
+    /// can reach it: a closure). `None` when unknown. A ranking hint (private
     /// helpers sit below public API), never a filter.
     pub visibility: Option<&'static str>,
 }

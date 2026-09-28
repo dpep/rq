@@ -4,6 +4,7 @@
 
 use std::fs;
 
+use crate::search::{self, Context};
 use crate::tests::support::{indexed, top};
 
 const WIDGET_GO: &str = include_str!("fixtures/go/widget.go");
@@ -57,6 +58,15 @@ fn python_definitions_rank_and_classify() {
     assert_eq!(deposit.parent.as_deref(), Some("Account"));
 
     assert_eq!(top(&store, "build_account").kind, "function");
+
+    // a closure ranks below the module-level function it shares a name with,
+    // and says why
+    let audits = search::search(&store, "_audit", None, None, &Context::default(), 10)
+        .unwrap()
+        .hits;
+    let parents: Vec<_> = audits.iter().map(|h| h.parent.as_deref()).collect();
+    assert_eq!(parents, [None, Some("build_account")]);
+    assert!(audits[1].features.iter().any(|f| f.name == "local"));
 
     // the constant outranks a function whose name only starts with it
     let max = top(&store, "MAX_RETRIES");

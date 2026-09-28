@@ -35,7 +35,7 @@ pub(crate) struct SymbolRow {
     pub mtime: Option<i64>,
     /// Last git commit time touching the file — the stronger recency signal.
     pub git_ts: Option<i64>,
-    /// Access level (`public`/`crate`/`private`/`protected`) when the language
+    /// Access level (`public`/`crate`/`private`/`protected`/`local`) when the language
     /// expresses one; `None` for unknown (or pre-v9 rows). A ranking hint.
     pub visibility: Option<String>,
     /// The file declares itself generated. A ranking hint.

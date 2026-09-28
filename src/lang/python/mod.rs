@@ -1,6 +1,9 @@
 //! Python plugin. Extracts `class` → class and `def` (free → function, inside a
 //! class → method), qualified with `.` (`method · Account`, nested class
 //! `Inner · Outer`). Decorators are transparent — the wrapped def is what counts.
+//! A `def` nested in another (a closure, a decorator's wrapper) → function,
+//! qualified by its enclosing def, and `local`: nothing outside can reach it.
+//! Classes and assignments inside a def are locals and stay out.
 //! An `UPPER_SNAKE` assignment at module or class level → constant: Python has
 //! no `const`, so the naming convention is the only declaration of intent there
 //! is. A lowercase module variable is ordinary state and stays out.
@@ -33,44 +36,54 @@ impl LanguagePlugin for Python {
             tree_sitter_python::LANGUAGE.into(),
             file,
             source,
-            |ctx, root, out| walk(ctx, root, None, false, out),
+            |ctx, root, out| walk(ctx, root, None, Scope::Module, out),
         )
     }
 }
 
-/// `parent` is the enclosing qualified name; `in_class` is true inside a
-/// class body, where a `def` is a method.
-fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, in_class: bool, out: &mut Vec<Symbol>) {
+/// What a node sits directly inside, which decides what a `def` there is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Module,
+    Class,
+    /// A def body: only nested defs are definitions here.
+    Function,
+}
+
+/// `parent` is the enclosing qualified name.
+fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec<Symbol>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "class_definition" => {
+            "class_definition" if scope != Scope::Function => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     let mut s = ctx.symbol(&name, Kind::Class, child, parent);
                     s.visibility = Some(name_visibility(&name));
                     out.push(s);
                     let qualified = qualify(parent, &name, ".");
-                    walk(ctx, child, Some(&qualified), true, out);
+                    walk(ctx, child, Some(&qualified), Scope::Class, out);
                 }
             }
             "function_definition" => {
                 if let Some(name) = ctx.field_text(child, "name") {
-                    let kind = if in_class {
-                        Kind::Method
-                    } else {
-                        Kind::Function
+                    let (kind, vis) = match scope {
+                        Scope::Class => (Kind::Method, name_visibility(&name)),
+                        Scope::Module => (Kind::Function, name_visibility(&name)),
+                        Scope::Function => (Kind::Function, "local"),
                     };
                     let mut s = ctx.symbol(&name, kind, child, parent);
-                    s.visibility = Some(name_visibility(&name));
+                    s.visibility = Some(vis);
                     out.push(s);
+                    let qualified = qualify(parent, &name, ".");
+                    walk(ctx, child, Some(&qualified), Scope::Function, out);
                 }
-                // don't descend into a def body (nested defs rarely navigated)
             }
-            // reached only at module/class level — a def body is never walked
-            "assignment" => constants(ctx, child, parent, out),
+            // a local class holds nothing reachable from outside the def
+            "class_definition" => {}
+            "assignment" if scope != Scope::Function => constants(ctx, child, parent, out),
             // a decorated class/function: descend so the wrapped def is seen
             // in the same context
-            _ => walk(ctx, child, parent, in_class, out),
+            _ => walk(ctx, child, parent, scope, out),
         }
     }
 }
@@ -167,6 +180,50 @@ def build():
         assert_eq!(build.parent, None);
 
         assert_eq!(account.language, "python");
+    }
+
+    #[test]
+    fn nested_defs_are_private_functions_of_their_enclosing_def() {
+        let src = r#"
+def _multi_decorate(decorators, method):
+    def _wrapper(self, *args):
+        def inner():
+            pass
+        return inner
+
+    class Local:
+        def hidden(self):
+            pass
+
+    LIMIT = 3
+    return _wrapper
+
+class Account:
+    def deposit(self):
+        @cached
+        def helper():
+            pass
+"#;
+        let syms = extract(src);
+
+        let wrapper = find(&syms, "_wrapper");
+        assert_eq!(wrapper.kind, Kind::Function);
+        assert_eq!(wrapper.parent.as_deref(), Some("_multi_decorate"));
+        assert_eq!(wrapper.visibility, Some("local"));
+
+        let inner = find(&syms, "inner");
+        assert_eq!(inner.parent.as_deref(), Some("_multi_decorate._wrapper"));
+        assert_eq!(inner.visibility, Some("local"));
+
+        // a closure in a method is a function, not a method, of that method
+        let helper = find(&syms, "helper");
+        assert_eq!(helper.kind, Kind::Function);
+        assert_eq!(helper.parent.as_deref(), Some("Account.deposit"));
+
+        // locals of a def: a class (and its methods) and an assignment
+        for absent in ["Local", "hidden", "LIMIT"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
     }
 
     #[test]

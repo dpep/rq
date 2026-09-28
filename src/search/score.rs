@@ -254,13 +254,20 @@ pub(crate) fn score(
     // filter): it breaks ties among comparable matches without overriding
     // match quality, and unknown visibility (pre-v9 rows, or languages that
     // don't express one) carries no signal at all.
-    if matches!(
-        cand.visibility.as_deref(),
-        Some("private") | Some("protected")
-    ) {
+    //
+    // A `local` definition (a closure, a function nested in another) is
+    // reachable only from inside its enclosing definition, so it ranks below
+    // every same-named definition that isn't, and above test code: sized, like
+    // `separators`, past what `path`, extent and kind can add together.
+    let visibility = match cand.visibility.as_deref() {
+        Some("private" | "protected") => Some(("private", -15.0)),
+        Some("local") => Some(("local", -LOCAL_PENALTY)),
+        _ => None,
+    };
+    if let Some((name, value)) = visibility {
         features.push(Feature {
-            name: "private",
-            value: -15.0 * quality,
+            name,
+            value: value * quality,
         });
     }
 
@@ -494,6 +501,9 @@ const MAX_BODY_BONUS: f64 = 50.0;
 /// whose classes happen to be top-level. Only nesting past the normal range
 /// says anything about how canonical a definition is.
 const FREE_DEPTH: usize = 2;
+
+/// A definition local to another's body. See the visibility block in `score`.
+const LOCAL_PENALTY: f64 = 150.0;
 
 /// Per level of enclosing scope beyond [`FREE_DEPTH`]. Small: this exists to
 /// order results that are otherwise identical, not to outweigh how well a name

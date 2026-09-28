@@ -1,5 +1,5 @@
 """Fixture: a small, domain-neutral Python file exercising class, method,
-free-function, and constant extraction."""
+free-function, nested-function, and constant extraction."""
 
 MAX_RETRIES = 3
 default_currency = "XYZ"
@@ -16,7 +16,20 @@ class Account:
 
 
 def build_account():
-    return Account()
+    def _audit(account):
+        # a closure longer than the module-level function it shadows, so only
+        # being local keeps it second
+        checked = account
+        checked = checked or Account()
+        checked = checked or Account()
+        checked = checked or Account()
+        return checked
+
+    return _audit(Account())
+
+
+def _audit(account):
+    return account
 
 
 def max_retries_for(account):

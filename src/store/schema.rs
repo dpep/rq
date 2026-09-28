@@ -50,8 +50,9 @@ CREATE TABLE symbols (
   line INTEGER NOT NULL,
   end_line INTEGER,                  -- 1-based last line of the definition body
   parent TEXT,
-  visibility TEXT                    -- public|crate|private|protected; NULL when
-                                     -- unknown (pre-v9 rows backfill lazily)
+  visibility TEXT                    -- public|crate|private|protected|local;
+                                     -- NULL when unknown (pre-v9 rows
+                                     -- backfill lazily)
 );
 CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);

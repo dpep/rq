@@ -14,6 +14,10 @@ and aren't listed; see `git log` for those.
   `type`: `type HandlerFunc func(*Context)`, `type HandlersChain []HandlerFunc`,
   `type Celsius float64` and aliases (`type GitInfo = gitmap.GitInfo`). They
   used to be dropped, so `rq HandlerFunc` found nothing in gin.
+- **Python: a `def` nested in another is indexed**, as a `function` whose
+  parent is the enclosing def (`_wrapper · _multi_decorate`). Its
+  visibility is the new value `local`, and it ranks below every same-named
+  definition outside a function body (`local` in `--explain`).
 - **TypeScript: enum members are indexed**, as `variant`s of their enum:
   `rq EVENT.MOUSE_MOVE` and `rq MOUSE_MOVE -k variant` find them.
 

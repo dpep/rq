@@ -229,7 +229,7 @@ pub(crate) struct Hit {
     pub end_line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    /// Access level (`public`/`crate`/`private`/`protected`) when the language
+    /// Access level (`public`/`crate`/`private`/`protected`/`local`) when the language
     /// expresses one. Omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
