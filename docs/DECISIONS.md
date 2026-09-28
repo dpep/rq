@@ -1530,7 +1530,9 @@ Marked: hugo 11 files (all 11 carrying Go's marker, no others), gin 1 (a `.pb.go
 | before | 27 | 1,304 / 1,750 / 2,000 |
 | after | 28 (`String`) | 1,304 / 1,750 / 2,000 |
 
-Recall: 0 sources moved; anchored unchanged (351 #1, 439 top 10).
+Recall: 0 sources moved; anchored unchanged (351 #1, 439 top 10). Reading the header costs
+nothing measurable: a cold index of rails with one worker took 3.3 s of user CPU on both
+builds, four interleaved runs each (wall time was unusable at load 33).
 
 *The upgrade re-reads every file.* v19 forgets every file's stat and hash and demotes
 complete repos to warming, as v14 did for three languages. The header can't be read from
