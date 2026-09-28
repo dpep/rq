@@ -58,8 +58,8 @@ rq.
 - `signature` is the definition's first line, so you often don't need to open
   the file to confirm a match.
 - `confidence` (0–1) is how sure rq is this is the one you meant. Near 1.0, take
-  it; a low value or several close results, disambiguate (add a kind, scope, or
-  path).
+  it; about 0.5 means it's level with the next result, a coin flip. A low value or
+  several close results, disambiguate (add a kind, scope, or path).
 - `total` is how many matches the results were drawn from, before `-l`.
 - `source` is `live` when rq answered from a bounded scan of files on disk
   because nothing is indexed there yet — a directory outside a git repo, or a

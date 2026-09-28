@@ -2218,3 +2218,36 @@ plain / anchored). Regress 44 of 47 before, plus three new cases that main fails
 *Reverses if:* a language starts recording modules as parents (then every type in it is
 nested, and the rule reads that language's namespaces as it reads Ruby's), or top-level
 declarations that only reopen a class (Ruby core extensions) show up winning in real use.
+
+## D44 — A tie reads as 0.50 already: no `tied` flag, no N-way confidence
+
+**Rejected**, 2026-09-28. The same report as D43 asked that an exact tie lower the reported
+confidence or say so (a `tied` field), since both halves of a tie showed 0.50.
+
+*Measured.* On the anchored set (446 call sites, truth by location, so a namesake at #1 is
+wrong), today's confidence for #1 is already calibrated where a tie lands: asked plain,
+the 323 #1s reported at 0.45–0.55 are right 44% of the time. 0.50 is a coin flip, and
+says so.
+
+*Rejected:*
+- **An N-way share.** Pairwise, a lead `p` over one rival; across rivals,
+  `1 / (1 + Σ (1 − p) / p)`, which equals today's value with one close rival and reads a
+  four-way tie as 0.25. Brier score of #1's confidence against being right:
+
+  | | today | N-way |
+  |---|---|---|
+  | plain | 0.250 | 0.232 |
+  | anchored | 0.121 | 0.131 |
+
+  Better plain, worse anchored: the anchor's boosts are evidence, and discounting every
+  close rival under-reads them (its 0.30–0.45 bucket is right 61% of the time). A change
+  to what every caller reads, and `--show`'s gate, needs to win on both.
+- **`tied: true`.** A binary on a graded judgement: 1452 against 1452 and 1443 against
+  1442 are the same coin flip, and a flag would call one a tie and the other not.
+  Confidence already grades it.
+
+What changed is the wording: README and the skill say that about 0.5 means level with
+the next result.
+
+*Reverses if:* callers are seen taking a 0.5 result as an answer (then the scale needs a
+word in the output, not only in the docs), or an N-way share that holds up anchored.

@@ -140,7 +140,7 @@ that doesn't apply is **omitted**, never `null`.
 | `visibility` | when the language expresses one | `public`, `crate`, `private`, `protected` or `local` (a function nested in another). |
 | `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
 | `source` | search | `index`, or `live` when the result came from a live scan of files on disk because no index pass has finished for this directory yet: one rq doesn't track, or a repo asked with `--no-wait` before its first index (or after `--drop`). The hit is real; only its ranking is provisional. See [Staying current](#staying-current). |
-| `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it. |
+| `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it; about 0.5 means it's level with the next result, a coin flip. |
 | `features` | search | The scoring signals that fired, strongest first. |
 | `signature` | when the line is non-empty | The definition's first source line, trimmed. |
 | `body` | `--show`, confident match | The full `line..=end_line` source. |
