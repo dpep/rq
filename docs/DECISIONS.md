@@ -2660,7 +2660,7 @@ is why its first answer here is 32 ms against the 2–4 ms a clone gets.
 *`-a` over five worktrees*, after the fixes above (rails clone at `main`, and
 worktrees 300, 600, 1,000 and 2,000 commits back, all indexed; 1,163 rails queries,
 `--limit 0`, from the 300 worktree). Against the union of what each worktree finds
-alone, counting a declaration folded into `also_in` as found: 0.59-era D50 (main)
+alone, counting a declaration folded into `also_in` as found: D50's first cut (main)
 missed 22,134 of 243,452 definition sites in 26 queries and returned 169,968 duplicate
 rows in 1,006; now none missing and no duplicates. Latency, `--profile` phases, 3 reps
 interleaved, load 7–23, ms (median / p90 / p99):
