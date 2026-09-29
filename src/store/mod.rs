@@ -90,6 +90,22 @@ const CANDIDATE_FROM: &str = "FROM symbols s \
     JOIN checkouts co ON co.id = cf.checkout_id \
     JOIN repositories r ON r.id = s.repository_id";
 
+/// Which checkout a candidate row is read from, bound to `?{n}`. Scoped, the
+/// checkout `?{n}` names. Unscoped (`?{n}` the checkout to prefer, or NULL),
+/// one per version: the preferred checkout when it maps the version, else the
+/// newest that does. A definition k checkouts share then costs the cap one
+/// row rather than k, and [`fold_checkouts`] applies the same preference.
+pub(super) fn read_from(scoped: bool, n: usize) -> String {
+    if scoped {
+        return format!("cf.checkout_id = ?{n}");
+    }
+    format!(
+        "cf.checkout_id = COALESCE(\
+           (SELECT x.checkout_id FROM checkout_files x WHERE x.file_id = s.file_id AND x.checkout_id = ?{n}), \
+           (SELECT MAX(x.checkout_id) FROM checkout_files x WHERE x.file_id = s.file_id))"
+    )
+}
+
 /// A checkout as the index knows it: the unit coverage, file stats and caches
 /// are kept for, and the repository whose file versions and names it shares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1200,12 +1216,15 @@ impl Store {
                     args.push(Value::Integer(c.repo));
                     args.push(Value::Integer(c.id));
                     format!(
-                        " AND s.repository_id = ?{} AND cf.checkout_id = ?{}",
+                        " AND s.repository_id = ?{} AND {}",
                         args.len() - 1,
-                        args.len()
+                        read_from(true, args.len())
                     )
                 }
-                None => String::new(),
+                None => {
+                    args.push(prefer.map_or(Value::Null, Value::Integer));
+                    format!(" AND {}", read_from(false, args.len()))
+                }
             };
             args.push(Value::Integer(limit as i64));
             let sql = format!(
@@ -1236,7 +1255,7 @@ impl Store {
         let repo = only.map(|c| c.repo);
         if !force_fuzzy && !found.is_empty() {
             let suspended = self.ensure_name_index(repo)?;
-            let mut rows = self.respelled_candidates(only, &suspended, probe, &q)?;
+            let mut rows = self.respelled_candidates(only, prefer, &suspended, probe, &q)?;
             for (id, row) in rows.drain(..) {
                 found.entry((id, row.checkout_id)).or_insert(row);
             }
@@ -1246,10 +1265,10 @@ impl Store {
         // The name index holds exactly the names and file stems the scorer
         // accepts.
         let suspended = self.ensure_name_index(repo)?;
-        for (id, row) in self.named_candidates(only, &suspended, probe, limit)? {
+        for (id, row) in self.named_candidates(only, prefer, &suspended, probe, limit)? {
             found.entry((id, row.checkout_id)).or_insert(row);
         }
-        for (id, row) in self.filed_candidates(only, &suspended, probe, limit)? {
+        for (id, row) in self.filed_candidates(only, prefer, &suspended, probe, limit)? {
             found.entry((id, row.checkout_id)).or_insert(row);
         }
         Ok(fold_checkouts(found.into_values().collect(), only, prefer))
@@ -1288,7 +1307,8 @@ fn checkout_meta_keys(id: i64, root: &str) -> [String; 6] {
 /// Unscoped rows fold across checkouts: a definition several checkouts hold —
 /// the same name, kind and parent at the same path and line, whether or not
 /// the rest of the file agrees — is kept from one of them, `prefer` when it
-/// holds it, else the oldest. Within that checkout every row stays.
+/// holds it, else the newest, as [`read_from`] picks for one version. Within
+/// that checkout every row stays.
 fn fold_checkouts(
     rows: Vec<SymbolRow>,
     only: Option<Checkout>,
@@ -1302,7 +1322,7 @@ fn fold_checkouts(
         let (file, name, kind) = (r.file.clone(), r.name.clone(), r.kind.clone());
         (r.repository_id, file, name, kind, r.parent.clone(), r.line)
     };
-    let rank = |checkout: i64| (Some(checkout) != prefer, checkout);
+    let rank = |checkout: i64| (Some(checkout) != prefer, std::cmp::Reverse(checkout));
     let mut winner: HashMap<Def, i64> = HashMap::new();
     for r in &rows {
         winner
@@ -2084,13 +2104,44 @@ mod tests {
             ["/b"],
             "the current checkout's"
         );
-        assert_eq!(roots("Widget", None), ["/a"], "else the oldest checkout's");
+        assert_eq!(roots("Widget", Some(a.id)), ["/a"]);
+        assert_eq!(roots("Widget", None), ["/b"], "else the newest checkout's");
         assert_eq!(roots("alpha", Some(a.id)), ["/b"], "what only B holds");
         // scoped, each checkout answers for itself
         let scoped = store
             .search_candidates("alpha", 10, false, Some(a), None, &Probe::new("alpha"))
             .unwrap();
         assert!(scoped.is_empty());
+    }
+
+    #[test]
+    fn a_version_many_checkouts_share_costs_the_cap_one_row() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/x"), None)
+            .unwrap();
+        let widgets = || {
+            Some(
+                (1..=3)
+                    .map(|i| sym(&format!("widget_{i}"), Kind::Method, i, None))
+                    .collect(),
+            )
+        };
+        let checkouts: Vec<Checkout> = ["/a", "/b", "/c"]
+            .iter()
+            .map(|root| store.upsert_checkout(repo, root, None).unwrap())
+            .collect();
+        for &c in &checkouts {
+            write(&mut store, c, "h", widgets());
+        }
+        let mut names: Vec<String> = store
+            .search_candidates("widget", 3, false, None, None, &Probe::new("widget"))
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["widget_1", "widget_2", "widget_3"]);
     }
 
     #[test]

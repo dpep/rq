@@ -310,3 +310,59 @@ fn status_and_drop_name_each_checkout() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+/// `n` files each defining `perform_task`, in `k` worktrees, every one indexed.
+fn crowded(label: &str, n: usize, k: usize) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+    let (base, db) = scratch(label);
+    let main = base.join("main");
+    fs::create_dir_all(main.join("jobs")).unwrap();
+    for i in 0..n {
+        fs::write(
+            main.join(format!("jobs/job_{i}.rb")),
+            format!("class Job{i}\n  def perform_task\n  end\nend\n"),
+        )
+        .unwrap();
+    }
+    git(&main, &["init", "-q", "-b", "main"]);
+    git(
+        &main,
+        &["remote", "add", "origin", "git@github.com:acme/jobs.git"],
+    );
+    commit_all(&main, "init");
+    let mut roots = vec![main.clone()];
+    for i in 1..k {
+        let dir = base.join(format!("wt-{i}"));
+        git(
+            &main,
+            &["worktree", "add", "-q", "--detach", dir.to_str().unwrap()],
+        );
+        roots.push(dir);
+    }
+    for dir in &roots {
+        assert!(rq(&db, dir, &["--index"]).0);
+    }
+    (base, db, roots)
+}
+
+#[test]
+fn all_repos_counts_each_definition_once_however_many_checkouts_hold_it() {
+    // more rows than the candidate cap once multiplied by the checkouts
+    let (n, k) = (2000, 5);
+    let (base, db, roots) = crowded("crowded", n, k);
+    let (ok, out) = rq(
+        &db,
+        &roots[1],
+        &["perform_task", "-a", "--limit", "0", "--ndjson"],
+    );
+    assert!(ok);
+    let rows: Vec<Value> = out.lines().map(json).collect();
+    assert_eq!(rows.len(), n, "every definition, once");
+    assert_eq!(rows[0]["total"], n);
+    let root = roots[1].to_string_lossy();
+    assert!(
+        rows.iter().all(|r| r["root"] == root.as_ref()),
+        "read from the checkout asked in"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}

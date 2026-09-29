@@ -482,7 +482,7 @@ why a result ranked where it did:
   checkout), and within it the current checkout's rows still carry the boost
   (the feature keeps its name, `current_repo`). Under `--all-repos`, a
   definition several checkouts hold — same repo, path, name, kind, parent and
-  line — is one result, the current checkout's copy first, else the oldest's
+  line — is one result, the current checkout's copy first, else the newest's
 - **recency** — symbols in recently-active files (~14-day half-life), sourced
   from the more recent of file mtime and last git commit time (captured once per
   index, not on the search path)

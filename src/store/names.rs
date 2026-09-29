@@ -8,14 +8,24 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-use super::{CANDIDATE_COLS, CANDIDATE_FROM, Checkout, Result, Store, SymbolRow, row_to_candidate};
+use super::{
+    CANDIDATE_COLS, CANDIDATE_FROM, Checkout, Result, Store, SymbolRow, read_from, row_to_candidate,
+};
 use crate::search::{
     NAME_INDEX_FORMAT, PRIMARY_KINDS, Probe, SIG_BYTES, Signature, joiners_eq, path_stem,
 };
 
-/// The fetches' checkout scope, bound as `?3`: a name the repo's index holds
-/// may be defined only in another checkout, and then fetches nothing here.
-const IN_CHECKOUT: &str = "AND (?3 IS NULL OR cf.checkout_id = ?3)";
+/// The fetches' checkout filter, bound as `?3` (see [`read_from`]): a name
+/// the repo's index holds may be defined only in another checkout, and then
+/// fetches nothing here.
+fn in_checkout(only: Option<Checkout>) -> String {
+    format!("AND {}", read_from(only.is_some(), 3))
+}
+
+/// What `?3` binds: the scope's checkout, or unscoped the one to prefer.
+fn checkout_arg(only: Option<Checkout>, prefer: Option<i64>) -> Option<i64> {
+    only.map_or(prefer, |c| Some(c.id))
+}
 
 /// Keys per chunk. An append rewrites the last chunk, and a scan reads one row
 /// per chunk.
@@ -372,6 +382,7 @@ impl Store {
     pub(super) fn named_candidates(
         &self,
         only: Option<Checkout>,
+        prefer: Option<i64>,
         suspended: &[i64],
         probe: &Probe,
         limit: usize,
@@ -392,9 +403,10 @@ impl Store {
         keys.dedup_by(|a, b| (a.0, &a.1) == (b.0, &b.1));
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE s.repository_id = ?1 AND s.name_lower = ?2 {IN_CHECKOUT}"
+             WHERE s.repository_id = ?1 AND s.name_lower = ?2 {}",
+            in_checkout(only)
         ))?;
-        let checkout = only.map(|c| c.id);
+        let checkout = checkout_arg(only, prefer);
         let mut fetch = |keys: &[(i64, String, String)]| -> Result<(Vec<(i64, SymbolRow)>, bool)> {
             let mut rows = Vec::new();
             for (r, lower, _) in keys {
@@ -427,6 +439,7 @@ impl Store {
     pub(super) fn respelled_candidates(
         &self,
         only: Option<Checkout>,
+        prefer: Option<i64>,
         suspended: &[i64],
         probe: &Probe,
         lower: &str,
@@ -440,9 +453,10 @@ impl Store {
         )?;
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE s.repository_id = ?1 AND s.name_lower = ?2 {IN_CHECKOUT}"
+             WHERE s.repository_id = ?1 AND s.name_lower = ?2 {}",
+            in_checkout(only)
         ))?;
-        let checkout = only.map(|c| c.id);
+        let checkout = checkout_arg(only, prefer);
         let mut rows = Vec::new();
         for (r, name) in names {
             let lower_name = name.to_lowercase();
@@ -461,6 +475,7 @@ impl Store {
     pub(super) fn filed_candidates(
         &self,
         only: Option<Checkout>,
+        prefer: Option<i64>,
         suspended: &[i64],
         probe: &Probe,
         limit: usize,
@@ -475,9 +490,10 @@ impl Store {
         let kinds = PRIMARY_KINDS.map(|k| format!("'{k}'")).join(", ");
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE fi.repository_id = ?1 AND fi.path = ?2 AND s.kind IN ({kinds}) {IN_CHECKOUT}"
+             WHERE fi.repository_id = ?1 AND fi.path = ?2 AND s.kind IN ({kinds}) {}",
+            in_checkout(only)
         ))?;
-        let checkout = only.map(|c| c.id);
+        let checkout = checkout_arg(only, prefer);
         let mut rows = Vec::new();
         for (r, path) in &files {
             if rows.len() >= limit {
@@ -533,7 +549,7 @@ mod tests {
     /// The names fuzzy recall hands on for `query`, from the index alone.
     fn recalled(store: &Store, repo: Option<Checkout>, query: &str) -> Vec<String> {
         let mut names: Vec<String> = store
-            .named_candidates(repo, &[], &Probe::new(query), 1000)
+            .named_candidates(repo, None, &[], &Probe::new(query), 1000)
             .unwrap()
             .into_iter()
             .map(|(_, c)| c.name)
@@ -810,7 +826,7 @@ mod tests {
             &["w_x_i_x_d", "WidgetDetail", "WideIndexDriver", "Widget"],
         );
         let kept: Vec<String> = store
-            .named_candidates(Some(r), &[], &Probe::new("wid"), 2)
+            .named_candidates(Some(r), None, &[], &Probe::new("wid"), 2)
             .unwrap()
             .into_iter()
             .map(|(_, c)| c.name)
@@ -829,7 +845,7 @@ mod tests {
             .replace_file_symbols(r, "lib/connection_pool.rb", "ruby", None, "h", &syms)
             .unwrap();
         let rows = store
-            .filed_candidates(Some(r), &[], &Probe::new("conpool"), 100)
+            .filed_candidates(Some(r), None, &[], &Probe::new("conpool"), 100)
             .unwrap();
         let names: Vec<&str> = rows.iter().map(|(_, c)| c.name.as_str()).collect();
         assert_eq!(names, ["Base"]);

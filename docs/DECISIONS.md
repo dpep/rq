@@ -2564,9 +2564,12 @@ per-checkout delta (D23's declined layering). A cold pass suspends the index onl
 *repo* holds no versions: a new worktree's first pass appends the few names it adds.
 
 *`-a`* searches every checkout. Rows of one version fold to one hit, the current
-checkout's when it maps it, else the oldest checkout's; so do rows of different versions
+checkout's when it maps it, else the newest checkout's; so do rows of different versions
 that define the same name, kind, parent and line at the same path, which is what two
-branches that differ elsewhere in the file look like. The current-repo boost follows
+branches that differ elsewhere in the file look like. The first fold happens in SQL, one
+row per version, before the candidate cap: folding after it let k checkouts of one repo
+cut the cap to 8,000/k definitions, which dropped 8,771 of them across five rails
+worktrees and crowded out every other repo. The current-repo boost follows
 the scope: it goes to the checkout you're in (the feature keeps its name, `current_repo`).
 
 *Surface.* `--status` is one row per checkout, with `root` beside `repo`. Hits and
