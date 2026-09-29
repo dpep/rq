@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.0 — 2026-09-29
 
 Upgrading keeps each repo's index with one of its checkouts still on disk, the
 one you last searched in where rq can tell. Other worktrees and clones of the
