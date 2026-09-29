@@ -2705,3 +2705,79 @@ scope and output — either shape needs.
 denormalizing the checkout onto `symbols` (a row per checkout per symbol) trades the
 sharing back for a seekable `(checkout, name_lower)` index; or extraction stops reading
 the path, when bytes alone can key a version and renamed files share too.
+
+## D51 — A database rq can't use is set aside and rebuilt, or kept for a newer rq
+
+**Adopted**, 2026-09-29. `src/store/recover.rs`; tests there and in `tests/recovery.rs`.
+
+*The problem.* The index is a cache, but a database rq couldn't use left every command
+failing until someone deleted it by hand: a file that isn't a database, a truncated one, or
+an upgrade step that errors all came back as exit 74 on every run. Meanwhile an older rq
+that opened a newer rq's database queried it as its own and failed on SQL
+(`no such column: fi.mtime`, 0.59 against v23).
+
+*What.* `Store::open` sorts every way an open can fail into one of three:
+- **Broken:** SQLite says the file is corrupt or not a database (at any statement of the
+  open, including the schema read that ends it), an upgrade step fails for a reason other
+  than the environment, the version is negative, or a table the schema creates is missing.
+  The file and its WAL move to `<name>.broken-<unix time>`, the shared-memory file is
+  deleted, and a fresh database is created. The previous set-aside copy is deleted first, so
+  at most one is kept. One line on stderr says what happened and where the old file is;
+  stdout and the exit code are the command's own, so `--json` sees `not_indexed` or
+  `warming` like any first run, and the usual rebuild-on-need takes it from there.
+- **Newer:** the version is above this rq's. The file is never written. This rq opens
+  `<stem>.v<its version>.<ext>` beside it (`rq.v23.db`) instead, says so once when it
+  creates it, and works normally from it.
+- **Failed:** busy, locked, disk full, I/O, permissions, read-only, out of memory. A new
+  file would meet the same failure, so the error is reported as before (74).
+
+The upgrade runs in one transaction, as it did, so a step that fails midway rolls back and
+the copy set aside is the database as the older rq left it: evidence for the bug report.
+
+*Stamps.* `user_version` stays the schema version. `meta` gains `created_by` (the rq that
+laid down a fresh schema) and `schema_by` (the rq that brought it to its current schema),
+written inside the schema transaction, so they cost no extra write. `schema_by` is what the
+side-store message quotes ("written by a newer rq (0.61.0)"). Rejected: a last-opener
+stamp. It would take the write lock on the read path whenever the binary changed, and
+nothing needs it: the schema version decides compatibility, and the rq that owns that
+schema is the one worth naming.
+
+*Concurrency.* An advisory lock on `<db>.lock` is held shared while opening and exclusive
+while setting a file aside. An opener that finds the file broken takes the exclusive lock,
+then compares the file's (device, inode) with what it saw before opening: if it changed,
+another process already set it aside, and this one opens the new file. So exactly one
+process moves it and says so, and none can move a fresh database another has started
+writing to (the eight-thread and six-process tests check both). The shared lock keeps an
+opener off the old file while its WAL and main file move; the WAL moves first so a new file
+never adopts the old WAL. A process that already had the old file open finds out on its
+next write, which SQLite refuses as `SQLITE_READONLY_DBMOVED`.
+
+*Side stores, not a refusal or a rebuild.* Two installed versions (a brew release and a dev
+build, or an agent's pinned copy) are normal. An older rq that rebuilt a newer database
+would ping-pong, each version wiping the other's index on every alternation; one that
+refused would fail every command until upgraded. The side store costs a second index on
+disk and a cold first search, and both versions keep working. When a newer rq lays down
+its schema at the main path, it deletes its own version's side store (the main path is
+its own again) and any older version's unused for 30 days; side stores are found by
+probing their names, not by listing the directory, because `RQ_DB` can sit in a directory
+of hundreds of thousands of files (listing a 445,000-entry `$TMPDIR` on each schema write
+took the burst-of-openers test from 1 s to 50 s).
+Rejected: a newer rq adopting an older rq's side store. It is a cache of the same repos at
+an older schema, and adopting it would mean migrating a file some older rq may still be
+writing.
+
+*Not done.* No `PRAGMA quick_check`: it reads every page, 20–30 ms on a 12 MB rails index
+against a 50 ms first-answer budget, and WAL gives no "unclean shutdown" signal to reserve
+it for. It isn't needed for truncation either: SQLite compares the header's page count
+with the file's size on the first read, which the open's schema read triggers (the
+truncation tests cut a database in half). Damage deeper in a file than the open reads
+still fails the command that reaches it. The open costs 0.5–0.6 ms against 0.5 ms before
+(rails, `--profile` "store open").
+
+*Reach.* Only rq from this release on recovers or keeps a side store. rq 0.60.0 and older
+opening a later schema still fail on SQL; the first schema bump after this one is the first
+an older rq steps around.
+
+*Reverses if:* a real index turns out to be worth more than a rebuild (it's a cache today),
+or side stores pile up in practice; then the older rq refusing with a clear message is the
+simpler shape.

@@ -228,12 +228,21 @@ usage_daily (
 -- small key/value store, per checkout: indexed HEAD, warm lock, warm
 -- verdict, branch-file cache, and the files the index holds as uncommitted
 -- edits (by checkout id where a pass writes them, by root where a search
--- reads them before any pass registered the checkout)
+-- reads them before any pass registered the checkout); and for the database,
+-- the rq versions that created it and wrote its schema (`created_by`,
+-- `schema_by`)
 meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 ```
 
 Decisions worth calling out:
 
+- **A database rq can't use is set aside and rebuilt, or kept for a newer rq**
+  (D51). Opening sorts failures three ways: damaged or a failed upgrade moves
+  the file to `<name>.broken-<time>` (one kept) and starts fresh, with one
+  stderr line; a newer rq's database is left alone and this rq uses
+  `<stem>.v<version>.<ext>` beside it; busy, disk full and permissions are
+  reported as before. A `<db>.lock` flock, shared while opening and exclusive
+  while moving, makes exactly one process move a broken file.
 - **The name index** holds, per repo, a signature for every distinct symbol
   name and file stem across every checkout's versions: which characters it has and which pairs of them a query
   could step across under `align`'s rules. Fuzzy recall screens every

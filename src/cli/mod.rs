@@ -3141,7 +3141,61 @@ fn cmd_status(out: Output) -> ExitCode {
             }
         }
     }
+    if out == Output::Text
+        && let Ok(db) = db_path()
+    {
+        for line in leftovers(&db, store.file()) {
+            println!("{line}");
+        }
+    }
     ExitCode::SUCCESS
+}
+
+/// What `--status` says about the files beside the index (DECISIONS D51): the
+/// index this rq uses when a newer rq owns the default one, other versions'
+/// indexes, and a damaged index kept after a rebuild.
+fn leftovers(db: &std::path::Path, using: Option<&std::path::Path>) -> Vec<String> {
+    let name = |p: &std::path::Path| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let size = |p: &std::path::Path| {
+        let bytes: u64 = ["", "-wal"]
+            .iter()
+            .filter_map(|s| std::fs::metadata(format!("{}{s}", p.display())).ok())
+            .map(|m| m.len())
+            .sum();
+        format!("{} MB", bytes.div_ceil(1 << 20))
+    };
+    let mut lines = Vec::new();
+    let own = crate::store::side_path(db, crate::store::VERSION);
+    // SQLite reports the file with symlinks resolved, so compare names
+    if using.is_some_and(|u| u.file_name() == own.file_name()) {
+        lines.push(format!(
+            "this rq uses {}: {} belongs to a newer rq",
+            name(&own),
+            name(db)
+        ));
+    }
+    for (side, v) in crate::store::side_stores(db, 1..=crate::store::VERSION + 64) {
+        if side != own {
+            lines.push(format!(
+                "{}  schema v{v}'s own index, {}",
+                name(&side),
+                size(&side)
+            ));
+        }
+    }
+    if let Some(copy) = crate::store::broken_copy(db) {
+        lines.push(format!(
+            "{}  set aside when it couldn't be used, {} (safe to delete)",
+            name(&copy),
+            size(&copy)
+        ));
+    }
+    lines
 }
 
 /// `--usage`: how rq has actually been called, by day, caller, and flag set.

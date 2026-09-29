@@ -7,6 +7,22 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+Nothing to do: rq now recovers on its own from an index it can't use.
+
+### Fixed
+- **A damaged index, or an upgrade that fails, is rebuilt instead of failing
+  every command.** rq moves the old file aside (`rq.db.broken-<time>`, only the
+  newest kept), says so in one line on stderr, and indexes again as on a first
+  run; `--json` output is the usual `warming`/`not_indexed`. `rq --status`
+  lists the kept copy, which is safe to delete (DECISIONS D51).
+- **An older rq no longer breaks on a newer rq's index**, from the next schema
+  change on. It leaves that file alone and keeps its own beside it
+  (`rq.v23.db`), so a brew install and a dev build can take turns without
+  rebuilding each other's index. rq 0.60.0 and older can't do this, so they
+  still fail against a later schema.
+
 ## 0.60.0 — 2026-09-29
 
 Upgrading keeps each repo's index with one of its checkouts still on disk, the

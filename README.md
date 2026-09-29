@@ -190,6 +190,11 @@ Every code means one thing, so a script can branch on the number: `1` is
 absent, `2` is ask again, and anything else is an error, which `kind` names.
 `rq --help` lists the same table.
 
+An index that's damaged, or whose upgrade fails, is not an error: rq moves it
+aside, says where on stderr, and rebuilds it. An older rq that finds a newer
+rq's index keeps a separate one beside it. `rq --status` lists both kinds of
+file; either is safe to delete.
+
 ### Batch mode
 
 Pipe queries on stdin, one per line, with `-J`. rq resolves the repo and opens

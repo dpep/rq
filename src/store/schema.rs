@@ -614,6 +614,22 @@ pub(crate) enum Step {
     },
 }
 
+/// A schema and the steps that reach it: this rq's, or in tests a stand-in
+/// for another rq's.
+pub(crate) struct Ladder {
+    pub version: i64,
+    /// The schema a fresh database is created with.
+    pub fresh: &'static str,
+    pub steps: &'static [(i64, Step)],
+}
+
+/// This rq's schema.
+pub(crate) const LADDER: Ladder = Ladder {
+    version: VERSION,
+    fresh: SCHEMA,
+    steps: &MIGRATIONS,
+};
+
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
 pub(crate) const MIGRATIONS: [(i64, Step); 25] = [

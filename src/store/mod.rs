@@ -4,7 +4,11 @@
 //! happen concurrently. See `docs/ARCHITECTURE.md` for the schema.
 
 mod names;
+mod recover;
 mod schema;
+
+pub(crate) use recover::{broken_copy, side_path, side_stores};
+pub(crate) use schema::VERSION;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -228,6 +232,29 @@ pub(crate) struct UsageRow {
     pub live: i64,
 }
 
+/// Record which rq did something to the schema, e.g. `schema_by = 0.61.0`.
+fn stamp(conn: &Connection, key: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        params![key, env!("CARGO_PKG_VERSION")],
+    )
+    .map(drop)
+}
+
+/// A table `schema` creates that the database doesn't have.
+fn missing_table(conn: &Connection, schema: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?;
+    let have = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<std::collections::HashSet<_>>>()?;
+    Ok(schema
+        .split("CREATE TABLE ")
+        .skip(1)
+        .filter_map(|rest| rest.split_whitespace().next())
+        .find(|table| !have.contains(*table))
+        .map(String::from))
+}
+
 /// Run one migration step.
 fn apply(conn: &Connection, step: &schema::Step) -> Result<()> {
     match *step {
@@ -276,20 +303,35 @@ const UPGRADE_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl Store {
     /// Open (creating if needed) the database at `path`, enabling WAL and
-    /// applying the schema.
+    /// applying the schema. A database this rq can't use is set aside and
+    /// rebuilt, or kept for a newer rq (see [`recover`]).
     pub(crate) fn open(path: &Path) -> Result<Store> {
-        let conn = Connection::open(path)?;
-        Self::init(conn)
+        recover::open(path, &schema::LADDER)
+    }
+
+    /// The file this store reads, which is not the path asked for when a newer
+    /// rq owns that one.
+    pub(crate) fn file(&self) -> Option<&Path> {
+        self.conn.path().filter(|p| !p.is_empty()).map(Path::new)
     }
 
     /// Open an in-memory database — used by tests.
     #[cfg(test)]
     pub(crate) fn open_in_memory() -> Result<Store> {
         let conn = Connection::open_in_memory()?;
-        Self::init(conn)
+        match Self::init(conn, &schema::LADDER) {
+            Ok((store, _)) => Ok(store),
+            Err(recover::Refusal::Failed(e)) => Err(e),
+            Err(_) => unreachable!("a new in-memory database is always usable"),
+        }
     }
 
-    fn init(conn: Connection) -> Result<Store> {
+    /// The store, and whether this call laid down or upgraded its schema.
+    fn init(
+        conn: Connection,
+        ladder: &schema::Ladder,
+    ) -> std::result::Result<(Store, bool), recover::Refusal> {
+        use recover::Refusal;
         // WAL lets one writer and many readers coexist; busy_timeout makes a
         // second writer (e.g. two `rq` processes in two terminals, both warming)
         // wait briefly instead of erroring with "database is locked". mmap reads
@@ -310,7 +352,7 @@ impl Store {
         // holds it: another opener may have laid the schema down meanwhile.
         // Foreign keys are off for it: rebuilding a table (v23) drops one that
         // others reference, and the pragma can't change inside a transaction.
-        let upgrading = version < schema::VERSION;
+        let upgrading = (0..ladder.version).contains(&version);
         if upgrading {
             // An upgrade holds the write lock as long as it takes, seconds on a
             // store of a million rows, and every other opener queues here
@@ -320,7 +362,7 @@ impl Store {
                 UPGRADE_WAIT.as_millis()
             ))?;
             version = user_version(&conn)?;
-            if version > 0 && version < schema::VERSION {
+            if version > 0 && version < ladder.version {
                 eprintln!("rq: upgrading the index (one-time)…");
             }
             // v23 reshapes tables the steps before it write to, so a database
@@ -335,21 +377,32 @@ impl Store {
                 version = version.max(23);
             }
         }
+        // Never lowered, never migrated: a newer rq's database stays as it is.
+        if version > ladder.version {
+            return Err(Refusal::Newer(version));
+        }
+        if version < 0 {
+            return Err(Refusal::Broken {
+                upgrading: false,
+                reason: format!("schema version {version}"),
+            });
+        }
         if version == 0 {
             // fresh database — SCHEMA is already at the current version
-            conn.execute_batch(schema::SCHEMA)?;
+            conn.execute_batch(ladder.fresh)?;
+            stamp(&conn, "created_by")?;
         } else {
             // cumulative migrations for existing databases
-            for (v, step) in schema::MIGRATIONS {
-                if version < v {
-                    apply(&conn, &step)?;
+            for (v, step) in ladder.steps {
+                if version < *v {
+                    apply(&conn, step).map_err(|e| Refusal::upgrade(version, e))?;
                 }
             }
         }
-        // Only ever raise it: an older rq that lowered it would make a newer one
-        // re-run migrations it had already applied.
-        if version < schema::VERSION {
-            conn.pragma_update(None, "user_version", schema::VERSION)?;
+        let wrote = version < ladder.version;
+        if wrote {
+            stamp(&conn, "schema_by")?;
+            conn.pragma_update(None, "user_version", ladder.version)?;
         }
         if upgrading {
             conn.execute_batch(&format!(
@@ -357,7 +410,15 @@ impl Store {
                 BUSY_WAIT.as_millis()
             ))?;
         }
-        Ok(Store { conn })
+        // Also the first read of the schema, which is where a damaged or
+        // truncated file shows itself.
+        if let Some(table) = missing_table(&conn, ladder.fresh)? {
+            return Err(Refusal::Broken {
+                upgrading: false,
+                reason: format!("no {table} table"),
+            });
+        }
+        Ok((Store { conn }, wrote))
     }
 
     /// Insert or update a repository, returning its id.
@@ -1756,29 +1817,6 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_newer_database_leaves_its_version_alone() {
-        let path = std::env::temp_dir().join(format!("rq-newer-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let newer = schema::VERSION + 1;
-        drop(Store::open(&path).unwrap());
-        {
-            let store = Store::open(&path).unwrap();
-            store
-                .conn
-                .pragma_update(None, "user_version", newer)
-                .unwrap();
-        }
-        let store = Store::open(&path).unwrap();
-        let version: i64 = store
-            .conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, newer, "an older rq must not lower the version");
-        drop(store);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
     fn an_added_column_survives_an_older_rq_resetting_the_version() {
         let live_columns = |store: &Store| -> i64 {
             store
@@ -1949,7 +1987,7 @@ mod tests {
         );
         assert_eq!(left("SELECT COUNT(*) FROM symbols"), 1);
         assert_eq!(
-            left("SELECT COUNT(*) FROM meta"),
+            left("SELECT COUNT(*) FROM meta WHERE key NOT IN ('created_by', 'schema_by')"),
             0,
             "per-repo caches dropped"
         );
@@ -2202,7 +2240,11 @@ mod tests {
         assert_eq!(names_in(&store, b), ["Gadget"]);
         assert_eq!((count(&store, "files"), count(&store, "symbols")), (1, 1));
         assert_eq!(store.coverage_status("/a").unwrap(), None);
-        assert_eq!(count(&store, "meta"), 0, "its caches go with it");
+        assert_eq!(
+            count(&store, "meta WHERE key NOT IN ('created_by', 'schema_by')"),
+            0,
+            "its caches go with it"
+        );
         assert_eq!(store.repository_id("local:/x").unwrap(), Some(repo));
     }
 

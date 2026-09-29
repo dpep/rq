@@ -3060,12 +3060,9 @@ fn a_structured_caller_gets_its_errors_as_json() {
     // a file where the database's directory should be: nothing can be created
     let blocked = dir.join("blocked");
     fs::write(&blocked, "").unwrap();
+    // (a corrupt database is rebuilt rather than reported: tests/recovery.rs)
     let unwritable = blocked.join("rq.db");
-    let corrupt = dir.join("corrupt.db");
-    fs::write(&corrupt, "not a database, just bytes ".repeat(200)).unwrap();
-
     let unwritable = unwritable.to_str().unwrap();
-    let corrupt = corrupt.to_str().unwrap();
     // args, extra env, piped stdin, the error kind expected
     type Case<'a> = (
         &'a [&'a str],
@@ -3089,10 +3086,15 @@ fn a_structured_caller_gets_its_errors_as_json() {
             None,
             "database",
         ),
-        (&["Widget", "-J"], &[("RQ_DB", corrupt)], None, "database"),
+        (
+            &["Widget", "-J"],
+            &[("RQ_DB", unwritable)],
+            None,
+            "database",
+        ),
         (
             &["--status", "--json"],
-            &[("RQ_DB", corrupt)],
+            &[("RQ_DB", unwritable)],
             None,
             "database",
         ),
