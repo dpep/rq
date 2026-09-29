@@ -51,7 +51,8 @@ CREATE TABLE checkout_files (
                                      -- checkout's history
   PRIMARY KEY (checkout_id, path)
 ) WITHOUT ROWID;
-CREATE INDEX idx_checkout_files_file ON checkout_files(file_id, checkout_id);
+-- the search join: covering, so a candidate row costs one seek, not two
+CREATE INDEX idx_checkout_files_file ON checkout_files(file_id, checkout_id, mtime, git_ts);
 
 CREATE TABLE symbols (
   id INTEGER PRIMARY KEY,
@@ -531,7 +532,7 @@ INSERT INTO checkout_files (checkout_id, path, file_id, mtime, git_ts)
   FROM files f WHERE f.repository_id IN (SELECT repository_id FROM checkouts);
 DROP TABLE files;
 ALTER TABLE files_v23 RENAME TO files;
-CREATE INDEX idx_checkout_files_file ON checkout_files(file_id, checkout_id);
+CREATE INDEX idx_checkout_files_file ON checkout_files(file_id, checkout_id, mtime, git_ts);
 
 CREATE TABLE coverage_v23 (
   id INTEGER PRIMARY KEY,
