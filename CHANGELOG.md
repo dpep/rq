@@ -10,13 +10,12 @@ and aren't listed; see `git log` for those.
 ## Unreleased
 
 Upgrading keeps each repo's index with one of its checkouts still on disk, the
-one you last searched in where rq can tell. The upgrade takes seconds on a
-large index; the first rq says so on stderr, and others started meanwhile
-wait for it rather than failing "database is locked".
-Other worktrees and clones of the same remote re-index on their next search,
-parsing only the files that differ. An older rq can't read the upgraded
-database (a search fails with `no such column`); `rm` the database, or point
-`RQ_DB` elsewhere, to go back.
+one you last searched in where rq can tell. Other worktrees and clones of the
+same remote re-index on their next search, parsing only the files that differ.
+The upgrade takes seconds on a large index; the first rq says so on stderr,
+and others started meanwhile wait for it rather than failing "database is
+locked". An older rq can't read the upgraded database (a search fails with
+`no such column`); `rm` the database, or point `RQ_DB` elsewhere, to go back.
 
 ### Fixed
 - **Worktrees, clones and detached checkouts of one repo no longer overwrite
@@ -25,6 +24,9 @@ database (a search fails with `no such column`); `rm` the database, or point
   branch A came back `warming` from A until a warm re-indexed A over B, and then
   B's answers flipped the same way. Each checkout now answers from its own
   files, and has its own coverage, warm state and branch boost (DECISIONS D50).
+- **`--drop --json` names a repo by its identity even when there was nothing
+  to drop**, with the path it was asked about in `root`; it gave the path as
+  `repo`.
 
 ### Changed
 - **A file version is stored once per repo.** Identical files across checkouts
@@ -41,7 +43,8 @@ database (a search fails with `no such column`); `rm` the database, or point
 - **An `-a` miss names the checkouts it can't speak for**: `incomplete` in
   JSON lists the roots not fully indexed.
 - **`--drop` inside a checkout drops only that checkout.** `--drop <repo>`
-  still drops the repo, now with every checkout of it.
+  still drops the repo, now with every checkout of it, and reports `files` and
+  `symbols` summed over them as `--status` showed them.
 - **Searches in a linked worktree answer about 10× sooner.** rq read git's
   state from disk only when `.git` was a directory, so in a `git worktree` it
   forked git for HEAD and recomputed the branch's changed files on every query

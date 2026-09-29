@@ -114,7 +114,7 @@ struct Cli {
     #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with_all = ["index", "status", "usage", "symbols", "drop", "warm"])]
     anchor: Option<AnchorSpec>,
 
-    /// Search every indexed repo, not just this one.
+    /// Search every indexed checkout, not just this one.
     #[arg(help_heading = "Narrow the search", short = 'a', long = "all-repos")]
     all_repos: bool,
 
@@ -182,20 +182,20 @@ struct Cli {
     #[arg(help_heading = "The index", long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "drop", "open", "web"])]
     symbols: Option<String>,
 
-    /// Index a repo now (PATH, or this one).
+    /// Index a checkout now (PATH, or this one).
     ///
     /// Searches index on their own; this just does it up front.
     #[arg(help_heading = "The index", long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with = "status")]
     index: Option<Option<String>>,
 
-    /// Show what's indexed, per repo.
+    /// Show what's indexed, per checkout.
     #[arg(help_heading = "The index", long, conflicts_with = "index")]
     status: bool,
 
-    /// Forget a repo's index (the opposite of --index).
+    /// Forget a checkout's index (the opposite of --index).
     ///
-    /// TARGET is the repo's path (default: this one), or its identity as --status
-    /// shows it.
+    /// TARGET is the checkout's path (default: this one), or a repo identity as
+    /// --status shows it, which forgets every checkout of the repo.
     #[arg(help_heading = "The index", long, conflicts_with_all = ["index", "status", "open", "web"])]
     drop: bool,
 
@@ -2918,7 +2918,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
                             "repo": identity,
                             "root": root_key(&root),
                             "scope": if subtree { "subtree" } else { "full" },
-                            "files_added": stats.files_indexed,
+                            "files_added": stats.files_parsed,
                             "symbols_added": stats.symbols,
                             "files": files,
                             "symbols": symbols,
@@ -2930,11 +2930,11 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
                     match totals {
                         Some((files, symbols)) => println!(
                             "{} file(s)/{} symbol(s) added this run; index{scope} now {files} files, {symbols} symbols",
-                            stats.files_indexed, stats.symbols
+                            stats.files_parsed, stats.symbols
                         ),
                         None => println!(
                             "{} file(s)/{} symbol(s) added this run{scope}",
-                            stats.files_indexed, stats.symbols
+                            stats.files_parsed, stats.symbols
                         ),
                     }
                 }
@@ -2995,15 +2995,20 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     };
     let Some((identity, repo_id)) = repo else {
         // nothing to drop — idempotent. `dropped: false` lets a script tell.
-        let named = target.unwrap_or(key);
+        // `repo` stays an identity: a path's is what `--index` would record.
+        let (identity, at) = if root.exists() {
+            (crate::index::detect_identity(&root).to_string(), Some(key))
+        } else {
+            (target.unwrap_or_default(), None)
+        };
         return match out {
             Output::Text => {
-                println!("not indexed: {named}");
+                println!("not indexed: {}", at.as_deref().unwrap_or(&identity));
                 ExitCode::SUCCESS
             }
             _ => emit_json(
                 out,
-                &serde_json::json!({"repo": named, "files": 0, "symbols": 0, "dropped": false}),
+                &serde_json::json!({"repo": identity, "root": at, "files": 0, "symbols": 0, "dropped": false}),
             ),
         };
     };

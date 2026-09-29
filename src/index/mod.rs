@@ -27,8 +27,19 @@ pub(crate) struct Stats {
     /// Files (re)indexed this run: parsed, or mapped to a version the repo
     /// already held (unchanged files are skipped).
     pub files_indexed: usize,
+    /// Of those, the ones parsed: versions the repo didn't hold.
+    pub files_parsed: usize,
     /// Symbols written this run.
     pub symbols: usize,
+}
+
+impl std::ops::AddAssign for Stats {
+    fn add_assign(&mut self, o: Stats) {
+        self.files_seen += o.files_seen;
+        self.files_indexed += o.files_indexed;
+        self.files_parsed += o.files_parsed;
+        self.symbols += o.symbols;
+    }
 }
 
 /// Index the whole repository rooted at `root`. The CLI calls [`index_under`]
@@ -208,8 +219,7 @@ struct BatchWriter<'a> {
     checkout: Checkout,
     root: &'a Path,
     buf: Vec<crate::store::FileSymbols>,
-    files: usize,
-    symbols: usize,
+    written: Stats,
     /// Cumulative time spent in `replace_files` (the single-writer store path) —
     /// surfaced under `-v` so we can see write vs. walk/parse contention.
     write_time: Duration,
@@ -226,8 +236,7 @@ impl<'a> BatchWriter<'a> {
             checkout,
             root,
             buf: Vec::new(),
-            files: 0,
-            symbols: 0,
+            written: Stats::default(),
             write_time: Duration::ZERO,
             batches: 0,
             last_flush: None,
@@ -249,11 +258,9 @@ impl<'a> BatchWriter<'a> {
     fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if !self.buf.is_empty() {
             let t = Instant::now();
-            let (f, sy) = write_files(self.store, self.checkout, self.root, &self.buf)?;
+            self.written += write_files(self.store, self.checkout, self.root, &self.buf)?;
             self.write_time += t.elapsed();
             self.batches += 1;
-            self.files += f;
-            self.symbols += sy;
             self.buf.clear();
             self.last_flush = Some(Instant::now());
         }
@@ -263,23 +270,27 @@ impl<'a> BatchWriter<'a> {
 
 /// Write parsed files into the checkout. A file sent unparsed, for a version
 /// another checkout let go of since this pass loaded the repo's versions, is
-/// parsed and written again, so every file lands. Returns `(files, symbols)`.
+/// parsed and written again, so every file lands. Returns what it wrote.
 fn write_files(
     store: &mut Store,
     checkout: Checkout,
     root: &Path,
     files: &[crate::store::FileSymbols],
-) -> crate::store::Result<(usize, usize)> {
+) -> crate::store::Result<Stats> {
+    let stats = |w: &crate::store::Written| Stats {
+        files_seen: 0,
+        files_indexed: w.files,
+        files_parsed: w.versions,
+        symbols: w.symbols,
+    };
     let written = store.replace_files(checkout, files)?;
-    let (mut n, mut symbols) = (written.files, written.symbols);
+    let mut out = stats(&written);
     if !written.unmapped.is_empty() {
         let paths: Vec<_> = written.unmapped.iter().map(|p| root.join(p)).collect();
         let (parsed, _) = parse_files(root, &paths, None, None, &Versions::new());
-        let again = store.replace_files(checkout, &parsed)?;
-        n += again.files;
-        symbols += again.symbols;
+        out += stats(&store.replace_files(checkout, &parsed)?);
     }
-    Ok((n, symbols))
+    Ok(out)
 }
 
 /// Source-file candidates from `git ls-files` — read out of git's index, not by
@@ -579,7 +590,7 @@ fn run_index(
     }
     let mut active_span = crate::profile::span("index: active files");
     let (active_parsed, _) = parse_files(root, &active_to_parse, None, None, &versions);
-    let (mut files_indexed, mut symbols) = write_files(store, checkout, root, &active_parsed)?;
+    let mut stats = write_files(store, checkout, root, &active_parsed)?;
     active_span.note(|| format!("{} file(s)", active_parsed.len()));
     drop(active_span);
 
@@ -626,7 +637,7 @@ fn run_index(
     let skipped = std::sync::atomic::AtomicU64::new(0);
     let stream_start = Instant::now();
     let mut fused_span = crate::profile::span("index: walk+parse+write");
-    let (seen, completed, walk_files, walk_symbols, write_time, batches) = {
+    let (seen, completed, walked, write_time, batches) = {
         let mut writer = BatchWriter::new(&mut *store, checkout, root);
         // Demand first: a query's exact or prefix match — the only kind a warming
         // search answers with — lives in a file containing its leaf name, and
@@ -688,13 +699,17 @@ fn run_index(
         (
             seen,
             completed,
-            writer.files,
-            writer.symbols,
+            writer.written,
             writer.write_time,
             writer.batches,
         )
     };
-    fused_span.note(|| format!("{walk_files} file(s), {walk_symbols} symbol(s)"));
+    fused_span.note(|| {
+        format!(
+            "{} file(s), {} symbol(s)",
+            walked.files_indexed, walked.symbols
+        )
+    });
     drop(fused_span);
     // Both of these overlap the phase above rather than following it — the
     // workers parse while the consumer thread writes — so they are reported as
@@ -711,8 +726,8 @@ fn run_index(
         let elapsed = stream_start.elapsed();
         crate::trace!(
             "walk+parse+write {} file(s)/{} symbol(s) in {} ms ({} ms in store writes, {} parse jobs)",
-            walk_files,
-            walk_symbols,
+            walked.files_indexed,
+            walked.symbols,
             elapsed.as_millis(),
             write_time.as_millis(),
             parse_jobs(),
@@ -723,16 +738,11 @@ fn run_index(
         let rebuilt = store.maintain_name_index(checkout.repo)?;
         span.note(|| if rebuilt { "rebuilt" } else { "current" }.to_string());
     }
-    files_indexed += walk_files;
-    symbols += walk_symbols;
-    let stats = Stats {
-        files_seen: seen.len(),
-        files_indexed,
-        symbols,
-    };
+    stats += walked;
+    stats.files_seen = seen.len();
     if profiling {
         crate::profile::count("files seen", stats.files_seen as u64);
-        crate::profile::count("files parsed", stats.files_indexed as u64);
+        crate::profile::count("files parsed", stats.files_parsed as u64);
         crate::profile::count(
             "files skipped (mtime)",
             skipped.load(std::sync::atomic::Ordering::Relaxed),
@@ -1677,8 +1687,8 @@ mod tests {
             generated: false,
             symbols: None,
         };
-        let (files, symbols) = write_files(&mut store, checkout, &dir, &[unparsed]).unwrap();
-        assert_eq!((files, symbols), (1, 1));
+        let written = write_files(&mut store, checkout, &dir, &[unparsed]).unwrap();
+        assert_eq!((written.files_indexed, written.symbols), (1, 1));
         let rows = store.symbols_in_file(checkout.id, "w.rb").unwrap();
         assert_eq!(rows[0].name, "Widget");
         let _ = std::fs::remove_dir_all(&dir);

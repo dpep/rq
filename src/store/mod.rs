@@ -147,6 +147,8 @@ pub(crate) struct FileSymbols {
 pub(crate) struct Written {
     /// Files newly mapped into the checkout.
     pub files: usize,
+    /// Of those, the ones parsed: a version the repo didn't hold.
+    pub versions: usize,
     /// Symbols of the versions newly stored.
     pub symbols: usize,
     /// Files sent unparsed for a version another checkout let go of since:
@@ -657,6 +659,7 @@ impl Store {
                                 ])?;
                             }
                             written.symbols += symbols.len();
+                            written.versions += 1;
                             id
                         }
                     };
@@ -872,11 +875,18 @@ impl Store {
         )
     }
 
-    /// A repository's stored totals across its checkouts: (versions, symbols).
+    /// A repository's totals as `--status` shows them, summed over its
+    /// checkouts: (files, symbols). Versions would count a file once per edit
+    /// any checkout holds.
     pub(crate) fn repo_totals(&self, repository_id: i64) -> Result<(i64, i64)> {
         self.conn.query_row(
-            "SELECT (SELECT COUNT(*) FROM files WHERE repository_id = ?1),
-                    (SELECT COUNT(*) FROM symbols WHERE repository_id = ?1)",
+            "SELECT (SELECT COUNT(*) FROM checkout_files cf
+                       JOIN checkouts co ON co.id = cf.checkout_id
+                       WHERE co.repository_id = ?1),
+                    (SELECT COUNT(*) FROM checkout_files cf
+                       JOIN checkouts co ON co.id = cf.checkout_id
+                       JOIN symbols s ON s.file_id = cf.file_id
+                       WHERE co.repository_id = ?1)",
             params![repository_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )

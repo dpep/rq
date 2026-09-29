@@ -247,6 +247,7 @@ fn a_new_worktree_parses_nothing_its_siblings_hold() {
     assert!(ok, "{out}");
     let index = json(&out);
     assert_eq!(index["files"], 2, "{out}");
+    assert_eq!(index["files_added"], 0, "nothing parsed: {out}");
     assert_eq!(index["symbols_added"], 0, "nothing parsed: {out}");
     assert_eq!(index["root"], c.to_string_lossy().as_ref(), "{out}");
     assert_eq!(names(&hits(&db, &c, "old_name", &[])), ["old_name"]);
@@ -302,11 +303,20 @@ fn status_and_drop_name_each_checkout() {
     assert_eq!(json(&out).as_array().map(Vec::len), Some(2), "{out}");
     assert_each_reads_its_own(&db, &a, &b);
 
-    // dropping the repo by name drops every checkout of it
+    // dropping the repo by name drops every checkout of it, counted as
+    // `--status` counted them
     let (ok, out) = rq(&db, &a, &["--drop", "github.com/acme/widgets", "--json"]);
     assert!(ok, "{out}");
+    assert_eq!(json(&out)["files"], 4, "{out}");
     let (_, out) = rq(&db, &a, &["--status", "--json"]);
     assert_eq!(json(&out).as_array().map(Vec::len), Some(0), "{out}");
+    // nothing left to drop: `repo` is still an identity, not a path
+    let (ok, out) = rq(&db, &a, &["--drop", "--json"]);
+    assert!(ok, "{out}");
+    let dropped = json(&out);
+    assert_eq!(dropped["dropped"], false, "{out}");
+    assert_eq!(dropped["repo"], "github.com/acme/widgets", "{out}");
+    assert_eq!(dropped["root"], a.to_string_lossy().as_ref(), "{out}");
 
     let _ = fs::remove_dir_all(&base);
 }

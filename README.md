@@ -53,7 +53,7 @@ rq Scope::name              # scope-aware: only the name defined inside Scope (o
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
                             #   (prefix-matched; r=ruby+rust; aliases rb/rs/ts/js)
 rq <query> -l/--limit N     # cap the number of results (default 10; 0 = every match)
-rq <query> -a/--all-repos   # search every indexed repo (default: just the checkout you're in)
+rq <query> -a/--all-repos   # search every indexed checkout (default: just the one you're in)
 rq <query> --anchor F:LINE  # rank as if asked from that line (F:LINE[:COL])
 rq <query> --show           # print the definition's source (confident match only)
 rq <query> -o/--open        # open the best match in your editor
@@ -232,12 +232,15 @@ the next query continues; or `unindexed` for a checkout rq knows but holds
 nothing for, such as a repo's other worktrees after an upgrade, until a search
 there indexes it. A checkout deleted from disk is forgotten, and doesn't
 appear. `files` and `symbols` count what the checkout holds so far. A dropped checkout is gone from `--status` until a query or `--index`
-starts rebuilding it, and then reads `warming`. `rq --index --json` emits this
-run's counts (`files_added`, `symbols_added` — a file whose content a sibling
-checkout already stored is added without new symbols) plus the checkout's
-totals and `root`. `rq --drop` inside a checkout drops that checkout; `rq --drop
-IDENTITY` drops the repo with every checkout of it. `--json` reports what it
-removed (`repo`, `root` for a checkout, `files`, `symbols`, `dropped`).
+starts rebuilding it, and then reads `warming`. `rq --index --json` emits what
+this run parsed (`files_added`, `symbols_added` — a file whose content a
+sibling checkout already stored is parsed by neither, so a new worktree often
+adds nothing) plus the checkout's totals and `root`. `rq --drop` inside a
+checkout drops that checkout; `rq --drop IDENTITY` drops the repo with every
+checkout of it. `--json` reports what it removed (`repo`, `root` for a
+checkout, and `files` and `symbols` as `--status` counted them, summed over
+the checkouts for a repo) and `dropped`; `repo` is always an identity, even
+when there was nothing to drop.
 Single-result commands emit one object.
 
 These commands exit `0` whenever they ran, including when there's nothing to
@@ -300,7 +303,7 @@ src/cli/mod.rs:1873  method store · BranchRefresh
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the checkout you're in by default,
   so each worktree answers from its own branch (`-a`/`--all-repos` to search
-  every indexed repo)
+  every indexed checkout)
 - **recency** — symbols in recently edited or committed files
 - **branch** — on a feature branch, files you're changing vs the trunk (and
   their directory neighbors) — where you're most likely working
