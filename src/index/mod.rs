@@ -1167,6 +1167,9 @@ pub(crate) enum Refresh {
     Unchanged,
     /// File changed; its symbols were re-extracted.
     Updated,
+    /// Gone from a root that's there (a branch switch deleted it): kept in the
+    /// index all the same, for a pass to reconcile, but no answer now.
+    Missing,
 }
 
 /// Whether `root` is inside a git work tree. Implicit (opportunistic) indexing
@@ -1509,6 +1512,9 @@ pub(crate) fn refresh_file(
     }
     let source = match std::fs::read_to_string(&path) {
         Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && root.is_dir() => {
+            return Ok(Refresh::Missing);
+        }
         Err(_) => return Ok(Refresh::Unchanged), // unreadable now — leave it, don't forget
     };
     let hash = content_hash(&source);

@@ -1058,8 +1058,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let interrupted = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
 
     // Staleness: revalidate the files behind the top hits; re-rank once if changed.
+    let mut gone = Vec::new();
     if !hits.is_empty()
-        && revalidate_top(store, &hits)
+        && revalidate_top(store, &hits, &mut gone)
         && let Ok(m) = scope(current).search(store, query, current, &ctx, rank_limit)
     {
         total = m.total;
@@ -1071,18 +1072,18 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // failed read, and the warm the switch sets off reconciles the index.
     let before = hits.len();
     hits.retain(|h| {
-        h.root.as_deref().is_none_or(|r| {
-            let root = std::path::Path::new(r);
-            !root.is_dir() || root.join(&h.file).exists()
-        })
+        !gone
+            .iter()
+            .any(|(root, file)| h.root.as_deref() == Some(root) && h.file == *file)
     });
     total = total.saturating_sub(before - hits.len());
 
-    // Nothing strong, and the worktree may have moved since its index: with
-    // the warm in-process (detach off), settle it now and ask again, so a
-    // definition saved a moment ago answers this query rather than the next.
+    // A miss, and the worktree may have moved since its index: with the warm
+    // in-process (detach off), settle it now, as the miss path would before
+    // exiting anyway, and ask again, so a definition saved a moment ago
+    // answers this query rather than the next. A hit doesn't wait on it.
     let mut staleness = staleness;
-    if !hits.iter().any(strong)
+    if hits.is_empty()
         && matches!(staleness, Some(Staleness::Running(_)))
         && settle_warm(
             store,
@@ -2859,9 +2860,14 @@ fn repo_relative(root: &std::path::Path, cwd: &std::path::Path, file: &str) -> S
 }
 
 /// Revalidate the files behind the top hits against disk — each in the
-/// checkout it was read from — refreshing any that changed. Returns true if
-/// anything changed (so the caller re-runs the search).
-fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
+/// checkout it was read from — refreshing any that changed, and noting in
+/// `gone` any deleted since. Returns true if anything changed (so the caller
+/// re-runs the search).
+fn revalidate_top(
+    store: &mut Store,
+    hits: &[crate::search::Hit],
+    gone: &mut Vec<(String, String)>,
+) -> bool {
     use std::collections::HashSet;
     let mut seen = HashSet::new();
     let mut changed = false;
@@ -2875,10 +2881,10 @@ fn revalidate_top(store: &mut Store, hits: &[crate::search::Hit]) -> bool {
         let Some(checkout) = store.checkout(root).ok().flatten() else {
             continue; // a live row: nothing stored to refresh
         };
-        if let Ok(crate::index::Refresh::Updated) =
-            crate::index::refresh_file(store, checkout, std::path::Path::new(root), &hit.file)
-        {
-            changed = true;
+        match crate::index::refresh_file(store, checkout, std::path::Path::new(root), &hit.file) {
+            Ok(crate::index::Refresh::Updated) => changed = true,
+            Ok(crate::index::Refresh::Missing) => gone.push((root.to_string(), hit.file.clone())),
+            _ => {}
         }
     }
     changed

@@ -50,11 +50,12 @@ fn refresh_picks_up_edits_and_deletes() {
 
     // Delete the file. A search-time refresh is deliberately non-destructive — a
     // failed read isn't proof of deletion, so it leaves the entry rather than
-    // risk forgetting live data on a bad root — and Bar stays findable.
+    // risk forgetting live data on a bad root — and Bar stays in the index,
+    // reported missing for the caller to leave out of its answer.
     fs::remove_file(&file).unwrap();
     assert_eq!(
         index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
-        Refresh::Unchanged
+        Refresh::Missing
     );
     assert!(
         !search::search(&store, "Bar", None, None, &search::Context::default(), 5)
