@@ -9,7 +9,8 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
-Upgrading keeps each repo's index with its most recently registered checkout.
+Upgrading keeps each repo's index with one of its checkouts still on disk, the
+one you last searched in where rq can tell.
 Other worktrees and clones of the same remote re-index on their next search,
 parsing only the files that differ. An older rq can't read the upgraded
 database (a search fails with `no such column`); `rm` the database, or point

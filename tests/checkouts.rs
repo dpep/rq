@@ -366,3 +366,45 @@ fn all_repos_counts_each_definition_once_however_many_checkouts_hold_it() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn a_checkout_gone_from_disk_is_forgotten() {
+    let (base, db, [a, b, c]) = three_worktrees("gone");
+    // C, the newest, shares A's gadget.rb; then it's deleted without a word
+    assert!(rq(&db, &c, &["--index"]).0);
+    fs::remove_dir_all(&c).unwrap();
+    let elsewhere = base.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let root = |d: &Path| d.to_string_lossy().into_owned();
+
+    let found = hits(&db, &elsewhere, "old_name", &["-a"]);
+    assert_eq!(names(&found), ["old_name"], "{found:?}");
+    assert_eq!(found[0].2, root(&a), "read from a checkout that exists");
+
+    let (ok, out) = rq(&db, &elsewhere, &["--status", "--json"]);
+    assert!(ok, "{out}");
+    let rows = json(&out);
+    let roots: Vec<&str> = rows
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| r["root"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(roots, [root(&a), root(&b)], "{out}");
+
+    // the last checkout of a repo takes its name index with it
+    fs::remove_dir_all(&a).unwrap();
+    fs::remove_dir_all(&b).unwrap();
+    let (_, out) = rq(&db, &elsewhere, &["--status", "--json"]);
+    assert_eq!(json(&out).as_array().map(Vec::len), Some(0), "{out}");
+    assert!(hits(&db, &elsewhere, "old_name", &["-a"]).is_empty());
+    let (ok, out) = rq(
+        &db,
+        &elsewhere,
+        &["--drop", "github.com/acme/widgets", "--json"],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(json(&out)["dropped"], false, "nothing left to drop: {out}");
+
+    let _ = fs::remove_dir_all(&base);
+}

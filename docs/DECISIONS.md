@@ -2578,11 +2578,20 @@ adding a `checkout` synonym. `--drop` inside a checkout drops that checkout; giv
 repo identity, every checkout of it.
 
 *Migration (v23).* `files` is rebuilt as versions, keeping ids so symbols stay put. Each
-repo's rows are mapped to its newest checkout, which keeps its coverage; other checkouts
-start unindexed and warm on their next search, parsing only what differs from the
-versions already there. Per-tree caches keyed by repo are dropped rather than guessed at:
-the next sweep records them again. Versions of a repo with no checkout are unreachable and
-go.
+repo's rows are mapped to one checkout still on disk, the one a search last verified
+(the newest `warm_verified:` stamp) or else the newest registered, which keeps its
+coverage; other checkouts start unindexed and warm on their next search, parsing only
+what differs from the versions already there. The first cut took the newest registered
+checkout whether or not it existed: usually a short-lived agent worktree, often gone, so
+`-a` answered from a deleted tree and the live ones started empty. Per-tree caches keyed
+by repo are dropped rather than guessed at: the next sweep records them again. A repo
+with no checkout is unreachable and goes, name index too.
+
+*Dead checkouts.* A checkout whose root is gone from disk is forgotten before `-a`,
+`--status` or an index pass reads the others: a stat per checkout, a write only when one
+is gone. Only pruning on a sibling's index pass left `-a` answering from deleted trees
+(and preferring them, being newest) and `--status` calling them `complete`. When a
+repo's last checkout goes, the repo goes with it.
 
 *Measured.* Release builds against main (0.59.0), on a shared machine whose load is
 given per table. Two rails worktrees 300 commits apart (486 files differ) and a third

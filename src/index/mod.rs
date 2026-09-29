@@ -490,6 +490,19 @@ fn sweep_outcome(
     }
 }
 
+/// Forget every checkout whose root is gone from disk (a removed worktree, a
+/// moved repo), with the versions only it held. Runs before whatever reads
+/// other checkouts than the one asked from (`-a`, `--status`, an index pass):
+/// a stat per checkout, and a write only when one is gone. Best-effort: one a
+/// busy writer kept is pruned next time.
+pub(crate) fn prune_missing_checkouts(store: &Store) {
+    for root in store.all_checkout_roots().unwrap_or_default() {
+        if !Path::new(&root).exists() {
+            let _ = store.forget_checkout(&root);
+        }
+    }
+}
+
 /// The shared indexing core behind both the explicit (`index_under`) and
 /// opportunistic (`index_budgeted`) paths, run as a single fused pipeline: one
 /// walk thread streams candidate paths (cheap, stat-only, mtime-skipping
@@ -534,16 +547,7 @@ fn run_index(
     let checkout =
         store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
 
-    // Registering the current root guarantees a live checkout, so prune any
-    // sibling whose path has since vanished (the repo moved, a worktree was
-    // removed) — with the versions only it held. Runs here, on index/warm, not
-    // on every search: a dead checkout is never searched, so occasional
-    // cleanup when we're already writing checkouts is enough.
-    for stale in store.checkout_roots(repo_id).unwrap_or_default() {
-        if !Path::new(&stale).exists() {
-            let _ = store.forget_checkout(&stale);
-        }
-    }
+    prune_missing_checkouts(store);
 
     let stored = store.file_mtimes(checkout.id)?;
     let coverage_mark = store.coverage_mark(checkout.id)?;

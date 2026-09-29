@@ -830,6 +830,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         anchor,
     } = session;
     let cwd_is_git = *cwd_is_git;
+    // `-a` reads every checkout, so none may be one deleted from disk
+    if all_repos {
+        crate::index::prune_missing_checkouts(store);
+    }
 
     // Opportunistic indexing (Layer 5), time-bounded so the first query in a
     // large repo never blocks on a full walk. We may warm a git work tree (safe
@@ -3039,6 +3043,7 @@ fn cmd_status(out: Output) -> ExitCode {
             );
         }
     };
+    crate::index::prune_missing_checkouts(&store);
     let rows = match store.coverage_overview() {
         Ok(rows) => rows,
         Err(e) => return fail(out, Failure::Database, format_args!("rq --status: {e}")),

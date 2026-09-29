@@ -230,6 +230,7 @@ pub(crate) struct UsageRow {
 fn apply(conn: &Connection, step: &schema::Step) -> Result<()> {
     match *step {
         schema::Step::Sql(sql) => conn.execute_batch(sql),
+        schema::Step::Run(run) => run(conn),
         schema::Step::AddColumn {
             table,
             column,
@@ -878,9 +879,18 @@ impl Store {
         Ok(out)
     }
 
-    /// Forget the checkout at `root_path` — a stale binding (the repo moved) or
-    /// a `--drop`: its map, coverage and caches, and every version only it
-    /// mapped. The repository and its other checkouts are untouched.
+    /// Every checkout root recorded, of any repository.
+    pub(crate) fn all_checkout_roots(&self) -> Result<Vec<String>> {
+        self.conn
+            .prepare("SELECT root_path FROM checkouts ORDER BY id")?
+            .query_map([], |r| r.get(0))?
+            .collect()
+    }
+
+    /// Forget the checkout at `root_path` — a stale binding (the repo moved),
+    /// a root gone from disk, or a `--drop`: its map, coverage and caches, and
+    /// every version only it mapped. Its other checkouts are untouched; with
+    /// none left, the repository goes too.
     pub(crate) fn forget_checkout(&self, root_path: &str) -> Result<()> {
         let Some(checkout) = self.checkout(root_path)? else {
             return Ok(());
@@ -905,6 +915,7 @@ impl Store {
             tx.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
         }
         tx.execute("DELETE FROM checkouts WHERE id = ?1", params![checkout.id])?;
+        drop_if_unchecked_out(&tx, checkout.repo)?;
         tx.commit()
     }
 
@@ -931,16 +942,9 @@ impl Store {
         for root in self.checkout_roots(repository_id)? {
             self.forget_checkout(&root)?;
         }
+        // a repo no checkout held (an upgrade left it) never saw one go
         let tx = self.conn.transaction()?;
-        for sql in [
-            "DELETE FROM name_sigs WHERE repository_id = ?1",
-            "DELETE FROM name_index WHERE repository_id = ?1",
-            "DELETE FROM symbols WHERE repository_id = ?1",
-            "DELETE FROM files WHERE repository_id = ?1",
-            "DELETE FROM repositories WHERE id = ?1",
-        ] {
-            tx.execute(sql, params![repository_id])?;
-        }
+        drop_if_unchecked_out(&tx, repository_id)?;
         tx.commit()
     }
 
@@ -1286,6 +1290,27 @@ fn release(conn: &Connection, file_id: i64) -> Result<()> {
             .execute(params![file_id])?;
         conn.prepare_cached("DELETE FROM files WHERE id = ?1")?
             .execute(params![file_id])?;
+    }
+    Ok(())
+}
+
+/// A repository is the checkouts that hold it: once none do, its versions
+/// and name index are unreachable, so they go with the repository row.
+fn drop_if_unchecked_out(conn: &Connection, repository_id: i64) -> Result<()> {
+    let held: bool = conn
+        .prepare_cached("SELECT EXISTS (SELECT 1 FROM checkouts WHERE repository_id = ?1)")?
+        .query_row(params![repository_id], |r| r.get(0))?;
+    if held {
+        return Ok(());
+    }
+    for sql in [
+        "DELETE FROM name_sigs WHERE repository_id = ?1",
+        "DELETE FROM name_index WHERE repository_id = ?1",
+        "DELETE FROM symbols WHERE repository_id = ?1",
+        "DELETE FROM files WHERE repository_id = ?1",
+        "DELETE FROM repositories WHERE id = ?1",
+    ] {
+        conn.prepare_cached(sql)?.execute(params![repository_id])?;
     }
     Ok(())
 }
@@ -1806,7 +1831,7 @@ mod tests {
     }
 
     #[test]
-    fn v23_maps_each_repo_to_its_newest_checkout() {
+    fn v23_maps_each_repo_to_its_newest_checkout_when_none_is_on_disk() {
         // one repo, two checkouts (the older one stale), one repo with none
         let path = legacy(
             "migrate-v23",
@@ -1865,6 +1890,51 @@ mod tests {
         assert_eq!(found[0].root, "/new");
         drop(store);
         remove(&path);
+    }
+
+    #[test]
+    fn v23_maps_each_repo_to_a_checkout_still_on_disk() {
+        let dir = std::env::temp_dir().join(format!("rq-v23-roots-{}", std::process::id()));
+        let (verified, newer) = (dir.join("verified"), dir.join("newer"));
+        for d in [&verified, &newer] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (verified, newer) = (verified.display(), newer.display());
+        // repo 1: a live root verified last, a newer live one, a newest gone
+        // one; repo 2: a live root and a newer gone one; repo 3: no checkout
+        let path = legacy(
+            "migrate-v23-live",
+            22,
+            &format!(
+                "INSERT INTO repositories (id, identity, created_at, updated_at) \
+                   VALUES (1, 'r1', 0, 0), (2, 'r2', 0, 0), (3, 'r3', 0, 0); \
+                 INSERT INTO checkouts (id, repository_id, root_path) \
+                   VALUES (1, 1, '{verified}'), (2, 1, '{newer}'), (3, 1, '/gone/a'), \
+                          (4, 2, '{newer}/r2'), (5, 2, '/gone/b'); \
+                 INSERT INTO files (id, repository_id, path, language, content_hash) \
+                   VALUES (1, 1, 'w.rb', 'ruby', 'h'), (2, 2, 'x.rb', 'ruby', 'h'); \
+                 INSERT INTO name_index (repository_id, format, built) VALUES (3, 1, 0); \
+                 INSERT INTO meta (key, value) VALUES \
+                   ('warm_verified:{verified}', '200\nstamp'), \
+                   ('warm_verified:{newer}', '100\nstamp');"
+            ),
+        );
+        std::fs::create_dir_all(format!("{newer}/r2")).unwrap();
+        let store = Store::open(&path).unwrap();
+        let mapped: Vec<(i64, i64)> = store
+            .conn
+            .prepare("SELECT file_id, checkout_id FROM checkout_files ORDER BY file_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(mapped, [(1, 1), (2, 4)]);
+        assert_eq!(store.repository_id("r3").unwrap(), None, "held by nothing");
+        assert_eq!(count(&store, "name_index"), 0);
+        drop(store);
+        remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

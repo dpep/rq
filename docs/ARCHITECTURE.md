@@ -61,9 +61,10 @@ Identity answers two different questions, so it is modeled at two levels
   (indexed HEAD, edited files, warm lock and verdict, branch files) and its
   git-aware ranking. A search is scoped to the checkout it runs in, so two
   worktrees on different branches each answer from their own files. A checkout
-  whose path no longer exists is pruned when a sibling is next indexed/warmed
-  (not on every search — a dead checkout is never searched), with the versions
-  only it held.
+  whose path no longer exists is pruned, with the versions only it held, before
+  anything reads checkouts other than the one asked from: `-a`, `--status` and
+  every index pass (a stat per checkout). A repository whose last checkout goes
+  goes with it, name index and all.
 
 The system is designed for **many** repositories and millions of symbols from
 day one. It never assumes a single repository.

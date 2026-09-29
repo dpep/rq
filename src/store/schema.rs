@@ -496,13 +496,53 @@ UPDATE files SET mtime = NULL, content_hash = ''
   WHERE language IN ('rust', 'go', 'python', 'typescript', 'javascript');
 "#;
 
+/// Which checkout v23 gives each repo's rows to, as the temp table
+/// `v23_target`: one whose root still exists — the one a search last verified
+/// (the newest `warm_verified:` stamp) when any was, else the newest
+/// registered. With none left on disk, the newest; the prune forgets it as it
+/// would any dead checkout. The newest alone was often a short-lived agent
+/// worktree, already gone, and its siblings started empty.
+pub(crate) fn v23_targets(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let checkouts: Vec<(i64, i64, String, Option<String>)> = conn
+        .prepare(
+            "SELECT c.id, c.repository_id, c.root_path, m.value FROM checkouts c \
+             LEFT JOIN meta m ON m.key = 'warm_verified:' || c.root_path",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    // best first: on disk, then last verified, then newest
+    let rank = |(id, _, root, verified): &(i64, i64, String, Option<String>)| {
+        let verified_at: Option<i64> = verified
+            .as_deref()
+            .and_then(|v| v.split_once('\n')?.0.parse().ok());
+        (std::path::Path::new(root).exists(), verified_at, *id)
+    };
+    let mut best: std::collections::HashMap<i64, &(i64, i64, String, Option<String>)> =
+        std::collections::HashMap::new();
+    for c in &checkouts {
+        let slot = best.entry(c.1).or_insert(c);
+        if rank(c) > rank(slot) {
+            *slot = c;
+        }
+    }
+    conn.execute_batch(
+        "CREATE TEMP TABLE v23_target (repository_id INTEGER PRIMARY KEY, checkout_id INTEGER)",
+    )?;
+    let mut insert = conn.prepare("INSERT INTO v23_target VALUES (?1, ?2)")?;
+    for (repo, c) in best {
+        insert.execute([repo, c.0])?;
+    }
+    Ok(())
+}
+
 /// Migration v22 -> v23: the checkout becomes the index unit (DECISIONS D50).
 /// `files` is rebuilt as versions, ids kept so symbols stay put, and each
-/// repo's rows are mapped to its newest checkout, which keeps its coverage;
-/// other checkouts index on their next search, sharing what's unchanged.
-/// Versions no checkout can map go. Per-repo caches in `meta` are dropped: the
-/// next sweep records them per checkout. Tables are rebuilt SQLite's way —
-/// create, copy, drop, rename — which needs foreign keys off (`Store::init`).
+/// repo's rows are mapped to the checkout [`v23_targets`] picks, which keeps
+/// its coverage; other checkouts index on their next search, sharing what's
+/// unchanged. A repo no checkout holds goes, versions and name index too.
+/// Per-repo caches in `meta` are dropped: the next sweep records them per
+/// checkout. Tables are rebuilt SQLite's way — create, copy, drop, rename —
+/// which needs foreign keys off (`Store::init`).
 pub(crate) const MIGRATION_V23: &str = r#"
 CREATE TABLE files_v23 (
   id INTEGER PRIMARY KEY,
@@ -527,7 +567,7 @@ INSERT INTO files_v23 (id, repository_id, path, language, content_hash, generate
   SELECT id, repository_id, path, language, COALESCE(content_hash, ''), generated
   FROM files WHERE repository_id IN (SELECT repository_id FROM checkouts);
 INSERT INTO checkout_files (checkout_id, path, file_id, mtime, git_ts)
-  SELECT (SELECT MAX(c.id) FROM checkouts c WHERE c.repository_id = f.repository_id),
+  SELECT (SELECT t.checkout_id FROM v23_target t WHERE t.repository_id = f.repository_id),
          f.path, f.id, f.mtime, f.git_ts
   FROM files f WHERE f.repository_id IN (SELECT repository_id FROM checkouts);
 DROP TABLE files;
@@ -545,7 +585,7 @@ CREATE TABLE coverage_v23 (
   UNIQUE(checkout_id, scope)
 );
 INSERT INTO coverage_v23 (checkout_id, scope, files_seen, files_indexed, status, last_indexed_at)
-  SELECT (SELECT MAX(c.id) FROM checkouts c WHERE c.repository_id = v.repository_id),
+  SELECT (SELECT t.checkout_id FROM v23_target t WHERE t.repository_id = v.repository_id),
          v.scope, v.files_seen, v.files_indexed, v.status, v.last_indexed_at
   FROM coverage v WHERE v.repository_id IN (SELECT repository_id FROM checkouts);
 DROP TABLE coverage;
@@ -553,11 +593,17 @@ ALTER TABLE coverage_v23 RENAME TO coverage;
 
 DELETE FROM meta WHERE key LIKE 'head:%' OR key LIKE 'edited:%' OR key LIKE 'git_ts_head:%'
   OR key LIKE 'warm_lock:%' OR key LIKE 'warm_verified:%' OR key LIKE 'branch_files:%';
+DROP TABLE v23_target;
+DELETE FROM name_sigs WHERE repository_id NOT IN (SELECT repository_id FROM checkouts);
+DELETE FROM name_index WHERE repository_id NOT IN (SELECT repository_id FROM checkouts);
+DELETE FROM repositories WHERE id NOT IN (SELECT repository_id FROM checkouts);
 "#;
 
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
+    /// What SQL alone can't decide, such as whether a root is still on disk.
+    Run(fn(&rusqlite::Connection) -> rusqlite::Result<()>),
     /// `ALTER TABLE … ADD COLUMN`, skipped when the column is already there.
     /// SQL can't say `IF NOT EXISTS` here, and a step can run twice: rq before
     /// 0.54.1 reset `user_version` to its own when it opened a newer database.
@@ -570,7 +616,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 24] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 25] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -594,5 +640,6 @@ pub(crate) const MIGRATIONS: [(i64, Step); 24] = [
     (21, MIGRATION_V21),
     (21, Step::Sql(MIGRATION_V21_REQUEUE)),
     (22, Step::Sql(MIGRATION_V22)),
+    (23, Step::Run(v23_targets)),
     (23, Step::Sql(MIGRATION_V23)),
 ];
