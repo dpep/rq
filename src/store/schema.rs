@@ -6,10 +6,132 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 22;
+pub(crate) const VERSION: i64 = 23;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
+CREATE TABLE repositories (
+  id INTEGER PRIMARY KEY,
+  identity TEXT UNIQUE NOT NULL,
+  default_branch TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE checkouts (
+  id INTEGER PRIMARY KEY,
+  repository_id INTEGER NOT NULL REFERENCES repositories(id),
+  root_path TEXT NOT NULL UNIQUE,
+  current_branch TEXT
+);
+
+-- a version of a file: its path and content in a repo, stored once however
+-- many checkouts hold it. Extraction reads the path as well as the bytes, so
+-- both are the key. A requeue migration must keep hashes distinct per path
+-- (`'stale:' || content_hash`), not blank them: two checkouts may hold two.
+CREATE TABLE files (
+  id INTEGER PRIMARY KEY,
+  repository_id INTEGER NOT NULL REFERENCES repositories(id),
+  path TEXT NOT NULL,
+  language TEXT,
+  content_hash TEXT NOT NULL,
+  generated INTEGER NOT NULL DEFAULT 0, -- declares itself generated (a header marker)
+  UNIQUE(repository_id, path, content_hash)
+);
+
+-- which version each checkout has at each path. A version no row maps is
+-- deleted with the row that let go of it.
+CREATE TABLE checkout_files (
+  checkout_id INTEGER NOT NULL REFERENCES checkouts(id),
+  path TEXT NOT NULL,
+  file_id INTEGER NOT NULL REFERENCES files(id),
+  mtime INTEGER,                     -- last-modified time, unix *nanoseconds*
+                                     -- (git-style racy-edit protection)
+  git_ts INTEGER,                    -- last commit touching the path, on this
+                                     -- checkout's history
+  PRIMARY KEY (checkout_id, path)
+) WITHOUT ROWID;
+CREATE INDEX idx_checkout_files_file ON checkout_files(file_id, checkout_id);
+
+CREATE TABLE symbols (
+  id INTEGER PRIMARY KEY,
+  repository_id INTEGER NOT NULL REFERENCES repositories(id),
+  file_id INTEGER NOT NULL REFERENCES files(id),
+  name TEXT NOT NULL,
+  name_lower TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  language TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  end_line INTEGER,                  -- 1-based last line of the definition body
+  parent TEXT,
+  visibility TEXT,                   -- public|crate|private|protected|local;
+                                     -- NULL when unknown (pre-v9 rows
+                                     -- backfill lazily)
+  stub INTEGER NOT NULL DEFAULT 0    -- declares what is defined elsewhere
+);
+CREATE INDEX idx_symbols_file ON symbols(file_id);
+CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
+
+CREATE TABLE coverage (
+  id INTEGER PRIMARY KEY,
+  checkout_id INTEGER NOT NULL REFERENCES checkouts(id),
+  scope TEXT NOT NULL DEFAULT 'full',
+  files_seen INTEGER,
+  files_indexed INTEGER,
+  status TEXT NOT NULL,
+  last_indexed_at INTEGER,
+  UNIQUE(checkout_id, scope)
+);
+
+-- usage counters, one row per (day, caller, flag set), incremented on write.
+-- The only record of how rq is actually used. Read by `--usage`, never by
+-- ranking.
+CREATE TABLE usage_daily (
+  day TEXT NOT NULL,                 -- local date, YYYY-MM-DD
+  source TEXT NOT NULL,
+  flags TEXT NOT NULL,
+  searches INTEGER NOT NULL,
+  misses INTEGER NOT NULL,           -- answered nothing, against a ready index
+  warming INTEGER NOT NULL,          -- answered nothing because it wasn't ready
+  on_complete INTEGER NOT NULL,      -- ran against a fully indexed repo
+  live INTEGER NOT NULL DEFAULT 0,   -- answered from a live scan, not the index
+  PRIMARY KEY (day, source, flags)
+);
+
+-- the name index (docs/NAME_INDEX.md): each repo's distinct symbol names and
+-- file paths as fixed-size signatures, in append-order chunks. `keys` is each
+-- key's end offset (u32), then the keys' bytes.
+CREATE TABLE name_sigs (
+  repository_id INTEGER NOT NULL,
+  kind INTEGER NOT NULL,             -- 0 symbol names, 1 file paths (by stem)
+  chunk INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  sigs BLOB NOT NULL,
+  keys BLOB NOT NULL,
+  PRIMARY KEY (repository_id, kind, chunk)
+);
+
+-- a repo's index is read only while it's current: built under this format,
+-- and maintained since; -1 while a cold pass suspends it. `built` is how many
+-- names the last rebuild wrote.
+CREATE TABLE name_index (
+  repository_id INTEGER PRIMARY KEY,
+  format INTEGER NOT NULL,
+  built INTEGER NOT NULL
+);
+
+-- small key/value store (per checkout: indexed HEAD, edited files, warm
+-- lock and verdict, branch-file cache)
+CREATE TABLE meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"#;
+
+/// The schema as v22 left it: migration tests lay it down to stand in for an
+/// older database, since the steps before v23 only ever add to it.
+#[cfg(test)]
+pub(crate) const SCHEMA_V22: &str = r#"
 CREATE TABLE repositories (
   id INTEGER PRIMARY KEY,
   identity TEXT UNIQUE NOT NULL,
@@ -373,6 +495,65 @@ UPDATE files SET mtime = NULL, content_hash = ''
   WHERE language IN ('rust', 'go', 'python', 'typescript', 'javascript');
 "#;
 
+/// Migration v22 -> v23: the checkout becomes the index unit (DECISIONS D50).
+/// `files` is rebuilt as versions, ids kept so symbols stay put, and each
+/// repo's rows are mapped to its newest checkout, which keeps its coverage;
+/// other checkouts index on their next search, sharing what's unchanged.
+/// Versions no checkout can map go. Per-repo caches in `meta` are dropped: the
+/// next sweep records them per checkout. Tables are rebuilt SQLite's way —
+/// create, copy, drop, rename — which needs foreign keys off (`Store::init`).
+pub(crate) const MIGRATION_V23: &str = r#"
+CREATE TABLE files_v23 (
+  id INTEGER PRIMARY KEY,
+  repository_id INTEGER NOT NULL REFERENCES repositories(id),
+  path TEXT NOT NULL,
+  language TEXT,
+  content_hash TEXT NOT NULL,
+  generated INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(repository_id, path, content_hash)
+);
+CREATE TABLE checkout_files (
+  checkout_id INTEGER NOT NULL REFERENCES checkouts(id),
+  path TEXT NOT NULL,
+  file_id INTEGER NOT NULL REFERENCES files(id),
+  mtime INTEGER,
+  git_ts INTEGER,
+  PRIMARY KEY (checkout_id, path)
+) WITHOUT ROWID;
+
+DELETE FROM symbols WHERE repository_id NOT IN (SELECT repository_id FROM checkouts);
+INSERT INTO files_v23 (id, repository_id, path, language, content_hash, generated)
+  SELECT id, repository_id, path, language, COALESCE(content_hash, ''), generated
+  FROM files WHERE repository_id IN (SELECT repository_id FROM checkouts);
+INSERT INTO checkout_files (checkout_id, path, file_id, mtime, git_ts)
+  SELECT (SELECT MAX(c.id) FROM checkouts c WHERE c.repository_id = f.repository_id),
+         f.path, f.id, f.mtime, f.git_ts
+  FROM files f WHERE f.repository_id IN (SELECT repository_id FROM checkouts);
+DROP TABLE files;
+ALTER TABLE files_v23 RENAME TO files;
+CREATE INDEX idx_checkout_files_file ON checkout_files(file_id, checkout_id);
+
+CREATE TABLE coverage_v23 (
+  id INTEGER PRIMARY KEY,
+  checkout_id INTEGER NOT NULL REFERENCES checkouts(id),
+  scope TEXT NOT NULL DEFAULT 'full',
+  files_seen INTEGER,
+  files_indexed INTEGER,
+  status TEXT NOT NULL,
+  last_indexed_at INTEGER,
+  UNIQUE(checkout_id, scope)
+);
+INSERT INTO coverage_v23 (checkout_id, scope, files_seen, files_indexed, status, last_indexed_at)
+  SELECT (SELECT MAX(c.id) FROM checkouts c WHERE c.repository_id = v.repository_id),
+         v.scope, v.files_seen, v.files_indexed, v.status, v.last_indexed_at
+  FROM coverage v WHERE v.repository_id IN (SELECT repository_id FROM checkouts);
+DROP TABLE coverage;
+ALTER TABLE coverage_v23 RENAME TO coverage;
+
+DELETE FROM meta WHERE key LIKE 'head:%' OR key LIKE 'edited:%' OR key LIKE 'git_ts_head:%'
+  OR key LIKE 'warm_lock:%' OR key LIKE 'warm_verified:%' OR key LIKE 'branch_files:%';
+"#;
+
 /// One rung of the migration ladder.
 pub(crate) enum Step {
     Sql(&'static str),
@@ -388,7 +569,7 @@ pub(crate) enum Step {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 23] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 24] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -412,4 +593,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 23] = [
     (21, MIGRATION_V21),
     (21, Step::Sql(MIGRATION_V21_REQUEUE)),
     (22, Step::Sql(MIGRATION_V22)),
+    (23, Step::Sql(MIGRATION_V23)),
 ];

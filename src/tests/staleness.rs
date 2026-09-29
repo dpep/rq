@@ -23,7 +23,7 @@ fn refresh_picks_up_edits_and_deletes() {
     let mut store = Store::open_in_memory().unwrap();
     index::index_path(&mut store, &dir).unwrap();
     let repo = store
-        .repository_id(&index::detect_identity(&dir).to_string())
+        .checkout(&dir.canonicalize().unwrap().to_string_lossy())
         .unwrap()
         .unwrap();
 
@@ -135,7 +135,7 @@ fn refresh_remembers_a_touch_and_still_sees_the_next_edit() {
     let mut store = Store::open_in_memory().unwrap();
     index::index_path(&mut store, &dir).unwrap();
     let repo = store
-        .repository_id(&index::detect_identity(&dir).to_string())
+        .checkout(&dir.canonicalize().unwrap().to_string_lossy())
         .unwrap()
         .unwrap();
 
@@ -145,7 +145,7 @@ fn refresh_remembers_a_touch_and_still_sees_the_next_edit() {
         index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
         Refresh::Unchanged
     );
-    let stored = store.file_mtime(repo, "a.rb").unwrap().flatten();
+    let stored = store.file_mtime(repo.id, "a.rb").unwrap().flatten();
     let expected = touched
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

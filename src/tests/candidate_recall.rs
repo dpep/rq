@@ -23,9 +23,7 @@ fn sym(name: &str) -> Symbol {
 #[test]
 fn an_exact_match_survives_a_fuzzy_recall_that_fills_the_cap() {
     let mut store = Store::open_in_memory().unwrap();
-    let repo = store
-        .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
-        .unwrap();
+    let repo = store.test_checkout(&RepoIdentity::local("/tmp/x"));
 
     // 50 fuzzy matches for "mango", plus the exact target. With a tiny cap,
     // fuzzy recall alone would keep 5 of the 51; the exact layer must still
@@ -37,7 +35,7 @@ fn an_exact_match_survives_a_fuzzy_recall_that_fills_the_cap() {
         .unwrap();
 
     let cands = store
-        .search_candidates("mango", 5, true, None, &Probe::new("mango"))
+        .search_candidates("mango", 5, true, None, None, &Probe::new("mango"))
         .unwrap();
     assert!(
         cands.iter().any(|c| c.name == "mango"),
@@ -49,9 +47,7 @@ fn an_exact_match_survives_a_fuzzy_recall_that_fills_the_cap() {
 #[test]
 fn a_strong_match_short_circuits_fuzzy_recall() {
     let mut store = Store::open_in_memory().unwrap();
-    let repo = store
-        .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
-        .unwrap();
+    let repo = store.test_checkout(&RepoIdentity::local("/tmp/x"));
 
     // "User" is a prefix match for "user"; "Peruser" matches only fuzzily.
     // When a strong match exists fuzzy recall is skipped — the relevance gate
@@ -70,7 +66,7 @@ fn a_strong_match_short_circuits_fuzzy_recall() {
 
     let probe = Probe::new("user");
     let strong_only = store
-        .search_candidates("user", 50, false, None, &probe)
+        .search_candidates("user", 50, false, None, None, &probe)
         .unwrap();
     assert!(strong_only.iter().any(|c| c.name == "User"), "prefix kept");
     assert!(
@@ -79,7 +75,7 @@ fn a_strong_match_short_circuits_fuzzy_recall() {
     );
 
     let forced = store
-        .search_candidates("user", 50, true, None, &probe)
+        .search_candidates("user", 50, true, None, None, &probe)
         .unwrap();
     assert!(
         forced.iter().any(|c| c.name == "Peruser"),
@@ -90,12 +86,8 @@ fn a_strong_match_short_circuits_fuzzy_recall() {
 #[test]
 fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
     let mut store = Store::open_in_memory().unwrap();
-    let here = store
-        .upsert_repository(&RepoIdentity::local("/tmp/here"), None)
-        .unwrap();
-    let other = store
-        .upsert_repository(&RepoIdentity::local("/tmp/other"), None)
-        .unwrap();
+    let here = store.test_checkout(&RepoIdentity::local("/tmp/here"));
+    let other = store.test_checkout(&RepoIdentity::local("/tmp/other"));
 
     // The other repo floods every layer; with the cap shared across repos,
     // this repo's fuzzy match would never be reached.
@@ -110,7 +102,7 @@ fn a_repo_scoped_cap_is_filled_by_that_repo_alone() {
         .unwrap();
 
     let cands = store
-        .search_candidates("widget", 5, false, Some(here), &Probe::new("widget"))
+        .search_candidates("widget", 5, false, Some(here), None, &Probe::new("widget"))
         .unwrap();
     let names: Vec<&str> = cands.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(

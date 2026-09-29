@@ -23,9 +23,7 @@ fn def(name: &str, kind: Kind, file: &str, lines: u32) -> (String, Symbol) {
 
 fn store_with(defs: Vec<(String, Symbol)>) -> Store {
     let mut store = Store::open_in_memory().unwrap();
-    let repo = store
-        .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
-        .unwrap();
+    let repo = store.test_checkout(&RepoIdentity::local("/tmp/x"));
     for (file, sym) in defs {
         store
             .replace_file_symbols(repo, &file, "ruby", None, "h", &[sym])
@@ -78,9 +76,7 @@ fn a_match_past_the_cap_of_names_that_cannot_match_is_still_found() {
     // More names sharing the query's substrings than the candidate cap, none
     // holding its letters in order, all written before the one that does
     let mut store = Store::open_in_memory().unwrap();
-    let repo = store
-        .upsert_repository(&RepoIdentity::local("/tmp/x"), None)
-        .unwrap();
+    let repo = store.test_checkout(&RepoIdentity::local("/tmp/x"));
     let decoys: Vec<Symbol> = (0..8_100)
         .map(|i| {
             def(

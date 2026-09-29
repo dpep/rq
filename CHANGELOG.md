@@ -7,6 +7,30 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+Upgrading keeps each repo's index with its most recently registered checkout.
+Other worktrees and clones of the same remote re-index on their next search,
+parsing only the files that differ.
+
+### Fixed
+- **Worktrees, clones and detached checkouts of one repo no longer overwrite
+  each other.** They share a remote identity, and the index kept one row per
+  path, so the last checkout indexed won: a method added on branch A could be a
+  definitive miss from A once B indexed. Each checkout now answers from its own
+  files, and has its own coverage, warm state and branch boost (DECISIONS D50).
+
+### Changed
+- **A file version is stored once per repo.** Identical files across checkouts
+  share one parse and one set of rows, so a new worktree indexes in the time it
+  takes to read and hash its files.
+- **`--all-repos` spans every checkout.** A definition several checkouts hold,
+  at the same path and line, is one result, taken from the checkout you're in.
+- **`--status` lists each checkout**, with its `root` in JSON beside `repo`;
+  `--index` reports the `root` it indexed.
+- **`--drop` inside a checkout drops only that checkout.** `--drop <repo>`
+  still drops the repo, now with every checkout of it.
+
 ## 0.59.0 — 2026-09-28
 
 Upgrading re-reads every indexed Rust, Go, Python, TypeScript and JavaScript

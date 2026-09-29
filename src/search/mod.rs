@@ -19,17 +19,13 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::core::now_unix;
-use crate::store::{Store, SymbolRow};
+use crate::store::{Checkout, Store, SymbolRow};
 
 /// Per-layer cap on candidates pulled from the store before ranking. Exact and
 /// prefix matches are guaranteed in full (see `Store::search_candidates`); this
 /// bounds the rows fuzzy recall fetches from the name index's matches.
 /// Scoring is linear and cheap, so this sits well under the latency budget.
 const CANDIDATE_LIMIT: usize = 8000;
-
-/// Sentinel repository id for live-scan (Layer 4) results — distinct from any
-/// real row id, and treated as "the current repo" so the boost applies.
-const LIVE_REPO_ID: i64 = -1;
 
 /// Boost for a symbol whose file you're actively changing on this branch.
 const BRANCH_FILE_BOOST: f64 = 180.0;
@@ -104,9 +100,9 @@ const MIN_PROXIMITY: f64 = 5.0;
 /// the file an agent is reading. Ranking context only — it never filters.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Anchor {
-    /// Identity of the repo the anchor's file belongs to.
-    identity: String,
-    /// The anchor's file, relative to that repo's root.
+    /// Root of the checkout the anchor's file belongs to.
+    root: String,
+    /// The anchor's file, relative to that root.
     file: String,
     /// Lowercased scope chain of the innermost definition enclosing the
     /// anchor's line (`Foo::Widget#save` → `[foo, widget, save]`); empty when
@@ -117,7 +113,7 @@ pub(crate) struct Anchor {
 impl Anchor {
     /// An anchor at `line` of `file`, given that file's definitions as they
     /// stand now. Language-blind: only spans and recorded parents are read.
-    pub(crate) fn new(identity: String, file: String, line: i64, defs: &[SymbolRow]) -> Self {
+    pub(crate) fn new(root: String, file: String, line: i64, defs: &[SymbolRow]) -> Self {
         let innermost = defs
             .iter()
             .filter(|d| d.line <= line && line <= d.end_line.unwrap_or(d.line))
@@ -127,11 +123,7 @@ impl Anchor {
             scope.push(d.name.to_ascii_lowercase());
             scope
         });
-        Anchor {
-            identity,
-            file,
-            scope,
-        }
+        Anchor { root, file, scope }
     }
 
     /// The candidate is defined inside a scope enclosing the anchor — its parent
@@ -151,9 +143,9 @@ impl Anchor {
     }
 
     /// Same file, then same directory, decaying with each directory step
-    /// between the two. Only within the anchor's own repo.
-    fn proximity(&self, identity: &str, file: &str) -> f64 {
-        if identity != self.identity {
+    /// between the two. Only within the anchor's own checkout.
+    fn proximity(&self, root: &str, file: &str) -> f64 {
+        if root != self.root {
             return 0.0;
         }
         if file == self.file {
@@ -182,8 +174,8 @@ impl Context {
             self.anchor.as_ref().map_or((0.0, 0.0, false), |a| {
                 (
                     a.enclosing(c.parent.as_deref()),
-                    a.proximity(&c.repo_identity, &c.file),
-                    a.identity == c.repo_identity && a.file == c.file,
+                    a.proximity(&c.root, &c.file),
+                    a.root == c.root && a.file == c.file,
                 )
             });
         Boosts {
@@ -308,21 +300,20 @@ impl std::ops::Deref for Matches {
 }
 
 /// Search the index for `query`, returning up to `limit` ranked hits.
-/// `current_repo_id` (if any) boosts results from the repository you're in;
-/// `only_repo` (if any) restricts results to that repository, so a search inside
-/// a repo answers about *that* repo rather than leaking others you've indexed;
+/// `current` (a checkout id, if any) boosts results from the checkout you're
+/// in; `only` (if any) restricts results to that checkout, so a search inside
+/// a repo answers about *that* tree rather than leaking others you've indexed;
 /// `ctx` carries where the search is asked from: the branch's changed files
 /// and an optional anchor position.
 pub(crate) fn search(
     store: &Store,
     query: &str,
-    current_repo_id: Option<i64>,
-    only_repo: Option<i64>,
+    current: Option<i64>,
+    only: Option<Checkout>,
     ctx: &Context,
     limit: usize,
 ) -> crate::store::Result<Matches> {
-    let run =
-        |q: &str, typo: bool| search_query(store, q, current_repo_id, only_repo, ctx, limit, typo);
+    let run = |q: &str, typo: bool| search_query(store, q, current, only, ctx, limit, typo);
     if !query.contains('.') {
         return run(query, true);
     }
@@ -405,8 +396,8 @@ fn found(m: &Matches) -> bool {
 fn search_query(
     store: &Store,
     query: &str,
-    current_repo_id: Option<i64>,
-    only_repo: Option<i64>,
+    current: Option<i64>,
+    only: Option<Checkout>,
     ctx: &Context,
     limit: usize,
     // retry as a near miss when nothing matches outright
@@ -426,13 +417,14 @@ fn search_query(
     };
     let trace_on = crate::trace::enabled();
     let t = std::time::Instant::now();
-    // Repo scope: outside `--all-repos`, a search inside a repo returns only
-    // that repo's definitions — never another indexed repo's.
+    // Checkout scope: outside `--all-repos`, a search inside a repo returns
+    // only that checkout's definitions — never another indexed tree's.
     let mut candidates = store.search_candidates(
         recall,
         CANDIDATE_LIMIT,
         score::has_wildcard(leaf),
-        only_repo,
+        only,
+        current,
         &Probe::new(leaf),
     )?;
     // `Foo.new` runs a constructor the store knows by another name
@@ -442,7 +434,8 @@ fn search_query(
                 name,
                 CANDIDATE_LIMIT,
                 false,
-                only_repo,
+                only,
+                current,
                 &Probe::new(name),
             )?);
         }
@@ -463,7 +456,7 @@ fn search_query(
                 // recent commit (git_ts, seconds)
                 let recency = recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now);
                 let boosts = ctx.boosts(c, recency);
-                rank_one(query, c, current_repo_id, boosts, near_miss)
+                rank_one(query, c, current, boosts, near_miss)
             })
             .collect()
     };
@@ -543,14 +536,14 @@ fn search_query(
 pub(crate) fn scope_miss_owner(
     store: &Store,
     query: &str,
-    current_repo_id: Option<i64>,
-    only_repo: Option<i64>,
+    current: Option<i64>,
+    only: Option<Checkout>,
     ctx: &Context,
 ) -> Option<String> {
     let (leaf, qualifier) = score::parse_qualified(query);
     qualifier?;
     // a few, not one: an exact name under a test path can rank below a prefix
-    let bare = search(store, leaf, current_repo_id, only_repo, ctx, 10).ok()?;
+    let bare = search(store, leaf, current, only, ctx, 10).ok()?;
     let hit = bare
         .hits
         .iter()
@@ -600,19 +593,31 @@ pub(crate) fn live_search(
 ) -> LiveScan {
     let needle = prefilter.then_some(query.as_bytes());
     let identity = crate::index::detect_identity(root).to_string();
+    let root_str = root.to_string_lossy();
     let files = crate::index::scan(root, skip, deadline, needle);
     let scanned = files.len();
     let rows: Vec<SymbolRow> = files
         .into_iter()
         .flat_map(|fs| {
             let generated = fs.generated;
-            fs.symbols.into_iter().map(move |s| (s, generated))
+            fs.symbols
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |s| (s, generated))
         })
-        .map(|(s, generated)| SymbolRow::live(s, LIVE_REPO_ID, &identity, generated))
+        .map(|(s, generated)| SymbolRow::live(s, &identity, &root_str, generated))
         .collect();
     let rank = |q: &str| -> Vec<Hit> {
         rows.iter()
-            .filter_map(|row| rank_one(q, row, Some(LIVE_REPO_ID), ctx.boosts(row, 0.0), false))
+            .filter_map(|row| {
+                rank_one(
+                    q,
+                    row,
+                    Some(crate::store::LIVE),
+                    ctx.boosts(row, 0.0),
+                    false,
+                )
+            })
             .map(|hit| Hit {
                 source: Source::Live,
                 ..hit
@@ -732,7 +737,7 @@ fn collapse_declarations(hits: &mut Vec<Hit>) {
     let mut keep = Vec::with_capacity(hits.len());
     for (i, hit) in hits.iter().enumerate() {
         let key = (
-            hit.repo_identity.clone(),
+            hit.root.clone().unwrap_or_default(),
             hit.parent.clone(),
             hit.parent.is_none().then(|| hit.file.clone()),
             hit.name.clone(),
@@ -769,19 +774,19 @@ fn collapse_declarations(hits: &mut Vec<Hit>) {
 fn rank_one(
     query: &str,
     c: &SymbolRow,
-    current_repo_id: Option<i64>,
+    current: Option<i64>,
     boosts: Boosts,
     near_miss: bool,
 ) -> Option<Hit> {
     // Borrowed, so a candidate that doesn't score costs nothing; the clones
     // below happen only for the few that become results.
-    let scored = score::score(query, c, current_repo_id, boosts, near_miss)?;
+    let scored = score::score(query, c, current, boosts, near_miss)?;
     Some(Hit {
         name: c.name.clone(),
         kind: c.kind.clone(),
         language: c.language.clone(),
         file: c.file.clone(),
-        root: None,
+        root: Some(c.root.clone()),
         line: c.line,
         end_line: c.end_line,
         parent: c.parent.clone(),
@@ -880,9 +885,7 @@ mod tests {
 
     fn store_with(symbols: &[Symbol]) -> Store {
         let mut store = Store::open_in_memory().unwrap();
-        let repo = store
-            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/x"), None)
-            .unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
         store
             .replace_file_symbols(repo, "app/x.rb", "ruby", None, "h", symbols)
             .unwrap();
@@ -895,9 +898,7 @@ mod tests {
         // definition named only by its file, a transposition, a glob, a scope,
         // a sigil, non-ASCII.
         let mut store = Store::open_in_memory().unwrap();
-        let repo = store
-            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/x"), None)
-            .unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
         let files = [
             (
                 "lib/connection_pool.rb",
@@ -932,7 +933,7 @@ mod tests {
         // every row in the store: what the scorer would accept with no recall
         let every: Vec<SymbolRow> = files
             .iter()
-            .flat_map(|(file, _)| store.symbols_in_file(repo, file).unwrap())
+            .flat_map(|(file, _)| store.symbols_in_file(repo.id, file).unwrap())
             .collect();
         let queries = [
             "conpool",
@@ -950,7 +951,7 @@ mod tests {
             let recall = score::strip_wildcards(leaf);
             // forced, so fuzzy recall runs even where a prefix matched
             let indexed = store
-                .search_candidates(&recall, 1000, true, None, &Probe::new(leaf))
+                .search_candidates(&recall, 1000, true, None, None, &Probe::new(leaf))
                 .unwrap();
             for near_miss in [false, true] {
                 let accepted =
@@ -975,14 +976,10 @@ mod tests {
     }
 
     /// Two repos, each with its own symbol, so scoping can be exercised.
-    fn store_two_repos() -> (Store, i64, i64) {
+    fn store_two_repos() -> (Store, Checkout, Checkout) {
         let mut store = Store::open_in_memory().unwrap();
-        let a = store
-            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/a"), None)
-            .unwrap();
-        let b = store
-            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/b"), None)
-            .unwrap();
+        let a = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/a"));
+        let b = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/b"));
         store
             .replace_file_symbols(a, "a.rb", "ruby", None, "h", &[sym("Widget", Kind::Class)])
             .unwrap();
@@ -996,11 +993,19 @@ mod tests {
     fn only_repo_scopes_results_to_that_repo() {
         let (store, a, b) = store_two_repos();
         // scoped to repo A: only A's Widget, never B's
-        let hits = search(&store, "Widget", Some(a), Some(a), &Context::default(), 10).unwrap();
+        let hits = search(
+            &store,
+            "Widget",
+            Some(a.id),
+            Some(a),
+            &Context::default(),
+            10,
+        )
+        .unwrap();
         assert_eq!(hits.hits.len(), 1);
         assert_eq!(hits.hits[0].repo_identity, "local:/tmp/a");
         // no scope (--all-repos): both repos' Widgets surface
-        let all = search(&store, "Widget", Some(a), None, &Context::default(), 10).unwrap();
+        let all = search(&store, "Widget", Some(a.id), None, &Context::default(), 10).unwrap();
         assert_eq!(all.hits.len(), 2);
         let _ = b;
     }
@@ -1009,7 +1014,15 @@ mod tests {
     fn scoped_search_reports_no_match_rather_than_leaking_another_repo() {
         let (store, a, _b) = store_two_repos();
         // "Gadget" exists in neither; scoped to A it's simply absent (not B's)
-        let hits = search(&store, "Gadget", Some(a), Some(a), &Context::default(), 10).unwrap();
+        let hits = search(
+            &store,
+            "Gadget",
+            Some(a.id),
+            Some(a),
+            &Context::default(),
+            10,
+        )
+        .unwrap();
         assert!(hits.is_empty());
     }
 
@@ -1289,6 +1302,8 @@ mod tests {
             parent: parent.map(str::to_string),
             repository_id: 1,
             repo_identity: "local:/tmp/x".into(),
+            checkout_id: 1,
+            root: "/tmp/x".into(),
             mtime: None,
             git_ts: None,
             visibility: None,
@@ -1360,9 +1375,7 @@ mod tests {
     #[test]
     fn an_anchor_prefers_the_definition_in_its_enclosing_class() {
         let mut store = Store::open_in_memory().unwrap();
-        let repo = store
-            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/x"), None)
-            .unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
         for (file, parent) in [
             ("app/a/gadget.rb", "Gadget"),
             ("app/shop/widget.rb", "Shop::Widget"),
@@ -1406,9 +1419,7 @@ mod tests {
     #[test]
     fn a_bare_type_name_prefers_the_top_level_definition() {
         let mut store = Store::open_in_memory().unwrap();
-        let repo = store
-            .upsert_repository(&crate::core::RepoIdentity::local("/tmp/x"), None)
-            .unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
         // the nested ones have the bigger bodies, which used to decide it
         let account = |parent: Option<&str>, end_line| Symbol {
             parent: parent.map(str::to_string),

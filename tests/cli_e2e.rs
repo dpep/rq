@@ -2296,11 +2296,15 @@ fn generated_code_ranks_below_hand_written_code() {
     assert!(first(&db).contains("widget.go"), "{}", first(&db));
 
     // An index from before v19 never read the header. Upgrading queues every
-    // file for re-extraction, so the next pass picks the marker up.
+    // file for re-extraction (the store's migration tests cover the ladder);
+    // this is that queued state, and the next pass picks the marker up.
     {
         let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.execute_batch("UPDATE files SET generated = 0; PRAGMA user_version = 18;")
-            .unwrap();
+        conn.execute_batch(
+            "UPDATE files SET generated = 0, content_hash = 'stale:' || content_hash; \
+             UPDATE checkout_files SET mtime = NULL;",
+        )
+        .unwrap();
     }
     rq(&db, &dir, &["--index"]);
     assert!(first(&db).contains("widget.go"), "{}", first(&db));
@@ -2319,18 +2323,22 @@ fn an_index_from_before_constants_gains_them_on_the_next_search() {
     git_init_commit(&dir);
     rq(&db, &dir, &["--index"]);
 
-    // rewind to what a v13 binary left behind: the same file, no constant
+    // what a v13 binary left behind, as v14 queued it (the store's migration
+    // tests cover the ladder): the same file, no constant, stamps forgotten
     {
         let conn = rusqlite::Connection::open(&db).unwrap();
         conn.execute_batch(
-            "DELETE FROM symbols WHERE kind = 'constant'; PRAGMA user_version = 13;",
+            "DELETE FROM symbols WHERE kind = 'constant'; \
+             UPDATE files SET content_hash = 'stale:' || content_hash; \
+             UPDATE checkout_files SET mtime = NULL; \
+             UPDATE coverage SET status = 'warming';",
         )
         .unwrap();
     }
 
-    // Opening migrates, which demotes the repo to warming. A search that the
-    // old rows can't answer then holds for the in-process warm (detach is off
-    // here), which re-parses the file the migration un-stamped.
+    // The repo is warming. A search that the old rows can't answer then holds
+    // for the in-process warm (detach is off here), which re-parses the file
+    // the migration un-stamped.
     let (ok, out) = rq(&db, &dir, &["MaxRetries", "--ndjson"]);
     assert!(ok, "constant found after the upgrade: {out}");
     assert!(

@@ -8,10 +8,14 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-use super::{CANDIDATE_COLS, CANDIDATE_FROM, Result, Store, SymbolRow, row_to_candidate};
+use super::{CANDIDATE_COLS, CANDIDATE_FROM, Checkout, Result, Store, SymbolRow, row_to_candidate};
 use crate::search::{
     NAME_INDEX_FORMAT, PRIMARY_KINDS, Probe, SIG_BYTES, Signature, joiners_eq, path_stem,
 };
+
+/// The fetches' checkout scope, bound as `?3`: a name the repo's index holds
+/// may be defined only in another checkout, and then fetches nothing here.
+const IN_CHECKOUT: &str = "AND (?3 IS NULL OR cf.checkout_id = ?3)";
 
 /// Keys per chunk. An append rewrites the last chunk, and a scan reads one row
 /// per chunk.
@@ -38,7 +42,8 @@ impl Keys {
     fn source(self) -> &'static str {
         match self {
             Keys::Names => "SELECT DISTINCT name FROM symbols WHERE repository_id = ?1",
-            Keys::Files => "SELECT path FROM files WHERE repository_id = ?1",
+            // one key per path, however many versions of it checkouts hold
+            Keys::Files => "SELECT DISTINCT path FROM files WHERE repository_id = ?1",
         }
     }
 
@@ -366,13 +371,13 @@ impl Store {
     /// hold more rows than `limit`, the best names' rows are the ones kept.
     pub(super) fn named_candidates(
         &self,
-        repo: Option<i64>,
+        only: Option<Checkout>,
         suspended: &[i64],
         probe: &Probe,
         limit: usize,
     ) -> Result<Vec<(i64, SymbolRow)>> {
         let names = self.scan(
-            repo,
+            only.map(|c| c.repo),
             suspended,
             Keys::Names,
             |sig| probe.screen(sig),
@@ -387,15 +392,16 @@ impl Store {
         keys.dedup_by(|a, b| (a.0, &a.1) == (b.0, &b.1));
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE s.repository_id = ?1 AND s.name_lower = ?2"
+             WHERE s.repository_id = ?1 AND s.name_lower = ?2 {IN_CHECKOUT}"
         ))?;
+        let checkout = only.map(|c| c.id);
         let mut fetch = |keys: &[(i64, String, String)]| -> Result<(Vec<(i64, SymbolRow)>, bool)> {
             let mut rows = Vec::new();
             for (r, lower, _) in keys {
                 if rows.len() >= limit {
                     return Ok((rows, true));
                 }
-                for row in stmt.query_map(params![r, lower], row_to_candidate)? {
+                for row in stmt.query_map(params![r, lower, checkout], row_to_candidate)? {
                     rows.push(row?);
                 }
             }
@@ -420,13 +426,13 @@ impl Store {
     /// literal layers never fetch them. `lower` is the lowercased query.
     pub(super) fn respelled_candidates(
         &self,
-        repo: Option<i64>,
+        only: Option<Checkout>,
         suspended: &[i64],
         probe: &Probe,
         lower: &str,
     ) -> Result<Vec<(i64, SymbolRow)>> {
         let names = self.scan(
-            repo,
+            only.map(|c| c.repo),
             suspended,
             Keys::Names,
             |sig| probe.screen(sig),
@@ -434,15 +440,16 @@ impl Store {
         )?;
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE s.repository_id = ?1 AND s.name_lower = ?2"
+             WHERE s.repository_id = ?1 AND s.name_lower = ?2 {IN_CHECKOUT}"
         ))?;
+        let checkout = only.map(|c| c.id);
         let mut rows = Vec::new();
         for (r, name) in names {
             let lower_name = name.to_lowercase();
             if lower_name == lower {
                 continue; // the exact layer has it
             }
-            for row in stmt.query_map(params![r, lower_name], row_to_candidate)? {
+            for row in stmt.query_map(params![r, lower_name, checkout], row_to_candidate)? {
                 rows.push(row?);
             }
         }
@@ -453,13 +460,13 @@ impl Store {
     /// path match alone lets `score` surface.
     pub(super) fn filed_candidates(
         &self,
-        repo: Option<i64>,
+        only: Option<Checkout>,
         suspended: &[i64],
         probe: &Probe,
         limit: usize,
     ) -> Result<Vec<(i64, SymbolRow)>> {
         let files = self.scan(
-            repo,
+            only.map(|c| c.repo),
             suspended,
             Keys::Files,
             |sig| probe.screen_stem(sig),
@@ -468,14 +475,15 @@ impl Store {
         let kinds = PRIMARY_KINDS.map(|k| format!("'{k}'")).join(", ");
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE fi.repository_id = ?1 AND fi.path = ?2 AND s.kind IN ({kinds})"
+             WHERE fi.repository_id = ?1 AND fi.path = ?2 AND s.kind IN ({kinds}) {IN_CHECKOUT}"
         ))?;
+        let checkout = only.map(|c| c.id);
         let mut rows = Vec::new();
         for (r, path) in &files {
             if rows.len() >= limit {
                 break;
             }
-            for row in stmt.query_map(params![r, path], row_to_candidate)? {
+            for row in stmt.query_map(params![r, path, checkout], row_to_candidate)? {
                 rows.push(row?);
             }
         }
@@ -509,13 +517,11 @@ mod tests {
         }
     }
 
-    fn repo(store: &Store, path: &str) -> i64 {
-        store
-            .upsert_repository(&RepoIdentity::local(path), None)
-            .unwrap()
+    fn repo(store: &Store, path: &str) -> Checkout {
+        store.test_checkout(&RepoIdentity::local(path))
     }
 
-    fn write(store: &mut Store, repo: i64, file: &str, names: &[&str]) {
+    fn write(store: &mut Store, repo: Checkout, file: &str, names: &[&str]) {
         let syms: Vec<Symbol> = names.iter().map(|n| sym(n, Kind::Function)).collect();
         // a fresh hash each time, so every call is a rewrite
         let hash = format!("{file}{names:?}");
@@ -525,7 +531,7 @@ mod tests {
     }
 
     /// The names fuzzy recall hands on for `query`, from the index alone.
-    fn recalled(store: &Store, repo: Option<i64>, query: &str) -> Vec<String> {
+    fn recalled(store: &Store, repo: Option<Checkout>, query: &str) -> Vec<String> {
         let mut names: Vec<String> = store
             .named_candidates(repo, &[], &Probe::new(query), 1000)
             .unwrap()
@@ -537,9 +543,9 @@ mod tests {
     }
 
     /// Every key the repo's index holds, of `kind`, in order.
-    fn held(store: &Store, repo: i64, kind: Keys) -> Vec<String> {
+    fn held(store: &Store, repo: Checkout, kind: Keys) -> Vec<String> {
         store
-            .scan(Some(repo), &[], kind, |_| true, |_, _| true)
+            .scan(Some(repo.repo), &[], kind, |_| true, |_, _| true)
             .unwrap()
             .into_iter()
             .map(|(_, k)| k)
@@ -551,7 +557,7 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let r = repo(&store, "/tmp/a");
         assert!(
-            current(&store.conn, r).unwrap(),
+            current(&store.conn, r.repo).unwrap(),
             "a new repo starts current"
         );
         write(&mut store, r, "a.rs", &["WidgetFactory"]);
@@ -581,7 +587,7 @@ mod tests {
         write(&mut store, r, "a.rs", &["GadgetFactory"]);
         assert!(recalled(&store, Some(r), "wdgfac").is_empty());
         assert!(held(&store, r, Keys::Names).contains(&"WidgetFactory".to_string()));
-        store.rebuild_name_index(r).unwrap();
+        store.rebuild_name_index(r.repo).unwrap();
         assert_eq!(held(&store, r, Keys::Names), ["GadgetFactory"]);
     }
 
@@ -596,18 +602,18 @@ mod tests {
             .conn
             .execute(
                 "UPDATE name_index SET format = 0 WHERE repository_id = ?1",
-                [a],
+                [a.repo],
             )
             .unwrap();
         store
             .conn
-            .execute("DELETE FROM name_index WHERE repository_id = ?1", [b])
+            .execute("DELETE FROM name_index WHERE repository_id = ?1", [b.repo])
             .unwrap();
         // written while stale, so never appended
         write(&mut store, a, "c.rs", &["WidgetFabric"]);
         let names = |repo| -> Vec<String> {
             let mut names: Vec<String> = store
-                .search_candidates("wdgfa", 100, true, repo, &Probe::new("wdgfa"))
+                .search_candidates("wdgfa", 100, true, repo, None, &Probe::new("wdgfa"))
                 .unwrap()
                 .into_iter()
                 .map(|c| c.name)
@@ -616,20 +622,20 @@ mod tests {
             names
         };
         assert_eq!(names(Some(a)), ["WidgetFabric", "WidgetFactory"]);
-        assert!(current(&store.conn, a).unwrap());
-        assert!(!current(&store.conn, b).unwrap(), "scoped to a");
+        assert!(current(&store.conn, a.repo).unwrap());
+        assert!(!current(&store.conn, b.repo).unwrap(), "scoped to a");
         assert_eq!(
             names(None),
             ["WidgetFabric", "WidgetFacade", "WidgetFactory"]
         );
-        assert!(current(&store.conn, b).unwrap());
+        assert!(current(&store.conn, b.repo).unwrap());
     }
 
     #[test]
     fn a_suspended_index_is_verified_from_rows_until_its_pass_rebuilds_it() {
         let mut store = Store::open_in_memory().unwrap();
         let r = repo(&store, "/tmp/a");
-        store.suspend_name_index(r).unwrap();
+        store.suspend_name_index(r.repo).unwrap();
         let syms = [
             sym("Gadget", Kind::Module),
             sym("WidgetFactory", Kind::Function),
@@ -639,7 +645,7 @@ mod tests {
             .unwrap();
         let names = |query: &str, repo| -> Vec<String> {
             let mut names: Vec<String> = store
-                .search_candidates(query, 100, true, repo, &Probe::new(query))
+                .search_candidates(query, 100, true, repo, None, &Probe::new(query))
                 .unwrap()
                 .into_iter()
                 .map(|c| c.name)
@@ -649,10 +655,10 @@ mod tests {
         };
         assert_eq!(names("wdgfac", Some(r)), ["WidgetFactory"]);
         assert_eq!(names("gdgfac", None), ["Gadget"], "by its file's stem");
-        assert!(!current(&store.conn, r).unwrap(), "left to the pass");
+        assert!(!current(&store.conn, r.repo).unwrap(), "left to the pass");
         assert!(held(&store, r, Keys::Names).is_empty(), "read from rows");
-        assert!(store.maintain_name_index(r).unwrap());
-        assert!(current(&store.conn, r).unwrap());
+        assert!(store.maintain_name_index(r.repo).unwrap());
+        assert!(current(&store.conn, r.repo).unwrap());
         assert_eq!(names("wdgfac", Some(r)), ["WidgetFactory"]);
     }
 
@@ -660,9 +666,13 @@ mod tests {
     fn a_suspended_index_whose_pass_died_is_rebuilt_by_recall() {
         let mut store = Store::open_in_memory().unwrap();
         let r = repo(&store, "/tmp/a");
-        store.suspend_name_index(r).unwrap();
+        store.suspend_name_index(r.repo).unwrap();
         write(&mut store, r, "a.rs", &["WidgetFactory"]);
-        assert_eq!(store.ensure_name_index(None).unwrap(), [r], "its pass runs");
+        assert_eq!(
+            store.ensure_name_index(None).unwrap(),
+            [r.repo],
+            "its pass runs"
+        );
 
         let mut child = std::process::Command::new("true").spawn().unwrap();
         child.wait().unwrap();
@@ -671,7 +681,7 @@ mod tests {
             .execute("UPDATE name_index SET built = ?1", [child.id()])
             .unwrap();
         assert!(store.ensure_name_index(None).unwrap().is_empty());
-        assert!(current(&store.conn, r).unwrap());
+        assert!(current(&store.conn, r.repo).unwrap());
         assert_eq!(held(&store, r, Keys::Names), ["WidgetFactory"]);
     }
 
@@ -684,10 +694,13 @@ mod tests {
             .conn
             .execute("UPDATE name_index SET format = 0", [])
             .unwrap();
-        assert!(!current(&store.conn, r).unwrap());
-        assert!(store.maintain_name_index(r).unwrap());
-        assert!(current(&store.conn, r).unwrap());
-        assert!(!store.maintain_name_index(r).unwrap(), "then left alone");
+        assert!(!current(&store.conn, r.repo).unwrap());
+        assert!(store.maintain_name_index(r.repo).unwrap());
+        assert!(current(&store.conn, r.repo).unwrap());
+        assert!(
+            !store.maintain_name_index(r.repo).unwrap(),
+            "then left alone"
+        );
     }
 
     #[test]
@@ -701,7 +714,7 @@ mod tests {
         store.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
         let names = || -> Vec<String> {
             store
-                .search_candidates("wdgfac", 100, true, Some(r), &Probe::new("wdgfac"))
+                .search_candidates("wdgfac", 100, true, Some(r), None, &Probe::new("wdgfac"))
                 .unwrap()
                 .into_iter()
                 .map(|c| c.name)
@@ -710,10 +723,16 @@ mod tests {
         let writer = Connection::open(&path).unwrap();
         writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
         assert_eq!(names(), ["WidgetFactory"], "answered while locked out");
-        assert!(!current(&store.conn, r).unwrap(), "left to a later search");
+        assert!(
+            !current(&store.conn, r.repo).unwrap(),
+            "left to a later search"
+        );
         writer.execute_batch("COMMIT;").unwrap();
         assert_eq!(names(), ["WidgetFactory"]);
-        assert!(current(&store.conn, r).unwrap(), "rebuilt once it could");
+        assert!(
+            current(&store.conn, r.repo).unwrap(),
+            "rebuilt once it could"
+        );
         drop((store, writer));
         for ext in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
@@ -727,10 +746,10 @@ mod tests {
         let names: Vec<String> = (0..=COMPACT_MIN).map(|i| format!("name{i}")).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         write(&mut store, r, "a.rs", &names[..10]);
-        assert!(!store.maintain_name_index(r).unwrap());
+        assert!(!store.maintain_name_index(r.repo).unwrap());
         write(&mut store, r, "a.rs", &names);
-        assert!(store.maintain_name_index(r).unwrap());
-        assert!(!store.maintain_name_index(r).unwrap());
+        assert!(store.maintain_name_index(r.repo).unwrap());
+        assert!(!store.maintain_name_index(r.repo).unwrap());
     }
 
     #[test]
@@ -768,12 +787,12 @@ mod tests {
             ["WidgetFacade", "WidgetFactory"]
         );
         assert_eq!(recalled(&store, Some(b), "wdgfac"), ["WidgetFacade"]);
-        store.drop_repository(b).unwrap();
+        store.drop_repository(b.repo).unwrap();
         let left: i64 = store
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM name_sigs WHERE repository_id = ?1",
-                [b],
+                [b.repo],
                 |r| r.get(0),
             )
             .unwrap();

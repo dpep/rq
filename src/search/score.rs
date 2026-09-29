@@ -116,7 +116,7 @@ pub(crate) struct Boosts {
 pub(crate) fn score(
     query: &str,
     cand: &SymbolRow,
-    current_repo_id: Option<i64>,
+    current: Option<i64>,
     boosts: Boosts,
     // Allow a bounded typo match — only set on a retry that found nothing.
     near_miss: bool,
@@ -439,9 +439,10 @@ pub(crate) fn score(
         }
     }
 
-    // Current-repo boost — the repo you're in dominates other repos.
-    if let Some(cur) = current_repo_id
-        && cur == cand.repository_id
+    // Current-repo boost — the checkout you're in dominates other trees,
+    // other checkouts of this repo among them.
+    if let Some(cur) = current
+        && cur == cand.checkout_id
     {
         features.push(Feature {
             name: "current_repo",
@@ -1535,6 +1536,8 @@ mod tests {
             parent: None,
             repository_id: repo,
             repo_identity: "r".into(),
+            checkout_id: repo,
+            root: "/tmp/x".into(),
             mtime: None,
             git_ts: None,
             visibility: None,

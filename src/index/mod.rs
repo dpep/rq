@@ -13,14 +13,19 @@ use ignore::WalkBuilder;
 
 use crate::core::RepoIdentity;
 use crate::lang;
-use crate::store::Store;
+use crate::store::{Checkout, Store};
+
+/// Path → the content hashes of the versions a repo holds there
+/// ([`Store::versions`]): a file hashing to one of them needs no parse.
+type Versions = HashMap<String, Vec<String>>;
 
 /// Outcome of an indexing run.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stats {
     /// Files matching a known language that were walked.
     pub files_seen: usize,
-    /// Files (re)parsed this run (unchanged files are skipped).
+    /// Files (re)indexed this run: parsed, or mapped to a version the repo
+    /// already held (unchanged files are skipped).
     pub files_indexed: usize,
     /// Symbols written this run.
     pub symbols: usize,
@@ -200,7 +205,7 @@ const WRITE_INTERVAL: Duration = Duration::from_millis(50);
 /// final write. The `stream_walk` sink for `run_index`.
 struct BatchWriter<'a> {
     store: &'a mut Store,
-    repo_id: i64,
+    checkout: Checkout,
     buf: Vec<crate::store::FileSymbols>,
     files: usize,
     symbols: usize,
@@ -214,10 +219,10 @@ struct BatchWriter<'a> {
 }
 
 impl<'a> BatchWriter<'a> {
-    fn new(store: &'a mut Store, repo_id: i64) -> Self {
+    fn new(store: &'a mut Store, checkout: Checkout) -> Self {
         Self {
             store,
-            repo_id,
+            checkout,
             buf: Vec::new(),
             files: 0,
             symbols: 0,
@@ -242,7 +247,7 @@ impl<'a> BatchWriter<'a> {
     fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if !self.buf.is_empty() {
             let t = Instant::now();
-            let (f, sy) = self.store.replace_files(self.repo_id, &self.buf)?;
+            let (f, sy) = self.store.replace_files(self.checkout, &self.buf)?;
             self.write_time += t.elapsed();
             self.batches += 1;
             self.files += f;
@@ -323,6 +328,7 @@ fn stream_walk(
     deadline: Option<Instant>,
     cap: Option<usize>,
     needle: Option<&[u8]>,
+    versions: &Versions,
     seen: HashSet<String>,
     keep: impl Fn(&str, &Path) -> bool + Send,
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -397,7 +403,7 @@ fn stream_walk(
                         parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
                         break;
                     }
-                    if let Some(fs) = parse_file(root, &path, needle)
+                    if let Some(fs) = parse_file(root, &path, needle, versions)
                         && res_tx.send(fs).is_err()
                     {
                         break;
@@ -502,29 +508,34 @@ fn run_index(
         .unwrap_or_else(|| detect_identity(root).to_string());
     let branch = head_branch(root);
     let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
-    store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
+    let checkout =
+        store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
 
     // Registering the current root guarantees a live checkout, so prune any
-    // sibling rows whose path has since vanished (the repo moved) — keeps the
-    // identity→location map from accumulating dead bindings. Runs here, on index/
-    // warm, not on every search: stale rows are cheap (reads route around them),
-    // so occasional cleanup when we're already writing checkouts is enough.
+    // sibling whose path has since vanished (the repo moved, a worktree was
+    // removed) — with the versions only it held. Runs here, on index/warm, not
+    // on every search: a dead checkout is never searched, so occasional
+    // cleanup when we're already writing checkouts is enough.
     for stale in store.checkout_roots(repo_id).unwrap_or_default() {
         if !Path::new(&stale).exists() {
             let _ = store.forget_checkout(&stale);
         }
     }
 
-    let stored = store.file_mtimes(repo_id)?;
-    let coverage_mark = store.coverage_mark(repo_id)?;
+    let stored = store.file_mtimes(checkout.id)?;
+    let coverage_mark = store.coverage_mark(checkout.id)?;
+    // Versions other checkouts already stored: a file hashing to one maps to
+    // it unparsed, so a second worktree parses only what differs.
+    let versions = store.versions(checkout.repo)?;
     drop(setup_span);
     let mut seen: HashSet<String> = HashSet::new();
 
-    // A cold repo (nothing indexed yet) suspends its name index and rebuilds
-    // it from every name at the end, rather than appending batch by batch.
-    // Incremental passes touch a few files and append as they write.
-    if stored.is_empty() {
-        store.suspend_name_index(repo_id)?;
+    // A cold repo (nothing indexed in any checkout) suspends its name index
+    // and rebuilds it from every name at the end, rather than appending batch
+    // by batch. Incremental passes, and a new checkout of a repo already held,
+    // touch a few names and append as they write.
+    if versions.is_empty() {
+        store.suspend_name_index(checkout.repo)?;
     }
 
     // Active (branch) files first: always parsed and written, so the working set
@@ -540,8 +551,8 @@ fn run_index(
         );
     }
     let mut active_span = crate::profile::span("index: active files");
-    let (active_parsed, _) = parse_files(root, &active_to_parse, None, None);
-    let (mut files_indexed, mut symbols) = store.replace_files(repo_id, &active_parsed)?;
+    let (active_parsed, _) = parse_files(root, &active_to_parse, None, None, &versions);
+    let (mut files_indexed, mut symbols) = store.replace_files(checkout, &active_parsed)?;
     active_span.note(|| format!("{} file(s)", active_parsed.len()));
     drop(active_span);
 
@@ -589,7 +600,7 @@ fn run_index(
     let stream_start = Instant::now();
     let mut fused_span = crate::profile::span("index: walk+parse+write");
     let (seen, completed, walk_files, walk_symbols, write_time, batches) = {
-        let mut writer = BatchWriter::new(&mut *store, repo_id);
+        let mut writer = BatchWriter::new(&mut *store, checkout);
         // Demand first: a query's exact or prefix match — the only kind a warming
         // search answers with — lives in a file containing its leaf name, and
         // reading for that is several times cheaper than parsing. So parse those
@@ -606,6 +617,7 @@ fn run_index(
                 deadline,
                 None,
                 Some(needle.as_bytes()),
+                &versions,
                 seen.clone(),
                 changed,
                 cancel,
@@ -639,6 +651,7 @@ fn run_index(
             deadline,
             cap,
             None,
+            &versions,
             seen,
             keep,
             cancel,
@@ -680,7 +693,7 @@ fn run_index(
     }
     {
         let mut span = crate::profile::span("index: name index");
-        let rebuilt = store.maintain_name_index(repo_id)?;
+        let rebuilt = store.maintain_name_index(checkout.repo)?;
         span.note(|| if rebuilt { "rebuilt" } else { "current" }.to_string());
     }
     files_indexed += walk_files;
@@ -719,7 +732,7 @@ fn run_index(
         let mut forgotten = 0;
         for path in stored.keys() {
             if !seen.contains(path) {
-                store.forget_file(repo_id, path)?;
+                store.forget_file(checkout.id, path)?;
                 forgotten += 1;
             }
         }
@@ -734,7 +747,7 @@ fn run_index(
         // record the commit the index now reflects, so a later search can detect
         // an unchanged committed tree and skip re-walking a large repo
         if let Some(head) = head_state(root) {
-            let _ = store.set_indexed_head(repo_id, &head);
+            let _ = store.set_indexed_head(checkout.id, &head);
             // A full sweep leaves the index matching the disk, so the edits it
             // holds are exactly what's dirty now. Unchanged when it parsed
             // nothing, which is most sweeps of a clean repo — skip the status.
@@ -743,7 +756,7 @@ fn run_index(
                     .into_iter()
                     .filter(|f| is_source(f))
                     .collect();
-                let _ = store.set_edited_files(repo_id, &edited);
+                let _ = store.set_edited_files(checkout.id, &edited);
             }
         }
     }
@@ -754,7 +767,7 @@ fn run_index(
     // subdir-relative ones — pure waste. (A subdir index leans on mtime recency.)
     if stats.files_indexed > 0 && repo_root(root).is_some_and(|r| r == root_display) {
         let _span = crate::profile::span("index: git metadata");
-        capture_commit_times(store, repo_id, root);
+        capture_commit_times(store, checkout.id, root);
     }
 
     // Never persist "complete" for an empty index: a zero-file complete is almost
@@ -762,13 +775,14 @@ fn run_index(
     // the repo at zero. Keep it "warming" so the next query keeps polling for
     // files to index. Asks about the repo's *total* indexed files, not this
     // run's — a warm of an already-indexed repo re-parses nothing yet isn't empty.
-    let status = if status == "complete" && !store.repo_has_files(repo_id).unwrap_or(false) {
+    let status = if status == "complete" && !store.checkout_has_files(checkout.id).unwrap_or(false)
+    {
         "warming"
     } else {
         status
     };
     let recorded = store.set_coverage_since(
-        repo_id,
+        checkout.id,
         stats.files_seen as i64,
         stats.files_indexed as i64,
         status,
@@ -830,6 +844,7 @@ fn parse_file(
     root: &Path,
     file: &Path,
     needle: Option<&[u8]>,
+    versions: &Versions,
 ) -> Option<crate::store::FileSymbols> {
     let timing = crate::profile::enabled().then(Instant::now);
     let ext = file.extension().and_then(|e| e.to_str())?;
@@ -847,7 +862,10 @@ fn parse_file(
         return None;
     }
     let content_hash = content_hash(&source);
-    let symbols = plugin.extract(&rel, &source);
+    let held = versions
+        .get(&rel)
+        .is_some_and(|hashes| hashes.contains(&content_hash));
+    let symbols = (!held).then(|| plugin.extract(&rel, &source));
     if let Some(started) = timing {
         // workers run concurrently, so this sums to CPU time, not wall time
         let elapsed = started.elapsed();
@@ -907,6 +925,7 @@ fn parse_files(
     paths: &[std::path::PathBuf],
     deadline: Option<Instant>,
     needle: Option<&[u8]>,
+    versions: &Versions,
 ) -> (Vec<crate::store::FileSymbols>, bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -918,7 +937,7 @@ fn parse_files(
             if past(deadline) {
                 return (out, false);
             }
-            if let Some(parsed) = parse_file(root, p, needle) {
+            if let Some(parsed) = parse_file(root, p, needle, versions) {
                 out.push(parsed);
             }
         }
@@ -940,7 +959,7 @@ fn parse_files(
                             bailed.store(true, Ordering::Relaxed);
                             break;
                         }
-                        if let Some(parsed) = parse_file(root, p, needle) {
+                        if let Some(parsed) = parse_file(root, p, needle, versions) {
                             local.push(parsed);
                         }
                     }
@@ -962,9 +981,9 @@ fn parse_files(
 /// (the common case for a warm of uncommitted edits, which mtime already
 /// covers). A vanished old sha (rebase, gc) fails the range and falls back to
 /// the full bounded walk.
-fn capture_commit_times(store: &mut Store, repo_id: i64, root: &Path) {
+fn capture_commit_times(store: &mut Store, checkout: i64, root: &Path) {
     let Some(head) = git_head(root) else { return };
-    let last = store.git_ts_head(repo_id).ok().flatten();
+    let last = store.git_ts_head(checkout).ok().flatten();
     if last.as_deref() == Some(head.as_str()) {
         return; // HEAD unmoved — nothing new to capture
     }
@@ -973,13 +992,13 @@ fn capture_commit_times(store: &mut Store, repo_id: i64, root: &Path) {
         .and_then(|old| git_commit_times_range(root, &old, 1000))
         .unwrap_or_else(|| git_commit_times(root, 1000));
     if !times.is_empty() {
-        if store.set_file_git_ts(repo_id, &times).is_err() {
+        if store.set_file_git_ts(checkout, &times).is_err() {
             return; // don't advance the marker past an unpersisted capture
         }
     } else if first {
         return; // full walk yielded nothing — leave the marker unset to retry
     }
-    let _ = store.set_git_ts_head(repo_id, &head);
+    let _ = store.set_git_ts_head(checkout, &head);
 }
 
 /// Map of repo-relative path → most-recent commit time (unix seconds), from the
@@ -1080,6 +1099,7 @@ pub(crate) fn scan(
         deadline,
         None,
         needle,
+        &Versions::new(),
         HashSet::new(),
         keep,
         None,
@@ -1219,13 +1239,13 @@ fn parse_porcelain_z(out: &[u8]) -> Vec<String> {
 /// one never indexed. An edit the index already reflects is *not* a change —
 /// the worktree stays dirty until commit, and treating dirty as stale re-warmed
 /// on every query and made every miss read as "still warming".
-fn has_unindexed_edits(store: &Store, repository_id: i64, root: &Path, dirty: &[String]) -> bool {
+fn has_unindexed_edits(store: &Store, checkout: i64, root: &Path, dirty: &[String]) -> bool {
     dirty.iter().any(|rel| {
         if !is_source(rel) {
             return false;
         }
         let on_disk = file_mtime(&root.join(rel));
-        match store.file_mtime(repository_id, rel) {
+        match store.file_mtime(checkout, rel) {
             Ok(Some(indexed)) => indexed.is_none() || indexed != on_disk,
             Ok(None) => on_disk.is_some(),
             Err(_) => true,
@@ -1243,18 +1263,18 @@ fn has_unindexed_edits(store: &Store, repository_id: i64, root: &Path, dirty: &[
 /// again — the reindex it triggers has landed.
 pub(crate) fn has_unindexed_changes(
     store: &Store,
-    repository_id: i64,
+    checkout: i64,
     root: &Path,
     dirty: &[String],
 ) -> bool {
-    let prior = store.edited_files(repository_id).unwrap_or_default();
+    let prior = store.edited_files(checkout).unwrap_or_default();
     let unsettled: Vec<String> = prior
         .iter()
         .filter(|f| !dirty.contains(f))
-        .filter(|f| has_unindexed_edits(store, repository_id, root, std::slice::from_ref(f)))
+        .filter(|f| has_unindexed_edits(store, checkout, root, std::slice::from_ref(f)))
         .cloned()
         .collect();
-    let changed = !unsettled.is_empty() || has_unindexed_edits(store, repository_id, root, dirty);
+    let changed = !unsettled.is_empty() || has_unindexed_edits(store, checkout, root, dirty);
     // a dirty source file is an edit the index holds, or is about to
     let mut edited: Vec<String> = dirty
         .iter()
@@ -1267,7 +1287,7 @@ pub(crate) fn has_unindexed_changes(
     let mut prior = prior;
     prior.sort();
     if edited != prior {
-        let _ = store.set_edited_files(repository_id, &edited);
+        let _ = store.set_edited_files(checkout, &edited);
     }
     changed
 }
@@ -1431,7 +1451,7 @@ fn trunk_ref(root: &Path) -> Option<String> {
 /// whole tree at once and can tell "gone" from "couldn't read one file".
 pub(crate) fn refresh_file(
     store: &mut Store,
-    repository_id: i64,
+    checkout: Checkout,
     root: &Path,
     rel: &str,
 ) -> Result<Refresh, Box<dyn std::error::Error>> {
@@ -1440,7 +1460,7 @@ pub(crate) fn refresh_file(
     // than what was hashed, so the next check reads again rather than trusting
     // it. An unchanged mtime is the same skip the indexer's walk makes.
     let mtime = file_mtime(&path);
-    if mtime.is_some() && store.file_mtime(repository_id, rel)? == Some(mtime) {
+    if mtime.is_some() && store.file_mtime(checkout.id, rel)? == Some(mtime) {
         return Ok(Refresh::Unchanged);
     }
     let source = match std::fs::read_to_string(&path) {
@@ -1448,10 +1468,10 @@ pub(crate) fn refresh_file(
         Err(_) => return Ok(Refresh::Unchanged), // unreadable now — leave it, don't forget
     };
     let hash = content_hash(&source);
-    if store.file_unchanged(repository_id, rel, &hash)? {
+    if store.file_unchanged(checkout.id, rel, &hash)? {
         // touched, not edited: remember the new mtime so the next check stats
         // instead of reading it again
-        store.set_file_mtime(repository_id, rel, mtime)?;
+        store.set_file_mtime(checkout.id, rel, mtime)?;
         return Ok(Refresh::Unchanged);
     }
     let ext = path
@@ -1466,19 +1486,19 @@ pub(crate) fn refresh_file(
     // the plugin knows its language even when a file parses to zero symbols
     let language = plugin.map_or("unknown", |p| p.language());
     store.replace_files(
-        repository_id,
+        checkout,
         &[crate::store::FileSymbols {
             path: rel.to_string(),
             language: language.to_string(),
             mtime,
             content_hash: hash,
             generated: is_generated(&source),
-            symbols,
+            symbols: Some(symbols),
         }],
     )?;
     // Off the sweep path, a changed file is most likely an edit in progress;
     // if it's later discarded, the staleness check has to know to look.
-    let _ = store.note_edited_file(repository_id, rel);
+    let _ = store.note_edited_file(checkout.id, rel);
     Ok(Refresh::Updated)
 }
 
@@ -1488,16 +1508,16 @@ pub(crate) fn refresh_file(
 /// can't be read or isn't a language rq knows.
 pub(crate) fn current_definitions(
     store: &Store,
-    repository_id: Option<i64>,
+    checkout: Option<Checkout>,
     identity: &str,
     root: &Path,
     rel: &str,
 ) -> Vec<crate::store::SymbolRow> {
     let path = root.join(rel);
-    if let Some(repo_id) = repository_id
+    if let Some(checkout) = checkout
         && let Some(mtime) = file_mtime(&path)
-        && store.file_mtime(repo_id, rel).ok() == Some(Some(Some(mtime)))
-        && let Ok(rows) = store.symbols_in_file(repo_id, rel)
+        && store.file_mtime(checkout.id, rel).ok() == Some(Some(Some(mtime)))
+        && let Ok(rows) = store.symbols_in_file(checkout.id, rel)
     {
         return rows;
     }
@@ -1515,7 +1535,7 @@ pub(crate) fn current_definitions(
     plugin
         .extract(rel, &source)
         .into_iter()
-        .map(|s| crate::store::SymbolRow::live(s, repository_id.unwrap_or(-1), identity, generated))
+        .map(|s| crate::store::SymbolRow::live(s, identity, &root.to_string_lossy(), generated))
         .collect()
 }
 

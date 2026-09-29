@@ -179,7 +179,13 @@ fn a_content_scan_returns_only_matching_files_to_persist() {
     let scanned = index::scan(&dir, &HashSet::new(), None, Some(b"widget"));
     assert_eq!(scanned.len(), 1, "only the matching file: {scanned:?}");
     assert_eq!(scanned[0].path, "a.rb");
-    assert!(scanned[0].symbols.iter().any(|s| s.name == "Widget"));
+    assert!(
+        scanned[0]
+            .symbols
+            .iter()
+            .flatten()
+            .any(|s| s.name == "Widget")
+    );
 }
 
 #[test]
