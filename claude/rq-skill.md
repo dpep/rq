@@ -74,7 +74,9 @@ rq.
 
 On a miss, JSON is one `{"status": …, "query": …}` object, not results:
 
-- `no_match` (exit 1) — definitive. Fall back to `rg`.
+- `no_match` (exit 1) — definitive. Fall back to `rg`. Under `-a`, an
+  `incomplete` list names checkouts not fully indexed, which it can't speak
+  for; searching in one indexes it.
 - `scope_not_found` (exit 1) — nothing inside the scope you named; `found_in`
   says where the name does live. Re-ask with that scope.
 - `warming` (exit 2) — index incomplete; retry. Mostly after `--no-wait`;

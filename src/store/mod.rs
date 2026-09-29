@@ -747,13 +747,16 @@ impl Store {
     }
 
     /// Every checkout with its repository, coverage status and current totals.
-    /// Only an index pass registers a checkout and every finished pass writes
-    /// coverage, so one without it is mid-way through (or was cut short in)
-    /// its first pass: partially indexed, i.e. `warming`.
+    /// Every finished pass writes coverage, so one without it is mid-way
+    /// through (or was cut short in) its first pass, `warming`, or holds
+    /// nothing at all, `unindexed`: an upgrade registers a repo's other
+    /// checkouts that way, and only a search in one indexes it.
     pub(crate) fn coverage_overview(&self) -> Result<Vec<CoverageRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.identity, co.root_path,
-                    COALESCE(c.status, 'warming'),
+                    COALESCE(c.status, CASE WHEN EXISTS
+                      (SELECT 1 FROM checkout_files cf WHERE cf.checkout_id = co.id)
+                      THEN 'warming' ELSE 'unindexed' END),
                     (SELECT COUNT(*) FROM checkout_files cf WHERE cf.checkout_id = co.id),
                     (SELECT COUNT(*) FROM checkout_files cf
                        JOIN symbols s ON s.file_id = cf.file_id
@@ -775,6 +778,19 @@ impl Store {
             })?
             .collect::<Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// The roots of every checkout whose index isn't complete, as `--status`
+    /// tells them: what a miss across checkouts can't vouch for.
+    pub(crate) fn incomplete_roots(&self) -> Result<Vec<String>> {
+        self.conn
+            .prepare(
+                "SELECT co.root_path FROM checkouts co \
+                 LEFT JOIN coverage c ON c.checkout_id = co.id AND c.scope = 'full' \
+                 WHERE c.status IS NOT 'complete' ORDER BY co.root_path",
+            )?
+            .query_map([], |r| r.get(0))?
+            .collect()
     }
 
     /// The normalized identity of a repository by one of its checkout roots, if

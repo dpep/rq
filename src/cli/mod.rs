@@ -1147,7 +1147,20 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         if let (Some(cost), Some(root)) = (&live_scan, root.as_deref()) {
             note_live_scan(root, cost, false);
         }
-        let code = no_match_code(out, query, interrupted, incomplete, elsewhere.as_deref());
+        // `-a` can't vouch for a checkout nothing has indexed, and warms only
+        // the one it runs in: name the others rather than calling it `warming`
+        let incomplete_roots = match scope(current) {
+            Scope::All if !incomplete => store.incomplete_roots().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let code = no_match_code(
+            out,
+            query,
+            interrupted,
+            incomplete,
+            elsewhere.as_deref(),
+            &incomplete_roots,
+        );
         // Counted after the answer, and only here: whether this was a
         // definitive miss or a not-ready one is only known on this path, and
         // counting them as one number overstates how often rq truly finds nothing.
@@ -1592,6 +1605,8 @@ fn no_match_code(
     // nothing in it matched. "Not in that scope" and "no such name" are
     // different answers and the second is the less useful one.
     elsewhere: Option<&str>,
+    // checkouts `-a` read that aren't fully indexed, so the miss isn't theirs
+    incomplete_roots: &[String],
 ) -> ExitCode {
     let status = if interrupted {
         "interrupted"
@@ -1608,6 +1623,9 @@ fn no_match_code(
             if let Some(found_in) = elsewhere {
                 obj["found_in"] = serde_json::json!(found_in);
             }
+            if !incomplete_roots.is_empty() {
+                obj["incomplete"] = serde_json::json!(incomplete_roots);
+            }
             let _ = emit_json(out, &obj); // the exit code below carries the miss
         }
         Output::Text if interrupted => {
@@ -1619,6 +1637,10 @@ fn no_match_code(
         Output::Text if elsewhere.is_some() => eprintln!(
             "rq: nothing matching {query:?} in that scope — the name is defined elsewhere: {}",
             elsewhere.unwrap_or_default()
+        ),
+        Output::Text if !incomplete_roots.is_empty() => eprintln!(
+            "no matches for {query:?} in what's indexed; these checkouts aren't fully indexed (a search in one indexes it):\n  {}",
+            incomplete_roots.join("\n  ")
         ),
         Output::Text => eprintln!("no matches for {query:?}"),
     }

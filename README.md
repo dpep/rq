@@ -156,7 +156,7 @@ A miss is one `{"status": …, "query": …}` object instead of results:
 
 | `status` | Exit | Meaning |
 | --- | --- | --- |
-| `no_match` | 1 | Definitive: nothing by that name. |
+| `no_match` | 1 | Definitive: nothing by that name. Under `-a`, `incomplete` lists the roots of checkouts that aren't fully indexed, which the miss can't speak for; a search in one indexes it. |
 | `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
 | `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait`, since otherwise a cold repo blocks until it can answer. |
 | `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
@@ -226,10 +226,12 @@ rq perform --show                                    # 122 candidates: prints th
 
 `rq --status --json` emits a coverage row per checkout (`repo`, `root`,
 `status`, `files`, `symbols`): worktrees and clones of one remote share a
-`repo` and each has its own `root`. `status` is `complete`, or `warming` while
+`repo` and each has its own `root`. `status` is `complete`; `warming` while
 the index is partial — a first index still running, or a pass cut short that
-the next query continues. `files` and `symbols` count what the checkout holds
-so far. A dropped checkout is gone from `--status` until a query or `--index`
+the next query continues; or `unindexed` for a checkout rq knows but holds
+nothing for, such as a repo's other worktrees after an upgrade, until a search
+there indexes it. A checkout deleted from disk is forgotten, and doesn't
+appear. `files` and `symbols` count what the checkout holds so far. A dropped checkout is gone from `--status` until a query or `--index`
 starts rebuilding it, and then reads `warming`. `rq --index --json` emits this
 run's counts (`files_added`, `symbols_added` — a file whose content a sibling
 checkout already stored is added without new symbols) plus the checkout's

@@ -33,7 +33,11 @@ database (a search fails with `no such column`); `rm` the database, or point
   checkout you're in, else the newest. Checkouts deleted from disk are
   forgotten.
 - **`--status` lists each checkout**, with its `root` in JSON beside `repo`;
-  `--index` reports the `root` it indexed.
+  `--index` reports the `root` it indexed. A checkout rq knows but holds
+  nothing for (a repo's other worktrees, after the upgrade) reads `unindexed`
+  until a search there indexes it.
+- **An `-a` miss names the checkouts it can't speak for**: `incomplete` in
+  JSON lists the roots not fully indexed.
 - **`--drop` inside a checkout drops only that checkout.** `--drop <repo>`
   still drops the repo, now with every checkout of it.
 - **Searches in a linked worktree answer about 10× sooner.** rq read git's

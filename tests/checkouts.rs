@@ -430,3 +430,44 @@ fn all_repos_folds_a_definition_the_rest_of_its_file_moved() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn a_checkout_nothing_indexed_says_so() {
+    let (base, db, [a, b, _]) = three_worktrees("unindexed");
+    // what an upgrade leaves a repo's other checkouts: registered, empty
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let b_root = b.to_string_lossy().into_owned();
+    conn.execute_batch(&format!(
+        "DELETE FROM checkout_files WHERE checkout_id = (SELECT id FROM checkouts WHERE root_path = '{b_root}');
+         DELETE FROM coverage WHERE checkout_id = (SELECT id FROM checkouts WHERE root_path = '{b_root}');"
+    ))
+    .unwrap();
+    drop(conn);
+
+    let (_, out) = rq(&db, &a, &["--status", "--json"]);
+    let rows = json(&out);
+    let status: Vec<(&str, &str)> = rows
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| (r["root"].as_str().unwrap(), r["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        status,
+        [
+            (a.to_str().unwrap(), "complete"),
+            (b_root.as_str(), "unindexed")
+        ]
+    );
+
+    // only B defines new_name: a miss across checkouts names B, not `warming`
+    let elsewhere = base.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let (ok, out) = rq(&db, &elsewhere, &["new_name", "-a", "--json"]);
+    assert!(!ok);
+    let miss = json(&out);
+    assert_eq!(miss["status"], "no_match", "{out}");
+    assert_eq!(miss["incomplete"], serde_json::json!([b_root]), "{out}");
+
+    let _ = fs::remove_dir_all(&base);
+}
