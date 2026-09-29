@@ -2575,7 +2575,12 @@ with nothing to derive it from; the path, name, kind and parent already say whic
 definition it is, and the one kept is the checkout you're in or the newest. The first fold happens in SQL, one
 row per version, before the candidate cap: folding after it let k checkouts of one repo
 cut the cap to 8,000/k definitions, which dropped 8,771 of them across five rails
-worktrees and crowded out every other repo. The current-repo boost follows
+worktrees and crowded out every other repo. Checkouts far enough apart still hold one
+definition in several versions, so the name index's fetches count definitions against
+the cap when unscoped; a fuzzy `teco` over five rails worktrees 300–2,000 commits apart
+recalled 3,201 definitions against 8,000 versioned rows, and now 4,812, the union of
+what each worktree finds alone. Scoped, a row is a definition and the count is rows,
+as before. The current-repo boost follows
 the scope: it goes to the checkout you're in (the feature keeps its name, `current_repo`).
 
 *Surface.* `--status` is one row per checkout, with `root` beside `repo`. Hits and

@@ -1372,6 +1372,15 @@ fn checkout_meta_keys(id: i64, root: &str) -> [String; 6] {
     ]
 }
 
+/// Which definition a row is, across checkouts: its repo, path, name, kind
+/// and parent. Not its line, which an edit above it moves.
+pub(super) type Def<'a> = (i64, &'a str, &'a str, &'a str, Option<&'a str>);
+
+pub(super) fn def_key(r: &SymbolRow) -> Def<'_> {
+    let (file, name, kind) = (r.file.as_str(), r.name.as_str(), r.kind.as_str());
+    (r.repository_id, file, name, kind, r.parent.as_deref())
+}
+
 /// Unscoped rows fold across checkouts: a definition several checkouts hold —
 /// the same name, kind and parent at the same path, wherever the rest of the
 /// file moved it — is kept from one of them, `prefer` when it holds it, else
@@ -1385,16 +1394,11 @@ fn fold_checkouts(
     if only.is_some() {
         return rows;
     }
-    type Def<'a> = (i64, &'a str, &'a str, &'a str, Option<&'a str>);
-    fn def(r: &SymbolRow) -> Def<'_> {
-        let (file, name, kind) = (r.file.as_str(), r.name.as_str(), r.kind.as_str());
-        (r.repository_id, file, name, kind, r.parent.as_deref())
-    }
     let rank = |checkout: i64| (Some(checkout) != prefer, std::cmp::Reverse(checkout));
     let mut winner: HashMap<Def, i64> = HashMap::new();
     for r in &rows {
         winner
-            .entry(def(r))
+            .entry(def_key(r))
             .and_modify(|w| {
                 if rank(r.checkout_id) < rank(*w) {
                     *w = r.checkout_id;
@@ -1404,7 +1408,7 @@ fn fold_checkouts(
     }
     let keep: Vec<bool> = rows
         .iter()
-        .map(|r| winner[&def(r)] == r.checkout_id)
+        .map(|r| winner[&def_key(r)] == r.checkout_id)
         .collect();
     rows.into_iter()
         .zip(keep)

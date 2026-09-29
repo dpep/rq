@@ -9,7 +9,8 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::{
-    CANDIDATE_COLS, CANDIDATE_FROM, Checkout, Result, Store, SymbolRow, read_from, row_to_candidate,
+    CANDIDATE_COLS, CANDIDATE_FROM, Checkout, Result, Store, SymbolRow, def_key, read_from,
+    row_to_candidate,
 };
 use crate::search::{
     NAME_INDEX_FORMAT, PRIMARY_KINDS, Probe, SIG_BYTES, Signature, joiners_eq, path_stem,
@@ -20,6 +21,34 @@ use crate::search::{
 /// fetches nothing here.
 fn in_checkout(only: Option<Checkout>) -> String {
     format!("AND {}", read_from(only.is_some(), 3))
+}
+
+/// What the cap counts: rows in one checkout; across checkouts, definitions,
+/// which branches far enough apart hold in several versions each.
+struct Held {
+    defs: Option<std::collections::HashSet<u64>>,
+    rows: usize,
+}
+
+impl Held {
+    fn new(only: Option<Checkout>) -> Held {
+        Held {
+            defs: only.is_none().then(Default::default),
+            rows: 0,
+        }
+    }
+
+    fn add(&mut self, row: &SymbolRow) {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        self.rows += 1;
+        if let Some(defs) = &mut self.defs {
+            defs.insert(BuildHasherDefault::<DefaultHasher>::default().hash_one(def_key(row)));
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.defs.as_ref().map_or(self.rows, |d| d.len())
+    }
 }
 
 /// What `?3` binds: the scope's checkout, or unscoped the one to prefer.
@@ -408,13 +437,15 @@ impl Store {
         ))?;
         let checkout = checkout_arg(only, prefer);
         let mut fetch = |keys: &[(i64, String, String)]| -> Result<(Vec<(i64, SymbolRow)>, bool)> {
-            let mut rows = Vec::new();
+            let (mut rows, mut held) = (Vec::new(), Held::new(only));
             for (r, lower, _) in keys {
-                if rows.len() >= limit {
+                if held.count() >= limit {
                     return Ok((rows, true));
                 }
                 for row in stmt.query_map(params![r, lower, checkout], row_to_candidate)? {
-                    rows.push(row?);
+                    let row = row?;
+                    held.add(&row.1);
+                    rows.push(row);
                 }
             }
             Ok((rows, false))
@@ -428,7 +459,9 @@ impl Store {
             let keys: Vec<_> = ranked.into_iter().map(|(_, k)| k).collect();
             rows = fetch(&keys)?.0;
         }
-        rows.truncate(limit);
+        if only.is_some() {
+            rows.truncate(limit);
+        }
         Ok(rows)
     }
 
@@ -494,16 +527,20 @@ impl Store {
             in_checkout(only)
         ))?;
         let checkout = checkout_arg(only, prefer);
-        let mut rows = Vec::new();
+        let (mut rows, mut held) = (Vec::new(), Held::new(only));
         for (r, path) in &files {
-            if rows.len() >= limit {
+            if held.count() >= limit {
                 break;
             }
             for row in stmt.query_map(params![r, path, checkout], row_to_candidate)? {
-                rows.push(row?);
+                let row = row?;
+                held.add(&row.1);
+                rows.push(row);
             }
         }
-        rows.truncate(limit);
+        if only.is_some() {
+            rows.truncate(limit);
+        }
         Ok(rows)
     }
 }
@@ -566,6 +603,32 @@ mod tests {
             .into_iter()
             .map(|(_, k)| k)
             .collect()
+    }
+
+    #[test]
+    fn across_checkouts_the_cap_counts_definitions_not_versions() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&RepoIdentity::local("/x"), None)
+            .unwrap();
+        let names = ["widget_a", "widget_b", "widget_c"];
+        // three branches, three versions of one file, each defining all three
+        for (i, root) in ["/a", "/b", "/c"].iter().enumerate() {
+            let c = store.upsert_checkout(repo, root, None).unwrap();
+            let syms: Vec<Symbol> = names.iter().map(|n| sym(n, Kind::Function)).collect();
+            store
+                .replace_file_symbols(c, "w.rs", "rust", None, &format!("v{i}"), &syms)
+                .unwrap();
+        }
+        let mut found: Vec<String> = store
+            .named_candidates(None, None, &[], &Probe::new("widget"), names.len())
+            .unwrap()
+            .into_iter()
+            .map(|(_, r)| r.name)
+            .collect();
+        found.sort();
+        found.dedup();
+        assert_eq!(found, names);
     }
 
     #[test]
