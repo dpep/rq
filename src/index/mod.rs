@@ -206,6 +206,7 @@ const WRITE_INTERVAL: Duration = Duration::from_millis(50);
 struct BatchWriter<'a> {
     store: &'a mut Store,
     checkout: Checkout,
+    root: &'a Path,
     buf: Vec<crate::store::FileSymbols>,
     files: usize,
     symbols: usize,
@@ -219,10 +220,11 @@ struct BatchWriter<'a> {
 }
 
 impl<'a> BatchWriter<'a> {
-    fn new(store: &'a mut Store, checkout: Checkout) -> Self {
+    fn new(store: &'a mut Store, checkout: Checkout, root: &'a Path) -> Self {
         Self {
             store,
             checkout,
+            root,
             buf: Vec::new(),
             files: 0,
             symbols: 0,
@@ -247,7 +249,7 @@ impl<'a> BatchWriter<'a> {
     fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if !self.buf.is_empty() {
             let t = Instant::now();
-            let (f, sy) = self.store.replace_files(self.checkout, &self.buf)?;
+            let (f, sy) = write_files(self.store, self.checkout, self.root, &self.buf)?;
             self.write_time += t.elapsed();
             self.batches += 1;
             self.files += f;
@@ -257,6 +259,27 @@ impl<'a> BatchWriter<'a> {
         }
         Ok(())
     }
+}
+
+/// Write parsed files into the checkout. A file sent unparsed, for a version
+/// another checkout let go of since this pass loaded the repo's versions, is
+/// parsed and written again, so every file lands. Returns `(files, symbols)`.
+fn write_files(
+    store: &mut Store,
+    checkout: Checkout,
+    root: &Path,
+    files: &[crate::store::FileSymbols],
+) -> crate::store::Result<(usize, usize)> {
+    let written = store.replace_files(checkout, files)?;
+    let (mut n, mut symbols) = (written.files, written.symbols);
+    if !written.unmapped.is_empty() {
+        let paths: Vec<_> = written.unmapped.iter().map(|p| root.join(p)).collect();
+        let (parsed, _) = parse_files(root, &paths, None, None, &Versions::new());
+        let again = store.replace_files(checkout, &parsed)?;
+        n += again.files;
+        symbols += again.symbols;
+    }
+    Ok((n, symbols))
 }
 
 /// Source-file candidates from `git ls-files` — read out of git's index, not by
@@ -552,7 +575,7 @@ fn run_index(
     }
     let mut active_span = crate::profile::span("index: active files");
     let (active_parsed, _) = parse_files(root, &active_to_parse, None, None, &versions);
-    let (mut files_indexed, mut symbols) = store.replace_files(checkout, &active_parsed)?;
+    let (mut files_indexed, mut symbols) = write_files(store, checkout, root, &active_parsed)?;
     active_span.note(|| format!("{} file(s)", active_parsed.len()));
     drop(active_span);
 
@@ -600,7 +623,7 @@ fn run_index(
     let stream_start = Instant::now();
     let mut fused_span = crate::profile::span("index: walk+parse+write");
     let (seen, completed, walk_files, walk_symbols, write_time, batches) = {
-        let mut writer = BatchWriter::new(&mut *store, checkout);
+        let mut writer = BatchWriter::new(&mut *store, checkout, root);
         // Demand first: a query's exact or prefix match — the only kind a warming
         // search answers with — lives in a file containing its leaf name, and
         // reading for that is several times cheaper than parsing. So parse those
@@ -1631,6 +1654,31 @@ fn file_mtime(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_whose_version_went_mid_pass_is_parsed_and_written_anyway() {
+        // A worker skipped the parse because the repo held this version when
+        // the pass began; the checkout holding it has since let go of it.
+        let dir = std::env::temp_dir().join(format!("rq-vanished-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("w.rb"), "class Widget\nend\n").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        let checkout = store.test_checkout(&RepoIdentity::local("/x"));
+        let unparsed = crate::store::FileSymbols {
+            path: "w.rb".into(),
+            language: "ruby".into(),
+            mtime: None,
+            content_hash: "gone".into(),
+            generated: false,
+            symbols: None,
+        };
+        let (files, symbols) = write_files(&mut store, checkout, &dir, &[unparsed]).unwrap();
+        assert_eq!((files, symbols), (1, 1));
+        let rows = store.symbols_in_file(checkout.id, "w.rb").unwrap();
+        assert_eq!(rows[0].name, "Widget");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn generated_files_are_known_by_their_header() {

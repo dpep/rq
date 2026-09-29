@@ -126,6 +126,18 @@ pub(crate) struct FileSymbols {
     pub symbols: Option<Vec<Symbol>>,
 }
 
+/// What a [`Store::replace_files`] wrote.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Written {
+    /// Files newly mapped into the checkout.
+    pub files: usize,
+    /// Symbols of the versions newly stored.
+    pub symbols: usize,
+    /// Files sent unparsed for a version another checkout let go of since:
+    /// the caller parses them and writes them again.
+    pub unmapped: Vec<String>,
+}
+
 /// A coverage row's `(status, last_indexed_at)` as a pass found it when it
 /// began, or `None` before any pass finished (see `set_coverage_since`).
 pub(crate) type CoverageMark = Option<(String, i64)>;
@@ -494,19 +506,17 @@ impl Store {
     /// A file whose content hash already matches the checkout's is skipped (not
     /// rewritten); one whose version the repo already holds is mapped, not
     /// stored again. The version a path stops using is deleted once no
-    /// checkout maps it. Returns `(files_written, symbols_written)`: files
-    /// newly mapped, and the symbols of versions newly stored.
+    /// checkout maps it.
     pub(crate) fn replace_files(
         &mut self,
         checkout: Checkout,
         files: &[FileSymbols],
-    ) -> Result<(usize, usize)> {
+    ) -> Result<Written> {
         /// Files per transaction — bounds memory and WAL frame size on a big index.
         const BATCH: usize = 512;
 
         let repository_id = checkout.repo;
-        let mut files_written = 0;
-        let mut symbols_written = 0;
+        let mut written = Written::default();
         for chunk in files.chunks(BATCH) {
             // Immediate: this reads before it writes, and a deferred upgrade
             // fails at once when another writer commits first.
@@ -565,9 +575,10 @@ impl Store {
                         .optional()?;
                     let file_id = match (held, &f.symbols) {
                         (Some(id), _) => id,
-                        // the version went since the pass began: the next pass
-                        // parses the file, which stays unmapped until then
-                        (None, None) => continue,
+                        (None, None) => {
+                            written.unmapped.push(f.path.clone());
+                            continue;
+                        }
                         (None, Some(symbols)) => {
                             if indexing
                                 && path_known
@@ -611,7 +622,7 @@ impl Store {
                                     s.stub,
                                 ])?;
                             }
-                            symbols_written += symbols.len();
+                            written.symbols += symbols.len();
                             id
                         }
                     };
@@ -619,14 +630,14 @@ impl Store {
                     if let Some((old, _)) = stored {
                         release(&tx, old)?;
                     }
-                    files_written += 1;
+                    written.files += 1;
                 }
             }
             names::append(&tx, repository_id, names::Keys::Names, &fresh)?;
             names::append(&tx, repository_id, names::Keys::Files, &fresh_files)?;
             tx.commit()?;
         }
-        Ok((files_written, symbols_written))
+        Ok(written)
     }
 
     /// Record indexing coverage for a checkout (scope `full`).
@@ -1440,9 +1451,9 @@ mod tests {
             generated: false,
             symbols: Some(vec![sym("User", Kind::Class, 1, None)]),
         };
-        let written = store.replace_files(repo, &[file]);
+        let written = store.replace_files(repo, &[file]).unwrap();
         holder.join().unwrap();
-        assert_eq!(written.unwrap(), (1, 1));
+        assert_eq!((written.files, written.symbols), (1, 1));
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
@@ -1935,7 +1946,12 @@ mod tests {
         );
     }
 
-    fn write(store: &mut Store, checkout: Checkout, hash: &str, symbols: Option<Vec<Symbol>>) {
+    fn write(
+        store: &mut Store,
+        checkout: Checkout,
+        hash: &str,
+        symbols: Option<Vec<Symbol>>,
+    ) -> Written {
         let file = FileSymbols {
             path: "w.rb".into(),
             language: "ruby".into(),
@@ -1944,7 +1960,7 @@ mod tests {
             generated: false,
             symbols,
         };
-        store.replace_files(checkout, &[file]).unwrap();
+        store.replace_files(checkout, &[file]).unwrap()
     }
 
     fn names_in(store: &Store, checkout: Checkout) -> Vec<String> {
@@ -1991,8 +2007,9 @@ mod tests {
         assert_eq!(names_in(&store, a), ["Gadget"]);
         assert_eq!((count(&store, "files"), count(&store, "symbols")), (1, 1));
 
-        // a version gone since the pass began is left for the next pass
-        write(&mut store, a, "h3", None);
+        // a version gone since the pass began is handed back to be parsed
+        let written = write(&mut store, a, "h3", None);
+        assert_eq!(written.unmapped, ["w.rb"]);
         assert_eq!(names_in(&store, a), ["Gadget"], "unmapped, not emptied");
     }
 
