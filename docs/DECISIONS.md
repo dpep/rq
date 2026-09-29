@@ -2511,3 +2511,69 @@ level. That is a rewording with one lost source, not a simpler rule, so D43 stay
 *Reverses if:* a language records its modules as parents (D43's own reverses-if). Then
 nothing is top-level there, and the capped relative form (a type one or more levels deeper
 than its shallowest namesake: −10 × match quality) is the drop-in, measured here as equal.
+
+## D50 — The checkout is the index unit; a file version is stored once
+
+**Adopted**, 2026-09-28. Numbers below; the reproduction is `tests/checkouts.rs`.
+
+*The bug.* Identity is the remote (`github.com/org/repo`), so every worktree, clone and
+detached checkout of one project shared one set of rows, and `files` was keyed by
+`(repository_id, path)`: the last checkout to index a path won. Two worktrees where
+branch A adds `Widget#alpha` and branch B renames `old_name`: index A, then B, and a
+search for `alpha` from A was a definitive miss (exit 1), while B's search re-parsed on
+every flip. Coverage, the indexed HEAD, the edited set, the commit-times HEAD, the warm
+lock and verdict and the branch-file cache were per repo too, so one checkout's state
+decided the other's warm.
+
+*What.* Two ideas, each a key change rather than a special case:
+- **The checkout is the index unit.** A `checkouts` row (a root path) owns coverage and
+  every per-tree cache. A search is scoped to it, and its rows carry their `root`. The
+  repository stays the logical project: JSON `repo`, the grouping `-a` spans, and the
+  name index's unit.
+- **A file version is stored once per repo.** A `files` row is now `(repository_id, path,
+  content_hash)`, and symbols hang off it as before. `checkout_files` maps each checkout's
+  paths to versions, with that checkout's `mtime` and `git_ts` (commit times follow a
+  branch's history, not the bytes). A second worktree reads and hashes its files, finds the
+  versions, and parses only what differs; a pass loads the repo's `(path, hash)` set up
+  front so a worker skips a known version's parse, not just its write.
+
+*Why path and bytes, not bytes alone (trekr's blob).* trekr's facts are "a pure function of
+a blob's bytes". rq's extraction isn't: the plugin is chosen by extension, `.d.ts`
+declarations are stubs, and the TS grammar differs from TSX's. The extractor's whole input
+is `(path, bytes)`, so that is the key; the only sharing it gives up is identical content
+at two paths, which a rename across branches produces and which costs one parse.
+
+*No `--gc`: a version nobody maps is deleted when the last map row lets go of it*, in the
+same transaction (a path rewritten, a file forgotten, a checkout pruned or dropped). An
+orphan can't exist, so nothing needs collecting. Rejected: keeping versions until a `--gc`
+(trekr), so switching a checkout back to a branch parses nothing. Every saved edit mints a
+version, so the store grows with editing rather than with code, and it needs a collector
+with a retention policy. Switching back re-parses only the files the branches differ in,
+as it did before; a sibling worktree on that branch keeps them alive anyway.
+
+*The name index stays per repository*, over every version's names and paths. It is a
+screen: a name only another checkout defines passes it and fetches no rows, because the
+fetch joins the checkout's map. Candidates are still exactly what `score` accepts from this
+checkout's rows (D23's property). It was already a superset over time, holding names
+deleted since its last rebuild. Rejected: an index per checkout (a rebuild and a copy of
+the name bytes per worktree, for keys nearly all shared) and a shared base with a
+per-checkout delta (D23's declined layering). A cold pass suspends the index only when the
+*repo* holds no versions: a new worktree's first pass appends the few names it adds.
+
+*`-a`* searches every checkout. Rows of one version fold to one hit, the current
+checkout's when it maps it, else the oldest checkout's; so do rows of different versions
+that define the same name, kind, parent and line at the same path, which is what two
+branches that differ elsewhere in the file look like. The current-repo boost follows
+the scope: it goes to the checkout you're in (the feature keeps its name, `current_repo`).
+
+*Surface.* `--status` is one row per checkout, with `root` beside `repo`. Hits and
+outlines already named the checkout by `root`, so the field keeps that name rather than
+adding a `checkout` synonym. `--drop` inside a checkout drops that checkout; given a
+repo identity, every checkout of it.
+
+*Migration (v23).* `files` is rebuilt as versions, keeping ids so symbols stay put. Each
+repo's rows are mapped to its newest checkout, which keeps its coverage; other checkouts
+start unindexed and warm on their next search, parsing only what differs from the
+versions already there. Per-tree caches keyed by repo are dropped rather than guessed at:
+the next sweep records them again. Versions of a repo with no checkout are unreachable and
+go.
