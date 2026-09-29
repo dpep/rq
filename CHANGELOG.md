@@ -24,6 +24,11 @@ locked". An older rq can't read the upgraded database (a search fails with
   branch A came back `warming` from A until a warm re-indexed A over B, and then
   B's answers flipped the same way. Each checkout now answers from its own
   files, and has its own coverage, warm state and branch boost (DECISIONS D50).
+- **The first search after saving an edit answers from it** when warming runs
+  in-process (`RQ_WARM_DETACH=0`): it reindexed the edit and then reported
+  the miss it had before, `no_match`, so only the second search found it.
+- **A file a branch switch deleted is no longer a hit** on the first search
+  after the switch; the index drops it with the warm that follows.
 - **`--drop --json` names a repo by its identity even when there was nothing
   to drop**, with the path it was asked about in `root`; it gave the path as
   `repo`.

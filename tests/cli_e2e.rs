@@ -1063,10 +1063,9 @@ fn a_discarded_edit_is_reindexed() {
     let clean = indexed_symbols(&db, &dir);
 
     fs::write(dir.join("c.rb"), "class Gizmo\n  def spin; end\nend\n").unwrap();
+    // the query that notices the edit reindexes it, and answers from it
     let (ok, out) = rq(&db, &dir, &["spin", "--ndjson"]);
-    // the miss that notices the edit reindexes it; the retry finds it
-    let (ok2, out2) = rq(&db, &dir, &["spin", "--ndjson"]);
-    assert!(ok || ok2, "the edit is indexed: {out} {out2}");
+    assert!(ok, "the edit is found at once: {out}");
     assert_eq!(indexed_symbols(&db, &dir), clean + 1);
 
     git_checkout_file(&dir, "c.rb");
@@ -1082,6 +1081,50 @@ fn a_discarded_edit_is_reindexed() {
     );
     let (found, out) = rq(&db, &dir, &["spin", "--ndjson"]);
     assert!(!found, "no longer found: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_a_branch_switch_deleted_is_not_a_hit() {
+    let (dir, db) = scratch("switched-away");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(["-c", "user.email=t@e.st", "-c", "user.name=test"])
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+    };
+    let trunk = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&dir)
+            .env_remove("GIT_DIR")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    git(&["checkout", "-qb", "feature"]);
+    fs::write(
+        dir.join("b.rb"),
+        "class Branchy\n  def branch_only; end\nend\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "feature"]);
+    rq(&db, &dir, &["--index"]);
+    git(&["checkout", "-q", trunk.trim()]);
+
+    let (found, out) = rq(&db, &dir, &["branch_only", "--ndjson"]);
+    assert!(!found, "b.rb is gone with the branch: {out}");
 
     let _ = fs::remove_dir_all(&dir);
 }

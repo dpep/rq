@@ -1066,6 +1066,42 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         hits = m.hits;
     }
 
+    // A file gone from disk since its index (a branch switch deleted it) is
+    // no answer. Only dropped from this one: revalidation never forgets on a
+    // failed read, and the warm the switch sets off reconciles the index.
+    let before = hits.len();
+    hits.retain(|h| {
+        h.root.as_deref().is_none_or(|r| {
+            let root = std::path::Path::new(r);
+            !root.is_dir() || root.join(&h.file).exists()
+        })
+    });
+    total = total.saturating_sub(before - hits.len());
+
+    // Nothing strong, and the worktree may have moved since its index: with
+    // the warm in-process (detach off), settle it now and ask again, so a
+    // definition saved a moment ago answers this query rather than the next.
+    let mut staleness = staleness;
+    if !hits.iter().any(strong)
+        && matches!(staleness, Some(Staleness::Running(_)))
+        && settle_warm(
+            store,
+            staleness.take(),
+            false,
+            was_warming,
+            warming_ok,
+            root.as_deref(),
+            active_paths,
+            query,
+            warm_budget,
+            no_wait,
+        )
+        && let Ok(m) = scope(current).search(store, query, current, &ctx, rank_limit)
+    {
+        total = m.total;
+        hits = m.hits;
+    }
+
     // Untracked non-git dir — nothing persisted, no warmer running — so scan it
     // live in-memory (substring, then fuzzy) and blend with whatever the index
     // gave. The only non-persisting scan left.
@@ -1120,7 +1156,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // detached warm hasn't caught up with. Say "warming" (exit 2, retry)
         // rather than "no match" (exit 1, absent) — a just-added symbol is
         // exactly this case, and a confident no is the wrong answer to it.
-        incomplete |= settle_warm(
+        let moved = settle_warm(
             store,
             staleness,
             false,
@@ -1132,6 +1168,8 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             warm_budget,
             no_wait,
         );
+        // only a deferred reindex leaves the miss open; an inline one ran
+        incomplete |= moved && warm_detach_enabled();
         // A named scope that matched nothing is a different miss from a name
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
@@ -2220,10 +2258,9 @@ fn settle_warm(
         let _ = crate::index::index_budgeted(&mut idx, r, active, budget, Some(query));
     }
     maybe_detach_warm(store, warming_ok && (was_warming || changed), changed, root);
-    // Report only that work was *deferred*, which is what makes a miss
-    // provisional. When the reindex ran inline just above (detach off), the
-    // index is as current as we can make it and a miss is definitive.
-    changed && warm_detach_enabled()
+    // Whether the worktree moved. With detach on the reindex was deferred,
+    // which makes a miss provisional; with it off it ran inline just above.
+    changed
 }
 
 /// Inline warm budget on the search path. A *cap*, not a fixed delay:
