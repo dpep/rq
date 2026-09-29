@@ -267,6 +267,11 @@ fn wal(conn: &Connection) -> Result<()> {
     }
 }
 
+/// How long a write waits out another writer before failing "locked".
+const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// ...and how long an opener waits out another's schema upgrade.
+const UPGRADE_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl Store {
     /// Open (creating if needed) the database at `path`, enabling WAL and
     /// applying the schema.
@@ -289,7 +294,7 @@ impl Store {
         // pages in place rather than copying them through read(): fuzzy recall
         // materializes thousands of rows (see DECISIONS D8).
         // busy_timeout first: switching to WAL takes a lock of its own.
-        conn.execute_batch("PRAGMA busy_timeout=3000;")?;
+        conn.execute_batch(&format!("PRAGMA busy_timeout={};", BUSY_WAIT.as_millis()))?;
         wal(&conn)?;
         conn.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; \
@@ -305,8 +310,17 @@ impl Store {
         // others reference, and the pragma can't change inside a transaction.
         let upgrading = version < schema::VERSION;
         if upgrading {
-            conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE")?;
+            // An upgrade holds the write lock as long as it takes, seconds on a
+            // store of a million rows, and every other opener queues here
+            // behind it: past the usual timeout they'd fail "locked".
+            conn.execute_batch(&format!(
+                "PRAGMA busy_timeout={}; PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE",
+                UPGRADE_WAIT.as_millis()
+            ))?;
             version = user_version(&conn)?;
+            if version > 0 && version < schema::VERSION {
+                eprintln!("rq: upgrading the index (one-time)…");
+            }
             // v23 reshapes tables the steps before it write to, so a database
             // that already has its shape resumes there: an rq before 0.54.1
             // lowered the version of any newer database it opened.
@@ -336,7 +350,10 @@ impl Store {
             conn.pragma_update(None, "user_version", schema::VERSION)?;
         }
         if upgrading {
-            conn.execute_batch("COMMIT; PRAGMA foreign_keys=ON")?;
+            conn.execute_batch(&format!(
+                "COMMIT; PRAGMA foreign_keys=ON; PRAGMA busy_timeout={}",
+                BUSY_WAIT.as_millis()
+            ))?;
         }
         Ok(Store { conn })
     }
@@ -1590,6 +1607,24 @@ mod tests {
 
     /// A database file as an older rq left it: v22's schema, `rows` inserted
     /// with SQL, and `user_version` set to `version`.
+    #[test]
+    fn an_opener_waits_out_another_openers_upgrade() {
+        let path = legacy("upgrade-wait", 22, "");
+        // stands in for an upgrade outlasting the usual busy timeout
+        let holder = Connection::open(&path).unwrap();
+        holder
+            .execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE")
+            .unwrap();
+        let opener = {
+            let path = path.clone();
+            std::thread::spawn(move || Store::open(&path).map(drop))
+        };
+        std::thread::sleep(BUSY_WAIT + std::time::Duration::from_millis(500));
+        holder.execute_batch("COMMIT").unwrap();
+        opener.join().unwrap().expect("waits, then upgrades");
+        remove(&path);
+    }
+
     fn legacy(label: &str, version: i64, rows: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("rq-{label}-{}.db", std::process::id()));
         for suffix in ["", "-wal", "-shm"] {

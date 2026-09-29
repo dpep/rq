@@ -10,7 +10,9 @@ and aren't listed; see `git log` for those.
 ## Unreleased
 
 Upgrading keeps each repo's index with one of its checkouts still on disk, the
-one you last searched in where rq can tell.
+one you last searched in where rq can tell. The upgrade takes seconds on a
+large index; the first rq says so on stderr, and others started meanwhile
+wait for it rather than failing "database is locked".
 Other worktrees and clones of the same remote re-index on their next search,
 parsing only the files that differ. An older rq can't read the upgraded
 database (a search fails with `no such column`); `rm` the database, or point

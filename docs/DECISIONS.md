@@ -2593,6 +2593,11 @@ checkout whether or not it existed: usually a short-lived agent worktree, often 
 by repo are dropped rather than guessed at: the next sweep records them again. A repo
 with no checkout is unreachable and goes, name index too.
 
+The upgrade holds the write lock throughout, 11.4 s on a store of 1.5M symbols, and
+seven of eight rq processes opening it meanwhile failed "database is locked" (exit 74)
+at the 3 s busy timeout. An opener that finds the schema behind now waits up to five
+minutes for the lock, and the one that upgrades says so on stderr.
+
 *Dead checkouts.* A checkout whose root is gone from disk is forgotten before `-a`,
 `--status` or an index pass reads the others: a stat per checkout, a write only when one
 is gone. Only pruning on a sibling's index pass left `-a` answering from deleted trees
