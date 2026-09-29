@@ -16,8 +16,9 @@ parsing only the files that differ.
 ### Fixed
 - **Worktrees, clones and detached checkouts of one repo no longer overwrite
   each other.** They share a remote identity, and the index kept one row per
-  path, so the last checkout indexed won: a method added on branch A could be a
-  definitive miss from A once B indexed. Each checkout now answers from its own
+  path, so the last checkout indexed won: once B indexed, a method added on
+  branch A came back `warming` from A until a warm re-indexed A over B, and then
+  B's answers flipped the same way. Each checkout now answers from its own
   files, and has its own coverage, warm state and branch boost (DECISIONS D50).
 
 ### Changed

@@ -2520,10 +2520,13 @@ than its shallowest namesake: −10 × match quality) is the drop-in, measured h
 detached checkout of one project shared one set of rows, and `files` was keyed by
 `(repository_id, path)`: the last checkout to index a path won. Two worktrees where
 branch A adds `Widget#alpha` and branch B renames `old_name`: index A, then B, and a
-search for `alpha` from A was a definitive miss (exit 1), while B's search re-parsed on
-every flip. Coverage, the indexed HEAD, the edited set, the commit-times HEAD, the warm
-lock and verdict and the branch-file cache were per repo too, so one checkout's state
-decided the other's warm.
+search for `alpha` from A found nothing. It said `warming` (exit 2) because A's HEAD
+differed from the one recorded, which was B's, and a background warm then re-indexed A
+over B; with the warm in-process it was a definitive miss (exit 1). B's next hit re-parsed
+its own file back. Answers flipped with every switch, each paid for by re-indexing.
+Coverage, the indexed HEAD, the edited set, the commit-times HEAD, the warm lock and
+verdict and the branch-file cache were per repo too, so one checkout's state decided the
+other's warm.
 
 *What.* Two ideas, each a key change rather than a special case:
 - **The checkout is the index unit.** A `checkouts` row (a root path) owns coverage and
