@@ -38,7 +38,7 @@ Symbol {
   language     # ruby, go, ts, ...
   name         # RefundProcessor, perform, User
   kind         # class | module | method | function | struct | enum | trait | constant | type | macro | variant | field
-  file         # repo-relative path
+  file         # root-relative path
   line         # 1-based
   parent       # enclosing symbol (cheap nesting, NOT a call graph)
 }
@@ -49,17 +49,21 @@ tracking or inheritance — those are explicit non-goals for the MVP.
 
 ## Repository identity — two levels
 
-Identity answers two different questions, so it is modeled at two levels:
+Identity answers two different questions, so it is modeled at two levels
+(DECISIONS D50):
 
 - **Logical project** — `github.com/org/repo` (from the upstream remote) or
-  `local:/abs/path` fallback. Used to dedupe symbols across checkouts. Robust
-  to forks/clones being the "same" project.
-- **Local checkout** — a root path plus current branch. Used for indexing
-  coverage state and git-aware ranking. One project may have several checkouts
-  (multiple clones, all valid). A checkout whose path no longer exists is pruned
-  when the repo is next indexed/warmed (not on every search — stale rows are
-  cheap, since reads route around them), so a moved repo self-heals; symbols
-  are keyed by identity, so pruning a checkout only forgets a *location*.
+  `local:/abs/path` fallback. The `repo` every result names, the unit `-a`
+  spans, and the unit file versions and the name index are stored under: every
+  worktree, clone and detached checkout of one remote shares them.
+- **Local checkout** — a canonical root path. **The index unit**: each checkout
+  maps its paths to the versions it holds, and owns its coverage, its caches
+  (indexed HEAD, edited files, warm lock and verdict, branch files) and its
+  git-aware ranking. A search is scoped to the checkout it runs in, so two
+  worktrees on different branches each answer from their own files. A checkout
+  whose path no longer exists is pruned when a sibling is next indexed/warmed
+  (not on every search — a dead checkout is never searched), with the versions
+  only it held.
 
 The system is designed for **many** repositories and millions of symbols from
 day one. It never assumes a single repository.
@@ -110,25 +114,42 @@ repositories (
   created_at INTEGER, updated_at INTEGER
 );
 
--- a local clone of a repository
+-- a local checkout of a repository (a clone, worktree or detached tree):
+-- the index unit
 checkouts (
   id INTEGER PRIMARY KEY,
   repository_id INTEGER NOT NULL REFERENCES repositories(id),
-  root_path TEXT NOT NULL UNIQUE,
+  root_path TEXT NOT NULL UNIQUE,    -- canonical
   current_branch TEXT
 );
 
+-- a file version: a path's content in a repo, stored once however many
+-- checkouts hold it. The path is part of the key because extraction reads it
+-- (plugin by extension, `.d.ts` stubs). A requeue migration marks hashes
+-- stale per version (`'stale:' || content_hash`) rather than blanking them.
 files (
   id INTEGER PRIMARY KEY,
   repository_id INTEGER NOT NULL REFERENCES repositories(id),
-  path TEXT NOT NULL,                -- repo-relative
+  path TEXT NOT NULL,                -- root-relative
   language TEXT,
-  mtime INTEGER,                     -- unix *nanoseconds* (racy-edit protection)
-  content_hash TEXT,                 -- staleness detection
-  indexed_at INTEGER,
+  content_hash TEXT NOT NULL,
   generated INTEGER NOT NULL DEFAULT 0, -- header declares it generated (v19)
-  UNIQUE(repository_id, path)
+  UNIQUE(repository_id, path, content_hash)
 );
+
+-- which version each checkout holds at each path (v23). A version no row
+-- maps is deleted in the transaction that let go of it: nothing to collect.
+checkout_files (
+  checkout_id INTEGER NOT NULL REFERENCES checkouts(id),
+  path TEXT NOT NULL,
+  file_id INTEGER NOT NULL REFERENCES files(id),
+  mtime INTEGER,                     -- unix *nanoseconds* (racy-edit protection)
+  git_ts INTEGER,                    -- last commit touching the path, on this
+                                     -- checkout's history
+  PRIMARY KEY (checkout_id, path)
+) WITHOUT ROWID;
+-- the search join: covering, so a candidate row costs one seek
+CREATE INDEX idx_checkout_files_file ON checkout_files(file_id, checkout_id, mtime, git_ts);
 
 symbols (
   id INTEGER PRIMARY KEY,
@@ -157,7 +178,8 @@ CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
 
 -- the name index (NAME_INDEX.md, D23): each repo's distinct symbol names
 -- (kind 0) and file paths (kind 1, signed by their stem) as 40-byte
--- signatures, in append-order chunks of up to 512
+-- signatures, in append-order chunks of up to 512 — over every version any
+-- checkout holds, a screen whose fetches join the searching checkout's map
 name_sigs (
   repository_id INTEGER NOT NULL,
   kind INTEGER NOT NULL,
@@ -178,15 +200,15 @@ name_index (
   built INTEGER NOT NULL             -- keys the last rebuild wrote
 );
 
--- partial-indexing state, per repo (or directory scope)
+-- partial-indexing state, per checkout (or directory scope)
 coverage (
   id INTEGER PRIMARY KEY,
-  repository_id INTEGER NOT NULL REFERENCES repositories(id),
+  checkout_id INTEGER NOT NULL REFERENCES checkouts(id),
   scope TEXT NOT NULL DEFAULT 'full',   -- 'full' or a directory prefix
   files_seen INTEGER, files_indexed INTEGER,
   status TEXT NOT NULL,                  -- warming | complete (no row: no pass has finished)
   last_indexed_at INTEGER,
-  UNIQUE(repository_id, scope)
+  UNIQUE(checkout_id, scope)
 );
 
 -- cumulative usage counters, read by `--usage`, never by ranking.
@@ -202,19 +224,23 @@ usage_daily (
   PRIMARY KEY (day, source, flags)
 );
 
--- small key/value store (indexed HEAD, warm lock, warm verdict, branch-file
--- cache, and the files the index holds as uncommitted edits)
+-- small key/value store, per checkout: indexed HEAD, warm lock, warm
+-- verdict, branch-file cache, and the files the index holds as uncommitted
+-- edits (by checkout id where a pass writes them, by root where a search
+-- reads them before any pass registered the checkout)
 meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 ```
 
 Decisions worth calling out:
 
 - **The name index** holds, per repo, a signature for every distinct symbol
-  name and file stem: which characters it has and which pairs of them a query
+  name and file stem across every checkout's versions: which characters it has and which pairs of them a query
   could step across under `align`'s rules. Fuzzy recall screens every
   signature, verifies the survivors with the scorer's own match chain, and
   fetches rows only for the names it accepts, so its candidates are exactly
-  what `score` would take from any row (NAME_INDEX.md, D23). The default
+  what `score` would take from any row of the searching checkout (NAME_INDEX.md,
+  D23, D50): a name only another checkout defines screens in and fetches
+  nothing. The default
   since D24 fixed the ranking weaknesses complete recall exposed, and the only
   fuzzy recall since D26 removed the trigram FTS nets it replaced. A repo whose
   index is missing or from another format is rebuilt before recall reads it,
@@ -222,12 +248,15 @@ Decisions worth calling out:
   whose rebuild finds another writer holding the lock past the busy timeout
   (D26).
 - **`content_hash`** detects staleness so partial/old indexes don't silently
-  point at moved lines.
+  point at moved lines, and keys a version: a file whose `(path, hash)` the repo
+  already holds is mapped, not parsed (D50).
 - **An extraction change re-extracts by migration.** When a plugin starts
   emitting something new, a schema step clears the language's `mtime` and
   `content_hash` so neither skip keeps the old rows (the hash to `''`, not
   NULL, which the write path can't read), and demotes its repos' coverage to
-  `warming` so the next search sweeps them. v14 did this for the Go, Python and
+  `warming` so the next search sweeps them. Since v23 a version's hash is part
+  of its key, so a requeue marks it stale per version (`'stale:' || hash`)
+  rather than blanking it, and demotes checkouts' coverage. v14 did this for the Go, Python and
   TS/JS constants, v19's re-read of every file (for the `generated` flag)
   also picked up Rust's variants, aliases, macros and macro-body items, and v20
   re-reads Go, Python and TS/JS for their types, variants and nested defs, and v21
@@ -236,7 +265,8 @@ Decisions worth calling out:
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to
-  append a live-scan tail.
+  append a live-scan tail. It is per checkout: a new worktree of an indexed
+  repo is `warming` until its own pass completes.
 - **A miss and a not-yet are counted apart.** rq already separates them in its
   exit codes (1 = absent, 2 = index still warming); netting them into one
   number would overstate how often it truly finds nothing, and the two call for
@@ -267,12 +297,19 @@ search only reads.
 - **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
   fans out across CPUs; the parsed files are written in **one** transaction (one
   `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.
-  A pass over a cold repo (explicit or a first search's warm) suspends the
-  name index and rebuilds it at the end, before coverage is recorded, and
+  A pass over a cold repo — one no checkout holds a version of yet — (explicit
+  or a first search's warm) suspends the name index and rebuilds it at the end,
+  before coverage is recorded, and
   meanwhile fuzzy recall verifies the repo's committed names directly. Every other write appends the names and files new to the repo in
   the transaction that writes them, and every pass ends by rebuilding an index
   that is missing, from another format, or holding a quarter more keys than its
   last rebuild wrote.
+- **Shared across checkouts** — a pass loads the repo's `(path, hash)` set up
+  front; a worker that hashes a file to one of them skips the parse, and the
+  write maps the checkout's path to the stored version. A second worktree costs
+  a read and a hash per file plus parses of what differs: rails, a same-commit
+  worktree 170 ms against 850 cold, one 300 commits away 320 ms (D50). The
+  version a path stops using is deleted once no checkout maps it.
 - **Opportunistic + time-bounded** (`index_budgeted`) — the first query warms the
   index without blocking on a full walk: a small inline budget indexes the active
   (branch) files first and answers, then the deferred pass warms more per query
@@ -328,7 +365,9 @@ search only reads.
   *seed*, not a fence: it gets the named files in first and leaves coverage
   `warming`, so normal warming continues over the rest of the repo through use.
 - **Git off the hot path** — `is_git_repo` is native (walk up for `.git`),
-  identity is cached by checkout root, and the `git log` for commit-time recency
+  HEAD, branch and trunk are read from the git dir (a linked worktree's `.git`
+  file is followed to its own dir and `commondir`), identity is cached by
+  checkout root, and the `git log` for commit-time recency
   runs only when a sweep actually (re)indexed something. The one remaining
   per-search question — has the worktree moved since it was indexed? — forks
   `git status`, which grows with the worktree; a hit hands it to the detached
@@ -437,10 +476,13 @@ why a result ranked where it did:
   the scope too (a `scope_typo` feature, typo-level confidence). A `.` query
   that no scope answers tries `.` as a one-char wildcard before any typo retry
 - **path** — query also matches the file's name (Layer 3)
-- **current-repo scope + boost** — results are restricted to the repo you're in
-  by default (a search there answers about *that* repo, never leaking another
-  indexed one; `--all-repos` opts into cross-repo), and within it the current
-  repo's rows still carry the boost
+- **current-repo scope + boost** — results are restricted to the checkout you're
+  in by default (a search there answers about *that* tree, never leaking another
+  indexed repo or a sibling worktree's branch; `--all-repos` opts into every
+  checkout), and within it the current checkout's rows still carry the boost
+  (the feature keeps its name, `current_repo`). Under `--all-repos`, a
+  definition several checkouts hold — same repo, path, name, kind, parent and
+  line — is one result, the current checkout's copy first, else the oldest's
 - **recency** — symbols in recently-active files (~14-day half-life), sourced
   from the more recent of file mtime and last git commit time (captured once per
   index, not on the search path)
@@ -456,7 +498,7 @@ why a result ranked where it did:
   `parent` is a leading run of the scope chain of the innermost definition
   whose `line..end_line` span holds the anchor line, 60 per shared level, capped
   at 180. `proximity`: 90 in the anchor's own file, else 60 in its directory,
-  halving per directory step and dropped below 5; anchor's repo only. Built
+  halving per directory step and dropped below 5; anchor's checkout only. Built
   only from stored spans and parents (or a live parse of the anchor file when
   the index doesn't hold its current version), so it is language-blind. No
   inheritance, so an inherited method earns no `enclosing` (D18).
@@ -490,9 +532,10 @@ The index is **never assumed complete**.
 
 - `coverage.status` tells search its own confidence (`warming | complete`,
   or no row until a pass finishes). `warming` is indexing in progress — whether
-  opportunistic or seeded by a subtree `--index --path`. `--status` reports a
-  repo with no row as `warming` too: only a pass registers a repo, so it's one
-  whose first pass is running (or was cut short).
+  opportunistic or seeded by a subtree `--index --path`. `--status` lists one
+  row per checkout and reports one with no coverage as `warming` too: only a
+  pass registers a checkout, so it's one whose first pass is running (or was
+  cut short).
 - A `warming` repo **blocks until answered** (see the indexing model), so
   incomplete coverage yields a delayed-but-correct answer rather than a
   confident-looking wrong one. A dir with no finished pass that this query
@@ -533,7 +576,7 @@ with null stdio in its own process group and exits — the shell only ever waits
 on the answer. The
 child runs niced (and with throttled disk I/O on macOS) on a seconds-scale
 budget (`RQ_WARM_BUDGET_MS`), sweeping until coverage completes, and is
-single-flighted per repo via a pid-stamped lock in `meta`, so a burst of
+single-flighted per checkout via a pid-stamped lock in `meta`, so a burst of
 queries runs at most one warmer. On a complete repo the child is spawned after
 a hit and first asks whether anything moved; usually nothing has, and it
 exits after one `git status`, recording that verdict so hits over the next few

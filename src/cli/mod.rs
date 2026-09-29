@@ -205,7 +205,7 @@ struct Cli {
 
     /// Finish warming a repository's index in the background — the target a
     /// search re-execs after printing results, detached, so the shell never
-    /// waits on it. Single-flighted per repo; safe to run by hand.
+    /// waits on it. Single-flighted per checkout; safe to run by hand.
     #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "drop", "symbols", "open", "web", "show"])]
     warm: Option<Option<String>>,
 
@@ -1299,7 +1299,7 @@ fn maybe_detach_warm(
 
 /// Spawn `rq --warm <root>` fully detached: null stdio and its own process
 /// group, so it survives this process and a later Ctrl-C in the terminal
-/// can't reach it. The child nices itself and is single-flighted per repo.
+/// can't reach it. The child nices itself and is single-flighted per checkout.
 fn spawn_detached_warm(root: &std::path::Path) {
     use std::os::unix::process::CommandExt;
     let Ok(exe) = std::env::current_exe() else {
@@ -1351,7 +1351,7 @@ fn recently_verified(store: &Store, root: &std::path::Path, indexed_head: Option
 
 /// `rq --warm [PATH]`: the detached child a search re-execs after printing —
 /// finishes warming the repo's index in the background. Niced so it stays out
-/// of the foreground's way; single-flighted per repo so a burst of queries
+/// of the foreground's way; single-flighted per checkout so a burst of queries
 /// runs at most one warmer. Safe (and boring) to run by hand.
 fn cmd_warm(path: Option<&str>) -> ExitCode {
     // Stay out of the way: drop scheduling priority, and throttle disk I/O on

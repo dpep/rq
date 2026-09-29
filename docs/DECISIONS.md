@@ -2514,7 +2514,7 @@ than its shallowest namesake: −10 × match quality) is the drop-in, measured h
 
 ## D50 — The checkout is the index unit; a file version is stored once
 
-**Adopted**, 2026-09-28. Numbers below; the reproduction is `tests/checkouts.rs`.
+**Adopted**, 2026-09-28. The reproduction is `tests/checkouts.rs`; numbers at the end.
 
 *The bug.* Identity is the remote (`github.com/org/repo`), so every worktree, clone and
 detached checkout of one project shared one set of rows, and `files` was keyed by
@@ -2577,3 +2577,78 @@ start unindexed and warm on their next search, parsing only what differs from th
 versions already there. Per-tree caches keyed by repo are dropped rather than guessed at:
 the next sweep records them again. Versions of a repo with no checkout are unreachable and
 go.
+
+*Measured.* Release builds against main (0.59.0), on a shared machine whose load is
+given per table. Two rails worktrees 300 commits apart (486 files differ) and a third
+on the same commit as the first.
+
+`make recall BASE=main --anchored`: 0 sources moved, the top 10 changed in 0 of 6,879
+queries, regress 54 of 57 on both, anchored unchanged (213 / 359 #1, 431 / 439 top 10,
+D49's main row). A single checkout ranks exactly as before.
+
+| rails store, vacuumed | MB |
+|---|---|
+| main, one checkout | 11.2 |
+| this, one checkout | 11.7 (+4.5%: the map, with its path) |
+| this, two worktrees | 14.3 |
+| two full copies | 23.4 |
+
+| `rq --index` of a worktree, 5 reps, load 8, ms | default jobs | one job |
+|---|---|---|
+| cold, main | 848 | 2,927 |
+| cold, this | 847 | 3,472 |
+| after a sibling on the same commit | 170 | 214 |
+| after a sibling 300 commits away (12,609 new symbols) | 321 | 841 |
+
+An earlier run at load 5 agreed: cold 619 / 620, same commit 152, 300 commits away 259
+(one job: cold 1,967 / 1,963, 178, 659). What a sibling pays for is reading and hashing
+every file, parsing what differs, and its own `git log` for commit times (56 ms of the
+same-commit pass, since commit times follow the checkout's branch).
+
+| 582 rails queries × 5 reps, interleaved, load 8–13, ms (median / p90 / p99) | recall | query phase | first answer |
+|---|---|---|---|
+| main, worktree A alone | 1.45 / 6.01 / 14.88 | 1.71 / 8.72 / 25.52 | 32.42 / 42.13 / 60.38 |
+| this, A alone | 1.53 / 6.31 / 18.29 | 1.79 / 9.80 / 28.92 | 3.22 / 11.66 / 31.36 |
+| this, A beside B | 1.60 / 6.69 / 18.48 | 1.84 / 10.09 / 28.05 | 3.23 / 12.24 / 30.55 |
+| this, B beside A | 1.54 / 6.71 / 18.82 | 1.81 / 10.43 / 31.60 | 3.48 / 12.63 / 33.98 |
+
+The price is one seek into `checkout_files` per candidate row: recall +5% at the median
+and p90, +23% at p99, where queries fetch thousands of rows. Making its `file_id` index
+cover `mtime` and `git_ts` saved a second seek (recall p90 5.37 → 5.26 in an earlier
+run); dropping the `checkouts` join for the root measured within noise and stayed. A
+sibling's versions cost the scan little: the screen passes its names, the fetch finds no
+rows. Plain clones (`make recall --bench`, 58 hand queries × 5, load 12–15): query phase
+2.8 / 18.7 → 3.1 / 22.1 ms, first answer 4.1 / 20.1 → 4.2 / 23.1.
+
+First answer in a worktree fell tenfold for a reason next door: every fast path in the
+git layer assumed `.git` is a directory, so a linked worktree forked git for HEAD and,
+with no stamp for its branch-file cache, ran `git diff` on every query. They now follow
+the `.git` file to the worktree's own dir and its `commondir`. Main paid the same, which
+is why its first answer here is 32 ms against the 2–4 ms a clone gets.
+
+*Correct from each worktree.* All 1,163 rails harness queries, top 10 from each worktree
+with its sibling indexed against the same worktree indexed alone: identical, 1,163 of
+1,163 from both, and no row from the other checkout. `tests/checkouts.rs` pins the
+reproduction (worktrees, clones of one remote, a detached checkout) and the sharing,
+`-a`, `--status` and `--drop` behaviors. rq's own main and `checkouts` worktrees on one
+database: main's first index stored 950 of its 1,511 symbols, sharing the rest.
+
+*Migration.* v23 on a rails database built by 0.59.0: 20–27 ms including the `--status`
+that opened it; foreign-key and integrity checks clean. Tables are rebuilt SQLite's way
+with foreign keys off for the upgrade transaction; enforcement is back on for every write
+after it. An rq older than 0.54.1 lowered the version of a newer database it opened, and
+re-running pre-v23 steps on the new shape would fail, so a database that already has
+`checkout_files` resumes the ladder at v23.
+
+*Rejected: identity by path, no sharing* (each checkout its own repo row, files and name
+index). No join, so search would match main exactly, and no versions table or release.
+But a second worktree would cost a cold pass (847 ms at rails against 170, and minutes on
+a monorepo where a first query blocks on it) and a full copy (+11.7 MB against +2.6),
+paid by every worktree an agent makes for a task. The sharing is about 80 lines (the
+versions table, `release`, the parse skip); the rest — checkout-scoped coverage, caches,
+scope and output — either shape needs.
+
+*Reverses if:* the per-row seek shows up against the 50 ms budget at scale, where
+denormalizing the checkout onto `symbols` (a row per checkout per symbol) trades the
+sharing back for a seekable `(checkout, name_lower)` index; or extraction stops reading
+the path, when bytes alone can key a version and renamed files share too.

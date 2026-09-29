@@ -53,7 +53,7 @@ rq Scope::name              # scope-aware: only the name defined inside Scope (o
 rq <query> -x/--lang LANG   # restrict to language: ruby|rust|go|python|typescript|javascript
                             #   (prefix-matched; r=ruby+rust; aliases rb/rs/ts/js)
 rq <query> -l/--limit N     # cap the number of results (default 10; 0 = every match)
-rq <query> -a/--all-repos   # search every indexed repo (default: just the current one)
+rq <query> -a/--all-repos   # search every indexed repo (default: just the checkout you're in)
 rq <query> --anchor F:LINE  # rank as if asked from that line (F:LINE[:COL])
 rq <query> --show           # print the definition's source (confident match only)
 rq <query> -o/--open        # open the best match in your editor
@@ -61,8 +61,8 @@ rq <query> -w/--web         # open the best match on GitHub, pinned to a pushed 
 rq --symbols FILE           # outline a file's definitions, in line order
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # seed the index with a subtree first (big monorepos)
-rq --drop [PATH|IDENTITY]   # remove a repo's index (opposite of --index)
-rq --status                 # indexing coverage per known repository
+rq --drop [PATH|IDENTITY]   # remove a checkout's index, or a repo's (opposite of --index)
+rq --status                 # indexing coverage per indexed checkout
 rq --usage                  # searches per day, by caller and flags
 ```
 
@@ -224,14 +224,19 @@ rq perform --show                                    # 122 candidates: prints th
 
 ### Other commands
 
-`rq --status --json` emits coverage rows (`repo`, `status`, `files`, `symbols`).
-`status` is `complete`, or `warming` while the index is partial — a first index
-still running, or a pass cut short that the next query continues. `files` and
-`symbols` count what's indexed so far. A dropped repo is gone from `--status`
-until a query or `--index` starts rebuilding it, and then reads `warming`.
-`rq --index --json` emits this run's counts (`files_added`, `symbols_added`)
-plus the repo's totals. `rq --drop --json` reports what it removed (`repo`,
-`files`, `symbols`, `dropped`). Single-result commands emit one object.
+`rq --status --json` emits a coverage row per checkout (`repo`, `root`,
+`status`, `files`, `symbols`): worktrees and clones of one remote share a
+`repo` and each has its own `root`. `status` is `complete`, or `warming` while
+the index is partial — a first index still running, or a pass cut short that
+the next query continues. `files` and `symbols` count what the checkout holds
+so far. A dropped checkout is gone from `--status` until a query or `--index`
+starts rebuilding it, and then reads `warming`. `rq --index --json` emits this
+run's counts (`files_added`, `symbols_added` — a file whose content a sibling
+checkout already stored is added without new symbols) plus the checkout's
+totals and `root`. `rq --drop` inside a checkout drops that checkout; `rq --drop
+IDENTITY` drops the repo with every checkout of it. `--json` reports what it
+removed (`repo`, `root` for a checkout, `files`, `symbols`, `dropped`).
+Single-result commands emit one object.
 
 These commands exit `0` whenever they ran, including when there's nothing to
 report: an empty `--status`, an `--index` that found nothing new, or a `--drop`
@@ -291,8 +296,9 @@ src/cli/mod.rs:1873  method store · BranchRefresh
   below every same-named definition that isn't (`local`)
 - **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope; `Foo.new` finds the constructor, or the class itself when it inherits one. A package or module scope is read off the file's path, so `hugolib.HugoSites`, `models.QuerySet` and `mpsc::Sender` work too
 - **path** — the query also matches the file's name
-- **current repo** — results are scoped to the repo you're in by default
-  (`-a`/`--all-repos` to search every indexed repo)
+- **current repo** — results are scoped to the checkout you're in by default,
+  so each worktree answers from its own branch (`-a`/`--all-repos` to search
+  every indexed repo)
 - **recency** — symbols in recently edited or committed files
 - **branch** — on a feature branch, files you're changing vs the trunk (and
   their directory neighbors) — where you're most likely working
@@ -364,7 +370,8 @@ rq indexes **definitions** — classes, modules, methods, functions. It does
 features. It's built for many repositories and millions of symbols, and never
 assumes everything belongs to one project. Repository identity is normalized
 from the git remote (`github.com/org/repo`), falling back to
-`local:/absolute/path`.
+`local:/absolute/path`. Worktrees and clones of one remote share that identity
+and store each file's content once, but each answers from its own files.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
