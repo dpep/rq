@@ -11,7 +11,9 @@ and aren't listed; see `git log` for those.
 
 Upgrading keeps each repo's index with its most recently registered checkout.
 Other worktrees and clones of the same remote re-index on their next search,
-parsing only the files that differ.
+parsing only the files that differ. An older rq can't read the upgraded
+database (a search fails with `no such column`); `rm` the database, or point
+`RQ_DB` elsewhere, to go back.
 
 ### Fixed
 - **Worktrees, clones and detached checkouts of one repo no longer overwrite
