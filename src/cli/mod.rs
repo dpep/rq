@@ -2074,7 +2074,7 @@ fn cached_branch_files(
         return (hit.files.clone(), Some(refresh), hit.cost_ms);
     }
 
-    // Nothing cached (or nowhere to cache it, e.g. a worktree): compute inline.
+    // Nothing cached (or no git state to stamp it with): compute inline.
     let t = std::time::Instant::now();
     let files = crate::index::branch_changed_files(root);
     let cost_ms = t.elapsed().as_millis() as u64;

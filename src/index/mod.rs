@@ -1151,23 +1151,37 @@ pub(crate) fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// Where a work tree's git state lives: its own dir (`HEAD`, `index`) and the
+/// common one (refs, `packed-refs`). The same dir for a plain clone. A linked
+/// worktree's `.git` is a file naming its own dir, which names the common one
+/// in `commondir`; a submodule's names a dir that is both.
+fn git_dirs(root: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let dot = root.join(".git");
+    if dot.is_dir() {
+        return Some((dot.clone(), dot));
+    }
+    let pointer = std::fs::read_to_string(&dot).ok()?;
+    let dir = root.join(pointer.trim().strip_prefix("gitdir:")?.trim());
+    let common = std::fs::read_to_string(dir.join("commondir"))
+        .map_or_else(|_| dir.clone(), |c| dir.join(c.trim()));
+    Some((dir, common))
+}
+
 /// The current HEAD commit sha, or `None` outside a git work tree.
 pub(crate) fn git_head(root: &Path) -> Option<String> {
-    // Resolved by reading `.git` rather than forking `git rev-parse`: this runs
-    // on every search to gate warming, and the fork costs ~10 ms while the
-    // lookup is one or two small file reads. A worktree or submodule points
-    // `.git` elsewhere, so those still ask git.
-    let git_dir = root.join(".git");
-    if !git_dir.is_dir() {
+    // Resolved by reading the git dir rather than forking `git rev-parse`:
+    // this runs on every search to gate warming, and the fork costs ~10 ms
+    // while the lookup is one or two small file reads.
+    let Some((git_dir, common)) = git_dirs(root) else {
         return git_output(root, &["rev-parse", "HEAD"]);
-    }
+    };
     let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let head = head.trim();
     let Some(git_ref) = head.strip_prefix("ref: ") else {
         // detached HEAD holds the commit itself
         return (!head.is_empty()).then(|| head.to_string());
     };
-    if let Ok(sha) = std::fs::read_to_string(git_dir.join(git_ref)) {
+    if let Ok(sha) = std::fs::read_to_string(common.join(git_ref)) {
         let sha = sha.trim();
         if !sha.is_empty() {
             return Some(sha.to_string());
@@ -1175,7 +1189,7 @@ pub(crate) fn git_head(root: &Path) -> Option<String> {
     }
     // Not a loose ref, so it's packed: `<sha> refs/heads/<branch>`. Matching on
     // the leading space keeps `refs/heads/main` from matching `…/mainline`.
-    let packed = std::fs::read_to_string(git_dir.join("packed-refs")).ok()?;
+    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
     packed
         .lines()
         .find_map(|l| l.strip_suffix(&format!(" {git_ref}")))
@@ -1362,10 +1376,7 @@ pub(crate) fn branch_changed_files(root: &Path) -> Vec<String> {
 /// than trusting it alone. `None` when `.git` isn't a plain directory, which
 /// means "don't cache this".
 pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
-    let git_dir = root.join(".git");
-    if !git_dir.is_dir() {
-        return None;
-    }
+    let (git_dir, _) = git_dirs(root)?;
     let stamp = |name: &str| -> u64 {
         std::fs::metadata(git_dir.join(name))
             .and_then(|m| m.modified())
@@ -1385,8 +1396,8 @@ pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
 /// is still `head`, or when `.git` isn't a plain directory, since resolving
 /// HEAD there means forking git.
 pub(crate) fn git_state_stamp(root: &Path, head: &str) -> Option<String> {
-    let git_dir = root.join(".git");
-    if !git_dir.is_dir() || head_state(root)? != head {
+    let (git_dir, _) = git_dirs(root)?;
+    if head_state(root)? != head {
         return None;
     }
     let index = std::fs::metadata(git_dir.join("index"))
@@ -1397,17 +1408,14 @@ pub(crate) fn git_state_stamp(root: &Path, head: &str) -> Option<String> {
     Some(format!("{}\n{head}\n{index}", root.display()))
 }
 
-/// The checked-out branch, read from `.git/HEAD` rather than forked out to
-/// `git rev-parse`. `None` for a detached HEAD (no branch to compare), or when
-/// `.git` isn't a plain directory — a worktree or submodule points elsewhere,
-/// and resolving that is git's job, so those fall back to the fork.
+/// The checked-out branch, read from the git dir's `HEAD` rather than forked
+/// out to `git rev-parse`. `None` for a detached HEAD (no branch to compare).
 fn head_branch(root: &Path) -> Option<String> {
-    let git_dir = root.join(".git");
-    if !git_dir.is_dir() {
+    let Some((git_dir, _)) = git_dirs(root) else {
         return is_git_repo(root)
             .then(|| git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]))
             .flatten();
-    }
+    };
     let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let branch = head.trim().strip_prefix("ref: refs/heads/")?;
     (!branch.is_empty()).then(|| branch.to_string())
@@ -1421,13 +1429,12 @@ fn is_trunk(branch: &str) -> bool {
 
 /// The trunk ref to diff against: `main` if it exists, else `master`.
 fn trunk_ref(root: &Path) -> Option<String> {
-    let git_dir = root.join(".git");
-    if !git_dir.is_dir() {
+    let Some((_, git_dir)) = git_dirs(root) else {
         return ["main", "master"]
             .into_iter()
             .find(|name| git_output(root, &["rev-parse", "--verify", "--quiet", name]).is_some())
             .map(str::to_string);
-    }
+    };
     // A branch is a loose ref file or a line in packed-refs; both are cheaper
     // to look at than a `git rev-parse` fork.
     let packed = std::fs::read_to_string(git_dir.join("packed-refs")).unwrap_or_default();

@@ -30,6 +30,11 @@ parsing only the files that differ.
   `--index` reports the `root` it indexed.
 - **`--drop` inside a checkout drops only that checkout.** `--drop <repo>`
   still drops the repo, now with every checkout of it.
+- **Searches in a linked worktree answer about 10× sooner.** rq read git's
+  state from disk only when `.git` was a directory, so in a `git worktree` it
+  forked git for HEAD and recomputed the branch's changed files on every query
+  (~25 ms on rails). It now follows `.git`'s pointer to the worktree's own git
+  dir, as git does.
 
 ## 0.59.0 — 2026-09-28
 
