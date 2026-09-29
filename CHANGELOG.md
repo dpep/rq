@@ -28,8 +28,10 @@ database (a search fails with `no such column`); `rm` the database, or point
 - **A file version is stored once per repo.** Identical files across checkouts
   share one parse and one set of rows, so a new worktree indexes in the time it
   takes to read and hash its files.
-- **`--all-repos` spans every checkout.** A definition several checkouts hold,
-  at the same path and line, is one result, taken from the checkout you're in.
+- **`--all-repos` spans every checkout.** A definition several checkouts hold
+  at the same path is one result, whatever line each has it on, taken from the
+  checkout you're in, else the newest. Checkouts deleted from disk are
+  forgotten.
 - **`--status` lists each checkout**, with its `root` in JSON beside `repo`;
   `--index` reports the `root` it indexed.
 - **`--drop` inside a checkout drops only that checkout.** `--drop <repo>`

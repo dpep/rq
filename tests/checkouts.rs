@@ -408,3 +408,25 @@ fn a_checkout_gone_from_disk_is_forgotten() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn all_repos_folds_a_definition_the_rest_of_its_file_moved() {
+    let (base, db, [a, b, _]) = three_worktrees("moved");
+    // A's `alpha` pushed `base` nowhere, but B grows a comment above `Gadget`
+    fs::write(
+        b.join("gadget.rb"),
+        format!("# a note\n\n{}", GADGET.replace("old_name", "new_name")),
+    )
+    .unwrap();
+    commit_all(&b, "note");
+    assert!(rq(&db, &b, &["--index"]).0);
+    let elsewhere = base.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let found = hits(&db, &elsewhere, "Gadget", &["-a", "-k", "class"]);
+    assert_eq!(names(&found), ["Gadget"], "one Gadget: {found:?}");
+    let found = hits(&db, &a, "Gadget", &["-a", "-k", "class"]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].2, a.to_string_lossy(), "the checkout asked in");
+
+    let _ = fs::remove_dir_all(&base);
+}

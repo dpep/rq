@@ -1330,10 +1330,10 @@ fn checkout_meta_keys(id: i64, root: &str) -> [String; 6] {
 }
 
 /// Unscoped rows fold across checkouts: a definition several checkouts hold —
-/// the same name, kind and parent at the same path and line, whether or not
-/// the rest of the file agrees — is kept from one of them, `prefer` when it
-/// holds it, else the newest, as [`read_from`] picks for one version. Within
-/// that checkout every row stays.
+/// the same name, kind and parent at the same path, wherever the rest of the
+/// file moved it — is kept from one of them, `prefer` when it holds it, else
+/// the newest, as [`read_from`] picks for one version. Within that checkout
+/// every row stays.
 fn fold_checkouts(
     rows: Vec<SymbolRow>,
     only: Option<Checkout>,
@@ -1342,11 +1342,11 @@ fn fold_checkouts(
     if only.is_some() {
         return rows;
     }
-    type Def = (i64, String, String, String, Option<String>, i64);
-    let def = |r: &SymbolRow| -> Def {
-        let (file, name, kind) = (r.file.clone(), r.name.clone(), r.kind.clone());
-        (r.repository_id, file, name, kind, r.parent.clone(), r.line)
-    };
+    type Def<'a> = (i64, &'a str, &'a str, &'a str, Option<&'a str>);
+    fn def(r: &SymbolRow) -> Def<'_> {
+        let (file, name, kind) = (r.file.as_str(), r.name.as_str(), r.kind.as_str());
+        (r.repository_id, file, name, kind, r.parent.as_deref())
+    }
     let rank = |checkout: i64| (Some(checkout) != prefer, std::cmp::Reverse(checkout));
     let mut winner: HashMap<Def, i64> = HashMap::new();
     for r in &rows {
@@ -1359,8 +1359,13 @@ fn fold_checkouts(
             })
             .or_insert(r.checkout_id);
     }
+    let keep: Vec<bool> = rows
+        .iter()
+        .map(|r| winner[&def(r)] == r.checkout_id)
+        .collect();
     rows.into_iter()
-        .filter(|r| winner[&def(r)] == r.checkout_id)
+        .zip(keep)
+        .filter_map(|(r, keep)| keep.then_some(r))
         .collect()
 }
 

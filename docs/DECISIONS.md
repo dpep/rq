@@ -2565,8 +2565,14 @@ per-checkout delta (D23's declined layering). A cold pass suspends the index onl
 
 *`-a`* searches every checkout. Rows of one version fold to one hit, the current
 checkout's when it maps it, else the newest checkout's; so do rows of different versions
-that define the same name, kind, parent and line at the same path, which is what two
-branches that differ elsewhere in the file look like. The first fold happens in SQL, one
+that define the same name, kind and parent at the same path, whatever line each is on,
+which is what two branches that differ elsewhere in the file look like. The first cut
+also required the same line, and an edit above a definition defeated it: with five
+rails worktrees `rq -a find_by` listed `core.rb`'s `find_by` three times (lines 255,
+259, 260), 40% of `-a` top 10s changed, and other repos' answers were pushed down —
+search, not navigation. Rejected: folding only when the lines are near, a threshold
+with nothing to derive it from; the path, name, kind and parent already say which
+definition it is, and the one kept is the checkout you're in or the newest. The first fold happens in SQL, one
 row per version, before the candidate cap: folding after it let k checkouts of one repo
 cut the cap to 8,000/k definitions, which dropped 8,771 of them across five rails
 worktrees and crowded out every other repo. The current-repo boost follows
