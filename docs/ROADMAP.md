@@ -144,6 +144,12 @@ signal slots into the scorer without threading new parameters.
       warms the branch's active files first, so the working set is indexed (and
       kept fresh) before the rest of the repo
 - [ ] ownership / activity hints
+- [ ] a new untracked file is found only once something reindexes the tree
+      (a commit, a checkout, `rq --index`): the staleness check runs `git
+      status --untracked-files=no` for speed (DECISIONS D16), so a search
+      right after creating a file misses what it defines. Seeing it cheaply
+      needs an untracked scan bounded by the directories already known, or
+      the file-system clock of each directory
 
 ## Phase 5 — Editor integration
 

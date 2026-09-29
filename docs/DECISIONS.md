@@ -2657,6 +2657,28 @@ with no stamp for its branch-file cache, ran `git diff` on every query. They now
 the `.git` file to the worktree's own dir and its `commondir`. Main paid the same, which
 is why its first answer here is 32 ms against the 2–4 ms a clone gets.
 
+*`-a` over five worktrees*, after the fixes above (rails clone at `main`, and
+worktrees 300, 600, 1,000 and 2,000 commits back, all indexed; 1,163 rails queries,
+`--limit 0`, from the 300 worktree). Against the union of what each worktree finds
+alone, counting a declaration folded into `also_in` as found: 0.59-era D50 (main)
+missed 22,134 of 243,452 definition sites in 26 queries and returned 169,968 duplicate
+rows in 1,006; now none missing and no duplicates. Latency, `--profile` phases, 3 reps
+interleaved, load 7–23, ms (median / p90 / p99):
+
+| | recall | first answer |
+|---|---|---|
+| main, one checkout | 1.53 / 6.17 / 18.27 | 3.33 / 11.79 / 31.70 |
+| this, one checkout | 1.54 / 6.19 / 17.68 | 3.13 / 11.55 / 28.14 |
+| main, `-a`, one checkout | 2.28 / 7.45 / 19.36 | 3.83 / 12.58 / 29.98 |
+| this, `-a`, one checkout | 2.33 / 7.66 / 22.28 | 3.86 / 12.72 / 31.19 |
+| main, `-a`, five | 2.72 / 15.12 / 54.01 | 4.84 / 22.88 / 70.09 |
+| this, `-a`, five | 2.72 / 13.07 / 39.77 | 4.38 / 18.12 / 47.83 |
+
+Five checkouts still cost `-a` about twice one at p90 and p99: the name index holds
+every version's names, and each surviving row pays the per-version checkout pick.
+Both of D50's levers were already in (the covering `checkout_files` index; the
+`checkouts` join measured within noise), so nothing further was tried.
+
 *Correct from each worktree.* All 1,163 rails harness queries, top 10 from each worktree
 with its sibling indexed against the same worktree indexed alone: identical, 1,163 of
 1,163 from both, and no row from the other checkout. `tests/checkouts.rs` pins the
