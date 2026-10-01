@@ -622,9 +622,11 @@ fn run_index(
         })
         .unwrap_or_else(|| detect_identity(root).to_string());
     let branch = head_branch(root);
-    let repo_id = store.upsert_repository(&identity, branch.as_deref())?;
-    let checkout =
-        store.upsert_checkout(repo_id, &root_display.to_string_lossy(), branch.as_deref())?;
+    let checkout = store.register_checkout(
+        &identity,
+        branch.as_deref(),
+        &root_display.to_string_lossy(),
+    )?;
 
     prune_missing_checkouts(store);
 

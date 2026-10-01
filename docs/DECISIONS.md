@@ -2997,6 +2997,21 @@ demand walk gets cheap enough that waiting for it costs nothing.
   cold pass's name index rebuild and a demand scan that finds nothing to write; and
   treating an EPERM pid as dead (above).
 
+- **`rq --index` behind another writer waits once, and says so.** With the 30 s wait, a
+  write lock held 45 s failed `rq --index` at 44.6 s and one held 120 s at 64.5 s (0.60.1:
+  6.8 s), all of it in `index: setup` on a complete checkout. Not a stale snapshot: the
+  first write (the repository upsert) timed out after its 30 s, and the failure path then
+  resolved the checkout's identity for output it never printed — a write that waited 30 s
+  more. Now the identity is resolved only on success; the setup's upserts share one
+  transaction that takes the write lock up front, so a busy writer costs one wait, not
+  one per statement; and the pass's waits use rq's own busy handler (the bound per wait,
+  20 ms polls) so that past a second an interactive `rq --index` prints once that it is
+  waiting for another rq writing the index. Each wait is still bounded on its own, not
+  summed over the pass: a long `rq --index` beside a warm interleaves many short waits,
+  and a pass-wide total would fail it for making progress. The audit of the index path
+  found no other read-then-write in a deferred transaction: the rest take the lock up
+  front or write first (`forget_file`, `set_file_git_ts`).
+
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 
 **Adopted**, 2026-09-30. The candidate list in `run_index` (`src/index/mod.rs`); e2e test

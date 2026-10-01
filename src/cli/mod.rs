@@ -1832,7 +1832,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         Ok(s) => s,
         Err(_) => return ExitCode::from(Failure::Database.exit_code()),
     };
-    let _ = store.set_busy_wait(PASS_BUSY_WAIT);
+    let _ = store.wait_out_writers(writer_wait(), None);
     let start = path
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -2736,9 +2736,17 @@ fn live_fallback_budget() -> Duration {
 }
 
 /// How long a pass nobody is waiting on — `rq --index`, a warm child — waits
-/// out another writer: a cold pass's end rebuilds the name index in one
-/// transaction, which on a large repo outlasts a search's busy timeout.
-const PASS_BUSY_WAIT: Duration = Duration::from_secs(30);
+/// out another writer, each time: a cold pass's end rebuilds the name index
+/// in one transaction, which on a large repo outlasts a search's busy timeout.
+fn writer_wait() -> Duration {
+    env_budget("RQ_WRITER_WAIT_MS", 30_000)
+}
+
+/// Tell the human at the terminal, once, why `rq --index` isn't moving.
+fn say_waiting() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| eprintln!("rq: waiting for another rq writing the index…"));
+}
 
 /// Budget for each pass of the *detached* warm child — generous, because
 /// nothing waits on it: the shell got its results and the child runs niced in
@@ -3400,13 +3408,15 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
         }
     };
     drop(open_span);
-    let _ = store.set_busy_wait(PASS_BUSY_WAIT);
+    let on_long_wait = show_progress(out, stderr_interactive()).then_some(say_waiting as fn());
+    let _ = store.wait_out_writers(writer_wait(), on_long_wait);
     let indexed = crate::index::index_under(&mut store, &root, &subdirs);
-    // After the index, which has just recorded this checkout's identity — so
-    // this is a cache hit rather than a second `git remote` fork.
-    let identity = resolve_identity(&store, &root);
     match indexed {
         Ok(stats) => {
+            // After the index, which has just recorded this checkout's
+            // identity — so this is a cache hit rather than a second `git
+            // remote` fork. Not on failure: a busy writer would cost a second wait.
+            let identity = resolve_identity(&store, &root);
             let subtree = !subdirs.is_empty();
             // distinguish this run's incremental work from the checkout's totals
             let totals = checkout_at(&store, &root).and_then(|c| store.checkout_totals(c.id).ok());

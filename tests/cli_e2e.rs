@@ -4406,3 +4406,35 @@ fn across_checkouts_ctrl_c_at_a_terminal_prints_what_is_known() {
     let _ = fs::remove_dir_all(&other);
     let _ = fs::remove_dir_all(&here);
 }
+
+#[test]
+fn an_index_blocked_by_another_writer_says_so_and_gives_up_after_one_wait() {
+    let (dir, db) = scratch("index-blocked");
+    fs::write(dir.join("a.rb"), "class Alpha\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    let holder = rusqlite::Connection::open(&db).unwrap();
+    holder
+        .execute_batch("BEGIN IMMEDIATE; INSERT OR REPLACE INTO meta VALUES ('held', '1');")
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    let (code, out, err) = rq_full(
+        &db,
+        &dir,
+        &["--index"],
+        &[
+            ("RQ_ASSUME_INTERACTIVE", "1"),
+            ("RQ_WRITER_WAIT_MS", "2000"),
+        ],
+        None,
+    );
+    let waited = start.elapsed();
+    holder.execute_batch("COMMIT").unwrap();
+    assert_eq!(code, 74, "{out}{err}");
+    assert!(err.contains("waiting for another rq"), "{err}");
+    // one wait, not one per write
+    assert!(waited < std::time::Duration::from_secs(4), "{waited:?}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

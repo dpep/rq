@@ -329,6 +329,39 @@ fn stamp_fresh(at: &str) -> bool {
 
 /// How long a write waits out another writer before failing "locked".
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a pass nobody waits on — `rq --index`, a warm child — waits out
+/// another writer, in ms (see [`Store::wait_out_writers`]).
+static WRITER_WAIT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Called while a pass has waited on another writer past [`WAIT_NOTICE`].
+static ON_LONG_WAIT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+/// How long a pass waits on another writer before saying so.
+const WAIT_NOTICE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The busy handler [`Store::wait_out_writers`] installs: each wait for the
+/// lock is bounded on its own, and past [`WAIT_NOTICE`] the hook hears of it.
+fn pass_busy(attempt: i32) -> bool {
+    use std::time::{Duration, Instant};
+    thread_local!(static SINCE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) });
+    let since = SINCE.with(|s| {
+        if attempt == 0 || s.get().is_none() {
+            s.set(Some(Instant::now()));
+        }
+        s.get().expect("set above")
+    });
+    let wait = Duration::from_millis(WRITER_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed));
+    let waited = since.elapsed();
+    if waited >= wait {
+        return false;
+    }
+    if waited >= WAIT_NOTICE
+        && let Some(hook) = ON_LONG_WAIT.get()
+    {
+        hook();
+    }
+    std::thread::sleep((wait - waited).min(Duration::from_millis(20)));
+    true
+}
 /// ...and how long an opener waits out another's schema upgrade.
 const UPGRADE_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -497,6 +530,27 @@ impl Store {
             id,
             repo: repository_id,
         })
+    }
+
+    /// Record the repository and its checkout at `root_path` as a pass starts:
+    /// its first writes, under the write lock taken up front, so a busy writer
+    /// costs one wait rather than one per statement.
+    pub(crate) fn register_checkout(
+        &self,
+        identity: &impl std::fmt::Display,
+        branch: Option<&str>,
+        root_path: &str,
+    ) -> Result<Checkout> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let repo = self.upsert_repository(identity, branch)?;
+        // a root that moved to another identity is forgotten in its own transaction
+        if self.checkout(root_path)?.is_some_and(|c| c.repo != repo) {
+            tx.commit()?;
+            return self.upsert_checkout(repo, root_path, branch);
+        }
+        let checkout = self.upsert_checkout(repo, root_path, branch)?;
+        tx.commit()?;
+        Ok(checkout)
     }
 
     /// A repository with one checkout, rooted at its identity's text — the
@@ -1396,10 +1450,23 @@ impl Store {
         self.conn.query_row("PRAGMA data_version", [], |r| r.get(0))
     }
 
-    /// Let this connection's writes wait out another writer for `wait`
-    /// instead of the default, which is sized for a search's latency.
-    pub(crate) fn set_busy_wait(&self, wait: std::time::Duration) -> Result<()> {
-        self.conn.busy_timeout(wait)
+    /// Let this connection's writes wait out another writer for `wait` each
+    /// time, instead of the default sized for a search's latency, calling
+    /// `on_long_wait` while a wait runs past a second. For a process that runs
+    /// one pass: the bound and the hook are the process's.
+    pub(crate) fn wait_out_writers(
+        &self,
+        wait: std::time::Duration,
+        on_long_wait: Option<fn()>,
+    ) -> Result<()> {
+        WRITER_WAIT_MS.store(
+            wait.as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if let Some(hook) = on_long_wait {
+            let _ = ON_LONG_WAIT.set(hook);
+        }
+        self.conn.busy_handler(Some(pass_busy))
     }
 
     /// Keep a span counted outside a pass (an older rq's partial index), unless
