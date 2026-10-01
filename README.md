@@ -159,7 +159,7 @@ A miss is one `{"status": …, "query": …}` object instead of results:
 | --- | --- | --- |
 | `no_match` | 1 | Definitive: nothing by that name. Under `-a`, `incomplete` lists the roots of checkouts that aren't fully indexed, which the miss can't speak for; a search in one indexes it. |
 | `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
-| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. When something matched but a file not read yet could hold a better match, the object also carries `warming` (as on a result) and the matches so far as `provisional`. |
+| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. It carries `warming` (as on a result) for how far this checkout's index got, and when something matched but a file not read yet could hold a better match, the matches so far as `provisional`. |
 | `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
 
 A match exits `0`. Every miss is non-zero, so `rq … && …` reads as "found

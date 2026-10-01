@@ -1208,12 +1208,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
         // search never pays for it.
-        let here = current.map(|c| c.id);
+        let here_id = current.map(|c| c.id);
         let elsewhere = match scope(current) {
             Scope::Nothing => None,
-            Scope::All => crate::search::scope_miss_owner(store, query, here, None, &ctx),
+            Scope::All => crate::search::scope_miss_owner(store, query, here_id, None, &ctx),
             Scope::Checkout(c) => {
-                crate::search::scope_miss_owner(store, query, here, Some(c), &ctx)
+                crate::search::scope_miss_owner(store, query, here_id, Some(c), &ctx)
             }
         };
         if let (Some(cost), Some(root)) = (&live_scan, root.as_deref()) {
@@ -1225,11 +1225,20 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             Scope::All if !incomplete => store.incomplete_roots().unwrap_or_default(),
             _ => Vec::new(),
         };
+        // how far this checkout's index got, as a provisional answer says
+        let warming = incomplete
+            .then_some(here.as_deref())
+            .flatten()
+            .and_then(|r| {
+                let continuing = warm_detach_enabled() && warming_ok;
+                warming_state(store, r, true, continuing)
+            });
         let code = no_match_code(
             out,
             query,
             interrupted,
             incomplete,
+            warming.as_ref(),
             elsewhere.as_deref(),
             &incomplete_roots,
         );
@@ -1580,11 +1589,12 @@ fn warming_note(hit: &crate::search::Hit, here: Option<&str>) -> Option<String> 
     })
 }
 
-/// "N of M files read", or "N files read" before the tree was enumerated.
+/// "N of M files read", or "N files read" when nothing counted the tree.
 fn read_so_far(w: &crate::search::Warming) -> String {
+    let files = |n| if n == 1 { "file" } else { "files" };
     match w.of {
-        Some(of) => format!("{} of {of} files read", w.read),
-        None => format!("{} files read", w.read),
+        Some(of) => format!("{} of {of} {} read", w.read, files(of)),
+        None => format!("{} {} read", w.read, files(w.read)),
     }
 }
 
@@ -1597,14 +1607,23 @@ fn emit_provisional(
     here: Option<&str>,
 ) -> Option<ExitCode> {
     let warming = hits.first().and_then(|h| h.warming.as_ref());
+    // A miss's status object, keys in its order, around hits in a result's.
+    #[derive(serde::Serialize)]
+    struct Provisional<'a> {
+        provisional: &'a [crate::search::Hit],
+        query: &'a str,
+        status: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warming: Option<&'a crate::search::Warming>,
+    }
     match args.out {
         Output::Json | Output::Ndjson => {
-            let obj = serde_json::json!({
-                "status": "warming",
-                "query": args.query,
-                "warming": warming,
-                "provisional": hits,
-            });
+            let obj = Provisional {
+                provisional: hits,
+                query: args.query,
+                status: "warming",
+                warming,
+            };
             let code = emit_json(args.out, &obj);
             (code != ExitCode::SUCCESS).then_some(code)
         }
@@ -1681,10 +1700,6 @@ fn spawn_detached_warm(root: &std::path::Path) {
     }
 }
 
-/// How long a warm lock is trusted without a liveness hit — past this, a
-/// stamp is a crashed warmer's leftover and a new child takes over.
-const WARM_LOCK_TTL_SECS: i64 = 600;
-
 /// How long a warm child's "nothing moved" verdict spares later hits the spawn,
 /// while git's own state still matches it. Only an unstaged edit to a tracked
 /// file can hide inside this window (it touches nothing in `.git`); a miss still
@@ -1746,7 +1761,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     // can't be made at all means another writer is busy; the next search retries.
     let held = |pid: u32, ts: i64| {
         let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
-        alive && now_unix() - ts < WARM_LOCK_TTL_SECS
+        alive && now_unix() - ts < crate::store::WARM_LOCK_TTL_SECS
     };
     if !store
         .claim_warm_lock(&key, std::process::id(), held)
@@ -1943,6 +1958,7 @@ fn no_match_code(
     query: &str,
     interrupted: bool,
     incomplete: bool,
+    warming: Option<&crate::search::Warming>,
     // Where the unqualified name *does* live, when a scope was named and
     // nothing in it matched. "Not in that scope" and "no such name" are
     // different answers and the second is the less useful one.
@@ -1968,14 +1984,29 @@ fn no_match_code(
             if !incomplete_roots.is_empty() {
                 obj["incomplete"] = serde_json::json!(incomplete_roots);
             }
+            if let Some(w) = warming {
+                obj["warming"] = serde_json::json!(w);
+            }
             let _ = emit_json(out, &obj); // the exit code below carries the miss
         }
         Output::Text if interrupted => {
             eprintln!("rq: indexing interrupted — run again to finish")
         }
-        Output::Text if incomplete => eprintln!(
-            "rq: still indexing — no match for {query:?} yet (run again, or `rq --index` to finish)"
-        ),
+        Output::Text if incomplete => {
+            let (state, read) = match warming {
+                Some(w) if w.interrupted => ("indexing stopped part-way", read_so_far(w)),
+                Some(w) => ("still indexing", read_so_far(w)),
+                None => ("still indexing", String::new()),
+            };
+            let read = if read.is_empty() {
+                read
+            } else {
+                format!(" ({read})")
+            };
+            eprintln!(
+                "rq: {state}{read} — no match for {query:?} yet (run again, or `rq --index` to finish)"
+            )
+        }
         Output::Text if elsewhere.is_some() => eprintln!(
             "rq: nothing matching {query:?} in that scope — the name is defined elsewhere: {}",
             elsewhere.unwrap_or_default()
@@ -3915,6 +3946,20 @@ mod tests {
         ] {
             assert_eq!(read_share_confidence(confidence, &w(read, of)), scaled);
         }
+    }
+
+    #[test]
+    fn files_read_counts_in_words() {
+        let w = |read, of| crate::search::Warming {
+            read,
+            of,
+            interrupted: false,
+            hint: String::new(),
+        };
+        assert_eq!(read_so_far(&w(1, None)), "1 file read");
+        assert_eq!(read_so_far(&w(2, None)), "2 files read");
+        assert_eq!(read_so_far(&w(1, Some(2))), "1 of 2 files read");
+        assert_eq!(read_so_far(&w(0, Some(1))), "0 of 1 file read");
     }
 
     #[test]

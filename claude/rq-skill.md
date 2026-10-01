@@ -86,7 +86,8 @@ On a miss, JSON is one `{"status": …, "query": …}` object, not results:
 - `scope_not_found` (exit 1) — nothing inside the scope you named; `found_in`
   says where the name does live. Re-ask with that scope.
 - `warming` (exit 2) — index incomplete; retry. Mostly after `--no-wait`;
-  otherwise rq indexes a cold repo before answering. When it found something a
+  otherwise rq indexes a cold repo before answering. Its `warming` field says
+  how far indexing got. When it found something a
   file not read yet could beat, the matches so far are in `provisional`: a
   lead, not an answer. (Under `-a`, a match from another checkout nothing is
   indexing answers instead, with `warming.interrupted` and the `rq --index`

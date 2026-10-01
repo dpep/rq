@@ -313,6 +313,10 @@ pub(crate) fn pid_alive(pid: i64) -> bool {
             || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
 }
 
+/// How long a warm lock is trusted without a liveness hit — past this, a
+/// stamp is a crashed warmer's leftover and a new child takes over.
+pub(crate) const WARM_LOCK_TTL_SECS: i64 = 600;
+
 /// How long a write waits out another writer before failing "locked".
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// ...and how long an opener waits out another's schema upgrade.
@@ -1370,10 +1374,12 @@ impl Store {
             })?
             .filter_map(|k| k.ok()?[prefix.len()..].parse().ok())
             .collect();
-        if let Some(pid) = self
-            .meta_get(&format!("warm_lock:{root}"))?
-            .and_then(|v| v.split_once(':')?.0.parse().ok())
-        {
+        // past its TTL the lock is a crashed warmer's, whose pid may be reused
+        if let Some(pid) = self.meta_get(&format!("warm_lock:{root}"))?.and_then(|v| {
+            let (pid, at) = v.split_once(':')?;
+            let fresh = now_unix() - at.parse::<i64>().ok()? < WARM_LOCK_TTL_SECS;
+            fresh.then(|| pid.parse().ok()).flatten()
+        }) {
             pids.push(pid);
         }
         let span = self
@@ -1811,6 +1817,12 @@ mod tests {
 
         store.end_pass("/repo", 8, None).unwrap();
         assert_eq!(store.passes("/repo").unwrap().1, None, "complete: no span");
+
+        // a live pid on a lock past its TTL is a reused pid, not a warmer
+        store
+            .meta_set("warm_lock:/old", &format!("{}:0", std::process::id()))
+            .unwrap();
+        assert!(store.passes("/old").unwrap().0.is_empty());
     }
 
     #[test]

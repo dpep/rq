@@ -34,8 +34,8 @@ index still being built now says so, in a new `warming` field.
 - **`warming` on results from an index still being built**: `{read, of,
   interrupted, hint}`, files indexed of the files the tree spans. Their
   `confidence` is scaled by `read / of`, since another definition may not be
-  indexed yet. Text output adds one line on stderr. `--status` rows for a
-  partial checkout carry the same `of`.
+  indexed yet. Text output adds one line on stderr. A `warming` miss carries the
+  same field, and `--status` rows for a partial checkout the same `of`.
 
 ## 0.60.1 — 2026-09-29
 

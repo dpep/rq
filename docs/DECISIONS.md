@@ -2924,3 +2924,11 @@ demand walk gets cheap enough that waiting for it costs nothing.
 - **Text says what JSON says.** With nothing continuing the index (`interrupted: true`),
   the stderr line reads "indexing stopped part-way" and names the `rq --index` that
   finishes it, rather than "still indexing".
+- **Paper cuts.** A `warming` miss carries the same `warming` object a provisional answer
+  does (and text its "N of M files read"); `provisional` lists its hits in a result's key
+  order rather than sorted, inside the same alphabetical status object a miss is; "1 file
+  read". A warm lock past its TTL no longer counts as a live indexer (`cmd_warm` already
+  took it over at that age), so a reused pid can't hold a scripted search for its whole
+  budget. A pass mark has no such bound — an explicit `rq --index` may run for as long as
+  the repo takes — so a crashed pass's mark whose pid is reused still reads as running
+  until the next pass clears it; `--wait` and Ctrl-C bound what that costs a search.

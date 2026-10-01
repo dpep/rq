@@ -4017,3 +4017,47 @@ fn status_reads_a_checkout_a_live_pass_is_filling_as_warming() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_warming_miss_says_how_far_the_index_got() {
+    let (dir, db) = prefix_and_exact("miss-progress");
+    rq(&db, &dir, &["--index", "app"]);
+
+    let (code, out, _) = rq_full(&db, &dir, &["Gadget", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 2, "{out}");
+    let v = json(&out);
+    assert_eq!(v["status"], "warming", "{out}");
+    assert_eq!(
+        (&v["warming"]["read"], &v["warming"]["of"]),
+        (&1.into(), &2.into()),
+        "{out}"
+    );
+
+    let (_, _, err) = rq_full(&db, &dir, &["Gadget", "--no-wait"], &[], None);
+    assert!(err.contains("1 of 2 files read"), "{err}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_provisional_match_has_a_results_shape() {
+    let (dir, db) = prefix_and_exact("provisional-shape");
+    rq(&db, &dir, &["--index", "app"]);
+    let (_, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    rq(&db, &dir, &["--index"]);
+    let (_, hit, _) = rq_full(&db, &dir, &["UserFieldsController", "--json"], &[], None);
+
+    // keys in the order a result lists them, not sorted
+    let keys = |s: &str| -> Vec<String> {
+        s.lines()
+            .filter(|l| l.starts_with("      \"") || l.starts_with("    \""))
+            .filter_map(|l| l.trim().split('"').nth(1).map(str::to_string))
+            .filter(|k| k != "warming" && k != "features")
+            .take(5)
+            .collect()
+    };
+    let provisional = out.split("\"provisional\": [").nth(1).unwrap_or_default();
+    assert_eq!(keys(provisional), keys(&hit), "{out}\n{hit}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
