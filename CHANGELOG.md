@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.2 — 2026-10-01
 
 Scripts that read exit `2` as "nothing found yet" keep working; the `warming`
 object may now carry the matches so far, under `provisional`. A result from an
