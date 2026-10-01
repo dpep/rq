@@ -3804,7 +3804,7 @@ fn hold_as_another_indexer(db: &Path, dir: &Path) -> (rusqlite::Connection, Stri
     let mark = format!("pass:{}:{}", root.display(), std::process::id());
     let conn = rusqlite::Connection::open(db).unwrap();
     conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s', 'now'))",
         rusqlite::params![mark],
     )
     .unwrap();
@@ -3914,7 +3914,7 @@ fn across_checkouts_this_ones_demand_walk_does_not_settle_another_still_indexing
     let conn = rusqlite::Connection::open(&db).unwrap();
     let mark = format!("pass:{}:{}", root.display(), std::process::id());
     conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s', 'now'))",
         rusqlite::params![mark],
     )
     .unwrap();
@@ -4032,7 +4032,7 @@ fn status_reads_a_checkout_a_live_pass_is_filling_as_warming() {
     conn.execute_batch("DELETE FROM coverage; DELETE FROM checkout_files;")
         .unwrap();
     conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s', 'now'))",
         rusqlite::params![format!("pass:{}:{}", root.display(), std::process::id())],
     )
     .unwrap();
@@ -4121,7 +4121,7 @@ fn complete_here_partial_elsewhere(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         std::process::id()
     );
     conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s', 'now'))",
         rusqlite::params![mark],
     )
     .unwrap();

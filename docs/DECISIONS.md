@@ -2951,9 +2951,13 @@ demand walk gets cheap enough that waiting for it costs nothing.
   order rather than sorted, inside the same alphabetical status object a miss is; "1 file
   read". A warm lock past its TTL no longer counts as a live indexer (`cmd_warm` already
   took it over at that age), so a reused pid can't hold a scripted search for its whole
-  budget. A pass mark has no such bound — an explicit `rq --index` may run for as long as
-  the repo takes — so a crashed pass's mark whose pid is reused still reads as running
-  until the next pass clears it; `--wait` and Ctrl-C bound what that costs a search.
+  budget. A pass mark gets the same bound: an explicit `rq --index` may run for as long as the
+  repo takes, so a pass renews its mark as it writes (each minute, well inside the
+  10-minute TTL), and a mark unrenewed past the TTL is a crashed pass's whose pid may be
+  reused — not counted, and cleared by the next pass. A pid that answers EPERM still
+  counts as alive: an `rq` run under `sudo` writing the same database is one, and reading
+  it dead would clear a live pass's mark and call its index `interrupted`; the TTL and
+  the stall bound below cover what a reused one costs.
 - **Second-hunt paper cuts.** A pass mark is written under the write lock taken up front:
   read then written in a deferred transaction, a busy writer failed the upgrade at once,
   busy timeout or not, so an `rq --index` during an `rq --warm` rebuild exited 74

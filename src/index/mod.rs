@@ -239,6 +239,8 @@ struct BatchWriter<'a> {
     /// whether batching is sized right.
     batches: usize,
     last_flush: Option<Instant>,
+    /// This pass's mark, when it holds one, and when it last renewed it.
+    mark: Option<(&'a str, Instant)>,
 }
 
 impl<'a> BatchWriter<'a> {
@@ -252,6 +254,7 @@ impl<'a> BatchWriter<'a> {
             write_time: Duration::ZERO,
             batches: 0,
             last_flush: None,
+            mark: None,
         }
     }
 
@@ -275,6 +278,13 @@ impl<'a> BatchWriter<'a> {
             self.batches += 1;
             self.buf.clear();
             self.last_flush = Some(Instant::now());
+            if let Some((root, renewed)) = &mut self.mark
+                && renewed.elapsed() >= crate::store::PASS_RENEWAL
+            {
+                // best-effort: a missed renewal costs nothing until the TTL
+                let _ = self.store.renew_pass(root, std::process::id());
+                *renewed = Instant::now();
+            }
         }
         Ok(())
     }
@@ -732,6 +742,7 @@ fn run_index(
     let mut fused_span = crate::profile::span("index: walk+parse+write");
     let (seen, completed, walked, write_time, batches) = {
         let mut writer = BatchWriter::new(&mut *store, checkout, root);
+        writer.mark = marked.then(|| (root_key.as_str(), Instant::now()));
         // Demand first: a query's exact or prefix match — the only kind a warming
         // search answers with — lives in a file containing its leaf name, and
         // reading for that is several times cheaper than parsing. So parse those

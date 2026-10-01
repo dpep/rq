@@ -313,9 +313,19 @@ pub(crate) fn pid_alive(pid: i64) -> bool {
             || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
 }
 
-/// How long a warm lock is trusted without a liveness hit — past this, a
-/// stamp is a crashed warmer's leftover and a new child takes over.
+/// How long a warm lock or a pass mark is trusted since it was stamped — past
+/// this, it is a crashed process's leftover whose pid may have been reused,
+/// and a new warmer takes over. A pass renews its mark as it writes.
 pub(crate) const WARM_LOCK_TTL_SECS: i64 = 600;
+
+/// How often a pass renews its mark, well inside the TTL.
+pub(crate) const PASS_RENEWAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a pass mark's or warm lock's stamp is inside the TTL.
+fn stamp_fresh(at: &str) -> bool {
+    at.parse::<i64>()
+        .is_ok_and(|at| now_unix() - at < WARM_LOCK_TTL_SECS)
+}
 
 /// How long a write waits out another writer before failing "locked".
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -1310,8 +1320,9 @@ impl Store {
 
     /// Mark a pass over the checkout at `root` as running in `pid`, and record
     /// how many source files the tree spans when the pass enumerated them. A
-    /// mark whose process is gone is a crashed pass's leftover, cleared here so
-    /// the marks never outgrow the live writers.
+    /// mark whose process is gone, or that went unrenewed past the TTL, is a
+    /// crashed pass's leftover, cleared here so the marks never outgrow the
+    /// live writers.
     pub(crate) fn begin_pass(&mut self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
         // it reads before it writes: deferred, a busy writer fails it at once
         let tx = self
@@ -1319,15 +1330,18 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let prefix = format!("pass:{root}:");
         let stale: Vec<String> = tx
-            .prepare("SELECT key FROM meta WHERE substr(key, 1, ?2) = ?1")?
-            .query_map(params![prefix, prefix.len() as i64], |r| r.get(0))?
-            .collect::<Result<Vec<String>>>()?
+            .prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?2) = ?1")?
+            .query_map(params![prefix, prefix.len() as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .filter(|k| {
+            .filter(|(k, at)| {
                 k[prefix.len()..]
                     .parse::<u32>()
-                    .is_ok_and(|p| p != pid && !pid_alive(i64::from(p)))
+                    .is_ok_and(|p| p != pid && (!pid_alive(i64::from(p)) || !stamp_fresh(at)))
             })
+            .map(|(k, _)| k)
             .collect();
         for key in stale {
             tx.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
@@ -1343,6 +1357,16 @@ impl Store {
             )?;
         }
         tx.commit()
+    }
+
+    /// Restamp `pid`'s mark from [`begin_pass`](Self::begin_pass), so a pass
+    /// that runs past the TTL isn't read as a crashed one.
+    pub(crate) fn renew_pass(&self, root: &str, pid: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE meta SET value = ?2 WHERE key = ?1",
+            params![format!("pass:{root}:{pid}"), now_unix().to_string()],
+        )?;
+        Ok(())
     }
 
     /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass), and record
@@ -1386,22 +1410,24 @@ impl Store {
     /// The processes marked as indexing the checkout at `root` (live or not —
     /// the caller asks), and the files its tree spanned when last enumerated.
     /// A warm child counts from its lock, which it holds across the passes it
-    /// runs, not only during one.
+    /// runs, not only during one. A mark or lock past its TTL is a crashed
+    /// process's, whose pid may be reused, and doesn't count.
     pub(crate) fn passes(&self, root: &str) -> Result<(Vec<u32>, Option<i64>)> {
         let prefix = format!("pass:{root}:");
         let mut pids: Vec<u32> = self
             .conn
-            .prepare_cached("SELECT key FROM meta WHERE substr(key, 1, ?2) = ?1")?
+            .prepare_cached("SELECT key, value FROM meta WHERE substr(key, 1, ?2) = ?1")?
             .query_map(params![prefix, prefix.len() as i64], |r| {
-                r.get::<_, String>(0)
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
-            .filter_map(|k| k.ok()?[prefix.len()..].parse().ok())
+            .filter_map(|row| {
+                let (k, at) = row.ok()?;
+                stamp_fresh(&at).then(|| k[prefix.len()..].parse().ok())?
+            })
             .collect();
-        // past its TTL the lock is a crashed warmer's, whose pid may be reused
         if let Some(pid) = self.meta_get(&format!("warm_lock:{root}"))?.and_then(|v| {
             let (pid, at) = v.split_once(':')?;
-            let fresh = now_unix() - at.parse::<i64>().ok()? < WARM_LOCK_TTL_SECS;
-            fresh.then(|| pid.parse().ok()).flatten()
+            stamp_fresh(at).then(|| pid.parse().ok())?
         }) {
             pids.push(pid);
         }
@@ -1873,6 +1899,28 @@ mod tests {
             .meta_set("warm_lock:/old", &format!("{}:0", std::process::id()))
             .unwrap();
         assert!(store.passes("/old").unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn a_pass_mark_unrenewed_past_its_ttl_is_a_crashed_passs() {
+        // a crashed pass whose pid was reused by a live process
+        let mut store = Store::open_in_memory().unwrap();
+        let me = std::process::id();
+        let stale = now_unix() - WARM_LOCK_TTL_SECS - 1;
+        store
+            .meta_set(&format!("pass:/repo:{me}"), &stale.to_string())
+            .unwrap();
+        assert!(store.passes("/repo").unwrap().0.is_empty());
+        assert!(!store.indexed_by_others("/repo"));
+
+        // a running pass renews its mark, and a stale one is cleared
+        store.renew_pass("/repo", me).unwrap();
+        assert_eq!(store.passes("/repo").unwrap().0, vec![me]);
+        store
+            .meta_set(&format!("pass:/repo:{me}"), &stale.to_string())
+            .unwrap();
+        store.begin_pass("/repo", 7, None).unwrap();
+        assert_eq!(store.passes("/repo").unwrap().0, vec![7]);
     }
 
     #[test]
