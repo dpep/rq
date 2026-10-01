@@ -3732,6 +3732,16 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
     assert!(out.contains("class User"), "{out}");
     assert!(err.contains("1 of 2 files read"), "{err}");
     assert!(!err.contains("narrow the query"), "{err}");
+    // ...and --open says the same before handing off
+    let (code, _, err) = rq_full(
+        &db,
+        &dir,
+        &["User", "--open", "--no-wait"],
+        &[("RQ_OPEN", "true")],
+        None,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("1 of 2 files read"), "{err}");
 
     // once complete, the same answer carries no disclosure and its own confidence
     rq(&db, &dir, &["--index"]);
@@ -3961,15 +3971,29 @@ fn a_tree_never_counted_is_counted_when_asked_and_never_null() {
     // an index an older rq left half-built recorded no span
     let (dir, db) = prefix_and_exact("span-missing");
     rq(&db, &dir, &["--index", "models"]);
-    rusqlite::Connection::open(&db)
-        .unwrap()
-        .execute("DELETE FROM meta WHERE key LIKE 'span:%'", [])
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("DELETE FROM meta WHERE key LIKE 'span:%'", [])
+        .unwrap();
+
+    // --status counts it as a hit does
+    let (_, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert_eq!(json(&out)[0]["of"], 2, "{out}");
+    conn.execute("DELETE FROM meta WHERE key LIKE 'span:%'", [])
         .unwrap();
 
     let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
     assert_eq!(code, 0, "{out}");
     let w = &json(&out)[0]["warming"];
     assert_eq!((&w["read"], &w["of"]), (&1.into(), &2.into()), "{out}");
+    // ...once: the count is kept for the next query
+    let kept: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM meta WHERE key LIKE 'span:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, 1);
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -4041,6 +4065,13 @@ fn a_warming_miss_says_how_far_the_index_got() {
 
     let (_, _, err) = rq_full(&db, &dir, &["Gadget", "--no-wait"], &[], None);
     assert!(err.contains("1 of 2 files read"), "{err}");
+
+    // keys in the order a result's `warming` lists them, as one -J stream mixes both
+    let (_, out, _) = rq_full(&db, &dir, &["Gadget", "--ndjson", "--no-wait"], &[], None);
+    assert!(
+        out.contains("\"warming\":{\"read\":1,\"of\":2,\"interrupted\":"),
+        "{out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -4179,6 +4210,50 @@ fn a_warm_child_keeps_going_past_its_budget_while_it_makes_progress() {
     let rows = json(&out);
     assert_eq!(rows[0]["status"], "complete", "{out}");
     assert_eq!(rows[0]["files"], 60, "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_sparse_checkout_spans_only_the_files_it_has() {
+    let (dir, db) = scratch("sparse");
+    for d in 0..5 {
+        fs::create_dir_all(dir.join(format!("d{d}"))).unwrap();
+        for f in 0..2 {
+            fs::write(
+                dir.join(format!("d{d}/w{f}.rb")),
+                format!("class W{d}x{f}\nend\n"),
+            )
+            .unwrap();
+        }
+    }
+    git_init_commit(&dir);
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    };
+    git(&["sparse-checkout", "set", "d0"]);
+    // skip-worktree on a file still on disk (hiding local edits) keeps it
+    git(&["update-index", "--skip-worktree", "d0/w0.rb"]);
+    assert!(!dir.join("d1").exists(), "the cone leaves d1 out");
+    rq(&db, &dir, &["--index", "--path", "d0"]);
+
+    let (code, out, _) = rq_full(&db, &dir, &["W0x", "--json", "--no-wait"], &[], None);
+    assert!(code == 0 || code == 2, "{out}");
+    let v = json(&out);
+    let w = if v.is_array() {
+        &v[0]["warming"]
+    } else {
+        &v["warming"]
+    };
+    assert_eq!((&w["read"], &w["of"]), (&2.into(), &2.into()), "{out}");
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -321,7 +321,10 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
         .flat_map(|p| p.extensions().iter().map(|e| format!("*.{e}")))
         .collect();
     let mut cmd = git(root);
-    cmd.args(["ls-files", "-z", "--cached", "--"]).args(&globs);
+    // `-t` tags skip-worktree entries `S`: a sparse checkout's files outside
+    // its cone, which aren't on disk to read
+    cmd.args(["ls-files", "-z", "-t", "--cached", "--"])
+        .args(&globs);
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
@@ -329,8 +332,12 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
     Some(
         out.stdout
             .split(|&b| b == 0)
-            .filter(|s| !s.is_empty())
-            .map(|s| root.join(String::from_utf8_lossy(s).as_ref()))
+            .filter_map(|entry| {
+                let (tag, path) = (entry.first()?, entry.get(2..)?);
+                let path = root.join(String::from_utf8_lossy(path).as_ref());
+                // skip-worktree also hides local edits to a file still there
+                (*tag != b'S' || path.exists()).then_some(path)
+            })
             .collect(),
     )
 }

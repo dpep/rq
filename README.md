@@ -149,7 +149,7 @@ that doesn't apply is **omitted**, never `null`.
 | `total` | search | Matches the window was drawn from, before `--limit`. |
 | `explain` | `--explain` | Feature name → score contribution, in whole points. |
 | `query` | batch mode | The stdin line this row answers. |
-| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, hint}`: files the index holds, files the tree spans (what git tracks plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it any more, and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of`. |
+| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, hint}`: files the index holds, files the tree spans (what git tracks, less a sparse checkout's files outside its cone, plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it any more, and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of`. |
 
 ### Misses and exit codes
 

@@ -2951,3 +2951,17 @@ demand walk gets cheap enough that waiting for it costs nothing.
   budget. A pass mark has no such bound — an explicit `rq --index` may run for as long as
   the repo takes — so a crashed pass's mark whose pid is reused still reads as running
   until the next pass clears it; `--wait` and Ctrl-C bound what that costs a search.
+- **Second-hunt paper cuts.** A pass mark is written under the write lock taken up front:
+  read then written in a deferred transaction, a busy writer failed the upgrade at once,
+  busy timeout or not, so an `rq --index` during an `rq --warm` rebuild exited 74
+  "database is locked" (4 of 12 runs) and a search's own warm died silently (now logged
+  at `-v`). A miss's `warming` lists its keys in a result's order, as a provisional
+  answer's does, so one `-J` stream never mixes two. `of` for a partial index an older rq
+  left without one is counted once and kept — a best-effort write that never waits on a
+  busy writer, whose pass records its own — rather than recounted by every query that
+  shows the checkout (`git ls-files` on 97k files, ~200 ms of each first answer), and
+  `--status` reports that same `of`. A sparse checkout's files outside its cone
+  (skip-worktree and not on disk) are neither enumerated nor counted, so 2 files of a
+  10-file tree read "2 of 2", not "2 of 10"; a skip-worktree file still on disk (hiding
+  local edits) stays in. `--open` prints the stderr line `--show` does for a settled
+  answer from a partial index.

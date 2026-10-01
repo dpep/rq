@@ -1365,6 +1365,18 @@ impl Store {
         }
     }
 
+    /// Keep a span counted outside a pass (an older rq's partial index), unless
+    /// a pass recorded one meanwhile. Best-effort and without waiting: a busy
+    /// writer means a pass, which records its own.
+    pub(crate) fn keep_span(&self, root: &str, span: usize) {
+        let _ = self.conn.busy_timeout(std::time::Duration::ZERO);
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
+            params![format!("span:{root}"), span.to_string()],
+        );
+        let _ = self.conn.busy_timeout(BUSY_WAIT);
+    }
+
     /// The processes marked as indexing the checkout at `root` (live or not —
     /// the caller asks), and the files its tree spanned when last enumerated.
     /// A warm child counts from its lock, which it holds across the passes it

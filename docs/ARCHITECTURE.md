@@ -566,9 +566,10 @@ The index is **never assumed complete**.
   warm lock) — so one warm ending isn't taken for the index being done.
 - **Every index hit from an incomplete checkout says so**: `warming: {read, of,
   interrupted, hint}` (files held, files the tree spans as the last pass
-  enumerated them — `span:<root>` in `meta`, git's tracked files plus any the
-  index holds that git doesn't, so `read` and `of` count one population; counted
-  on demand when no pass recorded it; dropped once complete — whether nothing is
+  enumerated them — `span:<root>` in `meta`, git's tracked files (less a sparse
+  checkout's outside its cone) plus any the index holds that git doesn't, so
+  `read` and `of` count one population; counted once, and kept, when no pass
+  recorded it; dropped once complete — whether nothing is
   indexing it, and what to run), with `confidence` scaled by `read / of`,
   floored to whole hundredths, and 0 when nothing could count the tree (outside
   git). `--status` reports the same `of`, and a checkout a live pass holds as

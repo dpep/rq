@@ -1363,6 +1363,11 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Returns before the normal print / warm-join — opening should be snappy,
     // and a launcher `exec`s.
     if counted_early && (open || web) {
+        if out == Output::Text
+            && let Some(note) = hits.first().and_then(|h| warming_note(h, here.as_deref()))
+        {
+            eprintln!("{note}");
+        }
         return finish_open(&hits, root.as_deref(), web);
     }
 
@@ -1560,10 +1565,7 @@ fn warming_state(
     }
     let checkout = store.checkout(root).ok().flatten()?;
     let read = store.checkout_file_count(checkout.id).unwrap_or(0);
-    let (_, span) = store.passes(root).unwrap_or_default();
-    let span = span.or_else(|| {
-        crate::index::count_span(store, std::path::Path::new(root), checkout.id).map(|s| s as i64)
-    });
+    let span = tree_span(store, root, checkout.id);
     let interrupted = !continuing && !store.indexed_by_others(root);
     let index = index_command(root, here);
     let hint = if interrupted {
@@ -1579,6 +1581,18 @@ fn warming_state(
         interrupted,
         hint,
     })
+}
+
+/// Files the tree at `root` spans: as the last pass recorded it, or counted
+/// now — and kept — for a partial index an older rq left without one.
+fn tree_span(store: &Store, root: &str, checkout: i64) -> Option<i64> {
+    if let Some(span) = store.passes(root).ok().and_then(|(_, span)| span) {
+        return Some(span);
+    }
+    let _span = crate::profile::span("warming: count the tree");
+    let span = crate::index::count_span(store, std::path::Path::new(root), checkout)?;
+    store.keep_span(root, span);
+    Some(span as i64)
 }
 
 /// Confidence on a partial index, scaled by the share of the tree read — the
@@ -2028,16 +2042,25 @@ fn no_match_code(
     };
     match out {
         Output::Json | Output::Ndjson => {
-            let mut obj = serde_json::json!({ "status": status, "query": query });
-            if let Some(found_in) = elsewhere {
-                obj["found_in"] = serde_json::json!(found_in);
+            // keys sorted, as a status object's are; `warming` in a result's order
+            #[derive(serde::Serialize)]
+            struct Miss<'a> {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                found_in: Option<&'a str>,
+                #[serde(skip_serializing_if = "<[String]>::is_empty")]
+                incomplete: &'a [String],
+                query: &'a str,
+                status: &'a str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                warming: Option<&'a crate::search::Warming>,
             }
-            if !incomplete_roots.is_empty() {
-                obj["incomplete"] = serde_json::json!(incomplete_roots);
-            }
-            if let Some(w) = warming {
-                obj["warming"] = serde_json::json!(w);
-            }
+            let obj = Miss {
+                found_in: elsewhere,
+                incomplete: incomplete_roots,
+                query,
+                status,
+                warming,
+            };
             let _ = emit_json(out, &obj); // the exit code below carries the miss
         }
         Output::Text if interrupted => {
@@ -3508,10 +3531,19 @@ fn cmd_status(out: Output) -> ExitCode {
         }
     };
     crate::index::prune_missing_checkouts(&store);
-    let rows = match store.coverage_overview() {
+    let mut rows = match store.coverage_overview() {
         Ok(rows) => rows,
         Err(e) => return fail(out, Failure::Database, format_args!("rq --status: {e}")),
     };
+    // the same `of` a hit from the checkout reports
+    for row in rows
+        .iter_mut()
+        .filter(|r| r.status != "complete" && r.of.is_none())
+    {
+        if let Some(checkout) = store.checkout(&row.root).ok().flatten() {
+            row.of = tree_span(&store, &row.root, checkout.id).map(|s| s.max(row.files));
+        }
+    }
     if let Some(code) = emit_rows(out, &rows) {
         return code;
     }
