@@ -1837,12 +1837,17 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         }
     }
 
-    // Sweep until coverage completes, the budget runs out, or a pass stops
-    // making progress (each pass converges — mtime-skips what's done).
-    let deadline = std::time::Instant::now() + warm_bg_budget();
+    // Sweep until coverage completes or a pass stops making progress (each
+    // pass converges — mtime-skips what's done). A search that found this
+    // child holding the lock bowed out and told its caller rq is still
+    // indexing, so the budget bounds a pass, not the sweep: stopping on it
+    // would leave the checkout part-read with nobody indexing it (D52).
+    let deadline = std::time::Instant::now() + warm_sweep_cap();
     let active = crate::index::branch_changed_files(&root);
     loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let remaining = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(warm_bg_budget());
         if remaining.is_zero() {
             break;
         }
@@ -2669,10 +2674,17 @@ fn live_fallback_budget() -> Duration {
     env_budget("RQ_FALLBACK_BUDGET_MS", 250)
 }
 
-/// Budget for the *detached* warm child — generous, because nothing waits on
-/// it: the shell got its results and the child runs niced in the background.
+/// Budget for each pass of the *detached* warm child — generous, because
+/// nothing waits on it: the shell got its results and the child runs niced in
+/// the background.
 fn warm_bg_budget() -> Duration {
     env_budget("RQ_WARM_BUDGET_MS", 20_000)
+}
+
+/// How long a warm child sweeps in all. Inside the lock's TTL, so a live
+/// child's lock never reads as a crashed one's and lets a second warmer in.
+fn warm_sweep_cap() -> Duration {
+    Duration::from_secs(crate::store::WARM_LOCK_TTL_SECS as u64 / 2)
 }
 
 /// Whether a search hands leftover warming to a detached child (default) or

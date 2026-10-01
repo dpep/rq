@@ -608,8 +608,10 @@ invocation prints results first; leftover index warming is handed to a
 **detached child**: after results print, the search re-execs `rq --warm <root>`
 with null stdio in its own process group and exits — the shell only ever waits
 on the answer. The
-child runs niced (and with throttled disk I/O on macOS) on a seconds-scale
-budget (`RQ_WARM_BUDGET_MS`), sweeping until coverage completes, and is
+child runs niced (and with throttled disk I/O on macOS), each pass on a
+seconds-scale budget (`RQ_WARM_BUDGET_MS`), sweeping until coverage completes
+or a pass makes no progress — at most half the lock's TTL, so a live child's
+lock never reads as a crashed one's — and is
 single-flighted per checkout via a pid-stamped lock in `meta`, so a burst of
 queries runs at most one warmer. On a complete repo the child is spawned after
 a hit and first asks whether anything moved; usually nothing has, and it

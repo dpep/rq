@@ -4156,3 +4156,29 @@ fn across_checkouts_a_complete_ones_search_follows_another_indexer() {
     let _ = fs::remove_dir_all(&other);
     let _ = fs::remove_dir_all(&here);
 }
+
+#[test]
+fn a_warm_child_keeps_going_past_its_budget_while_it_makes_progress() {
+    // one file a pass, and a budget a few passes fill: a child that stopped
+    // at its budget would leave the checkout part-read with nobody indexing it
+    let (dir, db) = scratch("warm-past-budget");
+    for i in 0..60 {
+        fs::write(dir.join(format!("w{i}.rb")), format!("class W{i}\nend\n")).unwrap();
+    }
+    git_init_commit(&dir);
+    let root = dir.canonicalize().unwrap();
+    let (code, _, _) = rq_full(
+        &db,
+        &dir,
+        &["--warm", root.to_str().unwrap()],
+        &[("RQ_WARM_BUDGET_MS", "200"), ("RQ_COLLECT_CAP", "1")],
+        None,
+    );
+    assert_eq!(code, 0);
+    let (_, out) = rq(&db, &dir, &["--status", "--json"]);
+    let rows = json(&out);
+    assert_eq!(rows[0]["status"], "complete", "{out}");
+    assert_eq!(rows[0]["files"], 60, "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

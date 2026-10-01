@@ -2918,6 +2918,18 @@ demand walk gets cheap enough that waiting for it costs nothing.
   one. Outside git nothing counts the tree short of walking it, so `of` is omitted (never
   `null`) and `confidence` is 0: the share read is what backs it, and an unknown share
   backs none. Scaling is in whole hundredths (29 of 100 at 1.0 is 0.29, not 0.28).
+- **"Still indexing" is a promise a process keeps.** `interrupted: false` told a caller
+  rq was still indexing, but the warm a search left behind bowed out to an `rq --warm`
+  already holding the lock, and that child stopped at its 20 s budget: in a second hunt,
+  10 of 16 searches 1 s into an `rq --warm` rebuild of the 100k corpus left coverage at
+  38–85k of 97k with nothing indexing it until the next search. The budget now bounds a
+  pass, not the sweep: a warm child keeps sweeping while its passes make progress, until
+  the checkout completes, within half the warm lock's TTL (5 min), so its lock never
+  reads as a crashed warmer's. Rejected: respawning a successor at the budget, which is
+  the same sweep with a process boundary and a race for the lock in the middle; and
+  claiming `continuing` only when some process will finish, which a search can't know
+  of a child it didn't start. A repo that needs more than 5 minutes still stops part-way,
+  as a crashed warm does.
 - **`--status` reads a checkout a live pass holds as `warming`**, with the same `of`. A
   cold pass reads every file for a search's name before it writes any, so for seconds it
   showed `unindexed 0 files` mid-rebuild.
