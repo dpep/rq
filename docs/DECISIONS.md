@@ -2893,3 +2893,12 @@ demand walk gets cheap enough that waiting for it costs nothing.
   the suspended name index and read commit times (~1.2 s) that the still-running pass
   would redo at its end. A pass cut short while another live pass fills the checkout now
   leaves both to that one. Piped `--wait 3`, 1 s into the rebuild: 4.0–5.3 s → 2.8–3.2 s.
+- **Settled means no file a retry would read can beat it.** Under `-a`, the demand walk
+  read only this checkout, but its flag settled a prefix match from any checkout; and a
+  prefix match from a checkout nothing was indexing stayed provisional forever, asking for
+  a retry that reads no more of it. A literal match now settles once neither this checkout
+  (demand walk done, or nothing left to warm) nor another checkout someone is indexing can
+  hold the name unread; a fuzzy one once neither has anything unread. `continuing` (and so
+  `interrupted: false`) belongs only to the checkout this search leaves a warm behind for,
+  and another checkout's hint names its root (`rq --index <root>`). Outside `-a` nothing
+  changes: this checkout is the only one read.

@@ -1011,6 +1011,14 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     drop(setup_span);
     let mut query_span = crate::profile::span("query");
     let label = repo_label(root.as_deref());
+    let here = root.as_deref().map(root_key);
+    // What a retry would read that this search hasn't, which is what a
+    // partial index's top match must not be beatable by to answer (D52).
+    let unread = |store: &Store, name_read: bool| Unread {
+        here: want_warm && !here.as_deref().is_some_and(|r| is_complete_key(store, r)),
+        name_read,
+        elsewhere: all_repos && others_open(store, here.as_deref()),
+    };
     let mut drew_progress = false;
     let mut last_draw = poll_start;
     // Rank one deeper than asked: confidence is a comparison against the
@@ -1031,10 +1039,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 if !polling {
                     break h;
                 }
-                let demanded = demanded.load(std::sync::atomic::Ordering::Acquire);
+                let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
                 let answered = shown(args, cwd.as_deref(), root.as_deref(), &h)
                     .first()
-                    .is_some_and(|top| settled(top, demanded));
+                    .is_some_and(|top| settled(top, here.as_deref(), &unread));
                 // Our own warm ending says nothing about the index while
                 // another process is still filling it.
                 let indexing = !warm_done.load(std::sync::atomic::Ordering::Relaxed)
@@ -1252,10 +1260,14 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // A hit from a checkout still being indexed says how far the index got,
     // and a top match that isn't `settled` is no answer yet: it goes out as
     // `warming` (exit 2), its hits provisional (D52).
-    disclose_warming(store, &mut hits, warm_detach_enabled() && warming_ok);
-    let provisional = hits.first().is_some_and(|top| {
-        top.warming.is_some() && !settled(top, demanded.load(std::sync::atomic::Ordering::Acquire))
-    });
+    let continuing = (warm_detach_enabled() && warming_ok)
+        .then_some(here.as_deref())
+        .flatten();
+    disclose_warming(store, &mut hits, here.as_deref(), continuing);
+    let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
+    let provisional = hits
+        .first()
+        .is_some_and(|top| top.warming.is_some() && !settled(top, here.as_deref(), &unread));
     let verdict = if provisional { "warming" } else { "hit" };
 
     // A process's first write can stall for milliseconds on a busy machine
@@ -1402,15 +1414,34 @@ fn shown(
     hits
 }
 
+/// What a retry of this search would read that this one hasn't.
+struct Unread {
+    /// More of this checkout: it isn't complete, and a search here warms it.
+    here: bool,
+    /// ...though not a file of it containing the name: this search's warm
+    /// read them all.
+    name_read: bool,
+    /// More of another checkout `-a` reads, which another process is indexing.
+    elsewhere: bool,
+}
+
 /// Whether the top match on an index still being filled answers the query:
-/// an exact match in the capitals typed does, though another definition of
-/// the name may be unread (the hit says so); any literal match does once every
-/// file containing the name has been read (`demanded`), since no unread file
-/// can then beat it on the name. A fuzzy or path match waits for the whole
-/// index (D52).
-fn settled(top: &crate::search::Hit, demanded: bool) -> bool {
+/// nothing a retry would read can beat it. An exact match in the capitals
+/// typed answers regardless, though another definition of the name may be
+/// unread (the hit says so); a literal match once no file a retry would read
+/// can hold the name; a fuzzy or path match once a retry would read nothing.
+/// A checkout nothing is indexing, other than this one, is as read as it will
+/// get, so its hit answers rather than asking for a retry that can't help (D52).
+fn settled(top: &crate::search::Hit, here: Option<&str>, unread: &Unread) -> bool {
     let has = |name| top.features.iter().any(|f| f.name == name);
-    (has("exact") && has("case")) || (demanded && crate::search::is_literal(&top.features))
+    if has("exact") && has("case") {
+        return true;
+    }
+    let literal = crate::search::is_literal(&top.features);
+    // the demand walk read this checkout's files, not another's
+    let from_here = top.root.as_deref().is_none_or(|r| Some(r) == here);
+    let here_open = unread.here && !(unread.name_read && literal && from_here);
+    !here_open && !unread.elsewhere
 }
 
 /// Whether another poll, after the sleep, costing what the last one did,
@@ -1420,12 +1451,21 @@ fn poll_fits(now: std::time::Instant, deadline: std::time::Instant, cost: Durati
 }
 
 fn is_complete(store: &Store, root: &std::path::Path) -> bool {
+    is_complete_key(store, &root_key(root))
+}
+
+fn is_complete_key(store: &Store, key: &str) -> bool {
+    store.coverage_status(key).ok().flatten().as_deref() == Some("complete")
+}
+
+/// Whether another process is indexing a checkout other than `here` that
+/// isn't complete yet.
+fn others_open(store: &Store, here: Option<&str>) -> bool {
     store
-        .coverage_status(&root_key(root))
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some("complete")
+        .incomplete_roots()
+        .unwrap_or_default()
+        .iter()
+        .any(|r| Some(r.as_str()) != here && store.indexed_by_others(r))
 }
 
 /// Whether a process other than this one is indexing the checkout at `root`.
@@ -1434,8 +1474,13 @@ fn others_indexing(store: &Store, root: &std::path::Path) -> bool {
 }
 
 /// Mark each index hit from a checkout that isn't fully indexed with how far
-/// its index got. `continuing`: this rq leaves a warm behind it.
-fn disclose_warming(store: &Store, hits: &mut [crate::search::Hit], continuing: bool) {
+/// its index got. `continuing`: the checkout this rq leaves a warm behind for.
+fn disclose_warming(
+    store: &Store,
+    hits: &mut [crate::search::Hit],
+    here: Option<&str>,
+    continuing: Option<&str>,
+) {
     let mut seen: HashMap<String, Option<crate::search::Warming>> = HashMap::new();
     for hit in hits.iter_mut() {
         if hit.source != crate::search::Source::Index {
@@ -1446,14 +1491,22 @@ fn disclose_warming(store: &Store, hits: &mut [crate::search::Hit], continuing: 
         };
         hit.warming = seen
             .entry(root.to_string())
-            .or_insert_with(|| warming_state(store, root, continuing))
+            .or_insert_with(|| {
+                warming_state(store, root, Some(root) == here, Some(root) == continuing)
+            })
             .clone();
     }
 }
 
 /// How far the index of the checkout at `root` has got, or `None` once it is
-/// complete.
-fn warming_state(store: &Store, root: &str, continuing: bool) -> Option<crate::search::Warming> {
+/// complete. `here`: the checkout this search runs in, which `rq --index`
+/// alone names.
+fn warming_state(
+    store: &Store,
+    root: &str,
+    here: bool,
+    continuing: bool,
+) -> Option<crate::search::Warming> {
     if store.coverage_status(root).ok().flatten().as_deref() == Some("complete") {
         return None;
     }
@@ -1461,16 +1514,23 @@ fn warming_state(store: &Store, root: &str, continuing: bool) -> Option<crate::s
     let read = store.checkout_file_count(checkout.id).unwrap_or(0);
     let (_, span) = store.passes(root).unwrap_or_default();
     let interrupted = !continuing && !store.indexed_by_others(root);
-    let hint = if interrupted {
-        "indexing stopped part-way: `rq --index` finishes it"
+    let index = if here {
+        "rq --index".to_string()
     } else {
-        "rq is still indexing this checkout: ask again for a fuller answer, or run `rq --index` to finish it now"
+        format!("rq --index {root}")
+    };
+    let hint = if interrupted {
+        format!("indexing stopped part-way: `{index}` finishes it")
+    } else {
+        format!(
+            "rq is still indexing this checkout: ask again for a fuller answer, or run `{index}` to finish it now"
+        )
     };
     Some(crate::search::Warming {
         read,
         of: span.map(|s| s.max(read)),
         interrupted,
-        hint: hint.to_string(),
+        hint,
     })
 }
 

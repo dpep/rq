@@ -167,7 +167,9 @@ something". While an index is being built, a match answers only when no file
 left to read could beat it on its name: an exact match in the capitals you
 typed, or any exact or prefix match once every file containing the name has
 been read. It still carries `warming`, since another definition of the name may
-not be indexed yet.
+not be indexed yet. Under `-a`, "left to read" means by a retry: another
+checkout that nothing is indexing answers from what it holds, with
+`warming.interrupted` and the `rq --index <root>` that would finish it.
 
 ### Errors
 

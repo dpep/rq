@@ -3818,3 +3818,77 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A checkout indexed only under `a/`, where a prefix match for `Widget`
+/// lives; the exact definition under `z/` is unread.
+fn partly_indexed_elsewhere(label: &str) -> (PathBuf, PathBuf) {
+    let (dir, db) = scratch(label);
+    fs::create_dir_all(dir.join("a")).unwrap();
+    fs::create_dir_all(dir.join("z")).unwrap();
+    fs::write(dir.join("a/widget.rb"), "class WidgetThing\nend\n").unwrap();
+    fs::write(dir.join("z/widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index", "a"]);
+    (dir, db)
+}
+
+/// A second repo, committed, sharing `db`'s index.
+fn another_repo(label: &str) -> PathBuf {
+    let (dir, _) = scratch(label);
+    fs::write(dir.join("other.rb"), "class Other\nend\n").unwrap();
+    git_init_commit(&dir);
+    dir
+}
+
+#[test]
+fn across_checkouts_a_partial_one_nothing_is_indexing_answers_and_says_so() {
+    let (r1, db) = partly_indexed_elsewhere("all-idle");
+    let r2 = another_repo("all-idle-here");
+    rq(&db, &r2, &["--index"]);
+
+    // the warm this search leaves behind is for r2, not r1, and a retry from
+    // here reads no more of r1: an answer, disclosed, not a request to retry
+    let (code, out, _) = rq_full(
+        &db,
+        &r2,
+        &["-a", "Widget", "--json"],
+        &[("RQ_WARM_DETACH", "1")],
+        None,
+    );
+    assert_eq!(code, 0, "{out}");
+    let top = &json(&out)[0];
+    assert_eq!(top["name"], "WidgetThing", "{out}");
+    assert_eq!(top["warming"]["interrupted"], true, "{out}");
+    let hint = top["warming"]["hint"].as_str().unwrap();
+    let r1_root = r1.canonicalize().unwrap();
+    assert!(
+        hint.contains(&format!("rq --index {}", r1_root.display())),
+        "names the checkout to index: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&r1);
+    let _ = fs::remove_dir_all(&r2);
+}
+
+#[test]
+fn across_checkouts_this_ones_demand_walk_does_not_settle_another_still_indexing() {
+    let (r1, db) = partly_indexed_elsewhere("all-busy");
+    let r3 = another_repo("all-busy-here");
+    let root = r1.canonicalize().unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mark = format!("pass:{}:{}", root.display(), std::process::id());
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        rusqlite::params![mark],
+    )
+    .unwrap();
+
+    // r3's own walk reads every file of r3 holding the name; r1's `z/` is
+    // still to come from the process indexing it
+    let (code, out, _) = rq_full(&db, &r3, &["-a", "Widget", "--json"], &[], None);
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(json(&out)["provisional"][0]["name"], "WidgetThing", "{out}");
+
+    let _ = fs::remove_dir_all(&r1);
+    let _ = fs::remove_dir_all(&r3);
+}

@@ -86,7 +86,9 @@ On a miss, JSON is one `{"status": …, "query": …}` object, not results:
 - `warming` (exit 2) — index incomplete; retry. Mostly after `--no-wait`;
   otherwise rq indexes a cold repo before answering. When it found something a
   file not read yet could beat, the matches so far are in `provisional`: a
-  lead, not an answer.
+  lead, not an answer. (Under `-a`, a match from another checkout nothing is
+  indexing answers instead, with `warming.interrupted` and the `rq --index`
+  that finishes it: asking again wouldn't change it.)
 - `interrupted` (exit 2) — indexing was stopped; run again.
 
 An error is JSON too, on stdout: `{"error": "…", "kind": "usage", "code": 64}`.

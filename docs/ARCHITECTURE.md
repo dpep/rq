@@ -553,7 +553,11 @@ The index is **never assumed complete**.
   incomplete coverage yields a delayed-but-correct answer rather than a
   confident-looking wrong one. "Answered" means the top match is *settled*: an
   exact match in the capitals typed, or any exact or prefix match once the
-  search's warm has read every file containing the name (D52). A prefix, fuzzy
+  search's warm has read every file containing the name (D52) — more
+  generally, once no file a retry would read can beat it: under `-a`, the
+  demand walk vouches only for this checkout, another checkout counts as unread
+  while another process indexes it, and one nothing is indexing is as read as
+  it will get. A prefix, fuzzy
   or path match before then is no answer: when the wait ends without one, the
   search reports `warming` (exit 2) with its matches as `provisional`. The wait
   continues while *anyone* is indexing the checkout — this search's warm, or
