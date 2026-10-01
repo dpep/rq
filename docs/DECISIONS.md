@@ -2880,3 +2880,12 @@ latency.
 wait (then accepting any exact match early, which would have got 4 of the 6 lowercase
 queries above right, is the cheaper trade), or the poll's recall on a suspended name index is fixed and the
 demand walk gets cheap enough that waiting for it costs nothing.
+
+### D52 addendum — what a pre-release hunt changed
+
+- **`--wait` is a deadline at a terminal too.** Following other processes' passes made an
+  interactive wait end only when the last of them did: `--wait 3` under a pty waited 20 s
+  behind an `rq --warm` rebuild of the 100k corpus. An explicit `--wait` now bounds every
+  caller; without one, a terminal still waits until answered (the progress line shows,
+  Ctrl-C escapes). A poll that, at the last poll's cost, would end past the deadline is not
+  started — on a cold pass each costs about a second.

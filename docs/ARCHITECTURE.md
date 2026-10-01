@@ -336,11 +336,12 @@ search only reads.
   - **Humans** (a TTY, plain text) also get a one-line "indexing…" progress
     heads-up on stderr after ~500 ms and a graceful **Ctrl-C** (a `SIGINT` handler
     over `libc`, installed only on this path) that aborts and prints the best
-    partial results. Interactive waits are unbounded — Ctrl-C is the escape.
+    partial results. Interactive waits are unbounded — Ctrl-C is the escape —
+    unless `--wait` names a bound.
   - **Programs** (`--json`/`--ndjson` or any pipe) block silently, bounded by a
     wait budget (`RQ_WAIT_BUDGET_MS`, default 1 min; `0` = non-blocking) since
-    there's no one to interrupt. **`--wait <dur>`** (`50ms`/`2s`/`1m`/bare ms)
-    overrides that budget per-call. A caller that prefers *fail-fast over
+    there's no one to interrupt. **`--wait <dur>`** (`50ms`/`2s`/`1m`/bare seconds)
+    overrides that budget per-call, for humans and programs alike. A caller that prefers *fail-fast over
     block-until-answered* passes **`--no-wait`** (shorthand for `--wait 0`): it
     answers from the committed index immediately — never blocking, and skipping
     the in-process warm so a query issued mid-rebuild neither waits on nor contends

@@ -3734,15 +3734,7 @@ fn a_search_waits_on_another_process_still_indexing() {
     // with the definition once the writer lets go.
     let (dir, db) = prefix_and_exact("partial-other");
     rq(&db, &dir, &["--index", "app"]);
-    let root = dir.canonicalize().unwrap();
-    let mark = format!("pass:{}:{}", root.display(), std::process::id());
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, '0')",
-        rusqlite::params![mark],
-    )
-    .unwrap();
-    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let (conn, mark) = hold_as_another_indexer(&db, &dir);
 
     let child = Command::new(env!("CARGO_BIN_EXE_rq"))
         .env_remove("GIT_DIR")
@@ -3764,6 +3756,65 @@ fn a_search_waits_on_another_process_still_indexing() {
     let out = String::from_utf8_lossy(&run.stdout);
     assert_eq!(run.status.code(), Some(0), "{out}");
     assert_eq!(json(&out)[0]["name"], "User", "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Hold `db` the way another rq mid-pass does: a live pass mark on the
+/// checkout at `dir` (this test's pid) and the write lock, so a search's own
+/// warm can neither finish the index nor see it finish.
+fn hold_as_another_indexer(db: &Path, dir: &Path) -> (rusqlite::Connection, String) {
+    let root = dir.canonicalize().unwrap();
+    let mark = format!("pass:{}:{}", root.display(), std::process::id());
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        rusqlite::params![mark],
+    )
+    .unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    (conn, mark)
+}
+
+#[test]
+fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes() {
+    let (dir, db) = prefix_and_exact("wait-tty");
+    rq(&db, &dir, &["--index", "app"]);
+    let (conn, mark) = hold_as_another_indexer(&db, &dir);
+
+    let start = std::time::Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["User", "--wait", "1s"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "0")
+        .env("RQ_ASSUME_INTERACTIVE", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run rq");
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break Some(s);
+        }
+        if start.elapsed() > std::time::Duration::from_secs(20) {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let waited = start.elapsed();
+    conn.execute_batch("COMMIT").unwrap();
+    conn.execute("DELETE FROM meta WHERE key = ?1", rusqlite::params![mark])
+        .unwrap();
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    // the writer's busy timeout bounds the join after the answer, not the wait
+    assert_eq!(status.and_then(|s| s.code()), Some(2), "after {waited:?}");
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -174,7 +174,8 @@ struct Cli {
     #[arg(help_heading = "Waiting on the index", long = "no-wait")]
     no_wait: bool,
 
-    /// Wait at most this long for the index to warm (default 1m).
+    /// Wait at most this long for the index to warm (default 1m; at a
+    /// terminal, until answered or Ctrl-C).
     ///
     /// `50ms`, `2s`, `1m`, or a bare number of seconds; `0` is --no-wait.
     /// Overrides `RQ_WAIT_BUDGET_MS` for this call.
@@ -992,10 +993,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         t_setup.elapsed().as_millis()
     );
     let poll_start = std::time::Instant::now();
-    // Deadline: an interactive block waits unbounded (Ctrl-C escapes); a
-    // programmatic block waits out the wait budget; a non-block (complete repo)
-    // keeps the original fast answer budget.
-    let deadline = if progress_ui {
+    // Deadline: an interactive block waits unbounded (Ctrl-C escapes) unless
+    // `--wait` names a bound; a programmatic block waits out the wait budget;
+    // a non-block (complete repo) keeps the original fast answer budget.
+    let deadline = if progress_ui && wait.is_none() {
         None
     } else if block {
         Some(poll_start + wait_budget)
@@ -1022,6 +1023,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         if current.is_none() {
             current = checkout_here(store);
         }
+        let searched_at = std::time::Instant::now();
         match scope(current).search(store, query, current, &ctx, rank_limit) {
             Ok(m) => {
                 total = m.total;
@@ -1039,7 +1041,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                     || root.as_deref().is_some_and(|r| others_indexing(store, r));
                 let complete = root.as_deref().is_some_and(|r| is_complete(store, r));
                 let stopped = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
-                let timed_out = deadline.is_some_and(|d| std::time::Instant::now() >= d);
+                // A poll costs what the last one did (about a second while a
+                // cold pass holds the name index), so stop rather than start
+                // one that would end past the deadline.
+                let timed_out = deadline.is_some_and(|d| {
+                    !poll_fits(std::time::Instant::now(), d, searched_at.elapsed())
+                });
                 if answered || complete || !indexing || stopped || timed_out {
                     break h;
                 }
@@ -1404,6 +1411,12 @@ fn shown(
 fn settled(top: &crate::search::Hit, demanded: bool) -> bool {
     let has = |name| top.features.iter().any(|f| f.name == name);
     (has("exact") && has("case")) || (demanded && crate::search::is_literal(&top.features))
+}
+
+/// Whether another poll, after the sleep, costing what the last one did,
+/// ends by `deadline`.
+fn poll_fits(now: std::time::Instant, deadline: std::time::Instant, cost: Duration) -> bool {
+    now + POLL_INTERVAL + cost <= deadline
 }
 
 fn is_complete(store: &Store, root: &std::path::Path) -> bool {
@@ -3775,6 +3788,18 @@ mod tests {
         assert!(parse_wait("").is_err());
         assert!(parse_wait("s").is_err());
         assert!(parse_wait("-1s").is_err());
+    }
+
+    #[test]
+    fn a_poll_that_would_end_past_the_deadline_is_not_started() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        assert!(poll_fits(now, deadline, Duration::from_millis(5)));
+        // a slow poll with two seconds left would overshoot by most of one
+        let late = now + Duration::from_secs(1);
+        assert!(!poll_fits(late, deadline, Duration::from_millis(1950)));
+        assert!(!poll_fits(deadline, deadline, Duration::ZERO));
     }
 
     #[test]

@@ -272,7 +272,8 @@ shows only while a large index is being built.
 
 `--wait <dur>` caps how long a query may wait: `50ms`, `2s`, `1m`, or bare
 seconds (`--wait 0` is `--no-wait`). It overrides `RQ_WAIT_BUDGET_MS` (default 1
-minute) for that call.
+minute) for that call, and bounds a search at a terminal too, which otherwise
+waits until answered (Ctrl-C stops it).
 
 ## File outline
 
