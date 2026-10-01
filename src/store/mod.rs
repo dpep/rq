@@ -1088,7 +1088,9 @@ impl Store {
             self.forget_checkout(&root)?;
         }
         // a repo no checkout held (an upgrade left it) never saw one go
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         drop_if_unchecked_out(&tx, repository_id)?;
         tx.commit()
     }
@@ -1311,7 +1313,10 @@ impl Store {
     /// mark whose process is gone is a crashed pass's leftover, cleared here so
     /// the marks never outgrow the live writers.
     pub(crate) fn begin_pass(&mut self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        // it reads before it writes: deferred, a busy writer fails it at once
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let prefix = format!("pass:{root}:");
         let stale: Vec<String> = tx
             .prepare("SELECT key FROM meta WHERE substr(key, 1, ?2) = ?1")?
@@ -1788,6 +1793,33 @@ mod tests {
         let mut store = Store::open(&path).unwrap();
         assert!(store.claim_warm_lock("repo", 99, |_, _| false).unwrap());
         assert!(!store.claim_warm_lock("repo", 100, |_, _| true).unwrap());
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn a_pass_mark_waits_out_a_concurrent_writer() {
+        // read-then-write in a deferred transaction can't wait for the lock:
+        // SQLite fails the upgrade with SQLITE_BUSY, busy_timeout or not
+        let path = std::env::temp_dir().join(format!("rq-busy-pass-{}.db", std::process::id()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        let mut store = Store::open(&path).unwrap();
+        let other = Store::open(&path).unwrap();
+        other
+            .conn
+            .execute_batch("BEGIN IMMEDIATE; INSERT INTO meta VALUES ('k', 'v');")
+            .unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            other.conn.execute_batch("COMMIT").unwrap();
+        });
+        let marked = store.begin_pass("/repo", 7, Some(3));
+        holder.join().unwrap();
+        marked.unwrap();
+        assert_eq!(store.passes("/repo").unwrap(), (vec![7], Some(3)));
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }

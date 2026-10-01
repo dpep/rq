@@ -961,7 +961,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         std::thread::spawn(move || {
             if let Ok(mut idx) = open_store() {
                 // path-prioritize toward the query so the relevant file indexes first
-                let _ = if block {
+                let pass = if block {
                     // the abort flag (`INTERRUPTED`) lets a Ctrl-C, a wait timeout,
                     // or an early answer stop the pass without losing committed work
                     crate::index::index_budgeted_cancellable(
@@ -976,6 +976,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 } else {
                     crate::index::index_budgeted(&mut idx, &root, &active, indexer_budget, Some(&q))
                 };
+                if let Err(e) = pass {
+                    crate::trace!("warm {}: pass failed: {e}", crate::trace::abbrev(&root));
+                }
             }
             warm_done.store(true, std::sync::atomic::Ordering::Relaxed);
         })
@@ -1763,11 +1766,19 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
         alive && now_unix() - ts < crate::store::WARM_LOCK_TTL_SECS
     };
-    if !store
-        .claim_warm_lock(&key, std::process::id(), held)
-        .unwrap_or(false)
-    {
-        return ExitCode::SUCCESS;
+    match store.claim_warm_lock(&key, std::process::id(), held) {
+        Ok(true) => {}
+        Ok(false) => {
+            crate::trace!(
+                "warm {}: another warm holds it",
+                crate::trace::abbrev(&root)
+            );
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            crate::trace!("warm {}: can't claim it: {e}", crate::trace::abbrev(&root));
+            return ExitCode::SUCCESS;
+        }
     }
 
     // A search on a complete repo hands us the staleness check rather than
@@ -1809,7 +1820,13 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         let stats = match crate::index::index_budgeted(&mut store, &root, &active, remaining, None)
         {
             Ok(s) => s,
-            Err(_) => break,
+            Err(e) => {
+                crate::trace!(
+                    "warm {}: pass failed, stopping: {e}",
+                    crate::trace::abbrev(&root)
+                );
+                break;
+            }
         };
         if store.coverage_status(&key).ok().flatten().as_deref() == Some("complete")
             || stats.files_indexed == 0
