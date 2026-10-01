@@ -226,7 +226,8 @@ usage_daily (
 );
 
 -- small key/value store, per checkout: indexed HEAD, warm lock, warm
--- verdict, branch-file cache, and the files the index holds as uncommitted
+-- verdict, branch-file cache, the passes running over it and the files its
+-- tree spans (D52), and the files the index holds as uncommitted
 -- edits (by checkout id where a pass writes them, by root where a search
 -- reads them before any pass registered the checkout); and for the database,
 -- the rq versions that created it and wrote its schema (`created_by`,
@@ -549,7 +550,19 @@ The index is **never assumed complete**.
   cut short).
 - A `warming` repo **blocks until answered** (see the indexing model), so
   incomplete coverage yields a delayed-but-correct answer rather than a
-  confident-looking wrong one. A dir with no finished pass that this query
+  confident-looking wrong one. "Answered" means the top match is *settled*: an
+  exact match in the capitals typed, or any exact or prefix match once the
+  search's warm has read every file containing the name (D52). A prefix, fuzzy
+  or path match before then is no answer: when the wait ends without one, the
+  search reports `warming` (exit 2) with its matches as `provisional`. The wait
+  continues while *anyone* is indexing the checkout — this search's warm, or
+  another process's pass (marked in `meta`, `pass:<root>:<pid>`, or holding the
+  warm lock) — so one warm ending isn't taken for the index being done.
+- **Every index hit from an incomplete checkout says so**: `warming: {read, of,
+  interrupted, hint}` (files held, files the tree spans as the last pass
+  enumerated them — `span:<root>` in `meta` — whether nothing is indexing it,
+  and what to run), with `confidence` scaled by `read / of`, floored to two
+  places. The same shape trekr reports (its DEC-320). A dir with no finished pass that this query
   isn't warming — untracked and non-git, or a git repo asked with `--no-wait` —
   gets a bounded in-memory live scan, merged with whatever the index offered. Each
   result carries its `source` (`index` or `live`), so a blended answer says
@@ -563,7 +576,7 @@ Degradation ladder:
 
 ```text
 zero index      → pure live scan (works, slower)
-warming index   → index results, blocking until the answer is trustworthy
+warming index   → index results, blocking until the answer is settled; marked `warming`
 complete + fresh → index only, sub-50 ms
 ```
 

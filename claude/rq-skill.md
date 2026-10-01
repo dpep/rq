@@ -66,6 +66,10 @@ rq.
   repo asked with `--no-wait` before its first index finished. `index`
   otherwise. The hit is real; its ranking is provisional. Asking outside a repo
   often? `rq --index <dir>` once.
+- `warming` (`{read, of, interrupted, hint}`) means the repo's index is still
+  being built: `read` of `of` files are in. Another definition may not be
+  indexed yet, and `confidence` is scaled down to match. Use the answer; if it
+  matters, ask again once indexing finishes (`hint` says how).
 - Fields that don't apply (`parent`, `visibility`, `end_line`, …) are omitted,
   never `null`. `declarations` and `also_in` appear when one name is declared in
   several places (a reopened module) and rq folded them into one result.
@@ -80,7 +84,9 @@ On a miss, JSON is one `{"status": …, "query": …}` object, not results:
 - `scope_not_found` (exit 1) — nothing inside the scope you named; `found_in`
   says where the name does live. Re-ask with that scope.
 - `warming` (exit 2) — index incomplete; retry. Mostly after `--no-wait`;
-  otherwise rq indexes a cold repo before answering.
+  otherwise rq indexes a cold repo before answering. When it found something a
+  file not read yet could beat, the matches so far are in `provisional`: a
+  lead, not an answer.
 - `interrupted` (exit 2) — indexing was stopped; run again.
 
 An error is JSON too, on stdout: `{"error": "…", "kind": "usage", "code": 64}`.

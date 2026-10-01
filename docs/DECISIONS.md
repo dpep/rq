@@ -2781,3 +2781,102 @@ an older rq steps around.
 *Reverses if:* a real index turns out to be worth more than a rebuild (it's a cache today),
 or side stores pile up in practice; then the older rq refusing with a clear message is the
 simpler shape.
+
+## D52 — An answer from a half-built index says so, and a guess waits
+
+**Adopted**, 2026-09-30. `settled`, `disclose_warming` and the poll in `src/cli/mod.rs`;
+`begin_pass`/`passes` in `src/store/mod.rs`; e2e tests `a_prefix_match_from_a_partial_index_*`,
+`an_exact_match_from_a_partial_index_*`, `a_search_waits_on_another_process_*`.
+
+*The problem.* A user on a ~93k-file Ruby monorepo, after an upgrade rebuild or `--drop`:
+`rq User` answered `admin_approval_tool.rb` and `rq Order` a model named for something
+else, both `source: index` at normal confidence, while `class User` wasn't indexed yet.
+Reproduced on a 100k-file Ruby corpus with a fresh index: `User` →
+`UserFieldsController` (prefix, 0.9), `Order` → a method `ordered_variable_defaults`
+(prefix, 0.9), `Account` → a method `account` (0.84). Two causes:
+- The warming poll accepted any **prefix** match as the answer. The demand tier (D11)
+  parses files containing the name in path order, so on a large repo hundreds of
+  `user_*` names commit before `user.rb` does.
+- The poll stopped when **this process's** warm ended, while another process (the
+  detached warm, an upgrade rebuild, an `rq --index` elsewhere) was still filling the
+  index. And no hit said the index was partial.
+
+*What.*
+- **Settled.** On a checkout not yet `complete`, the top match answers only when no unread
+  file can beat it on its name: an exact match carrying `case` (the capitals typed agree),
+  or any exact, prefix or constructor match once this search's warm has
+  read every file containing the name — the demand tier's walk completing, which the warm
+  now reports. Anything else keeps the poll waiting.
+- **The wait follows whoever is indexing.** A pass over an incomplete checkout marks it in
+  `meta` (`pass:<root>:<pid>`, cleared at its end, a dead pid's mark cleared by the next
+  pass) and records how many source files the tree spans (`span:<root>`, from the
+  `git ls-files` the pass enumerates with). The poll waits while its own warm runs, or
+  another live pid holds a mark or the warm lock (which a `--warm` child holds across
+  its passes), within the wait budget as before.
+- **Not settled when the wait ends** (`--no-wait`, `--wait`, the budget, Ctrl-C, or
+  nobody left indexing): `{"status": "warming", "query", "warming", "provisional": [hits]}`,
+  exit 2. Text prints the hits and one stderr line. `--show`/`--open`/`--web` don't act
+  on it.
+- **Every index hit from an incomplete checkout** carries `warming: {read, of,
+  interrupted, hint}`: files held, files the tree spans (omitted before any pass counted
+  them), whether nothing is indexing it (no live mark, and this rq leaves no warm
+  behind), and what to run. `confidence` is scaled by `read / of`, floored to two
+  places. Text adds one stderr line. No schema change: `meta` holds the marks.
+
+*Shape.* trekr answered the same report first (its DEC-320) with `warming: {read, of,
+interrupted, hint}` on every answer, confidence scaled by the share read, and exit 2 for
+"no answer yet". rq already says `warming` for that state and exits 2 for it, so the
+same object fits without new vocabulary. Exit 2 stays one shape — the status object a
+miss already gets — with `provisional` added, rather than a result array that exits 2:
+a caller that branches on the exit code reads the same object it always did.
+
+*Measured.* The 100k corpus (97k Ruby files; full index 19.6 s, release, 8 cores, load
+3–12 from other work), a fresh store per sample, a rebuild driven by another process
+(`rq --warm`, as an upgrade or `--drop` leaves), the query issued 1 s (~6k files read)
+or 4 s (~25k) in, `--json -l 2` with default settings. 26 capitalized class names; a hit
+is correct when it is one of the complete index's top-scoring results (ties included).
+
+| | base, 1 s | new, 1 s | base, 4 s | new, 4 s |
+|---|---|---|---|---|
+| correct top hit | 10/26 | 15/26 | 17/26 | 23/26 |
+| wrong, undisclosed | 16 (conf up to 1.0) | 0 | 9 (up to 1.0) | 0 |
+| wrong, disclosed `warming` | — | 11 (conf ≤ 0.11) | — | 3 (≤ 0.18) |
+| top is a definition of the name | 19/26 | 25/26 | 22/26 | 26/26 |
+| exit 2 | 0 | 0 | 0 | 0 |
+| latency p50 / p90 | 286 / 524 ms | 309 / 1121 ms | 1412 / 1836 | 1427 / 2497 |
+
+Every remaining wrong answer is a class of the right name in another place — another
+`Logger`, another `Request` — the case the disclosure is for. A complete index answers
+byte-for-byte as before (26 names plus 7 more, `-l 5`), warm latency within noise
+(median 133 vs 134 ms over three rounds), and `make recall BASE=main` is unchanged:
+0 up, 0 down, top 10 changed in 0 of 6,879 queries.
+
+*The cost: queries without a capital.* `user`, `account`, `order`, `topic`,
+`connection_pool`, `perform` and the prefix query `ConnectionPo`, 1 s into the same
+rebuild: base 3 of 7 right in ~0.3 s; new 7 of 7 right in 4–25 s, since only the
+demand walk's end settles them (it reads all 97k files and parses every one holding the
+name while the rebuild competes for the CPU, and the cold pass's suspended name index
+makes each poll's recall ~1 s). It is paid once per cold rebuild, within the wait
+budget, under the block-until-answered rule that correctness beats a first query's
+latency.
+
+*Rejected.*
+- **Any exact match waits for the demand walk too** (every answer settled the same way).
+  Measured as a third arm: 19/26 and 17/26 correct against 15/26 and 23/26, at p50 10.4–
+  10.7 s and p90 27–40 s. Reading every file holding the name settles the *name*, not
+  the ranking among a hundred exact `Client`s, which still moves until the whole tree is
+  in.
+- **Any exact match answers early, capital or not.** `Order` answered the `ORDER`
+  constant in the 1 s run, and `account` a method `account` where the class ranks
+  first; `case` is what says the capital was meant.
+- **The live scan for the exact name instead of waiting.** The demand walk already is
+  that scan, persisted; a second, unpersisted one would race it for the same files.
+- **Looping passes in the search's own warm** so a fuzzy query on a repo above the
+  per-pass cap (50k files) waits for the whole index. A capped pass stopping is what
+  `warm_progress` pins; such a query now reports `warming` with its provisional hits
+  rather than answering, and the detached warm carries on.
+
+*Reverses if:* lowercase or prefix queries during a rebuild draw complaints about the
+wait (then accepting any exact match early, which would have got 4 of the 6 lowercase
+queries above right, is the cheaper trade), or the poll's recall on a suspended name index is fixed and the
+demand walk gets cheap enough that waiting for it costs nothing.

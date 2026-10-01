@@ -125,20 +125,6 @@ fn decode(keys: &[u8], n: usize) -> Vec<&str> {
 /// rebuilds the index at its end. `built` holds the pass's pid meanwhile.
 const SUSPENDED: i64 = -1;
 
-/// Is the process that suspended an index still running? A pid of 0 is a
-/// marker from before the pid was kept: its pass can't be told from a killed
-/// one. A pid on another machine sharing the database reads as dead, which
-/// costs that pass speed, not correctness.
-fn suspender_alive(pid: i64) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    // EPERM: alive, but another user's
-    pid > 0
-        && (unsafe { libc::kill(pid, 0) } == 0
-            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
-}
-
 /// Did another connection hold the lock past the busy timeout?
 fn is_busy(e: &rusqlite::Error) -> bool {
     matches!(
@@ -260,7 +246,7 @@ impl Store {
             .collect::<Result<_>>()?;
         let mut suspended = Vec::new();
         for (id, format, holder) in behind {
-            if format == Some(SUSPENDED) && suspender_alive(holder.unwrap_or(0)) {
+            if format == Some(SUSPENDED) && super::pid_alive(holder.unwrap_or(0)) {
                 suspended.push(id);
                 continue;
             }

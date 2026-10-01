@@ -7,6 +7,32 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+Scripts that read exit `2` as "nothing found yet" keep working; the `warming`
+object may now carry the matches so far, under `provisional`. A result from an
+index still being built now says so, in a new `warming` field.
+
+### Fixed
+- **A search no longer answers from a half-built index as if it were whole.**
+  While a repo is being indexed (a first run, after `--drop`, or the rebuild an
+  upgrade starts), rq used to return the first exact or prefix match it had,
+  with normal confidence: `User` could answer `UserFieldsController`. Now it
+  waits for a match no unread file can beat on its name: an exact match in the
+  capitals you typed, or any exact or prefix match once every file containing
+  the name has been read. If the wait ends first (`--no-wait`, `--wait`, the
+  1-minute default for scripts), it reports `warming` (exit 2) with what it
+  found as `provisional` (DECISIONS D52).
+- **The wait follows whoever is indexing.** A search no longer stops waiting
+  when its own indexing ends while another rq process is still building the
+  index.
+
+### Added
+- **`warming` on results from an index still being built**: `{read, of,
+  interrupted, hint}`, files indexed of the files the tree spans. Their
+  `confidence` is scaled by `read / of`, since another definition may not be
+  indexed yet. Text output adds one line on stderr.
+
 ## 0.60.1 — 2026-09-29
 
 Nothing to do: rq now recovers on its own from an index it can't use.

@@ -296,6 +296,20 @@ fn wal(conn: &Connection) -> Result<()> {
     }
 }
 
+/// Is the process a pid in the database names still running? A pid of 0 is a
+/// marker from before the pid was kept: its pass can't be told from a killed
+/// one. A pid on another machine sharing the database reads as dead, which
+/// costs that pass speed, not correctness.
+pub(crate) fn pid_alive(pid: i64) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // EPERM: alive, but another user's
+    pid > 0
+        && (unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+}
+
 /// How long a write waits out another writer before failing "locked".
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// ...and how long an opener waits out another's schema upgrade.
@@ -1265,6 +1279,85 @@ impl Store {
         self.meta_set(&format!("branch_files:{root}"), &value)
     }
 
+    /// Mark a pass over the checkout at `root` as running in `pid`, and record
+    /// how many source files the tree spans when the pass enumerated them. A
+    /// mark whose process is gone is a crashed pass's leftover, cleared here so
+    /// the marks never outgrow the live writers.
+    pub(crate) fn begin_pass(&mut self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let prefix = format!("pass:{root}:");
+        let stale: Vec<String> = tx
+            .prepare("SELECT key FROM meta WHERE substr(key, 1, ?2) = ?1")?
+            .query_map(params![prefix, prefix.len() as i64], |r| r.get(0))?
+            .collect::<Result<Vec<String>>>()?
+            .into_iter()
+            .filter(|k| {
+                k[prefix.len()..]
+                    .parse::<u32>()
+                    .is_ok_and(|p| p != pid && !pid_alive(i64::from(p)))
+            })
+            .collect();
+        for key in stale {
+            tx.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![format!("{prefix}{pid}"), now_unix().to_string()],
+        )?;
+        if let Some(span) = span {
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+                params![format!("span:{root}"), span.to_string()],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass).
+    pub(crate) fn end_pass(&self, root: &str, pid: u32) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            params![format!("pass:{root}:{pid}")],
+        )?;
+        Ok(())
+    }
+
+    /// The processes marked as indexing the checkout at `root` (live or not —
+    /// the caller asks), and the files its tree spanned when last enumerated.
+    /// A warm child counts from its lock, which it holds across the passes it
+    /// runs, not only during one.
+    pub(crate) fn passes(&self, root: &str) -> Result<(Vec<u32>, Option<i64>)> {
+        let prefix = format!("pass:{root}:");
+        let mut pids: Vec<u32> = self
+            .conn
+            .prepare_cached("SELECT key FROM meta WHERE substr(key, 1, ?2) = ?1")?
+            .query_map(params![prefix, prefix.len() as i64], |r| {
+                r.get::<_, String>(0)
+            })?
+            .filter_map(|k| k.ok()?[prefix.len()..].parse().ok())
+            .collect();
+        if let Some(pid) = self
+            .meta_get(&format!("warm_lock:{root}"))?
+            .and_then(|v| v.split_once(':')?.0.parse().ok())
+        {
+            pids.push(pid);
+        }
+        let span = self
+            .meta_get(&format!("span:{root}"))?
+            .and_then(|v| v.parse().ok());
+        Ok((pids, span))
+    }
+
+    /// How many files a checkout holds — [`checkout_totals`](Self::checkout_totals)
+    /// without the symbol count, which on a large checkout is the slow half.
+    pub(crate) fn checkout_file_count(&self, checkout: i64) -> Result<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM checkout_files WHERE checkout_id = ?1",
+            params![checkout],
+            |r| r.get(0),
+        )
+    }
+
     fn meta_get(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
@@ -1649,6 +1742,29 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
+    }
+
+    #[test]
+    fn a_pass_clears_the_marks_of_passes_that_died() {
+        let mut store = Store::open_in_memory().unwrap();
+        let dead = 4_000_000; // above any pid the OS hands out
+        store.begin_pass("/repo", dead, Some(10)).unwrap();
+        store.begin_pass("/repo", 7, None).unwrap();
+        let (pids, span) = store.passes("/repo").unwrap();
+        assert_eq!(pids, vec![7], "the dead pass's mark is gone");
+        assert_eq!(
+            span,
+            Some(10),
+            "a pass that didn't count keeps the last span"
+        );
+
+        store.end_pass("/repo", 7).unwrap();
+        store.claim_warm_lock("/repo", 8, |_, _| false).unwrap();
+        assert_eq!(
+            store.passes("/repo").unwrap().0,
+            vec![8],
+            "a warm child counts"
+        );
     }
 
     #[test]

@@ -62,7 +62,7 @@ pub(crate) fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None, None, None)
+    run_index(store, root, &[], subdirs, None, None, None, None)
 }
 
 /// Lowercase the alphanumeric chars of `s` — the normal form for loose,
@@ -133,13 +133,15 @@ pub(crate) fn index_budgeted(
     budget: Duration,
     query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget), query, None)
+    run_index(store, root, active, &[], Some(budget), query, None, None)
 }
 
 /// Like [`index_budgeted`], but the pass stops promptly when `cancel` is set —
 /// the interactive cold-start escalation (see the CLI's search path) runs a long,
 /// generous-budget warm and lets the user abort it with Ctrl-C without losing the
-/// batches already committed.
+/// batches already committed. `demanded` is set once every file containing the
+/// query's leaf name is indexed: from then on no unread file can hold an exact
+/// or prefix match for it.
 pub(crate) fn index_budgeted_cancellable(
     store: &mut Store,
     root: &Path,
@@ -147,8 +149,18 @@ pub(crate) fn index_budgeted_cancellable(
     budget: Duration,
     query: Option<&str>,
     cancel: &std::sync::atomic::AtomicBool,
+    demanded: &std::sync::atomic::AtomicBool,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget), query, Some(cancel))
+    run_index(
+        store,
+        root,
+        active,
+        &[],
+        Some(budget),
+        query,
+        Some(cancel),
+        Some(demanded),
+    )
 }
 
 /// Max files a single *bounded* (warming) pass walks before it stops. The walk
@@ -528,6 +540,7 @@ pub(crate) fn prune_missing_checkouts(store: &Store) {
 /// repo) scope the walk; `budget` bounds it (`None` = unbounded). A whole-repo
 /// sweep that finishes within budget reconciles deletions and is `complete`; a
 /// sweep cut short — or a subtree seed — is `warming`.
+#[allow(clippy::too_many_arguments)]
 fn run_index(
     store: &mut Store,
     root: &Path,
@@ -536,6 +549,7 @@ fn run_index(
     budget: Option<Duration>,
     query: Option<&str>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
+    demanded_flag: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let profiling = crate::profile::enabled();
     PARSE_US.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -619,6 +633,18 @@ fn run_index(
         None => "filesystem walk (lazy — time lands in walk+parse+write)".to_string(),
     });
     drop(enum_span);
+    // A checkout not yet complete says a pass is filling it, and how much
+    // there is to fill, so a search answering meanwhile can tell how much of
+    // the tree it read and whether anyone is still reading (D52).
+    let root_key = root_display.to_string_lossy().into_owned();
+    let marked = coverage_mark.as_ref().is_none_or(|(s, _)| s != "complete");
+    if marked {
+        let span = match &git_candidates {
+            Some(paths) => Some(paths.len()),
+            None => git_source_candidates(root).map(|p| p.len()),
+        };
+        store.begin_pass(&root_key, std::process::id(), span)?;
+    }
     // parse query-relevant files (by path) first — a cheap in-memory reorder
     let git_candidates = git_candidates.map(|paths| prioritize_by_path(paths, root, query));
 
@@ -649,7 +675,7 @@ fn run_index(
         let needle = query.and_then(crate::search::literal_leaf);
         if let (Some(paths), Some(needle)) = (&git_candidates, needle) {
             let mut demand_span = crate::profile::span("index: demand scan");
-            stream_walk(
+            let (_, read_all) = stream_walk(
                 root,
                 paths.iter().cloned(),
                 deadline,
@@ -665,6 +691,9 @@ fn run_index(
                 },
             )?;
             writer.flush()?;
+            if read_all && let Some(flag) = demanded_flag {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
             demand_span.note(|| format!("{} file(s) contain {needle:?}", demanded.len()));
         }
         let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
@@ -830,6 +859,9 @@ fn run_index(
             "coverage {}: kept the `complete` another pass recorded during this one",
             crate::trace::abbrev(&root_display)
         );
+    }
+    if marked {
+        store.end_pass(&root_key, std::process::id())?;
     }
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",

@@ -149,6 +149,7 @@ that doesn't apply is **omitted**, never `null`.
 | `total` | search | Matches the window was drawn from, before `--limit`. |
 | `explain` | `--explain` | Feature name → score contribution, in whole points. |
 | `query` | batch mode | The stdin line this row answers. |
+| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, hint}`: files the index holds, source files the tree spans (omitted before a pass has counted them), whether nothing is indexing it any more, and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of`. |
 
 ### Misses and exit codes
 
@@ -158,11 +159,15 @@ A miss is one `{"status": …, "query": …}` object instead of results:
 | --- | --- | --- |
 | `no_match` | 1 | Definitive: nothing by that name. Under `-a`, `incomplete` lists the roots of checkouts that aren't fully indexed, which the miss can't speak for; a search in one indexes it. |
 | `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
-| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait`, since otherwise a cold repo blocks until it can answer. |
+| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. When something matched but a file not read yet could hold a better match, the object also carries `warming` (as on a result) and the matches so far as `provisional`. |
 | `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
 
 A match exits `0`. Every miss is non-zero, so `rq … && …` reads as "found
-something".
+something". While an index is being built, a match answers only when no file
+left to read could beat it on its name: an exact match in the capitals you
+typed, or any exact or prefix match once every file containing the name has
+been read. It still carries `warming`, since another definition of the name may
+not be indexed yet.
 
 ### Errors
 
@@ -258,8 +263,9 @@ nothing recorded yet it exits `1`.
 
 `--no-wait` answers from whatever's already indexed instead of waiting on a
 warming repo — say, right after a branch switch on a huge repo. A miss reports
-`warming` (exit 2) so you can retry; warming continues in a detached background
-process. On a repo with no index yet it answers from a quick live scan
+`warming` (exit 2) so you can retry, and so does a match the rest of the index
+could still beat, with what it found as `provisional`; warming continues in a
+detached background process. On a repo with no index yet it answers from a quick live scan
 (`"source": "live"`), and misses only what that scan can't reach. On a small or
 fully indexed repo it answers the same as without the flag: the difference
 shows only while a large index is being built.

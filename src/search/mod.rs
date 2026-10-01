@@ -10,8 +10,8 @@ mod score;
 
 pub(crate) use names::{Probe, SIG_BYTES, Signature};
 pub(crate) use score::{
-    Boosts, Feature, NAME_INDEX_FORMAT, PRIMARY_KINDS, confidence, joiners_eq, match_positions,
-    match_quality, path_stem,
+    Boosts, Feature, NAME_INDEX_FORMAT, PRIMARY_KINDS, confidence, is_literal, joiners_eq,
+    match_positions, match_quality, path_stem,
 };
 
 use std::collections::HashSet;
@@ -263,6 +263,24 @@ pub(crate) struct Hit {
     /// name-list shape so existing callers don't break.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explain: Option<std::collections::BTreeMap<String, f64>>,
+    /// Set when the checkout this hit came from is still being indexed: a
+    /// better match may be in a file not read yet (D52).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warming: Option<Warming>,
+}
+
+/// How far the index behind an answer has got, on a checkout still being
+/// indexed. The same shape trekr reports for the same question.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct Warming {
+    /// Files of this checkout the index holds.
+    pub read: i64,
+    /// Source files the tree spans, when a pass has enumerated it.
+    pub of: Option<i64>,
+    /// No process is indexing the checkout any more, nor will this one leave
+    /// a warm behind: the gap stays until a search or `rq --index` fills it.
+    pub interrupted: bool,
+    pub hint: String,
 }
 
 /// Serialize a hit's features as a name list, strongest first — the values are
@@ -802,6 +820,7 @@ fn rank_one(
         also_in: Vec::new(),
         total: 0, // filled from the final result set before output
         explain: None,
+        warming: None,
     })
 }
 
@@ -836,6 +855,7 @@ mod tests {
             also_in: Vec::new(),
             total: 0,
             explain: None,
+            warming: None,
         };
         let ordered = |mut hits: Vec<Hit>| {
             sort_and_truncate(&mut hits, 10);
@@ -1114,6 +1134,7 @@ mod tests {
             also_in: Vec::new(),
             total: 0,
             explain: None,
+            warming: None,
         };
         let from_index = vec![mk("User", 100.0)];
         let from_live = vec![mk("User", 500.0), mk("Account", 200.0)];
@@ -1218,6 +1239,7 @@ mod tests {
             also_in: Vec::new(),
             total: 0,
             explain: None,
+            warming: None,
         }
     }
 

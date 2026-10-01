@@ -149,9 +149,18 @@ fn a_cancelled_pass_stops_early_and_stays_warming() {
 
     let mut store = Store::open_in_memory().unwrap();
     let cancel = std::sync::atomic::AtomicBool::new(true); // aborted before it starts
+    let demanded = std::sync::atomic::AtomicBool::new(false);
     let ample = Duration::from_secs(5); // time isn't the bound here — the abort is
-    let stats =
-        index::index_budgeted_cancellable(&mut store, &dir, &[], ample, None, &cancel).unwrap();
+    let stats = index::index_budgeted_cancellable(
+        &mut store,
+        &dir,
+        &[],
+        ample,
+        Some("C1"),
+        &cancel,
+        &demanded,
+    )
+    .unwrap();
 
     assert!(
         stats.files_indexed < 20,
@@ -162,6 +171,45 @@ fn a_cancelled_pass_stops_early_and_stays_warming() {
         "warming",
         "an aborted sweep is never finalized as complete"
     );
+    assert!(
+        !demanded.load(std::sync::atomic::Ordering::Acquire),
+        "nor says it read every file holding the name"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_warm_says_when_every_file_holding_the_name_is_read() {
+    let dir = scratch_dir("demanded");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    for args in [&["init", "-q"][..], &["add", "-A"]] {
+        std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    }
+
+    let mut store = Store::open_in_memory().unwrap();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let demanded = std::sync::atomic::AtomicBool::new(false);
+    index::index_budgeted_cancellable(
+        &mut store,
+        &dir,
+        &[],
+        Duration::from_secs(5),
+        Some("widget"),
+        &cancel,
+        &demanded,
+    )
+    .unwrap();
+    assert!(demanded.load(std::sync::atomic::Ordering::Acquire));
 
     fs::remove_dir_all(&dir).ok();
 }

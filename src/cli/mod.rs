@@ -1,6 +1,6 @@
 //! Command-line surface. Search is the default action: `rq <query>`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -42,11 +42,14 @@ SHORT FLAGS (easy to misread):\n  \
 THE INDEX:\n  \
 One SQLite file for all repos, at $RQ_DB (an absolute path; default\n  \
 ~/.local/share/rq/rq.db). On a cold repo, a search keeps indexing until it can\n  \
-answer instead of reporting a false \"no matches\"; --no-wait answers right away.\n\n\
+answer instead of reporting a false \"no matches\"; --no-wait answers right away.\n  \
+A result from an index still being built says so (`warming`: files read of\n  \
+the tree) and scales its confidence to the share read.\n\n\
 EXIT CODES:\n  \
 0   matched; for --status, --index, --drop: ran, even with nothing to show or drop\n  \
 1   no match; for --usage: nothing recorded yet\n  \
-2   no match yet: the index is still warming or indexing was interrupted; ask again\n  \
+2   no answer yet: the index is still warming or indexing was interrupted; ask\n      \
+again. Matches found so far come back as `provisional`\n  \
 64  usage error: a bad flag, value or query\n  \
 66  a file named in the command doesn't exist\n  \
 69  no editor, browser or git remote to hand off to\n  \
@@ -162,9 +165,12 @@ struct Cli {
     // Waiting on the index
     /// Answer now from what's indexed; never wait on a rebuild.
     ///
-    /// For agents and scripts. A miss mid-rebuild reports `warming` (exit 2) so
-    /// the caller can retry. A repo with nothing indexed yet is scanned live
-    /// instead. Same as `--wait 0`; indexing carries on in the background.
+    /// For agents and scripts. Mid-rebuild, a miss reports `warming` (exit 2) so
+    /// the caller can retry, and so does a best match a file not read yet could
+    /// beat, with what was found as `provisional`. An exact match in the
+    /// capitals typed answers, marked `warming`. A repo with nothing indexed yet
+    /// is scanned live instead. Same as `--wait 0`; indexing carries on in the
+    /// background.
     #[arg(help_heading = "Waiting on the index", long = "no-wait")]
     no_wait: bool,
 
@@ -938,6 +944,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // `warm_done` lets the poll stop the instant the indexer finishes — so a miss
     // on a small repo returns as soon as it's indexed, not at the deadline.
     let warm_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Set once the warm has read every file containing the query's name: from
+    // then on no unread file can hold an exact or prefix match for it.
+    let demanded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let indexer = (want_warm && root.is_some() && !no_wait).then(|| {
         crate::trace!(
             "background warm ({indexer_budget:?}, block={block}, progress_ui={progress_ui}, {} jobs)",
@@ -947,6 +956,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         let active = active_paths.clone();
         let q = query.to_string();
         let warm_done = std::sync::Arc::clone(&warm_done);
+        let demanded = std::sync::Arc::clone(&demanded);
         std::thread::spawn(move || {
             if let Ok(mut idx) = open_store() {
                 // path-prioritize toward the query so the relevant file indexes first
@@ -960,6 +970,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                         indexer_budget,
                         Some(&q),
                         &INTERRUPTED,
+                        &demanded,
                     )
                 } else {
                     crate::index::index_budgeted(&mut idx, &root, &active, indexer_budget, Some(&q))
@@ -970,11 +981,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     });
 
     // Poll while a cold/partial repo warms. Don't print the first hit off a sparse
-    // index — a fuzzy or path match can be wrong once more is indexed. Hold until a
-    // *high-confidence* (exact or prefix name) match appears; otherwise keep
-    // building until the index is complete (a "no matches" is then trustworthy), a
-    // wait deadline passes, or — interactively — Ctrl-C. A human sees a progress
-    // line once the pause is noticeable.
+    // index — a prefix, fuzzy or path match can be wrong once more is indexed.
+    // Hold until the top match is `settled`; otherwise keep waiting while anyone
+    // — this warm or another process's — is still indexing, until the index is
+    // complete (a "no matches" is then trustworthy), a wait deadline passes, or —
+    // interactively — Ctrl-C. A human sees a progress line once the pause is
+    // noticeable.
     crate::trace!(
         "setup (open + repo detect + warm decision): {} ms",
         t_setup.elapsed().as_millis()
@@ -1014,15 +1026,21 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             Ok(m) => {
                 total = m.total;
                 let h = m.hits;
-                let confident = h.first().is_some_and(|hit| {
-                    hit.features
-                        .iter()
-                        .any(|f| matches!(f.name, "exact" | "prefix"))
-                });
-                let warm_finished = warm_done.load(std::sync::atomic::Ordering::Relaxed);
+                if !polling {
+                    break h;
+                }
+                let demanded = demanded.load(std::sync::atomic::Ordering::Acquire);
+                let answered = shown(args, cwd.as_deref(), root.as_deref(), &h)
+                    .first()
+                    .is_some_and(|top| settled(top, demanded));
+                // Our own warm ending says nothing about the index while
+                // another process is still filling it.
+                let indexing = !warm_done.load(std::sync::atomic::Ordering::Relaxed)
+                    || root.as_deref().is_some_and(|r| others_indexing(store, r));
+                let complete = root.as_deref().is_some_and(|r| is_complete(store, r));
                 let stopped = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
                 let timed_out = deadline.is_some_and(|d| std::time::Instant::now() >= d);
-                if !polling || confident || warm_finished || stopped || timed_out {
+                if answered || complete || !indexing || stopped || timed_out {
                     break h;
                 }
                 if progress_ui
@@ -1224,20 +1242,35 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         note_live_scan(root, cost, live);
     }
 
+    // A hit from a checkout still being indexed says how far the index got,
+    // and a top match that isn't `settled` is no answer yet: it goes out as
+    // `warming` (exit 2), its hits provisional (D52).
+    disclose_warming(store, &mut hits, warm_detach_enabled() && warming_ok);
+    let provisional = hits.first().is_some_and(|top| {
+        top.warming.is_some() && !settled(top, demanded.load(std::sync::atomic::Ordering::Acquire))
+    });
+    let verdict = if provisional { "warming" } else { "hit" };
+
     // A process's first write can stall for milliseconds on a busy machine
     // (DECISIONS D13), so the ranked list counts itself once it has printed.
     // --show/--open/--web leave by their own exits (--open `exec`s), so they
     // count here; a --show that falls through to the list was already counted.
-    let counted_early = show || open || web;
+    // None of them acts on a provisional match.
+    let counted_early = !provisional && (show || open || web);
     if counted_early {
         let _span = crate::profile::span("record usage");
-        record_usage(store, args, "hit", coverage.as_deref(), live);
+        record_usage(store, args, verdict, coverage.as_deref(), live);
     }
 
     // Confidence first, while the runner-up is still in hand, then cut to the
     // window the caller asked for — `--show`'s gate reads this, so measuring it
     // over an already-truncated list made `-l 1` unconditionally confident.
     attach_confidence(&mut hits);
+    for hit in &mut hits {
+        if let Some(w) = &hit.warming {
+            hit.confidence = read_share_confidence(hit.confidence, w);
+        }
+    }
     hits.truncate(want);
     let total = total.max(hits.len());
     for hit in &mut hits {
@@ -1265,7 +1298,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
 
     // --show: print the top hit's full source when confident; otherwise fall
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
-    if show && let Some(code) = show_top_definition(&mut hits, query, out) {
+    if counted_early
+        && show
+        && let Some(code) = show_top_definition(&mut hits, query, out)
+    {
         return code;
     }
 
@@ -1273,12 +1309,23 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // hand off to the editor or browser.
     // Returns before the normal print / warm-join — opening should be snappy,
     // and a launcher `exec`s.
-    if open || web {
+    if counted_early && (open || web) {
         return finish_open(&hits, root.as_deref(), web);
     }
 
-    if let Some(code) = render_hits(args, &hits) {
+    if provisional {
+        if let Some(code) = emit_provisional(args, &hits) {
+            return code;
+        }
+    } else if let Some(code) = render_hits(args, &hits) {
         return code;
+    } else if out == Output::Text
+        && let Some(w) = hits.first().and_then(|h| h.warming.as_ref())
+    {
+        eprintln!(
+            "rq: still indexing this checkout ({}) — another definition may not be indexed yet",
+            read_so_far(w)
+        );
     }
 
     // The budget's number. `total` adds the bookkeeping below, which runs
@@ -1289,7 +1336,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // otherwise queue behind.
     if !counted_early {
         let _span = crate::profile::span("after: record usage");
-        record_usage(store, args, "hit", coverage.as_deref(), live);
+        record_usage(store, args, verdict, coverage.as_deref(), live);
     }
 
     // Collect the refresh started back at setup. It ran alongside the search
@@ -1326,7 +1373,148 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         no_wait,
     );
 
-    ExitCode::SUCCESS
+    // exit 2 is "no answer yet", whether nothing matched or nothing settled
+    if provisional {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// The hits as the caller would see them: gated and filtered, uncut. What the
+/// poll judges a warming answer by, since a filter can drop the top match.
+fn shown(
+    args: &SearchArgs,
+    cwd: Option<&std::path::Path>,
+    root: Option<&std::path::Path>,
+    hits: &[crate::search::Hit],
+) -> Vec<crate::search::Hit> {
+    let mut hits = hits.to_vec();
+    apply_gates(args.query, &mut hits);
+    apply_post_filters(args, cwd, root, &mut hits);
+    hits
+}
+
+/// Whether the top match on an index still being filled answers the query:
+/// an exact match in the capitals typed does, though another definition of
+/// the name may be unread (the hit says so); any literal match does once every
+/// file containing the name has been read (`demanded`), since no unread file
+/// can then beat it on the name. A fuzzy or path match waits for the whole
+/// index (D52).
+fn settled(top: &crate::search::Hit, demanded: bool) -> bool {
+    let has = |name| top.features.iter().any(|f| f.name == name);
+    (has("exact") && has("case")) || (demanded && crate::search::is_literal(&top.features))
+}
+
+fn is_complete(store: &Store, root: &std::path::Path) -> bool {
+    store
+        .coverage_status(&root_key(root))
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("complete")
+}
+
+/// Whether a process other than this one is indexing the checkout at `root`.
+fn others_indexing(store: &Store, root: &std::path::Path) -> bool {
+    let me = std::process::id();
+    store.passes(&root_key(root)).is_ok_and(|(pids, _)| {
+        pids.iter()
+            .any(|&p| p != me && crate::store::pid_alive(i64::from(p)))
+    })
+}
+
+/// Mark each index hit from a checkout that isn't fully indexed with how far
+/// its index got. `continuing`: this rq leaves a warm behind it.
+fn disclose_warming(store: &Store, hits: &mut [crate::search::Hit], continuing: bool) {
+    let mut seen: HashMap<String, Option<crate::search::Warming>> = HashMap::new();
+    for hit in hits.iter_mut() {
+        if hit.source != crate::search::Source::Index {
+            continue;
+        }
+        let Some(root) = hit.root.as_deref() else {
+            continue;
+        };
+        hit.warming = seen
+            .entry(root.to_string())
+            .or_insert_with(|| warming_state(store, root, continuing))
+            .clone();
+    }
+}
+
+/// How far the index of the checkout at `root` has got, or `None` once it is
+/// complete.
+fn warming_state(store: &Store, root: &str, continuing: bool) -> Option<crate::search::Warming> {
+    if store.coverage_status(root).ok().flatten().as_deref() == Some("complete") {
+        return None;
+    }
+    let checkout = store.checkout(root).ok().flatten()?;
+    let read = store.checkout_file_count(checkout.id).unwrap_or(0);
+    let (pids, span) = store.passes(root).unwrap_or_default();
+    let me = std::process::id();
+    let others = pids
+        .iter()
+        .any(|&p| p != me && crate::store::pid_alive(i64::from(p)));
+    let interrupted = !continuing && !others;
+    let hint = if interrupted {
+        "indexing stopped part-way: `rq --index` finishes it"
+    } else {
+        "rq is still indexing this checkout: ask again for a fuller answer, or run `rq --index` to finish it now"
+    };
+    Some(crate::search::Warming {
+        read,
+        of: span.map(|s| s.max(read)),
+        interrupted,
+        hint: hint.to_string(),
+    })
+}
+
+/// Confidence on a partial index, scaled by the share of the tree read — the
+/// files that could hold a better match. Floored, so it never rounds up to a
+/// whole the index can't back. Unscaled when the tree's size is unknown.
+fn read_share_confidence(confidence: f64, w: &crate::search::Warming) -> f64 {
+    match w.of {
+        Some(of) if of > 0 => (confidence * w.read as f64 / of as f64 * 100.0).floor() / 100.0,
+        _ => confidence,
+    }
+}
+
+/// "N of M files read", or "N files read" before the tree was enumerated.
+fn read_so_far(w: &crate::search::Warming) -> String {
+    match w.of {
+        Some(of) => format!("{} of {of} files read", w.read),
+        None => format!("{} files read", w.read),
+    }
+}
+
+/// Report a top match that isn't settled on an index still being filled:
+/// `warming`, as a miss would be, with what was found so far as `provisional`.
+/// Text lists them as a hit would, under a note saying they may change.
+fn emit_provisional(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCode> {
+    let warming = hits.first().and_then(|h| h.warming.as_ref());
+    match args.out {
+        Output::Json | Output::Ndjson => {
+            let obj = serde_json::json!({
+                "status": "warming",
+                "query": args.query,
+                "warming": warming,
+                "provisional": hits,
+            });
+            let code = emit_json(args.out, &obj);
+            (code != ExitCode::SUCCESS).then_some(code)
+        }
+        Output::Text => {
+            if let Some(code) = render_hits(args, hits) {
+                return Some(code);
+            }
+            eprintln!(
+                "rq: still indexing ({}) — no settled match for {:?} yet, so these may change (run again, or `rq --index` to finish)",
+                warming.map_or_else(String::new, read_so_far),
+                args.query
+            );
+            None
+        }
+    }
 }
 
 /// Re-exec a detached warm child when this query's warming didn't finish the

@@ -3650,3 +3650,120 @@ fn kind_field_selects_fields_across_languages() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A repo where a prefix match for `User` sits in one directory and the exact
+/// definition in another, so seeding one directory leaves a partial index.
+fn prefix_and_exact(label: &str) -> (PathBuf, PathBuf) {
+    let (dir, db) = scratch(label);
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("models")).unwrap();
+    fs::write(
+        dir.join("app/fields.rb"),
+        "class UserFieldsController\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("models/user.rb"), "class User\nend\n").unwrap();
+    git_init_commit(&dir);
+    (dir, db)
+}
+
+fn json(out: &str) -> serde_json::Value {
+    serde_json::from_str(out).unwrap_or_else(|e| panic!("not JSON ({e}): {out}"))
+}
+
+#[test]
+fn a_prefix_match_from_a_partial_index_is_provisional_not_an_answer() {
+    let (dir, db) = prefix_and_exact("partial-prefix");
+    rq(&db, &dir, &["--index", "app"]);
+
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 2, "not an answer yet: {out}");
+    let v = json(&out);
+    assert_eq!(v["status"], "warming", "{out}");
+    assert_eq!(v["provisional"][0]["name"], "UserFieldsController", "{out}");
+    assert_eq!(v["warming"]["read"], 1, "{out}");
+    assert_eq!(v["warming"]["of"], 2, "{out}");
+
+    // text lists what it has, and says it may change
+    let (code, out, err) = rq_full(&db, &dir, &["User", "--no-wait"], &[], None);
+    assert_eq!(code, 2);
+    assert!(out.contains("UserFieldsController"), "{out}");
+    assert!(err.contains("1 of 2 files read"), "{err}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_exact_match_from_a_partial_index_answers_and_says_so() {
+    let (dir, db) = prefix_and_exact("partial-exact");
+    rq(&db, &dir, &["--index", "models"]);
+
+    let (code, out, err) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 0, "{out}");
+    let top = &json(&out)[0];
+    assert_eq!(top["name"], "User", "{out}");
+    let w = &top["warming"];
+    assert_eq!((&w["read"], &w["of"]), (&1.into(), &2.into()), "{out}");
+    assert_eq!(w["interrupted"], true, "nothing is indexing: {out}");
+    assert!(w["hint"].as_str().unwrap().contains("rq --index"), "{out}");
+    let partial = top["confidence"].as_f64().unwrap();
+    assert!(partial <= 0.5, "scaled by the half read: {out}");
+    assert!(
+        err.is_empty(),
+        "structured output keeps stderr quiet: {err}"
+    );
+
+    let (_, _, err) = rq_full(&db, &dir, &["User", "--no-wait"], &[], None);
+    assert!(err.contains("still indexing"), "{err}");
+
+    // once complete, the same answer carries no disclosure and its own confidence
+    rq(&db, &dir, &["--index"]);
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json"], &[], None);
+    assert_eq!(code, 0);
+    let top = &json(&out)[0];
+    assert!(top.get("warming").is_none(), "{out}");
+    assert!(top["confidence"].as_f64().unwrap() > partial, "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_search_waits_on_another_process_still_indexing() {
+    // Another writer holds the index mid-build: this search's own warm can't
+    // write, and ending is not the index being done. It waits, and answers
+    // with the definition once the writer lets go.
+    let (dir, db) = prefix_and_exact("partial-other");
+    rq(&db, &dir, &["--index", "app"]);
+    let root = dir.canonicalize().unwrap();
+    let mark = format!("pass:{}:{}", root.display(), std::process::id());
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        rusqlite::params![mark],
+    )
+    .unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["User", "--json", "--wait", "30s"])
+        .current_dir(&dir)
+        .env("RQ_DB", &db)
+        .env("RQ_WARM_DETACH", "0")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("run rq");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    conn.execute_batch("COMMIT").unwrap();
+    conn.execute("DELETE FROM meta WHERE key = ?1", rusqlite::params![mark])
+        .unwrap();
+
+    let run = child.wait_with_output().unwrap();
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(json(&out)[0]["name"], "User", "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
