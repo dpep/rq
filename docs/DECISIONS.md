@@ -2929,7 +2929,10 @@ demand walk gets cheap enough that waiting for it costs nothing.
   the same sweep with a process boundary and a race for the lock in the middle; and
   claiming `continuing` only when some process will finish, which a search can't know
   of a child it didn't start. A repo that needs more than 5 minutes still stops part-way,
-  as a crashed warm does.
+  as a crashed warm does. Measured on that harness, 8 runs per build alternating, load
+  18–26 from other work: once every warm had exited, 1 of 8 base runs had a complete
+  index (the rest 31–72k of 97k), against 8 of 8 (all done 49–64 s after the rebuild
+  began); exit 2 went from 2 of 8 to 0 of 8.
 - **`--status` reads a checkout a live pass holds as `warming`**, with the same `of`. A
   cold pass reads every file for a search's name before it writes any, so for seconds it
   showed `unindexed 0 files` mid-rebuild.
@@ -2959,11 +2962,15 @@ demand walk gets cheap enough that waiting for it costs nothing.
   the name index in one transaction, which on the 100k corpus under load outlasted the 3 s
   busy timeout of an `rq --index` writing alongside. A pass nobody waits on — `rq --index`
   and a warm child — now waits out another writer for 30 s; a search keeps 3 s, since
-  its in-process warm is joined before the process exits. A miss's `warming` lists its keys in a result's order, as a provisional
+  its in-process warm is joined before the process exits. `rq --index` 1–12 s into an
+  `rq --warm` rebuild of the 100k corpus: 66c08a2 failed 1 of 12, the pass-mark fix
+  alone 4 of 16 (the rebuild cause, now hit at delays of 5–8 s), both fixes 0 of 14. A miss's `warming` lists its keys in a result's order, as a provisional
   answer's does, so one `-J` stream never mixes two. `of` for a partial index an older rq
   left without one is counted once and kept — a best-effort write that never waits on a
   busy writer, whose pass records its own — rather than recounted by every query that
-  shows the checkout (`git ls-files` on 97k files, ~200 ms of each first answer), and
+  shows the checkout (`rq Account -a` from a small repo beside a partial 97k-file one:
+  first answer 144–321 ms on every query before; after, 828 ms once — 634 ms of it the
+  count, under load — then 7–12 ms), and
   `--status` reports that same `of`. A sparse checkout's files outside its cone
   (skip-worktree and not on disk) are neither enumerated nor counted, so 2 files of a
   10-file tree read "2 of 2", not "2 of 10"; a skip-worktree file still on disk (hiding
