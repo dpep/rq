@@ -1597,7 +1597,8 @@ fn warming_state(
         format!("indexing stopped part-way: `{index}` finishes it")
     } else {
         format!(
-            "rq is still indexing this checkout: ask again for a fuller answer, or run `{index}` to finish it now"
+            "rq is still indexing {}: ask again for a fuller answer, or run `{index}` to finish it now",
+            which_checkout(root, here)
         )
     };
     Some(crate::search::Warming {
@@ -1656,10 +1657,21 @@ fn warming_note(hit: &crate::search::Hit, here: Option<&str>) -> Option<String> 
             index_command(root, Some(root) == here)
         )
     } else {
+        let root = hit.root.as_deref().unwrap_or_default();
         format!(
-            "rq: still indexing this checkout ({read}) — another definition may not be indexed yet"
+            "rq: still indexing {} ({read}) — another definition may not be indexed yet",
+            which_checkout(root, Some(root) == here)
         )
     })
+}
+
+/// "this checkout", or the one at `root` when the search runs elsewhere.
+fn which_checkout(root: &str, here: bool) -> String {
+    if here {
+        "this checkout".to_string()
+    } else {
+        format!("the checkout at {root}")
+    }
 }
 
 /// "N of M files read", or "N files read" when nothing counted the tree.

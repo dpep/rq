@@ -4150,6 +4150,7 @@ fn across_checkouts_a_complete_ones_match_waits_on_another_still_indexing() {
         hint.contains(&format!("rq --index {}", root.display())),
         "{out}"
     );
+    assert!(!hint.contains("this checkout"), "it's another one: {out}");
 
     let (code, _, err) = rq_full(&db, &here, &["-a", "widget", "--no-wait"], &[], None);
     assert_eq!(code, 2);
