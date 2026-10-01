@@ -1513,6 +1513,9 @@ fn warming_state(
     let checkout = store.checkout(root).ok().flatten()?;
     let read = store.checkout_file_count(checkout.id).unwrap_or(0);
     let (_, span) = store.passes(root).unwrap_or_default();
+    let span = span.or_else(|| {
+        crate::index::count_span(store, std::path::Path::new(root), checkout.id).map(|s| s as i64)
+    });
     let interrupted = !continuing && !store.indexed_by_others(root);
     let index = if here {
         "rq --index".to_string()
@@ -1535,12 +1538,16 @@ fn warming_state(
 }
 
 /// Confidence on a partial index, scaled by the share of the tree read — the
-/// files that could hold a better match. Floored, so it never rounds up to a
-/// whole the index can't back. Unscaled when the tree's size is unknown.
+/// files that could hold a better match. Floored in whole hundredths, so it
+/// never rounds up to a whole the index can't back. A tree nothing could count
+/// backs none of it.
 fn read_share_confidence(confidence: f64, w: &crate::search::Warming) -> f64 {
     match w.of {
-        Some(of) if of > 0 => (confidence * w.read as f64 / of as f64 * 100.0).floor() / 100.0,
-        _ => confidence,
+        Some(of) if of > 0 => {
+            let hundredths = (confidence * 100.0).round() as i64;
+            (hundredths * w.read.min(of) / of) as f64 / 100.0
+        }
+        _ => 0.0,
     }
 }
 
@@ -3387,9 +3394,13 @@ fn cmd_status(out: Output) -> ExitCode {
                 } else {
                     format!("  {}", r.root)
                 };
+                let files = match r.of {
+                    Some(of) => format!("{} of {of}", r.files),
+                    None => r.files.to_string(),
+                };
                 println!(
-                    "{:<10} {:>6} files  {:>7} symbols  {}{at}",
-                    r.status, r.files, r.symbols, r.identity
+                    "{:<10} {files:>6} files  {:>7} symbols  {}{at}",
+                    r.status, r.symbols, r.identity
                 );
             }
         }
@@ -3840,6 +3851,25 @@ mod tests {
         assert!(parse_wait("").is_err());
         assert!(parse_wait("s").is_err());
         assert!(parse_wait("-1s").is_err());
+    }
+
+    #[test]
+    fn confidence_scales_by_the_share_read_in_whole_hundredths() {
+        let w = |read, of| crate::search::Warming {
+            read,
+            of,
+            interrupted: false,
+            hint: String::new(),
+        };
+        for (confidence, read, of, scaled) in [
+            (1.0, 29, Some(100), 0.29), // not 0.28 from 28.999…
+            (0.87, 1, Some(2), 0.43),
+            (1.0, 7, Some(7), 1.0),
+            (1.0, 0, Some(0), 0.0),
+            (1.0, 5, None, 0.0), // a tree nothing counted backs none of it
+        ] {
+            assert_eq!(read_share_confidence(confidence, &w(read, of)), scaled);
+        }
     }
 
     #[test]

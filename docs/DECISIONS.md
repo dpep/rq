@@ -2902,3 +2902,15 @@ demand walk gets cheap enough that waiting for it costs nothing.
   `interrupted: false`) belongs only to the checkout this search leaves a warm behind for,
   and another checkout's hint names its root (`rq --index <root>`). Outside `-a` nothing
   changes: this checkout is the only one read.
+- **`read` and `of` count one population.** `read` counts every file the index holds;
+  `of` counted what `git ls-files` lists, so the untracked files an explicit index reads
+  pushed `read` past `of`, and the clamp hid the unread tracked files ("6 of 6 files read",
+  confidence 1.0, with two tracked files unread). `of` is now git's tracked files plus
+  those the index holds that git doesn't, recounted at a pass's end, dropped once the
+  checkout is complete, and counted on demand for a partial index an older rq left without
+  one. Outside git nothing counts the tree short of walking it, so `of` is omitted (never
+  `null`) and `confidence` is 0: the share read is what backs it, and an unknown share
+  backs none. Scaling is in whole hundredths (29 of 100 at 1.0 is 0.29, not 0.28).
+- **`--status` reads a checkout a live pass holds as `warming`**, with the same `of`. A
+  cold pass reads every file for a search's name before it writes any, so for seconds it
+  showed `unindexed 0 files` mid-rebuild.

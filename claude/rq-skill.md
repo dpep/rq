@@ -68,7 +68,8 @@ rq.
   often? `rq --index <dir>` once.
 - `warming` (`{read, of, interrupted, hint}`) means the repo's index is still
   being built: `read` of `of` files are in. Another definition may not be
-  indexed yet, and `confidence` is scaled down to match. Use the answer; if it
+  indexed yet, and `confidence` is scaled down to match (to 0 when `of` is
+  missing: outside git nothing counts the tree). Use the answer; if it
   matters, ask again once indexing finishes (`hint` says how).
 - Fields that don't apply (`parent`, `visibility`, `end_line`, …) are omitted,
   never `null`. `declarations` and `also_in` appear when one name is declared in

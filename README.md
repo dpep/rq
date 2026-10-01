@@ -149,7 +149,7 @@ that doesn't apply is **omitted**, never `null`.
 | `total` | search | Matches the window was drawn from, before `--limit`. |
 | `explain` | `--explain` | Feature name → score contribution, in whole points. |
 | `query` | batch mode | The stdin line this row answers. |
-| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, hint}`: files the index holds, source files the tree spans (omitted before a pass has counted them), whether nothing is indexing it any more, and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of`. |
+| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, hint}`: files the index holds, files the tree spans (what git tracks plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it any more, and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of`. |
 
 ### Misses and exit codes
 
@@ -239,11 +239,13 @@ rq perform --show                                    # 122 candidates: prints th
 `rq --status --json` emits a coverage row per checkout (`repo`, `root`,
 `status`, `files`, `symbols`): worktrees and clones of one remote share a
 `repo` and each has its own `root`. `status` is `complete`; `warming` while
-the index is partial — a first index still running, or a pass cut short that
-the next query continues; or `unindexed` for a checkout rq knows but holds
-nothing for, such as a repo's other worktrees after an upgrade, until a search
-there indexes it. A checkout deleted from disk is forgotten, and doesn't
-appear. `files` and `symbols` count what the checkout holds so far. A dropped checkout is gone from `--status` until a query or `--index`
+the index is partial — a first index still running (even before it has
+written a file), or a pass cut short that the next query continues; or
+`unindexed` for a checkout rq knows but holds nothing for, such as a repo's
+other worktrees after an upgrade, until a search there indexes it. A checkout
+deleted from disk is forgotten, and doesn't appear. `files` and `symbols` count
+what the checkout holds so far, and a partial checkout's `of` the files its tree
+spans, as a result's `warming` counts them. A dropped checkout is gone from `--status` until a query or `--index`
 starts rebuilding it, and then reads `warming`. `rq --index --json` emits what
 this run parsed (`files_added`, `symbols_added` — a file whose content a
 sibling checkout already stored is parsed by neither, so a new worktree often

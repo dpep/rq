@@ -276,6 +276,7 @@ pub(crate) struct Warming {
     /// Files of this checkout the index holds.
     pub read: i64,
     /// Source files the tree spans, when a pass has enumerated it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub of: Option<i64>,
     /// No process is indexing the checkout any more, nor will this one leave
     /// a warm behind: the gap stays until a search or `rq --index` fills it.

@@ -335,6 +335,42 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
     )
 }
 
+/// Repo-relative paths of `paths` under `root`, as the index keys its files.
+fn rel_paths(paths: &[std::path::PathBuf], root: &Path) -> HashSet<String> {
+    paths
+        .iter()
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+/// The source files git tracks under `root`; `None` outside git, or before a
+/// first commit, where only a whole walk could count the tree.
+fn tracked_files(root: &Path) -> Option<HashSet<String>> {
+    git_source_candidates(root)
+        .filter(|p| !p.is_empty())
+        .map(|p| rel_paths(&p, root))
+}
+
+/// How many files the tree spans, counted as D52's `read` counts the files
+/// the index holds: what git tracks, plus what the index holds that git
+/// doesn't (untracked files an explicit index read, deletions not yet
+/// reconciled), so `read` never covers files missing from `of`.
+fn span_of<'a>(tracked: &HashSet<String>, held: impl IntoIterator<Item = &'a str>) -> usize {
+    tracked.len() + held.into_iter().filter(|f| !tracked.contains(*f)).count()
+}
+
+/// [`span_of`] for a checkout no pass has counted (an older rq built it).
+pub(crate) fn count_span(store: &Store, root: &Path, checkout: i64) -> Option<usize> {
+    let tracked = tracked_files(root)?;
+    let held = store.file_mtimes(checkout).ok()?;
+    Some(span_of(&tracked, held.keys().map(String::as_str)))
+}
+
 /// A lazy, streaming filesystem walk of `roots` yielding file paths — the
 /// fallback when git can't enumerate (an explicit unbounded index, or a non-git
 /// dir). Honors `.gitignore`/hidden rules via the `ignore` crate. Stops
@@ -638,11 +674,16 @@ fn run_index(
     // the tree it read and whether anyone is still reading (D52).
     let root_key = root_display.to_string_lossy().into_owned();
     let marked = coverage_mark.as_ref().is_none_or(|(s, _)| s != "complete");
+    let tracked = marked
+        .then(|| match &git_candidates {
+            Some(paths) => Some(rel_paths(paths, root)),
+            None => tracked_files(root),
+        })
+        .flatten();
     if marked {
-        let span = match &git_candidates {
-            Some(paths) => Some(paths.len()),
-            None => git_source_candidates(root).map(|p| p.len()),
-        };
+        let span = tracked
+            .as_ref()
+            .map(|t| span_of(t, stored.keys().map(String::as_str)));
         store.begin_pass(&root_key, std::process::id(), span)?;
     }
     // parse query-relevant files (by path) first — a cheap in-memory reorder
@@ -868,7 +909,15 @@ fn run_index(
         );
     }
     if marked {
-        store.end_pass(&root_key, std::process::id())?;
+        // recount: this pass may have read files git doesn't track
+        let span = (status != "complete" && recorded)
+            .then_some(tracked.as_ref())
+            .flatten()
+            .map(|t| {
+                let read = seen.iter().filter(|f| !stored.contains_key(*f));
+                span_of(t, stored.keys().chain(read).map(String::as_str))
+            });
+        store.end_pass(&root_key, std::process::id(), span)?;
     }
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",

@@ -176,6 +176,9 @@ pub(crate) struct CoverageRow {
     pub root: String,
     pub status: String,
     pub files: i64,
+    /// Files the tree spans, while it isn't complete and a pass has counted it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub of: Option<i64>,
     pub symbols: i64,
 }
 
@@ -868,11 +871,26 @@ impl Store {
                     root: r.get(1)?,
                     status: r.get(2)?,
                     files: r.get(3)?,
+                    of: None,
                     symbols: r.get(4)?,
                 })
             })?
-            .collect::<Result<Vec<_>>>()?;
-        Ok(rows)
+            .collect::<Result<Vec<CoverageRow>>>()?;
+        // A pass reads for a query's name before it writes a file, so a
+        // checkout a live pass is filling may hold none yet.
+        Ok(rows
+            .into_iter()
+            .map(|mut row| {
+                if row.status != "complete" {
+                    let (pids, span) = self.passes(&row.root).unwrap_or_default();
+                    if row.status == "unindexed" && pids.iter().any(|&p| pid_alive(i64::from(p))) {
+                        row.status = "warming".to_string();
+                    }
+                    row.of = span.map(|s| s.max(row.files));
+                }
+                row
+            })
+            .collect())
     }
 
     /// The roots of every checkout whose index isn't complete, as `--status`
@@ -1032,6 +1050,11 @@ impl Store {
         for key in checkout_meta_keys(checkout.id, root_path) {
             tx.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
         }
+        let passes = format!("pass:{root_path}:");
+        tx.execute(
+            "DELETE FROM meta WHERE substr(key, 1, ?2) = ?1",
+            params![passes, passes.len() as i64],
+        )?;
         tx.execute("DELETE FROM checkouts WHERE id = ?1", params![checkout.id])?;
         drop_if_unchecked_out(&tx, checkout.repo)?;
         tx.commit()
@@ -1313,13 +1336,24 @@ impl Store {
         tx.commit()
     }
 
-    /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass).
-    pub(crate) fn end_pass(&self, root: &str, pid: u32) -> Result<()> {
+    /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass), and record
+    /// the tree's span as the pass leaves it, or forget it (a complete
+    /// checkout discloses none).
+    pub(crate) fn end_pass(&self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
         self.conn.execute(
             "DELETE FROM meta WHERE key = ?1",
             params![format!("pass:{root}:{pid}")],
         )?;
-        Ok(())
+        match span {
+            Some(span) => self.meta_set(&format!("span:{root}"), &span.to_string()),
+            None => {
+                self.conn.execute(
+                    "DELETE FROM meta WHERE key = ?1",
+                    params![format!("span:{root}")],
+                )?;
+                Ok(())
+            }
+        }
     }
 
     /// The processes marked as indexing the checkout at `root` (live or not —
@@ -1523,8 +1557,9 @@ fn drop_if_unchecked_out(conn: &Connection, repository_id: i64) -> Result<()> {
 /// The `meta` keys one checkout's caches live under: by id where the index
 /// writes them, by root where a search reads them before any pass registered
 /// the checkout.
-fn checkout_meta_keys(id: i64, root: &str) -> [String; 6] {
+fn checkout_meta_keys(id: i64, root: &str) -> [String; 7] {
     [
+        format!("span:{root}"),
         format!("head:{id}"),
         format!("edited:{id}"),
         format!("git_ts_head:{id}"),
@@ -1766,13 +1801,16 @@ mod tests {
             "a pass that didn't count keeps the last span"
         );
 
-        store.end_pass("/repo", 7).unwrap();
+        store.end_pass("/repo", 7, Some(12)).unwrap();
         store.claim_warm_lock("/repo", 8, |_, _| false).unwrap();
         assert_eq!(
-            store.passes("/repo").unwrap().0,
-            vec![8],
-            "a warm child counts"
+            store.passes("/repo").unwrap(),
+            (vec![8], Some(12)),
+            "a warm child counts, and the pass's recount stands"
         );
+
+        store.end_pass("/repo", 8, None).unwrap();
+        assert_eq!(store.passes("/repo").unwrap().1, None, "complete: no span");
     }
 
     #[test]
@@ -2358,6 +2396,7 @@ mod tests {
         store.set_coverage(a.id, 1, 1, "complete").unwrap();
         store.set_indexed_head(a.id, "abc").unwrap();
         store.branch_files_set("/a", "s", 1, 1, &[]).unwrap();
+        store.begin_pass("/a", 4_000_000, Some(3)).unwrap();
 
         store.forget_checkout("/a").unwrap();
         assert_eq!(store.checkout_roots(repo).unwrap(), vec!["/b"]);

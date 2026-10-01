@@ -3718,6 +3718,15 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
 
     // once complete, the same answer carries no disclosure and its own confidence
     rq(&db, &dir, &["--index"]);
+    let spans: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM meta WHERE key LIKE 'span:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(spans, 0, "a complete checkout keeps no span");
     let (code, out, _) = rq_full(&db, &dir, &["User", "--json"], &[], None);
     assert_eq!(code, 0);
     let top = &json(&out)[0];
@@ -3891,4 +3900,103 @@ fn across_checkouts_this_ones_demand_walk_does_not_settle_another_still_indexing
 
     let _ = fs::remove_dir_all(&r1);
     let _ = fs::remove_dir_all(&r3);
+}
+
+#[test]
+fn files_read_and_the_tree_count_the_same_files() {
+    // an explicit index reads untracked files too; they belong in `of` as
+    // much as in `read`, or the unread tracked files vanish from the count
+    let (dir, db) = scratch("span-untracked");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("models")).unwrap();
+    fs::write(
+        dir.join("app/fields.rb"),
+        "class UserFieldsController\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("models/user.rb"), "class User\nend\n").unwrap();
+    git_init_commit(&dir);
+    for i in 0..3 {
+        fs::write(
+            dir.join(format!("app/u{i}.rb")),
+            format!("class U{i}\nend\n"),
+        )
+        .unwrap();
+    }
+    rq(&db, &dir, &["--index", "app"]);
+
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 2, "{out}");
+    let w = &json(&out)["warming"];
+    assert_eq!((&w["read"], &w["of"]), (&4.into(), &5.into()), "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_tree_never_counted_is_counted_when_asked_and_never_null() {
+    // an index an older rq left half-built recorded no span
+    let (dir, db) = prefix_and_exact("span-missing");
+    rq(&db, &dir, &["--index", "models"]);
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("DELETE FROM meta WHERE key LIKE 'span:%'", [])
+        .unwrap();
+
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 0, "{out}");
+    let w = &json(&out)[0]["warming"];
+    assert_eq!((&w["read"], &w["of"]), (&1.into(), &2.into()), "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_tree_that_cannot_be_counted_backs_no_confidence() {
+    // outside git nothing counts the tree short of walking it all
+    let (dir, db) = scratch("span-non-git");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("models")).unwrap();
+    fs::write(
+        dir.join("app/fields.rb"),
+        "class UserFieldsController\nend\n",
+    )
+    .unwrap();
+    fs::write(dir.join("models/user.rb"), "class User\nend\n").unwrap();
+    rq(&db, &dir, &["--index", ".", "--path", "models"]);
+
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 0, "{out}");
+    let top = &json(&out)[0];
+    assert!(!out.contains("null"), "omitted, never null: {out}");
+    assert!(top["warming"].get("of").is_none(), "{out}");
+    assert_eq!(top["confidence"], 0.0, "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn status_reads_a_checkout_a_live_pass_is_filling_as_warming() {
+    // a cold pass reads for the name before it writes a file
+    let (dir, db) = prefix_and_exact("status-live-pass");
+    rq(&db, &dir, &["--index", "app"]);
+    let root = dir.canonicalize().unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DELETE FROM coverage; DELETE FROM checkout_files;")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        rusqlite::params![format!("pass:{}:{}", root.display(), std::process::id())],
+    )
+    .unwrap();
+
+    let (code, out, _) = rq_full(&db, &dir, &["--status", "--json"], &[], None);
+    assert_eq!(code, 0, "{out}");
+    let row = &json(&out)[0];
+    assert_eq!(row["status"], "warming", "{out}");
+    assert_eq!((&row["files"], &row["of"]), (&0.into(), &2.into()), "{out}");
+    let (_, out, _) = rq_full(&db, &dir, &["--status"], &[], None);
+    assert!(out.contains("0 of 2 files"), "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
 }

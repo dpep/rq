@@ -23,6 +23,9 @@ index still being built now says so, in a new `warming` field.
   the name has been read. If the wait ends first (`--no-wait`, `--wait`, the
   1-minute default for scripts), it reports `warming` (exit 2) with what it
   found as `provisional` (DECISIONS D52).
+- **`--status` no longer reads a checkout being indexed as `unindexed 0
+  files`** while the first pass is still reading for a search's name; it says
+  `warming`, with how many files the tree spans (`of`).
 - **The wait follows whoever is indexing.** A search no longer stops waiting
   when its own indexing ends while another rq process is still building the
   index.
@@ -31,7 +34,8 @@ index still being built now says so, in a new `warming` field.
 - **`warming` on results from an index still being built**: `{read, of,
   interrupted, hint}`, files indexed of the files the tree spans. Their
   `confidence` is scaled by `read / of`, since another definition may not be
-  indexed yet. Text output adds one line on stderr.
+  indexed yet. Text output adds one line on stderr. `--status` rows for a
+  partial checkout carry the same `of`.
 
 ## 0.60.1 — 2026-09-29
 
