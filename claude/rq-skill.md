@@ -91,7 +91,8 @@ On a miss, JSON is one `{"status": …, "query": …}` object, not results:
   file not read yet could beat, the matches so far are in `provisional`: a
   lead, not an answer. (Under `-a`, a match from another checkout nothing is
   indexing answers instead, with `warming.interrupted` and the `rq --index`
-  that finishes it: asking again wouldn't change it.)
+  that finishes it: asking again wouldn't change it. One another process is
+  still indexing holds back every checkout's match, and the search waits on it.)
 - `interrupted` (exit 2) — indexing was stopped; run again.
 
 An error is JSON too, on stdout: `{"error": "…", "kind": "usage", "code": 64}`.

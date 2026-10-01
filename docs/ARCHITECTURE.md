@@ -556,8 +556,9 @@ The index is **never assumed complete**.
   search's warm has read every file containing the name (D52) — more
   generally, once no file a retry would read can beat it: under `-a`, the
   demand walk vouches only for this checkout, another checkout counts as unread
-  while another process indexes it, and one nothing is indexing is as read as
-  it will get. A prefix, fuzzy
+  while another process indexes it (holding back a match from any checkout,
+  complete ones included, and the search waits on that process), and one
+  nothing is indexing is as read as it will get. A prefix, fuzzy
   or path match before then is no answer: when the wait ends without one, the
   search reports `warming` (exit 2) with its matches as `provisional`. The wait
   continues while *anyone* is indexing the checkout — this search's warm, or

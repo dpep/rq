@@ -3910,8 +3910,14 @@ fn across_checkouts_this_ones_demand_walk_does_not_settle_another_still_indexing
     .unwrap();
 
     // r3's own walk reads every file of r3 holding the name; r1's `z/` is
-    // still to come from the process indexing it
-    let (code, out, _) = rq_full(&db, &r3, &["-a", "Widget", "--json"], &[], None);
+    // still to come from the process indexing it, which the search waits on
+    let (code, out, _) = rq_full(
+        &db,
+        &r3,
+        &["-a", "Widget", "--json", "--wait", "2"],
+        &[],
+        None,
+    );
     assert_eq!(code, 2, "{out}");
     assert_eq!(json(&out)["provisional"][0]["name"], "WidgetThing", "{out}");
 
@@ -4060,4 +4066,93 @@ fn a_provisional_match_has_a_results_shape() {
     assert_eq!(keys(provisional), keys(&hit), "{out}\n{hit}");
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// A complete repo holding only a prefix match for `Widget`, and another
+/// whose exact `class Widget` is unread while a live process (this test)
+/// marks a pass over it.
+fn complete_here_partial_elsewhere(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let (other, db) = scratch(label);
+    fs::create_dir_all(other.join("x")).unwrap();
+    fs::create_dir_all(other.join("y")).unwrap();
+    fs::write(other.join("x/thing.rb"), "class Thing\nend\n").unwrap();
+    fs::write(other.join("y/widget.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&other);
+    rq(&db, &other, &["--index", "x"]);
+    let here = another_repo(&format!("{label}-here"));
+    fs::write(here.join("maker.rb"), "def widget_maker\nend\n").unwrap();
+    git_init_commit(&here);
+    rq(&db, &here, &["--index"]);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mark = format!(
+        "pass:{}:{}",
+        other.canonicalize().unwrap().display(),
+        std::process::id()
+    );
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, '0')",
+        rusqlite::params![mark],
+    )
+    .unwrap();
+    (other, here, db)
+}
+
+#[test]
+fn across_checkouts_a_complete_ones_match_waits_on_another_still_indexing() {
+    let (other, here, db) = complete_here_partial_elsewhere("all-complete-here");
+
+    let (code, out, _) = rq_full(
+        &db,
+        &here,
+        &["-a", "widget", "--json", "--no-wait"],
+        &[],
+        None,
+    );
+    assert_eq!(code, 2, "{out}");
+    let v = json(&out);
+    assert_eq!(v["provisional"][0]["name"], "widget_maker", "{out}");
+    // the checkout that holds the answer back is the one named
+    let root = other.canonicalize().unwrap();
+    assert_eq!(v["warming"]["interrupted"], false, "{out}");
+    let hint = v["warming"]["hint"].as_str().unwrap();
+    assert!(
+        hint.contains(&format!("rq --index {}", root.display())),
+        "{out}"
+    );
+
+    let (code, _, err) = rq_full(&db, &here, &["-a", "widget", "--no-wait"], &[], None);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains(&format!("rq --index {}", root.display())),
+        "text names it too: {err}"
+    );
+
+    let _ = fs::remove_dir_all(&other);
+    let _ = fs::remove_dir_all(&here);
+}
+
+#[test]
+fn across_checkouts_a_complete_ones_search_follows_another_indexer() {
+    let (other, here, db) = complete_here_partial_elsewhere("all-follow");
+    let indexer = {
+        let (db, other) = (db.clone(), other.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            rq(&db, &other, &["--index"]);
+        })
+    };
+
+    let (code, out, _) = rq_full(
+        &db,
+        &here,
+        &["-a", "Widget", "--json", "--wait", "20"],
+        &[],
+        None,
+    );
+    indexer.join().unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(json(&out)[0]["name"], "Widget", "{out}");
+
+    let _ = fs::remove_dir_all(&other);
+    let _ = fs::remove_dir_all(&here);
 }

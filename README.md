@@ -159,7 +159,7 @@ A miss is one `{"status": …, "query": …}` object instead of results:
 | --- | --- | --- |
 | `no_match` | 1 | Definitive: nothing by that name. Under `-a`, `incomplete` lists the roots of checkouts that aren't fully indexed, which the miss can't speak for; a search in one indexes it. |
 | `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
-| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. It carries `warming` (as on a result) for how far this checkout's index got, and when something matched but a file not read yet could hold a better match, the matches so far as `provisional`. |
+| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. It carries `warming` (as on a result) for how far the checkout holding the answer back got (under `-a`, possibly another one being indexed, which its `hint` names), and when something matched but a file not read yet could hold a better match, the matches so far as `provisional`. |
 | `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
 
 A match exits `0`. Every miss is non-zero, so `rq … && …` reads as "found
@@ -169,7 +169,9 @@ typed, or any exact or prefix match once every file containing the name has
 been read. It still carries `warming`, since another definition of the name may
 not be indexed yet. Under `-a`, "left to read" means by a retry: another
 checkout that nothing is indexing answers from what it holds, with
-`warming.interrupted` and the `rq --index <root>` that would finish it.
+`warming.interrupted` and the `rq --index <root>` that would finish it, while
+one another process is indexing holds back any match but an exact one in your
+capitals — even one from a complete checkout — and the search waits on it.
 
 ### Errors
 

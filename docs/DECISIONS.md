@@ -2902,6 +2902,13 @@ demand walk gets cheap enough that waiting for it costs nothing.
   `interrupted: false`) belongs only to the checkout this search leaves a warm behind for,
   and another checkout's hint names its root (`rq --index <root>`). Outside `-a` nothing
   changes: this checkout is the only one read.
+  A second hunt found the rule applied only to a top match from an incomplete checkout:
+  from a complete one, `-a` answered `widget_maker` (prefix, 0.9, exit 0) while another
+  checkout being indexed held `class Widget` unread, and never waited, since only its own
+  warm made it poll. The rule now holds whatever checkout the match came from, the
+  search waits on another checkout's indexer as on its own warm, and a provisional
+  answer's `warming` and hint describe the checkout holding it back rather than the top
+  match's.
 - **`read` and `of` count one population.** `read` counts every file the index holds;
   `of` counted what `git ls-files` lists, so the untracked files an explicit index reads
   pushed `read` past `of`, and the clamp hid the unread tracked files ("6 of 6 files read",

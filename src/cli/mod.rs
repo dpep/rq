@@ -999,28 +999,36 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Deadline: an interactive block waits unbounded (Ctrl-C escapes) unless
     // `--wait` names a bound; a programmatic block waits out the wait budget;
     // a non-block (complete repo) keeps the original fast answer budget.
+    let here = root.as_deref().map(root_key);
+    // `-a` reads other checkouts too: one another process is still filling
+    // can hold a better match, so the search waits on it as on its own warm
+    let follow_others =
+        all_repos && warming_ok && !no_wait && others_open(store, here.as_deref()).is_some();
     let deadline = if progress_ui && wait.is_none() {
         None
-    } else if block {
+    } else if block || follow_others {
         Some(poll_start + wait_budget)
     } else {
         Some(poll_start + answer_warm_budget())
     };
     drop(warm_span);
-    let polling = indexer.is_some() && was_warming;
+    let polling = (indexer.is_some() && was_warming) || follow_others;
     // Everything before the first search: resolving the repo root, checking
     // coverage, deciding whether to warm. It runs on every query, so it counts
     // toward the first-answer budget even though no searching happened yet.
     drop(setup_span);
     let mut query_span = crate::profile::span("query");
     let label = repo_label(root.as_deref());
-    let here = root.as_deref().map(root_key);
     // What a retry would read that this search hasn't, which is what a
     // partial index's top match must not be beatable by to answer (D52).
     let unread = |store: &Store, name_read: bool| Unread {
-        here: want_warm && !here.as_deref().is_some_and(|r| is_complete_key(store, r)),
+        here: here
+            .clone()
+            .filter(|r| want_warm && !is_complete_key(store, r)),
         name_read,
-        elsewhere: all_repos && others_open(store, here.as_deref()),
+        elsewhere: all_repos
+            .then(|| others_open(store, here.as_deref()))
+            .flatten(),
     };
     let mut drew_progress = false;
     let mut last_draw = poll_start;
@@ -1045,12 +1053,15 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
                 let answered = shown(args, cwd.as_deref(), root.as_deref(), &h)
                     .first()
-                    .is_some_and(|top| settled(top, here.as_deref(), &unread));
+                    .is_some_and(|top| held_back_by(top, here.as_deref(), &unread).is_none());
                 // Our own warm ending says nothing about the index while
                 // another process is still filling it.
-                let indexing = !warm_done.load(std::sync::atomic::Ordering::Relaxed)
-                    || root.as_deref().is_some_and(|r| others_indexing(store, r));
-                let complete = root.as_deref().is_some_and(|r| is_complete(store, r));
+                let indexing = (indexer.is_some()
+                    && !warm_done.load(std::sync::atomic::Ordering::Relaxed))
+                    || root.as_deref().is_some_and(|r| others_indexing(store, r))
+                    || unread.elsewhere.is_some();
+                let complete = root.as_deref().is_some_and(|r| is_complete(store, r))
+                    && unread.elsewhere.is_none();
                 let stopped = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
                 // A poll costs what the last one did (about a second while a
                 // cold pass holds the name index), so stop rather than start
@@ -1277,9 +1288,12 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         .flatten();
     disclose_warming(store, &mut hits, here.as_deref(), continuing);
     let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
-    let provisional = hits
+    // the checkout whose unread files could still beat the top match
+    let held_back = hits
         .first()
-        .is_some_and(|top| top.warming.is_some() && !settled(top, here.as_deref(), &unread));
+        .and_then(|top| held_back_by(top, here.as_deref(), &unread))
+        .map(str::to_string);
+    let provisional = held_back.is_some();
     let verdict = if provisional { "warming" } else { "hit" };
 
     // A process's first write can stall for milliseconds on a busy machine
@@ -1352,8 +1366,14 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         return finish_open(&hits, root.as_deref(), web);
     }
 
-    if provisional {
-        if let Some(code) = emit_provisional(args, &hits, here.as_deref()) {
+    if let Some(by) = held_back.as_deref() {
+        let warming = warming_state(
+            store,
+            by,
+            Some(by) == here.as_deref(),
+            Some(by) == continuing,
+        );
+        if let Some(code) = emit_provisional(args, &hits, warming.as_ref(), by, here.as_deref()) {
             return code;
         }
     } else if let Some(code) = render_hits(args, &hits, show) {
@@ -1433,32 +1453,43 @@ fn shown(
 
 /// What a retry of this search would read that this one hasn't.
 struct Unread {
-    /// More of this checkout: it isn't complete, and a search here warms it.
-    here: bool,
+    /// More of this checkout, at this root: it isn't complete, and a search
+    /// here warms it.
+    here: Option<String>,
     /// ...though not a file of it containing the name: this search's warm
     /// read them all.
     name_read: bool,
-    /// More of another checkout `-a` reads, which another process is indexing.
-    elsewhere: bool,
+    /// More of another checkout `-a` reads, at this root, which another
+    /// process is indexing.
+    elsewhere: Option<String>,
 }
 
-/// Whether the top match on an index still being filled answers the query:
-/// nothing a retry would read can beat it. An exact match in the capitals
+/// Which checkout keeps the top match on an index still being filled from
+/// answering the query, if any: it answers once nothing a retry would read
+/// can beat it. An exact match in the capitals
 /// typed answers regardless, though another definition of the name may be
 /// unread (the hit says so); a literal match once no file a retry would read
 /// can hold the name; a fuzzy or path match once a retry would read nothing.
 /// A checkout nothing is indexing, other than this one, is as read as it will
 /// get, so its hit answers rather than asking for a retry that can't help (D52).
-fn settled(top: &crate::search::Hit, here: Option<&str>, unread: &Unread) -> bool {
+fn held_back_by<'a>(
+    top: &crate::search::Hit,
+    here: Option<&str>,
+    unread: &'a Unread,
+) -> Option<&'a str> {
     let has = |name| top.features.iter().any(|f| f.name == name);
     if has("exact") && has("case") {
-        return true;
+        return None;
     }
     let literal = crate::search::is_literal(&top.features);
     // the demand walk read this checkout's files, not another's
     let from_here = top.root.as_deref().is_none_or(|r| Some(r) == here);
-    let here_open = unread.here && !(unread.name_read && literal && from_here);
-    !here_open && !unread.elsewhere
+    let here_read = unread.name_read && literal && from_here;
+    unread
+        .here
+        .as_deref()
+        .filter(|_| !here_read)
+        .or(unread.elsewhere.as_deref())
 }
 
 /// Whether another poll, after the sleep, costing what the last one did,
@@ -1475,14 +1506,14 @@ fn is_complete_key(store: &Store, key: &str) -> bool {
     store.coverage_status(key).ok().flatten().as_deref() == Some("complete")
 }
 
-/// Whether another process is indexing a checkout other than `here` that
-/// isn't complete yet.
-fn others_open(store: &Store, here: Option<&str>) -> bool {
+/// A checkout other than `here`, not complete yet, that another process is
+/// indexing.
+fn others_open(store: &Store, here: Option<&str>) -> Option<String> {
     store
         .incomplete_roots()
         .unwrap_or_default()
-        .iter()
-        .any(|r| Some(r.as_str()) != here && store.indexed_by_others(r))
+        .into_iter()
+        .find(|r| Some(r.as_str()) != here && store.indexed_by_others(r))
 }
 
 /// Whether a process other than this one is indexing the checkout at `root`.
@@ -1604,12 +1635,14 @@ fn read_so_far(w: &crate::search::Warming) -> String {
 /// Report a top match that isn't settled on an index still being filled:
 /// `warming`, as a miss would be, with what was found so far as `provisional`.
 /// Text lists them as a hit would, under a note saying they may change.
+/// `warming` is how far `by`, the checkout holding the answer back, has got.
 fn emit_provisional(
     args: &SearchArgs,
     hits: &[crate::search::Hit],
+    warming: Option<&crate::search::Warming>,
+    by: &str,
     here: Option<&str>,
 ) -> Option<ExitCode> {
-    let warming = hits.first().and_then(|h| h.warming.as_ref());
     // A miss's status object, keys in its order, around hits in a result's.
     #[derive(serde::Serialize)]
     struct Provisional<'a> {
@@ -1634,10 +1667,6 @@ fn emit_provisional(
             if let Some(code) = render_hits(args, hits, false) {
                 return Some(code);
             }
-            let root = hits
-                .first()
-                .and_then(|h| h.root.as_deref())
-                .unwrap_or_default();
             let state = if warming.is_some_and(|w| w.interrupted) {
                 "indexing stopped part-way"
             } else {
@@ -1647,7 +1676,7 @@ fn emit_provisional(
                 "rq: {state} ({}) — no settled match for {:?} yet, so these may change (run again, or `{}` to finish)",
                 warming.map_or_else(String::new, read_so_far),
                 args.query,
-                index_command(root, Some(root) == here)
+                index_command(by, Some(by) == here)
             );
             None
         }
