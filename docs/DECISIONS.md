@@ -3012,6 +3012,16 @@ demand walk gets cheap enough that waiting for it costs nothing.
   found no other read-then-write in a deferred transaction: the rest take the lock up
   front or write first (`forget_file`, `set_file_git_ts`).
 
+- **Known gaps, left open at 0.60.2.** A sparse checkout's cone widening isn't noticed
+  until `rq --index` (older than 0.60.1). `--drop` while an `rq --index` runs can fail
+  that pass on a foreign key (older). The representative a duplicate collapse keeps
+  depends on file insertion order, which the parallel parse makes vary run to run: two
+  `rq --index` builds of the 100k corpus by one binary listed the same 5,116
+  `initialize` results with one representative swapped, so the hunt's 5,116 vs 5,117
+  across builds is that, not a change in order. `--wait 3` at a pty 1 s into a rebuild
+  took 4.8 s in the hunt; not reproduced at load 6–8 (`user` 3.1–3.5 s, `User`
+  0.4–0.7 s, base and new alike), so `poll_fits` is left as it is.
+
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 
 **Adopted**, 2026-09-30. The candidate list in `run_index` (`src/index/mod.rs`); e2e test
@@ -3036,6 +3046,10 @@ untracked files too: on the 97k-file corpus it takes 2.0–2.6 s against 0.04–
 `--cached`, a tree walk on every pass. A warm doesn't find an untracked file no pass has
 read; an explicit index does. **Out** — the explicit index skipping them in a git repo —
 would make a brand-new file unfindable until it's added.
+
+*Known gaps.* Renaming an untracked file drops it until `rq --index` (the warm forgets
+the old path and never discovers the new one), and a file ignored after it was indexed
+stays until `rq --index`.
 
 *Reverses if:* git's untracked cache (or fsmonitor) makes `--others` cheap enough to run
 per pass.
