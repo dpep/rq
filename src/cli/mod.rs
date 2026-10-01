@@ -1430,11 +1430,7 @@ fn is_complete(store: &Store, root: &std::path::Path) -> bool {
 
 /// Whether a process other than this one is indexing the checkout at `root`.
 fn others_indexing(store: &Store, root: &std::path::Path) -> bool {
-    let me = std::process::id();
-    store.passes(&root_key(root)).is_ok_and(|(pids, _)| {
-        pids.iter()
-            .any(|&p| p != me && crate::store::pid_alive(i64::from(p)))
-    })
+    store.indexed_by_others(&root_key(root))
 }
 
 /// Mark each index hit from a checkout that isn't fully indexed with how far
@@ -1463,12 +1459,8 @@ fn warming_state(store: &Store, root: &str, continuing: bool) -> Option<crate::s
     }
     let checkout = store.checkout(root).ok().flatten()?;
     let read = store.checkout_file_count(checkout.id).unwrap_or(0);
-    let (pids, span) = store.passes(root).unwrap_or_default();
-    let me = std::process::id();
-    let others = pids
-        .iter()
-        .any(|&p| p != me && crate::store::pid_alive(i64::from(p)));
-    let interrupted = !continuing && !others;
+    let (_, span) = store.passes(root).unwrap_or_default();
+    let interrupted = !continuing && !store.indexed_by_others(root);
     let hint = if interrupted {
         "indexing stopped part-way: `rq --index` finishes it"
     } else {

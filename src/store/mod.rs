@@ -1348,6 +1348,14 @@ impl Store {
         Ok((pids, span))
     }
 
+    /// Whether a live process other than this one holds a pass mark or the
+    /// warm lock on the checkout at `root`.
+    pub(crate) fn indexed_by_others(&self, root: &str) -> bool {
+        let me = std::process::id();
+        self.passes(root)
+            .is_ok_and(|(pids, _)| pids.iter().any(|&p| p != me && pid_alive(i64::from(p))))
+    }
+
     /// How many files a checkout holds — [`checkout_totals`](Self::checkout_totals)
     /// without the symbol count, which on a large checkout is the slow half.
     pub(crate) fn checkout_file_count(&self, checkout: i64) -> Result<i64> {

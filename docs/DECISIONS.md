@@ -2889,3 +2889,7 @@ demand walk gets cheap enough that waiting for it costs nothing.
   caller; without one, a terminal still waits until answered (the progress line shows,
   Ctrl-C escapes). A poll that, at the last poll's cost, would end past the deadline is not
   started — on a cold pass each costs about a second.
+  The rest of the overshoot was after the answer: the search's own pass, cut short, rebuilt
+  the suspended name index and read commit times (~1.2 s) that the still-running pass
+  would redo at its end. A pass cut short while another live pass fills the checkout now
+  leaves both to that one. Piped `--wait 3`, 1 s into the rebuild: 4.0–5.3 s → 2.8–3.2 s.

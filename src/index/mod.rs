@@ -762,7 +762,13 @@ fn run_index(
             parse_jobs(),
         );
     }
-    {
+    // A pass cut short while another is still filling this checkout leaves
+    // the tail — the name index and commit times — to that one's end, so the
+    // search that cut it isn't kept past its answer paying for it twice.
+    let leave_tail = marked
+        && cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        && store.indexed_by_others(&root_key);
+    if !leave_tail {
         let mut span = crate::profile::span("index: name index");
         let rebuilt = store.maintain_name_index(checkout.repo)?;
         span.note(|| if rebuilt { "rebuilt" } else { "current" }.to_string());
@@ -831,7 +837,8 @@ fn run_index(
     // `root` is the work-tree root: a subdir index's `git log` walks the whole
     // repo's history yet emits repo-relative paths that wouldn't match our
     // subdir-relative ones — pure waste. (A subdir index leans on mtime recency.)
-    if stats.files_indexed > 0 && repo_root(root).is_some_and(|r| r == root_display) {
+    if !leave_tail && stats.files_indexed > 0 && repo_root(root).is_some_and(|r| r == root_display)
+    {
         let _span = crate::profile::span("index: git metadata");
         capture_commit_times(store, checkout.id, root);
     }
