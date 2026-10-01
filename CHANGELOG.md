@@ -26,6 +26,9 @@ index still being built now says so, in a new `warming` field.
 - **`--status` no longer reads a checkout being indexed as `unindexed 0
   files`** while the first pass is still reading for a search's name; it says
   `warming`, with how many files the tree spans (`of`).
+- **An untracked file `rq --index` read is no longer forgotten** when
+  background indexing later completes the checkout (or reindexes it after an
+  edit): it stays found while it's on disk.
 - **The wait follows whoever is indexing.** A search no longer stops waiting
   when its own indexing ends while another rq process is still building the
   index.

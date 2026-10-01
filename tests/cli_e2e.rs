@@ -4257,3 +4257,30 @@ fn a_sparse_checkout_spans_only_the_files_it_has() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_untracked_file_an_explicit_index_read_survives_a_warm_completing_the_checkout() {
+    let (dir, db) = scratch("untracked-kept");
+    fs::create_dir_all(dir.join("a")).unwrap();
+    fs::create_dir_all(dir.join("b")).unwrap();
+    fs::write(dir.join("a/tracked.rb"), "class Tracked\nend\n").unwrap();
+    fs::write(dir.join("b/other.rb"), "class Other\nend\n").unwrap();
+    git_init_commit(&dir);
+    fs::write(dir.join("a/untracked1.rb"), "class Untracked1\nend\n").unwrap();
+    fs::write(dir.join("a/gone.rb"), "class Gone\nend\n").unwrap();
+    rq(&db, &dir, &["--index", "--path", "a"]);
+    fs::remove_file(dir.join("a/gone.rb")).unwrap();
+
+    // a search's warm reads the rest from git's index and completes the checkout
+    let (code, out, _) = rq_full(&db, &dir, &["Other", "--json"], &[], None);
+    assert_eq!(code, 0, "{out}");
+    let (_, status) = rq(&db, &dir, &["--status", "--json"]);
+    assert_eq!(json(&status)[0]["status"], "complete", "{status}");
+
+    let (code, out, _) = rq_full(&db, &dir, &["Untracked1", "--json"], &[], None);
+    assert_eq!(code, 0, "still on disk, still indexed: {out}");
+    let (code, out, _) = rq_full(&db, &dir, &["Gone", "--json"], &[], None);
+    assert_eq!(code, 1, "deleted, forgotten: {out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

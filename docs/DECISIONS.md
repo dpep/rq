@@ -2965,3 +2965,31 @@ demand walk gets cheap enough that waiting for it costs nothing.
   10-file tree read "2 of 2", not "2 of 10"; a skip-worktree file still on disk (hiding
   local edits) stays in. `--open` prints the stderr line `--show` does for a settled
   answer from a partial index.
+
+## D53 — Untracked files are in a checkout's index, and a warm keeps them
+
+**Adopted**, 2026-09-30. The candidate list in `run_index` (`src/index/mod.rs`); e2e test
+`an_untracked_file_an_explicit_index_read_survives_a_warm_completing_the_checkout`.
+
+*The problem.* The two passes disagreed about untracked files. An explicit `rq --index`
+walks the disk (honouring `.gitignore`) and reads them; a warm enumerates `git ls-files
+--cached`, which lists only tracked files, and a warm that completes the checkout
+reconciles away every held file it didn't see. So a file `rq --index --path a` read was
+forgotten when a search's warm later finished the checkout — `rq Untracked1` exited 1
+while the file sat on disk — and a complete index lost them the next time an edit sent a
+warm over it. Older than D52 (0.60.1 does it too); D52's `of` counted them meanwhile.
+
+*What.* In. A new file not yet `git add`ed is exactly what someone navigating their own
+work looks for, and an explicit index already reads them. A warm's candidates are git's
+tracked files plus the files the index holds that git doesn't list, when they're still
+on disk: re-read like any other (an mtime match skips them), and reconciled away once
+deleted. `of` already counts that population (D52 addendum).
+
+*Rejected.* **`git ls-files --others --exclude-standard`** in the warm, so it discovers
+untracked files too: on the 97k-file corpus it takes 2.0–2.6 s against 0.04–0.06 s for
+`--cached`, a tree walk on every pass. A warm doesn't find an untracked file no pass has
+read; an explicit index does. **Out** — the explicit index skipping them in a git repo —
+would make a brand-new file unfindable until it's added.
+
+*Reverses if:* git's untracked cache (or fsmonitor) makes `--others` cheap enough to run
+per pass.

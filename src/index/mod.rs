@@ -309,9 +309,10 @@ fn write_files(
 /// walking the filesystem. On a huge repo this is the difference between
 /// answering and timing out: enumeration is O(index read), and source-extension
 /// pathspecs make git hand back only files we can parse, so warming never burns
-/// its budget re-traversing non-source trees. Tracked files only (untracked are
-/// caught by an explicit `rq --index`'s filesystem walk). `None` outside a git
-/// work tree, so the caller falls back to walking the filesystem.
+/// its budget re-traversing non-source trees. Tracked files only: an explicit
+/// `rq --index`'s filesystem walk finds untracked ones, and a warm keeps those
+/// the index holds (D53). `None` outside a git work tree, so the caller falls
+/// back to walking the filesystem.
 fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
     if !is_git_repo(root) {
         return None;
@@ -681,18 +682,36 @@ fn run_index(
     // the tree it read and whether anyone is still reading (D52).
     let root_key = root_display.to_string_lossy().into_owned();
     let marked = coverage_mark.as_ref().is_none_or(|(s, _)| s != "complete");
-    let tracked = marked
-        .then(|| match &git_candidates {
-            Some(paths) => Some(rel_paths(paths, root)),
-            None => tracked_files(root),
-        })
-        .flatten();
+    let listed = git_candidates.as_ref().map(|paths| rel_paths(paths, root));
+    let unlisted;
+    let tracked = match &listed {
+        _ if !marked => None,
+        Some(listed) => Some(listed),
+        None => {
+            unlisted = tracked_files(root);
+            unlisted.as_ref()
+        }
+    };
     if marked {
-        let span = tracked
-            .as_ref()
-            .map(|t| span_of(t, stored.keys().map(String::as_str)));
+        let span = tracked.map(|t| span_of(t, stored.keys().map(String::as_str)));
         store.begin_pass(&root_key, std::process::id(), span)?;
     }
+    // Git's index lists no untracked file, but the checkout holds those an
+    // explicit index's filesystem walk read: keep the ones still on disk, or
+    // completing would reconcile them away (D53). Listing every untracked file
+    // instead (`--others`) walks the tree, ~2 s a pass on 97k files.
+    let git_candidates = git_candidates
+        .zip(listed.as_ref())
+        .map(|(mut paths, listed)| {
+            paths.extend(
+                stored
+                    .keys()
+                    .filter(|f| !listed.contains(*f))
+                    .map(|f| root.join(f))
+                    .filter(|p| p.exists()),
+            );
+            paths
+        });
     // parse query-relevant files (by path) first — a cheap in-memory reorder
     let git_candidates = git_candidates.map(|paths| prioritize_by_path(paths, root, query));
 
@@ -918,7 +937,7 @@ fn run_index(
     if marked {
         // recount: this pass may have read files git doesn't track
         let span = (status != "complete" && recorded)
-            .then_some(tracked.as_ref())
+            .then_some(tracked)
             .flatten()
             .map(|t| {
                 let read = seen.iter().filter(|f| !stored.contains_key(*f));

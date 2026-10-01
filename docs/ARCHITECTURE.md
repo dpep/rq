@@ -305,6 +305,10 @@ search only reads.
   no pass indexes a hidden path (a `.`-prefixed file or directory): a warm
   enumerates with `git ls-files`, which lists tracked ones, so one filter
   (`is_source`) keeps the indexed set the same whichever pass finishes.
+  Untracked files are in a checkout's index too: an explicit index walks the
+  disk and reads them, and a warm, which can't list them cheaply, re-reads the
+  ones the index holds while they're still on disk rather than reconciling
+  them away (D53).
 - **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
   fans out across CPUs; the parsed files are written in **one** transaction (one
   `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.
