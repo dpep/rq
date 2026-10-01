@@ -171,7 +171,8 @@ not be indexed yet. Under `-a`, "left to read" means by a retry: another
 checkout that nothing is indexing answers from what it holds, with
 `warming.interrupted` and the `rq --index <root>` that would finish it, while
 one another process is indexing holds back any match but an exact one in your
-capitals — even one from a complete checkout — and the search waits on it.
+capitals — even one from a complete checkout — and the search waits on it,
+until that process has written nothing for 5 seconds.
 
 ### Errors
 

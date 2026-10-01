@@ -566,8 +566,13 @@ The index is **never assumed complete**.
   or path match before then is no answer: when the wait ends without one, the
   search reports `warming` (exit 2) with its matches as `provisional`. The wait
   continues while *anyone* is indexing the checkout — this search's warm, or
-  another process's pass (marked in `meta`, `pass:<root>:<pid>`, or holding the
-  warm lock) — so one warm ending isn't taken for the index being done.
+  another process's pass (marked in `meta`, `pass:<root>:<pid>` stamped and
+  renewed each minute, or holding the warm lock; either past its 10-minute TTL is
+  a crashed process's) — so one warm ending isn't taken for the index being done.
+  Following other processes stops once nobody has committed to the index for 5 s
+  (`PRAGMA data_version`): a stopped indexer, or a stale mark, costs that much,
+  not the wait budget. At a terminal the progress line names the checkout waited
+  on and Ctrl-C prints the provisional answer, as on the search's own warm.
 - **Every index hit from an incomplete checkout says so**: `warming: {read, of,
   interrupted, hint}` (files held, files the tree spans as the last pass
   enumerated them — `span:<root>` in `meta`, git's tracked files (less a sparse
