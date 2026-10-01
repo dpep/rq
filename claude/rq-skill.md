@@ -27,8 +27,9 @@ rq <name> --json
 ```
 
 Reading the definition rather than just locating it? Use `--show`. When the top
-match's confidence is at least 0.85 it adds a `body` field with the full source;
-otherwise it returns the ranked list. It also tells rq which definition you
+match's confidence is at least 0.85 (before a `warming` result scales it down
+for the share read) it adds a `body` field with the full source; otherwise it
+returns the ranked list. It also tells rq which definition you
 used, which is how ranking improves for this repo — prefer it over a search
 followed by a separate file read:
 

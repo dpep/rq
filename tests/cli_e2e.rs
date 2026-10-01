@@ -3689,6 +3689,13 @@ fn a_prefix_match_from_a_partial_index_is_provisional_not_an_answer() {
     assert_eq!(code, 2);
     assert!(out.contains("UserFieldsController"), "{out}");
     assert!(err.contains("1 of 2 files read"), "{err}");
+    assert!(err.contains("indexing stopped part-way"), "{err}");
+
+    // --show has nothing settled to show, and says only that
+    let (code, _, err) = rq_full(&db, &dir, &["User", "--show", "--no-wait"], &[], None);
+    assert_eq!(code, 2);
+    assert!(err.contains("no settled match"), "{err}");
+    assert!(!err.contains("narrow the query"), "{err}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -3713,8 +3720,18 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
         "structured output keeps stderr quiet: {err}"
     );
 
+    // nothing continues it here (no detached warm): text says what JSON does
     let (_, _, err) = rq_full(&db, &dir, &["User", "--no-wait"], &[], None);
-    assert!(err.contains("still indexing"), "{err}");
+    assert!(err.contains("indexing stopped part-way"), "{err}");
+    assert!(!err.contains("still indexing"), "{err}");
+
+    // --show judges which definition was meant, as --open does; the share
+    // read is disclosed, not a reason to withhold the body
+    let (code, out, err) = rq_full(&db, &dir, &["User", "--show", "--no-wait"], &[], None);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("class User"), "{out}");
+    assert!(err.contains("1 of 2 files read"), "{err}");
+    assert!(!err.contains("narrow the query"), "{err}");
 
     // once complete, the same answer carries no disclosure and its own confidence
     rq(&db, &dir, &["--index"]);

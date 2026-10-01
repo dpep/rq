@@ -1285,6 +1285,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // window the caller asked for — `--show`'s gate reads this, so measuring it
     // over an already-truncated list made `-l 1` unconditionally confident.
     attach_confidence(&mut hits);
+    // `--show` asks which definition was meant, a question of ranking, as
+    // `--open` does; how much of the tree is read is disclosed, not gated on
+    let ranked = hits.first().map_or(0.0, |h| h.confidence);
     for hit in &mut hits {
         if let Some(w) = &hit.warming {
             hit.confidence = read_share_confidence(hit.confidence, w);
@@ -1319,8 +1322,13 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
     if counted_early
         && show
-        && let Some(code) = show_top_definition(&mut hits, query, out)
+        && let Some(code) = show_top_definition(&mut hits, query, out, ranked)
     {
+        if out == Output::Text
+            && let Some(note) = hits.first().and_then(|h| warming_note(h, here.as_deref()))
+        {
+            eprintln!("{note}");
+        }
         return code;
     }
 
@@ -1333,18 +1341,15 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     }
 
     if provisional {
-        if let Some(code) = emit_provisional(args, &hits) {
+        if let Some(code) = emit_provisional(args, &hits, here.as_deref()) {
             return code;
         }
-    } else if let Some(code) = render_hits(args, &hits) {
+    } else if let Some(code) = render_hits(args, &hits, show) {
         return code;
     } else if out == Output::Text
-        && let Some(w) = hits.first().and_then(|h| h.warming.as_ref())
+        && let Some(note) = hits.first().and_then(|h| warming_note(h, here.as_deref()))
     {
-        eprintln!(
-            "rq: still indexing this checkout ({}) — another definition may not be indexed yet",
-            read_so_far(w)
-        );
+        eprintln!("{note}");
     }
 
     // The budget's number. `total` adds the bookkeeping below, which runs
@@ -1517,11 +1522,7 @@ fn warming_state(
         crate::index::count_span(store, std::path::Path::new(root), checkout.id).map(|s| s as i64)
     });
     let interrupted = !continuing && !store.indexed_by_others(root);
-    let index = if here {
-        "rq --index".to_string()
-    } else {
-        format!("rq --index {root}")
-    };
+    let index = index_command(root, here);
     let hint = if interrupted {
         format!("indexing stopped part-way: `{index}` finishes it")
     } else {
@@ -1551,6 +1552,34 @@ fn read_share_confidence(confidence: f64, w: &crate::search::Warming) -> f64 {
     }
 }
 
+/// What finishes indexing the checkout at `root`: `rq --index` in the one
+/// this search runs in, naming the root anywhere else.
+fn index_command(root: &str, here: bool) -> String {
+    if here {
+        "rq --index".to_string()
+    } else {
+        format!("rq --index {root}")
+    }
+}
+
+/// The stderr line under a hit from a partial index: how far it got, and
+/// whether anything is still filling it.
+fn warming_note(hit: &crate::search::Hit, here: Option<&str>) -> Option<String> {
+    let w = hit.warming.as_ref()?;
+    let read = read_so_far(w);
+    Some(if w.interrupted {
+        let root = hit.root.as_deref().unwrap_or_default();
+        format!(
+            "rq: indexing stopped part-way ({read}) — another definition may not be indexed yet; `{}` finishes it",
+            index_command(root, Some(root) == here)
+        )
+    } else {
+        format!(
+            "rq: still indexing this checkout ({read}) — another definition may not be indexed yet"
+        )
+    })
+}
+
 /// "N of M files read", or "N files read" before the tree was enumerated.
 fn read_so_far(w: &crate::search::Warming) -> String {
     match w.of {
@@ -1562,7 +1591,11 @@ fn read_so_far(w: &crate::search::Warming) -> String {
 /// Report a top match that isn't settled on an index still being filled:
 /// `warming`, as a miss would be, with what was found so far as `provisional`.
 /// Text lists them as a hit would, under a note saying they may change.
-fn emit_provisional(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCode> {
+fn emit_provisional(
+    args: &SearchArgs,
+    hits: &[crate::search::Hit],
+    here: Option<&str>,
+) -> Option<ExitCode> {
     let warming = hits.first().and_then(|h| h.warming.as_ref());
     match args.out {
         Output::Json | Output::Ndjson => {
@@ -1576,13 +1609,23 @@ fn emit_provisional(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<Ex
             (code != ExitCode::SUCCESS).then_some(code)
         }
         Output::Text => {
-            if let Some(code) = render_hits(args, hits) {
+            if let Some(code) = render_hits(args, hits, false) {
                 return Some(code);
             }
+            let root = hits
+                .first()
+                .and_then(|h| h.root.as_deref())
+                .unwrap_or_default();
+            let state = if warming.is_some_and(|w| w.interrupted) {
+                "indexing stopped part-way"
+            } else {
+                "still indexing"
+            };
             eprintln!(
-                "rq: still indexing ({}) — no settled match for {:?} yet, so these may change (run again, or `rq --index` to finish)",
+                "rq: {state} ({}) — no settled match for {:?} yet, so these may change (run again, or `{}` to finish)",
                 warming.map_or_else(String::new, read_so_far),
-                args.query
+                args.query,
+                index_command(root, Some(root) == here)
             );
             None
         }
@@ -1974,8 +2017,9 @@ fn attach_confidence(hits: &mut [crate::search::Hit]) {
 }
 
 /// Print the ranked results (JSON array, NDJSON lines, or highlighted text).
-/// `Some(exit)` on a serialization failure, `None` on success.
-fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCode> {
+/// `Some(exit)` on a serialization failure, `None` on success. `unshown`: a
+/// `--show` found no single confident match to print instead.
+fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit], unshown: bool) -> Option<ExitCode> {
     // Time to the first printed result, not to the last: rq streams, and the
     // sub-50 ms budget is about the first answer. A change that speeds the
     // total while delaying this one is a regression.
@@ -2009,7 +2053,7 @@ fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit]) -> Option<ExitCod
     let color = match_color();
     let c = color.as_deref();
     let query = args.query;
-    if args.show {
+    if unshown {
         // fell through from --show: no single confident match to print
         let total = hits.first().map_or(hits.len(), |h| h.total);
         eprintln!(
@@ -2703,9 +2747,10 @@ fn show_top_definition(
     hits: &mut [crate::search::Hit],
     query: &str,
     out: Output,
+    ranked: f64,
 ) -> Option<ExitCode> {
     let top = hits.first()?;
-    if top.confidence < SHOW_CONFIDENCE {
+    if ranked < SHOW_CONFIDENCE {
         return None; // ambiguous / weak — let the caller list candidates
     }
     let end = top.end_line.unwrap_or(top.line);

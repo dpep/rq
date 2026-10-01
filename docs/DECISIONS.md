@@ -2914,3 +2914,13 @@ demand walk gets cheap enough that waiting for it costs nothing.
 - **`--status` reads a checkout a live pass holds as `warming`**, with the same `of`. A
   cold pass reads every file for a search's name before it writes any, so for seconds it
   showed `unindexed 0 files` mid-rebuild.
+- **`--show` gates on the ranking, not the share read.** Its 0.85 bar asks whether the top
+  match is the definition meant among the candidates, which is what `--open` acts on
+  without a bar. Gated on the scaled `confidence`, `--show` refused a settled answer
+  until ~85% of the tree was read and told a one-candidate list to "narrow the query".
+  Now a settled hit shows when its unscaled confidence clears the bar, with the same
+  stderr line a listed hit gets; the `confidence` field stays scaled. A provisional
+  answer still isn't shown, and says only that.
+- **Text says what JSON says.** With nothing continuing the index (`interrupted: true`),
+  the stderr line reads "indexing stopped part-way" and names the `rq --index` that
+  finishes it, rather than "still indexing".
