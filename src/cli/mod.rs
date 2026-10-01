@@ -493,6 +493,12 @@ const HEADS_UP_DELAY: Duration = Duration::from_millis(500);
 /// feeling live.
 const PROGRESS_REDRAW: Duration = Duration::from_millis(120);
 
+/// How long a search follows another process's indexing while nobody commits
+/// to the index. A live pass commits many times a second, and pauses under a
+/// second between batches (a 97k-file rebuild, name index included); a
+/// stopped one, or a crashed pass's mark on a reused pid, never commits again.
+const INDEXER_STALL: Duration = Duration::from_secs(5);
+
 /// Everything `rq <query>` needs, bundled from the parsed CLI flags.
 struct SearchArgs<'a> {
     query: &'a str,
@@ -932,11 +938,16 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // escalation *and* the in-process warm (no lock contention, no join) — leftover
     // warming still detaches below, so the index keeps improving for next time.
     let block = want_warm && was_warming && !no_wait;
+    let here = root.as_deref().map(root_key);
+    // `-a` reads other checkouts too: one another process is still filling
+    // can hold a better match, so the search waits on it as on its own warm
+    let follow_others =
+        all_repos && warming_ok && !no_wait && others_open(store, here.as_deref()).is_some();
     // A human at a plain-text terminal also gets a live progress heads-up and a
     // graceful Ctrl-C; piped/`--json` callers (agents, scripts) block silently and
     // are bounded by a wait budget instead, since there's nothing to draw to and
     // no one to interrupt.
-    let progress_ui = block && show_progress(out, stderr_interactive());
+    let progress_ui = (block || follow_others) && show_progress(out, stderr_interactive());
     let indexer_budget = if block { wait_budget } else { warm_budget };
     if progress_ui {
         install_interrupt_handler();
@@ -996,11 +1007,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         t_setup.elapsed().as_millis()
     );
     let poll_start = std::time::Instant::now();
-    let here = root.as_deref().map(root_key);
-    // `-a` reads other checkouts too: one another process is still filling
-    // can hold a better match, so the search waits on it as on its own warm
-    let follow_others =
-        all_repos && warming_ok && !no_wait && others_open(store, here.as_deref()).is_some();
     // Deadline: an interactive block waits unbounded (Ctrl-C escapes) unless
     // `--wait` names a bound; a programmatic block, or one following another
     // checkout's indexer, waits out the wait budget; a non-block (complete
@@ -1033,6 +1039,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     };
     let mut drew_progress = false;
     let mut last_draw = poll_start;
+    // when anyone last committed to the index, so a search stops following
+    // an indexer that writes nothing (stopped, or a crashed pass's mark)
+    let mut last_version = store.data_version().ok();
+    let mut last_write = poll_start;
     // Rank one deeper than asked: confidence is a comparison against the
     // runner-up, so normalizing over the returned window made `-l 1` read 1.0
     // every time — and that reading is what gates `--show`.
@@ -1055,12 +1065,19 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 let answered = shown(args, cwd.as_deref(), root.as_deref(), &h)
                     .first()
                     .is_some_and(|top| held_back_by(top, here.as_deref(), &unread).is_none());
+                let version = store.data_version().ok();
+                if version != last_version {
+                    (last_version, last_write) = (version, std::time::Instant::now());
+                }
+                let own =
+                    indexer.is_some() && !warm_done.load(std::sync::atomic::Ordering::Relaxed);
+                let stalled = !own && last_write.elapsed() >= INDEXER_STALL;
                 // Our own warm ending says nothing about the index while
                 // another process is still filling it.
-                let indexing = (indexer.is_some()
-                    && !warm_done.load(std::sync::atomic::Ordering::Relaxed))
-                    || root.as_deref().is_some_and(|r| others_indexing(store, r))
-                    || unread.elsewhere.is_some();
+                let indexing = own
+                    || !stalled
+                        && (root.as_deref().is_some_and(|r| others_indexing(store, r))
+                            || unread.elsewhere.is_some());
                 let complete = root.as_deref().is_some_and(|r| is_complete(store, r))
                     && unread.elsewhere.is_none();
                 let stopped = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
@@ -1077,7 +1094,14 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                     && poll_start.elapsed() >= HEADS_UP_DELAY
                     && last_draw.elapsed() >= PROGRESS_REDRAW
                 {
-                    draw_progress(store, current, &label);
+                    // name the checkout being waited on: ours, or another's
+                    match unread.elsewhere.as_deref().filter(|_| !own) {
+                        Some(r) => {
+                            let r = std::path::Path::new(r);
+                            draw_progress(store, checkout_at(store, r), &repo_label(Some(r)));
+                        }
+                        None => draw_progress(store, current, &label),
+                    }
                     drew_progress = true;
                     last_draw = std::time::Instant::now();
                 }

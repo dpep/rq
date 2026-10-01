@@ -33,7 +33,9 @@ index still being built now says so, in a new `warming` field.
   edit): it stays found while it's on disk.
 - **The wait follows whoever is indexing.** A search no longer stops waiting
   when its own indexing ends while another rq process is still building the
-  index.
+  index. At a terminal it shows which checkout it's waiting on, and Ctrl-C
+  prints what it has; it stops waiting on a process that has written nothing
+  for 5 seconds.
 - **Background indexing of a large repo runs until the index is complete**
   (for up to 5 minutes), rather than stopping after 20 seconds and leaving the
   rest for the next search in that checkout.

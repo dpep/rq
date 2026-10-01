@@ -4304,3 +4304,104 @@ fn an_explicit_index_waits_out_another_writer_holding_the_lock_a_while() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Run `rq` at a pretend terminal from `cwd`, sending SIGINT after `interrupt`
+/// if given, and killing it past `cap`. (exit code, elapsed, stdout, stderr);
+/// no code when it was killed.
+fn rq_at_terminal(
+    db: &Path,
+    cwd: &Path,
+    args: &[&str],
+    interrupt: Option<std::time::Duration>,
+    cap: std::time::Duration,
+) -> (Option<i32>, std::time::Duration, String, String) {
+    use std::io::Read;
+    let start = std::time::Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(args)
+        .current_dir(cwd)
+        .env("RQ_DB", db)
+        .env("RQ_WARM_DETACH", "0")
+        .env("RQ_ASSUME_INTERACTIVE", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run rq");
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = r.read_to_string(&mut s);
+            s
+        })
+    };
+    let out = drain(Box::new(child.stdout.take().unwrap()));
+    let err = drain(Box::new(child.stderr.take().unwrap()));
+    let mut signalled = false;
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break Some(s);
+        }
+        if !signalled && interrupt.is_some_and(|after| start.elapsed() >= after) {
+            unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+            signalled = true;
+        }
+        if start.elapsed() > cap {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let elapsed = start.elapsed();
+    (
+        status.and_then(|s| s.code()),
+        elapsed,
+        out.join().unwrap(),
+        err.join().unwrap(),
+    )
+}
+
+#[test]
+fn across_checkouts_a_terminal_search_shows_the_indexer_it_follows_and_leaves_one_that_stalls() {
+    // another process marks a pass over `other` and writes nothing more —
+    // stopped, or a crashed pass's mark on a reused pid
+    let (other, here, db) = complete_here_partial_elsewhere("all-tty-stall");
+
+    let (code, waited, out, err) = rq_at_terminal(
+        &db,
+        &here,
+        &["-a", "widget"],
+        None,
+        std::time::Duration::from_secs(25),
+    );
+    assert_eq!(code, Some(2), "after {waited:?}: {err}");
+    assert!(waited < std::time::Duration::from_secs(15), "{waited:?}");
+    assert!(out.contains("widget_maker"), "{out}");
+    let label = other.file_name().unwrap().to_string_lossy();
+    assert!(err.contains(&format!("indexing {label}")), "{err}");
+
+    let _ = fs::remove_dir_all(&other);
+    let _ = fs::remove_dir_all(&here);
+}
+
+#[test]
+fn across_checkouts_ctrl_c_at_a_terminal_prints_what_is_known() {
+    let (other, here, db) = complete_here_partial_elsewhere("all-tty-int");
+
+    let (code, waited, out, err) = rq_at_terminal(
+        &db,
+        &here,
+        &["-a", "widget"],
+        Some(std::time::Duration::from_millis(1500)),
+        std::time::Duration::from_secs(25),
+    );
+    assert_eq!(code, Some(2), "after {waited:?}: {err}");
+    assert!(out.contains("widget_maker"), "{out}");
+
+    let _ = fs::remove_dir_all(&other);
+    let _ = fs::remove_dir_all(&here);
+}

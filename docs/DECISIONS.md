@@ -2981,6 +2981,22 @@ demand walk gets cheap enough that waiting for it costs nothing.
   local edits) stays in. `--open` prints the stderr line `--show` does for a settled
   answer from a partial index.
 
+- **Following another checkout's indexer, at a terminal, looks like waiting on one's own.**
+  The second hunt's `-a` follow drew no progress line and installed no Ctrl-C handler from
+  a complete checkout (both hung off the search's own block), so it sat silent for the
+  programmatic 60 s budget: 7.4 s behind a live `rq --warm` of a 30k-file checkout, the
+  full 60 s behind a stopped one or a stale mark, then exit 2. Now the progress line names
+  the checkout being waited on, Ctrl-C prints the provisional answer, and a terminal waits
+  until answered as it does on its own warm. **The stall bound:** a search stops following
+  other processes once nobody has committed to the index for 5 s (`PRAGMA data_version`,
+  which moves on any other connection's commit) and answers provisionally, naming the
+  `rq --index` that finishes the checkout. A 97k-file `rq --warm` rebuild, sampled every
+  50 ms, never went 1 s without a commit (longest gap 0.9 s, the closing name index
+  rebuild, load 6); a stopped process or a crashed pass's mark never commits again.
+  Rejected: counting the followed checkout's files instead, which stands still through a
+  cold pass's name index rebuild and a demand scan that finds nothing to write; and
+  treating an EPERM pid as dead (above).
+
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 
 **Adopted**, 2026-09-30. The candidate list in `run_index` (`src/index/mod.rs`); e2e test

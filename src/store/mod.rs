@@ -1389,6 +1389,13 @@ impl Store {
         }
     }
 
+    /// A number that changes whenever another connection commits to the
+    /// database — how a waiting search tells an indexer at work from one
+    /// that has stopped writing.
+    pub(crate) fn data_version(&self) -> Result<i64> {
+        self.conn.query_row("PRAGMA data_version", [], |r| r.get(0))
+    }
+
     /// Let this connection's writes wait out another writer for `wait`
     /// instead of the default, which is sized for a search's latency.
     pub(crate) fn set_busy_wait(&self, wait: std::time::Duration) -> Result<()> {
