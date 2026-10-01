@@ -1365,6 +1365,12 @@ impl Store {
         }
     }
 
+    /// Let this connection's writes wait out another writer for `wait`
+    /// instead of the default, which is sized for a search's latency.
+    pub(crate) fn set_busy_wait(&self, wait: std::time::Duration) -> Result<()> {
+        self.conn.busy_timeout(wait)
+    }
+
     /// Keep a span counted outside a pass (an older rq's partial index), unless
     /// a pass recorded one meanwhile. Best-effort and without waiting: a busy
     /// writer means a pass, which records its own.

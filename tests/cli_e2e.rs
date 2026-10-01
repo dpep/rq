@@ -4284,3 +4284,23 @@ fn an_untracked_file_an_explicit_index_read_survives_a_warm_completing_the_check
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_explicit_index_waits_out_another_writer_holding_the_lock_a_while() {
+    // a cold pass's end rebuilds the name index in one transaction, which on
+    // a large repo holds the lock past a search's busy timeout
+    let (dir, db) = prefix_and_exact("index-waits");
+    rq(&db, &dir, &["--index", "app"]);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(4500));
+        conn.execute_batch("COMMIT").unwrap();
+    });
+
+    let (code, out, err) = rq_full(&db, &dir, &["--index", "--json"], &[], None);
+    holder.join().unwrap();
+    assert_eq!(code, 0, "{out}{err}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

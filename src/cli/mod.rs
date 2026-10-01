@@ -996,14 +996,15 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         t_setup.elapsed().as_millis()
     );
     let poll_start = std::time::Instant::now();
-    // Deadline: an interactive block waits unbounded (Ctrl-C escapes) unless
-    // `--wait` names a bound; a programmatic block waits out the wait budget;
-    // a non-block (complete repo) keeps the original fast answer budget.
     let here = root.as_deref().map(root_key);
     // `-a` reads other checkouts too: one another process is still filling
     // can hold a better match, so the search waits on it as on its own warm
     let follow_others =
         all_repos && warming_ok && !no_wait && others_open(store, here.as_deref()).is_some();
+    // Deadline: an interactive block waits unbounded (Ctrl-C escapes) unless
+    // `--wait` names a bound; a programmatic block, or one following another
+    // checkout's indexer, waits out the wait budget; a non-block (complete
+    // repo) keeps the original fast answer budget.
     let deadline = if progress_ui && wait.is_none() {
         None
     } else if block || follow_others {
@@ -1795,6 +1796,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         Ok(s) => s,
         Err(_) => return ExitCode::from(Failure::Database.exit_code()),
     };
+    let _ = store.set_busy_wait(PASS_BUSY_WAIT);
     let start = path
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -2697,6 +2699,11 @@ fn live_fallback_budget() -> Duration {
     env_budget("RQ_FALLBACK_BUDGET_MS", 250)
 }
 
+/// How long a pass nobody is waiting on — `rq --index`, a warm child — waits
+/// out another writer: a cold pass's end rebuilds the name index in one
+/// transaction, which on a large repo outlasts a search's busy timeout.
+const PASS_BUSY_WAIT: Duration = Duration::from_secs(30);
+
 /// Budget for each pass of the *detached* warm child — generous, because
 /// nothing waits on it: the shell got its results and the child runs niced in
 /// the background.
@@ -3357,6 +3364,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
         }
     };
     drop(open_span);
+    let _ = store.set_busy_wait(PASS_BUSY_WAIT);
     let indexed = crate::index::index_under(&mut store, &root, &subdirs);
     // After the index, which has just recorded this checkout's identity — so
     // this is a cache hit rather than a second `git remote` fork.

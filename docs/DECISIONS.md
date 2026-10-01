@@ -2955,7 +2955,11 @@ demand walk gets cheap enough that waiting for it costs nothing.
   read then written in a deferred transaction, a busy writer failed the upgrade at once,
   busy timeout or not, so an `rq --index` during an `rq --warm` rebuild exited 74
   "database is locked" (4 of 12 runs) and a search's own warm died silently (now logged
-  at `-v`). A miss's `warming` lists its keys in a result's order, as a provisional
+  at `-v`). That left a second, older cause of the same exit: a cold pass's end rebuilds
+  the name index in one transaction, which on the 100k corpus under load outlasted the 3 s
+  busy timeout of an `rq --index` writing alongside. A pass nobody waits on — `rq --index`
+  and a warm child — now waits out another writer for 30 s; a search keeps 3 s, since
+  its in-process warm is joined before the process exits. A miss's `warming` lists its keys in a result's order, as a provisional
   answer's does, so one `-J` stream never mixes two. `of` for a partial index an older rq
   left without one is counted once and kept — a best-effort write that never waits on a
   busy writer, whose pass records its own — rather than recounted by every query that
