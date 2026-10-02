@@ -586,7 +586,10 @@ The index is **never assumed complete**.
   isn't warming — untracked and non-git, or a git repo asked with `--no-wait` —
   gets a bounded in-memory live scan, merged with whatever the index offered. Each
   result carries its `source` (`index` or `live`), so a blended answer says
-  which parts were never persisted.
+  which parts were never persisted. In a git repo, where the scan stands in for
+  an index rq is building, a live hit carries the checkout's `warming` and is
+  scaled by the same `read / of` as an index hit (0 of the tree before a pass
+  registers it), so one answer holds one confidence scale.
 - **Opportunistic extraction** grows coverage through normal use.
 - **Staleness:** a `content_hash` mismatch marks a file's symbols stale; search
   lazily validates only the **top-N** results (stat, re-parse if changed) before

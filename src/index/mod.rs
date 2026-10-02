@@ -382,6 +382,11 @@ fn span_of<'a>(tracked: &HashSet<String>, held: impl IntoIterator<Item = &'a str
     tracked.len() + held.into_iter().filter(|f| !tracked.contains(*f)).count()
 }
 
+/// [`span_of`] for a tree whose checkout holds nothing.
+pub(crate) fn count_span_unheld(root: &Path) -> Option<usize> {
+    tracked_files(root).map(|t| t.len())
+}
+
 /// [`span_of`] for a checkout no pass has counted (an older rq built it).
 pub(crate) fn count_span(store: &Store, root: &Path, checkout: i64) -> Option<usize> {
     let tracked = tracked_files(root)?;

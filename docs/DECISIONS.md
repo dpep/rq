@@ -3022,6 +3022,32 @@ demand walk gets cheap enough that waiting for it costs nothing.
   took 4.8 s in the hunt; not reproduced at load 6–8 (`user` 3.1–3.5 s, `User`
   0.4–0.7 s, base and new alike), so `poll_fits` is left as it is.
 
+- **A live candidate is scaled as an indexed one (after 0.60.2).** A user's
+  `--no-wait` queries during a rebuild got provisional lists mixing index hits
+  scaled by `read / of` (a wrong one at 0.03) with `source: live` hits at their
+  raw 0.9 and 0.47, and no `warming` on the live ones. The live scan runs when no
+  pass has finished for the checkout (after `--drop`, or before a first index
+  writes coverage) and the index holds no exact or prefix match. Reproduced on the
+  100k corpus 0.6 s after `--drop`: `rq User --no-wait` answered exit 0, `live`,
+  confidence 0.67, no `warming` — the complete index ties several `User`s at 0.50.
+  What backs a live candidate is what this answer has read of the tree: the
+  index's files and the scan's. The scan stops at its 250 ms budget having parsed
+  57–1,448 of 97,146 files (`User`, `Order`, `Logger`, `usr`, on an empty index),
+  so it adds at most 0.015 to the share the index already backs — nothing at
+  whole hundredths once the index holds anything. So every hit from a checkout
+  rq is indexing, live or not, carries that checkout's `warming` and is scaled by
+  its `read / of`: one scale per answer, checkable against the `warming` it
+  carries. Before a pass registers the checkout, `read` is 0 and `of` is git's
+  tracked count (not kept: the pass records its own). Now: `User` 0.6 s after
+  `--drop` answers `live`, `warming: {read: 0, of: 97146}`, confidence 0.00.
+  A dir outside git that rq doesn't track is unchanged: nothing is indexing it,
+  and the scan — unbounded by an index's share — is the answer.
+  Rejected: **`max(index read, files the scan parsed) / of`**, the union's floor,
+  which equals the index share at whole hundredths in every sample above and
+  needs a second count in the output to stay checkable; and **a
+  `confidence_basis: live|index` marker**, which would leave two scales in one
+  answer and only label the mismatch — `source` already says which is which.
+
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 
 **Adopted**, 2026-09-30. The candidate list in `run_index` (`src/index/mod.rs`); e2e test

@@ -139,7 +139,7 @@ that doesn't apply is **omitted**, never `null`.
 | `parent` | when nested | The enclosing scope, e.g. `ActiveRecord::Migration`. |
 | `visibility` | when the language expresses one | `public`, `crate`, `private`, `protected` or `local` (a function nested in another). |
 | `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
-| `source` | search | `index`, or `live` when the result came from a live scan of files on disk because no index pass has finished for this directory yet: one rq doesn't track, or a repo asked with `--no-wait` before its first index (or after `--drop`). The hit is real; only its ranking is provisional. See [Staying current](#staying-current). |
+| `source` | search | `index`, or `live` when the result came from a live scan of files on disk because no index pass has finished for this directory yet: one rq doesn't track, or a repo asked with `--no-wait` before its first index (or after `--drop`). The hit is real; only its ranking is provisional. In a repo it carries `warming`, and its `confidence` is scaled as an index hit's is. See [Staying current](#staying-current). |
 | `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it; about 0.5 means it's level with the next result, a coin flip. |
 | `features` | search | The scoring signals that fired, strongest first. |
 | `signature` | when the line is non-empty | The definition's first source line, trimmed. |
@@ -149,7 +149,7 @@ that doesn't apply is **omitted**, never `null`.
 | `total` | search | Matches the window was drawn from, before `--limit`. |
 | `explain` | `--explain` | Feature name → score contribution, in whole points. |
 | `query` | batch mode | The stdin line this row answers. |
-| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, hint}`: files the index holds, files the tree spans (what git tracks, less a sparse checkout's files outside its cone, plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it any more, and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of`. |
+| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, hint}`: files the index holds, files the tree spans (what git tracks, less a sparse checkout's files outside its cone, plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it any more, and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of` — on every result from that checkout, `live` ones too, so they compare. |
 
 ### Misses and exit codes
 

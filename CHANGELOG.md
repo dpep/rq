@@ -7,6 +7,18 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **A live-scan result from a repo being indexed is on the same confidence
+  scale as an indexed one.** Asked with `--no-wait` before a repo's first index
+  finished (or after `--drop`), results from the bounded live scan kept their
+  unscaled confidence and carried no `warming`: a first query could answer
+  exit 0 at 0.67 with nothing indexed. They now carry the checkout's `warming`
+  and are scaled by `read / of` like every other result in the answer — 0
+  until the index holds something. Outside a repo, where nothing is indexing
+  and the scan is the answer, nothing changes.
+
 ## 0.60.2 — 2026-10-01
 
 Scripts that read exit `2` as "nothing found yet" keep working; the `warming`

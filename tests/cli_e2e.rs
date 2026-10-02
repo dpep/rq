@@ -3360,9 +3360,21 @@ fn no_wait_on_an_unindexed_repo_answers_from_a_live_scan() {
         row["source"].as_str().unwrap_or_default().to_string()
     };
 
+    // a live scan stands in for an index nobody has read yet: it says so,
+    // and nothing read backs its confidence
+    let unread = |out: &str| {
+        let row: serde_json::Value = serde_json::from_str(first_line(out)).expect("a JSON row");
+        let w = &row["warming"];
+        (
+            w["read"].as_i64(),
+            w["of"].as_i64(),
+            row["confidence"].as_f64(),
+        )
+    };
     let (code, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
     assert_eq!(code, 0, "{out}");
     assert_eq!(source(&out), "live", "cold: {out}");
+    assert_eq!(unread(&out), (Some(0), Some(1), Some(0.0)), "cold: {out}");
     let (code, _, _) = rq_full(&db, &dir, &["Gizmo", "-J", "--no-wait"], &[], None);
     assert_eq!(code, 2, "a cold miss is warming, not absent");
 
@@ -3373,6 +3385,11 @@ fn no_wait_on_an_unindexed_repo_answers_from_a_live_scan() {
     rq(&db, &dir, &["--drop"]);
     let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
     assert_eq!(source(&out), "live", "dropped: {out}");
+    assert_eq!(
+        unread(&out),
+        (Some(0), Some(1), Some(0.0)),
+        "dropped: {out}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -3391,6 +3408,8 @@ fn a_live_scan_answer_says_so() {
     let (code, out, err) = rq_full(&db, &dir, &["Widget", "-J"], &[], None);
     assert_eq!(code, 0, "{out}");
     assert_eq!(source(&out), "live", "{out}");
+    // nothing indexes a directory rq doesn't track: the scan is the answer
+    assert!(!out.contains("\"warming\""), "{out}");
     assert!(!err.contains("live scan"), "no note without -v: {err}");
 
     // -v names the scan and what it cost; --profile shows its span
@@ -4072,6 +4091,51 @@ fn a_warming_miss_says_how_far_the_index_got() {
         out.contains("\"warming\":{\"read\":1,\"of\":2,\"interrupted\":"),
         "{out}"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_live_candidate_is_scaled_as_an_indexed_one_is() {
+    // Mid first pass (files held, no coverage yet) `--no-wait` blends a live
+    // scan into the index's answer: every candidate is on one scale, the
+    // share of the tree the index has read, and says so.
+    let (dir, db) = scratch("live-scaled");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("models")).unwrap();
+    fs::write(dir.join("app/tool.rb"), "class AdminUserTool\nend\n").unwrap();
+    fs::write(dir.join("models/user.rb"), "class User\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index", "app"]);
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("DELETE FROM coverage", [])
+        .unwrap();
+
+    for query in ["User", "Usr"] {
+        let (_, out, _) = rq_full(
+            &db,
+            &dir,
+            &[query, "--json", "--no-wait", "-l", "5"],
+            &[],
+            None,
+        );
+        let v = json(&out);
+        let hits = v.as_array().or(v["provisional"].as_array()).expect("hits");
+        assert!(
+            hits.iter().any(|h| h["source"] == "live"),
+            "{query}: the scan answered: {out}"
+        );
+        for hit in hits {
+            let w = &hit["warming"];
+            assert_eq!(
+                (&w["read"], &w["of"]),
+                (&1.into(), &2.into()),
+                "{query}: {out}"
+            );
+            assert!(hit["confidence"].as_f64().unwrap() <= 0.5, "{query}: {out}");
+        }
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

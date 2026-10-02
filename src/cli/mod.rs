@@ -1311,7 +1311,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let continuing = (warm_detach_enabled() && warming_ok)
         .then_some(here.as_deref())
         .flatten();
-    disclose_warming(store, &mut hits, here.as_deref(), continuing);
+    // a live scan stands in for the index of a checkout rq is building
+    let scanned = here.as_deref().filter(|_| warming_ok);
+    disclose_warming(store, &mut hits, here.as_deref(), scanned, continuing);
     let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
     // the checkout whose unread files could still beat the top match
     let held_back = hits
@@ -1551,20 +1553,24 @@ fn others_indexing(store: &Store, root: &std::path::Path) -> bool {
     store.indexed_by_others(&root_key(root))
 }
 
-/// Mark each index hit from a checkout that isn't fully indexed with how far
-/// its index got. `continuing`: the checkout this rq leaves a warm behind for.
+/// Mark each hit from a checkout that isn't fully indexed with how far its
+/// index got, which scales every candidate from it alike: a live hit too, from
+/// `scanned`, the checkout a live scan stood in for (D52). `continuing`: the
+/// checkout this rq leaves a warm behind for.
 fn disclose_warming(
     store: &Store,
     hits: &mut [crate::search::Hit],
     here: Option<&str>,
+    scanned: Option<&str>,
     continuing: Option<&str>,
 ) {
     let mut seen: HashMap<String, Option<crate::search::Warming>> = HashMap::new();
     for hit in hits.iter_mut() {
-        if hit.source != crate::search::Source::Index {
-            continue;
-        }
-        let Some(root) = hit.root.as_deref() else {
+        let root = match hit.source {
+            crate::search::Source::Index => hit.root.as_deref(),
+            crate::search::Source::Live => scanned,
+        };
+        let Some(root) = root else {
             continue;
         };
         hit.warming = seen
@@ -1588,9 +1594,13 @@ fn warming_state(
     if store.coverage_status(root).ok().flatten().as_deref() == Some("complete") {
         return None;
     }
-    let checkout = store.checkout(root).ok().flatten()?;
-    let read = store.checkout_file_count(checkout.id).unwrap_or(0);
-    let span = tree_span(store, root, checkout.id);
+    // none yet: dropped, or never read, with no pass registered to fill it
+    let checkout = store.checkout(root).ok().flatten();
+    let read = checkout.map_or(0, |c| store.checkout_file_count(c.id).unwrap_or(0));
+    let span = match checkout {
+        Some(c) => tree_span(store, root, c.id),
+        None => crate::index::count_span_unheld(std::path::Path::new(root)).map(|s| s as i64),
+    };
     let interrupted = !continuing && !store.indexed_by_others(root);
     let index = index_command(root, here);
     let hint = if interrupted {
