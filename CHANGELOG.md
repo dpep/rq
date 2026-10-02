@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.3 — 2026-10-01
 
 A result from an index still being built, a `warming` miss and a `--status` row
 for a checkout being indexed may carry two new fields, `phase` and
