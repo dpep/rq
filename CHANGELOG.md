@@ -30,7 +30,8 @@ for a checkout being indexed may carry two new fields, `phase` and
   exit 0 at 0.67 with nothing indexed. They now carry the checkout's `warming`
   and are scaled by `read / of` like every other result in the answer — 0
   until the index holds something. Outside a repo, where nothing is indexing
-  and the scan is the answer, nothing changes.
+  and the scan is the answer, nothing changes. A `warming` miss in that window
+  now carries `warming` too (`read: 0`), where it had none.
 
 ## 0.60.2 — 2026-10-01
 
