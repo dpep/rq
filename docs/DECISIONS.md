@@ -3047,6 +3047,21 @@ demand walk gets cheap enough that waiting for it costs nothing.
   needs a second count in the output to stay checkable; and **a
   `confidence_basis: live|index` marker**, which would leave two scales in one
   answer and only label the mismatch — `source` already says which is which.
+- **Warm latency: no regression to remove.** The same user's warm benchmark read
+  23–91 ms on 0.60.1 and 25–106 ms on 0.60.2, the top end a bare class name with
+  ~7.6k candidates. Measured on one complete index of the 100k corpus (948k
+  symbols), 0.60.1, 0.60.2 and this change interleaved over 12 rounds after a
+  warm-up, `--json -l 5`, load 3–5: `Test` (8,000 candidates recalled) p50 58.2 /
+  59.2 / 59.1 ms, p90 60.0 / 60.0 / 61.1; `initialize` 53.1 / 53.4 / 54.1; `User`
+  36.5 / 36.2 / 37.1; `Error`, `Logger`, `Mail::Message`, `ConnectionPool` within
+  0.5 ms of each other. `--profile` attributes the same time to recall, score
+  and sort in both releases (21–25, 21, 8 ms for `Test`), and no warming span
+  runs: on a complete checkout the warming checks are a coverage read per root,
+  under the profile's 0.1 ms resolution. Rejected: **skipping the warming
+  machinery up front on a complete checkout**, which would save nothing
+  measurable and add a second path to keep in step. The user's 91 → 106 ms
+  didn't reproduce; it is a single number per release from a machine we can't
+  sample, and this harness's own single runs of `Test` spanned 57–61 ms.
 
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 
