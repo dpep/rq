@@ -179,6 +179,11 @@ pub(crate) struct CoverageRow {
     /// Files the tree spans, while it isn't complete and a pass has counted it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub of: Option<i64>,
+    /// What a live pass over it is doing, and for how many whole seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_secs: Option<i64>,
     pub symbols: i64,
 }
 
@@ -322,10 +327,19 @@ pub(crate) const WARM_LOCK_TTL_SECS: i64 = 600;
 pub(crate) const PASS_RENEWAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Whether a pass mark's or warm lock's stamp is inside the TTL.
+/// Whole seconds since `since` (unix seconds), never negative.
+pub(crate) fn phase_secs(since: i64) -> i64 {
+    (now_unix() - since).max(0)
+}
+
 fn stamp_fresh(at: &str) -> bool {
     at.parse::<i64>()
         .is_ok_and(|at| now_unix() - at < WARM_LOCK_TTL_SECS)
 }
+
+/// A pass's phases, as `warming.phase` names them.
+pub(crate) const READING: &str = "reading";
+pub(crate) const FINISHING: &str = "finishing";
 
 /// How long a write waits out another writer before failing "locked".
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -940,6 +954,8 @@ impl Store {
                     status: r.get(2)?,
                     files: r.get(3)?,
                     of: None,
+                    phase: None,
+                    phase_secs: None,
                     symbols: r.get(4)?,
                 })
             })?
@@ -955,6 +971,10 @@ impl Store {
                         row.status = "warming".to_string();
                     }
                     row.of = span.map(|s| s.max(row.files));
+                    if let Some((phase, since)) = self.pass_phase(&row.root) {
+                        row.phase = Some(phase);
+                        row.phase_secs = Some(phase_secs(since));
+                    }
                 }
                 row
             })
@@ -1118,11 +1138,13 @@ impl Store {
         for key in checkout_meta_keys(checkout.id, root_path) {
             tx.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
         }
-        let passes = format!("pass:{root_path}:");
-        tx.execute(
-            "DELETE FROM meta WHERE substr(key, 1, ?2) = ?1",
-            params![passes, passes.len() as i64],
-        )?;
+        for kind in ["pass", "phase"] {
+            let marks = format!("{kind}:{root_path}:");
+            tx.execute(
+                "DELETE FROM meta WHERE substr(key, 1, ?2) = ?1",
+                params![marks, marks.len() as i64],
+            )?;
+        }
         tx.execute("DELETE FROM checkouts WHERE id = ?1", params![checkout.id])?;
         drop_if_unchecked_out(&tx, checkout.repo)?;
         tx.commit()
@@ -1382,27 +1404,39 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let prefix = format!("pass:{root}:");
-        let stale: Vec<String> = tx
-            .prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?2) = ?1")?
-            .query_map(params![prefix, prefix.len() as i64], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .filter(|(k, at)| {
-                k[prefix.len()..]
-                    .parse::<u32>()
-                    .is_ok_and(|p| p != pid && (!pid_alive(i64::from(p)) || !stamp_fresh(at)))
-            })
-            .map(|(k, _)| k)
-            .collect();
-        for key in stale {
-            tx.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
+        // another pid's mark, or phase, left by a pass that died or (a mark)
+        // went unrenewed; a phase counts only beside a live mark or lock
+        let mut stale: Vec<(String, u32)> = Vec::new();
+        for (kind, renewed) in [("pass", true), ("phase", false)] {
+            let prefix = format!("{kind}:{root}:");
+            let rows = tx
+                .prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?2) = ?1")?
+                .query_map(params![prefix, prefix.len() as i64], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>>>()?;
+            stale.extend(rows.into_iter().filter_map(|(k, at)| {
+                let p = k[prefix.len()..].parse::<u32>().ok()?;
+                let gone = !pid_alive(i64::from(p)) || renewed && !stamp_fresh(&at);
+                (p != pid && gone).then_some((k, p))
+            }));
+        }
+        for (key, p) in stale {
+            tx.execute(
+                "DELETE FROM meta WHERE key IN (?1, ?2)",
+                params![key, format!("phase:{root}:{p}")],
+            )?;
         }
         tx.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-            params![format!("{prefix}{pid}"), now_unix().to_string()],
+            params![format!("pass:{root}:{pid}"), now_unix().to_string()],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![
+                format!("phase:{root}:{pid}"),
+                format!("{READING}:{}", now_unix())
+            ],
         )?;
         if let Some(span) = span {
             tx.execute(
@@ -1423,13 +1457,39 @@ impl Store {
         Ok(())
     }
 
+    /// Record what `pid`'s pass over the checkout at `root` is doing:
+    /// [`READING`] from its start, [`FINISHING`] once past its reads, when
+    /// what remains (the name index, commit times) holds `read` still.
+    pub(crate) fn set_pass_phase(&self, root: &str, pid: u32, phase: &'static str) -> Result<()> {
+        self.meta_set(
+            &format!("phase:{root}:{pid}"),
+            &format!("{phase}:{}", now_unix()),
+        )
+    }
+
+    /// What the passes indexing the checkout at `root` are doing, and since
+    /// when (unix seconds): `reading` while any is, as `read` then moves.
+    /// `None` when no live pass records one — an older rq's records none.
+    pub(crate) fn pass_phase(&self, root: &str) -> Option<(&'static str, i64)> {
+        let (pids, _) = self.passes(root).ok()?;
+        pids.into_iter()
+            .filter(|&p| pid_alive(i64::from(p)))
+            .filter_map(|p| self.meta_get(&format!("phase:{root}:{p}")).ok().flatten())
+            .filter_map(|v| {
+                let (phase, since) = v.split_once(':')?;
+                let phase = [READING, FINISHING].into_iter().find(|&p| p == phase)?;
+                Some((phase, since.parse().ok()?))
+            })
+            .max_by_key(|&(phase, since)| (phase == READING, since))
+    }
+
     /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass), and record
     /// the tree's span as the pass leaves it, or forget it (a complete
     /// checkout discloses none).
     pub(crate) fn end_pass(&self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
         self.conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            params![format!("pass:{root}:{pid}")],
+            "DELETE FROM meta WHERE key IN (?1, ?2)",
+            params![format!("pass:{root}:{pid}"), format!("phase:{root}:{pid}")],
         )?;
         match span {
             Some(span) => self.meta_set(&format!("span:{root}"), &span.to_string()),
@@ -1973,6 +2033,37 @@ mod tests {
             .meta_set("warm_lock:/old", &format!("{}:0", std::process::id()))
             .unwrap();
         assert!(store.passes("/old").unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn a_pass_says_whether_it_is_reading_or_finishing() {
+        let mut store = Store::open_in_memory().unwrap();
+        let me = std::process::id();
+        let dead = 4_000_000; // above any pid the OS hands out
+        store.begin_pass("/repo", dead, None).unwrap();
+        store.set_pass_phase("/repo", dead, FINISHING).unwrap();
+        assert_eq!(store.pass_phase("/repo"), None, "a dead pass says nothing");
+
+        store.begin_pass("/repo", me, None).unwrap();
+        assert!(
+            store
+                .meta_get(&format!("phase:/repo:{dead}"))
+                .unwrap()
+                .is_none(),
+            "cleared with the dead pass's mark"
+        );
+        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some(READING));
+        store.set_pass_phase("/repo", me, FINISHING).unwrap();
+        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some(FINISHING));
+        store.end_pass("/repo", me, None).unwrap();
+        assert_eq!(store.pass_phase("/repo"), None);
+        assert!(
+            store
+                .meta_get(&format!("phase:/repo:{me}"))
+                .unwrap()
+                .is_none(),
+            "a finished pass leaves no phase behind"
+        );
     }
 
     #[test]

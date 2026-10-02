@@ -3079,3 +3079,65 @@ stays until `rq --index`.
 
 *Reverses if:* git's untracked cache (or fsmonitor) makes `--others` cheap enough to run
 per pass.
+
+## D54 — A pass says what it is doing: `warming.phase`
+
+**Adopted**, 2026-10-01. `set_pass_phase`/`pass_phase` in `src/store/mod.rs`, the
+two phase writes in `run_index` (`src/index/mod.rs`), `warming_state` and
+`finishing_note` in `src/cli/mod.rs`; e2e test `a_pass_past_its_reads_says_it_is_finishing`.
+
+*The problem.* A user polling `--no-wait` once a second through a rebuild of a
+~109k-file monorepo saw `warming.read` sit at 50,000 for about 10 s, then jump. A
+caller deciding from `read`/`of` whether to keep waiting reads that as a hang.
+
+*What happens there.* 50,000 is a pass's file cap. When a pass's reads end it
+rebuilds the name index (one transaction), reads commit times (`git log`, then an
+update per path), records coverage and recounts the span; a warm child then starts
+its next pass, which sets up, enumerates, and stats the files it already holds
+before it reads a new one. None of that adds a file, so `read` stands still.
+Measured on the 100k corpus (97k Ruby files, 948k symbols; release, 8 cores), a
+cold rebuild by `rq --warm` sampled every 50 ms from another connection: `read`
+stood at 49,994 for 1.3 s (load 4–8), 1.4 s with 1/s `--no-wait` queries running,
+and 1.41 s under eight CPU hogs. `--profile`: name index 0.48–0.56 s, commit times
+0.41–0.52 s, the next pass's setup and enumerate 0.09–0.19 s, then its first batch.
+The ~10 s the user saw didn't reproduce here. What scales with their repo and not
+this corpus: commit times (this corpus has one commit; `git log -n1000
+--name-only` takes 0.08–0.44 s on rails, ruby and discourse) and a warm child's
+`nice 10` and throttled I/O under foreground load.
+
+*What.* `warming` carries `phase` — `reading`, or `finishing` once a pass's reads
+end — and `phase_secs`, whole seconds in it, wherever `warming` appears (results,
+a `provisional` answer, a `warming` miss) and on `--status` rows for a checkout
+not complete. Both are omitted, never `null`, when no live pass records a phase:
+nothing is indexing (`interrupted: true`), or the pass is an older rq's. Several
+passes: `reading` wins, since `read` then moves. Text adds ", finishing a pass
+(N s)" to its "N of M files read". Storage is `phase:<root>:<pid>` in `meta` —
+`<phase>:<unix seconds>` — written at the pass's start (before it enumerates, so a
+warm child's next pass reads `reading` from its setup), moved to `finishing` when
+the reads end, and deleted with the pass mark; it counts only beside a live mark
+or warm lock, and the next pass clears a dead pid's. A separate key, not a suffix
+on the pass mark, which an older rq would parse as a crashed pass's and clear. No
+schema change; two small writes a pass. Observed in the same rebuild, `--status`
+every 0.25 s: `reading 8` (s) to `finishing 0` at 49,994, to `reading 0` within a
+second.
+
+*The stall bound, checked.* D52's 5 s bound on following another process's
+indexing counts commits, and the steps above commit only at their ends. The
+longest stretch without one, in the runs above: 0.74 s (load 4–8) and 1.32 s
+(eight hogs), both the closing name index rebuild of 948k symbols; the cap
+boundary's own was 0.46–0.55 s. The bound holds here with room. Left unchanged:
+exempting a `finishing` pass from it would make it a rule with an exception, and
+nothing measured needs one. `finishing` is now itself a commit, so the clock
+restarts where the long steps begin.
+
+*Rejected.*
+- **Counting `read` more finely.** `read` is the files the index holds; nothing
+  in that window adds one, so a finer count stands just as still.
+- **A last-progress timestamp.** The name index rebuild is one transaction with
+  no commit to stamp, so the timestamp would stall exactly where `read` does.
+- **`committing` as the name.** The commits are the cheap part; the window is the
+  name index and commit times.
+
+*Reverses if:* a profile (`RQ_PROFILE=1 rq --warm`, or `phase_secs` on a
+`finishing` pass) shows a step without a commit past 5 s on a real repo — then the
+stall bound needs the phase, and that exception gets weighed on its numbers.

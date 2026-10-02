@@ -9,6 +9,19 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+A result from an index still being built, a `warming` miss and a `--status` row
+for a checkout being indexed may carry two new fields, `phase` and
+`phase_secs`; nothing else in their shape changes.
+
+### Added
+- **`warming.phase` says what indexing is doing, so a stalled count reads as
+  progress.** At the end of each pass (every 50,000 files) the files-read count
+  stands still while rq rebuilds its name index and reads commit times; a script
+  polling `read` could take that for a hang. `phase` is `reading` or
+  `finishing`, and `phase_secs` how long it has been in it, on results,
+  `provisional` answers, `warming` misses and `--status` rows (DECISIONS D54).
+  Text output adds "finishing a pass (N s)".
+
 ### Fixed
 - **A live-scan result from a repo being indexed is on the same confidence
   scale as an indexed one.** Asked with `--no-wait` before a repo's first index

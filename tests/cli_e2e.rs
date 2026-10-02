@@ -4141,6 +4141,64 @@ fn a_live_candidate_is_scaled_as_an_indexed_one_is() {
 }
 
 #[test]
+fn a_pass_past_its_reads_says_it_is_finishing() {
+    // `read` stands still while a pass rebuilds its name index and reads
+    // commit times: `phase` says why, wherever `warming` is reported
+    let (dir, db) = prefix_and_exact("phase");
+    rq(&db, &dir, &["--index", "app"]);
+    let root = dir.canonicalize().unwrap();
+    let me = std::process::id();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s', 'now'))",
+        [format!("pass:{}:{me}", root.display())],
+    )
+    .unwrap();
+
+    // a pass that records no phase (an older rq's) has none to report
+    let (_, out, _) = rq_full(&db, &dir, &["Gadget", "--json", "--no-wait"], &[], None);
+    assert!(!out.contains("phase"), "{out}");
+
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, 'finishing:' || (strftime('%s', 'now') - 7))",
+        [format!("phase:{}:{me}", root.display())],
+    )
+    .unwrap();
+    let finishing = |w: &serde_json::Value, what: &str| {
+        assert_eq!(w["phase"], "finishing", "{what}: {w}");
+        let secs = w["phase_secs"].as_i64().unwrap_or(-1);
+        assert!((7..60).contains(&secs), "{what}: {w}");
+    };
+    let (code, out, _) = rq_full(&db, &dir, &["Gadget", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 2, "{out}");
+    finishing(&json(&out)["warming"], "a miss");
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    assert_eq!(code, 2, "{out}");
+    let v = json(&out);
+    finishing(&v["warming"], "provisional");
+    finishing(&v["provisional"][0]["warming"], "a provisional hit");
+    let (code, out, _) = rq_full(
+        &db,
+        &dir,
+        &["UserFieldsController", "--json", "--no-wait"],
+        &[],
+        None,
+    );
+    assert_eq!(code, 0, "{out}");
+    finishing(&json(&out)[0]["warming"], "a hit");
+    let (_, out, _) = rq_full(&db, &dir, &["--status", "--json"], &[], None);
+    finishing(&json(&out)[0], "--status");
+
+    // text says what JSON says
+    let (_, _, err) = rq_full(&db, &dir, &["Gadget", "--no-wait"], &[], None);
+    assert!(err.contains("1 of 2 files read, finishing"), "{err}");
+    let (_, out, _) = rq_full(&db, &dir, &["--status"], &[], None);
+    assert!(out.contains("1 of 2 files, finishing"), "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_provisional_match_has_a_results_shape() {
     let (dir, db) = prefix_and_exact("provisional-shape");
     rq(&db, &dir, &["--index", "app"]);

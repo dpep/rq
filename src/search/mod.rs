@@ -281,6 +281,12 @@ pub(crate) struct Warming {
     /// No process is indexing the checkout any more, nor will this one leave
     /// a warm behind: the gap stays until a search or `rq --index` fills it.
     pub interrupted: bool,
+    /// What a live pass over the checkout is doing (`reading`, or
+    /// `finishing` while `read` stands still), and for how many seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_secs: Option<i64>,
     pub hint: String,
 }
 

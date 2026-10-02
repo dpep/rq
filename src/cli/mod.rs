@@ -1611,10 +1611,13 @@ fn warming_state(
             which_checkout(root, here)
         )
     };
+    let phase = store.pass_phase(root);
     Some(crate::search::Warming {
         read,
         of: span.map(|s| s.max(read)),
         interrupted,
+        phase: phase.map(|(p, _)| p),
+        phase_secs: phase.map(|(_, since)| crate::store::phase_secs(since)),
         hint,
     })
 }
@@ -1684,12 +1687,22 @@ fn which_checkout(root: &str, here: bool) -> String {
     }
 }
 
-/// "N of M files read", or "N files read" when nothing counted the tree.
+/// "N of M files read", or "N files read" when nothing counted the tree,
+/// and why `read` stands still when a pass is finishing.
 fn read_so_far(w: &crate::search::Warming) -> String {
     let files = |n| if n == 1 { "file" } else { "files" };
-    match w.of {
+    let read = match w.of {
         Some(of) => format!("{} of {of} {} read", w.read, files(of)),
         None => format!("{} {} read", w.read, files(w.read)),
+    };
+    format!("{read}{}", finishing_note(w.phase, w.phase_secs))
+}
+
+/// ", finishing a pass (N s)" while a pass is past its reads.
+fn finishing_note(phase: Option<&str>, secs: Option<i64>) -> String {
+    match (phase, secs) {
+        (Some(crate::store::FINISHING), Some(secs)) => format!(", finishing a pass ({secs} s)"),
+        _ => String::new(),
     }
 }
 
@@ -3628,8 +3641,9 @@ fn cmd_status(out: Output) -> ExitCode {
                     Some(of) => format!("{} of {of}", r.files),
                     None => r.files.to_string(),
                 };
+                let finishing = finishing_note(r.phase, r.phase_secs);
                 println!(
-                    "{:<10} {files:>6} files  {:>7} symbols  {}{at}",
+                    "{:<10} {files:>6} files{finishing}  {:>7} symbols  {}{at}",
                     r.status, r.symbols, r.identity
                 );
             }
@@ -4089,6 +4103,8 @@ mod tests {
             read,
             of,
             interrupted: false,
+            phase: None,
+            phase_secs: None,
             hint: String::new(),
         };
         for (confidence, read, of, scaled) in [
@@ -4108,12 +4124,23 @@ mod tests {
             read,
             of,
             interrupted: false,
+            phase: None,
+            phase_secs: None,
             hint: String::new(),
         };
         assert_eq!(read_so_far(&w(1, None)), "1 file read");
         assert_eq!(read_so_far(&w(2, None)), "2 files read");
         assert_eq!(read_so_far(&w(1, Some(2))), "1 of 2 files read");
         assert_eq!(read_so_far(&w(0, Some(1))), "0 of 1 file read");
+        let finishing = crate::search::Warming {
+            phase: Some(crate::store::FINISHING),
+            phase_secs: Some(9),
+            ..w(5, Some(8))
+        };
+        assert_eq!(
+            read_so_far(&finishing),
+            "5 of 8 files read, finishing a pass (9 s)"
+        );
     }
 
     #[test]

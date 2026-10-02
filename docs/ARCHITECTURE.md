@@ -582,7 +582,12 @@ The index is **never assumed complete**.
   indexing it, and what to run), with `confidence` scaled by `read / of`,
   floored to whole hundredths, and 0 when nothing could count the tree (outside
   git). `--status` reports the same `of`, and a checkout a live pass holds as
-  `warming` even before its first file is written. The same shape trekr reports (its DEC-320). A dir with no finished pass that this query
+  `warming` even before its first file is written. A live pass also says what it
+  is doing (`phase`: `reading`, or `finishing` — the name index rebuild and
+  commit times, which hold `read` still — and `phase_secs`, D54), from
+  `phase:<root>:<pid>` in `meta`: written at the pass's start, moved to
+  `finishing` when its reads end, cleared with its mark, and counted only beside
+  a live mark or warm lock. The same shape trekr reports (its DEC-320). A dir with no finished pass that this query
   isn't warming — untracked and non-git, or a git repo asked with `--no-wait` —
   gets a bounded in-memory live scan, merged with whatever the index offered. Each
   result carries its `source` (`index` or `live`), so a blended answer says

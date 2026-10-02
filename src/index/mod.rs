@@ -637,6 +637,15 @@ fn run_index(
 
     let stored = store.file_mtimes(checkout.id)?;
     let coverage_mark = store.coverage_mark(checkout.id)?;
+    // A checkout not yet complete says a pass is filling it, and how much
+    // there is to fill, so a search answering meanwhile can tell how much of
+    // the tree it read and whether anyone is still reading (D52), and what the
+    // pass is doing from its start, as a warm child's next pass sets up (D54).
+    let root_key = root_display.to_string_lossy().into_owned();
+    let marked = coverage_mark.as_ref().is_none_or(|(s, _)| s != "complete");
+    if marked {
+        let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::READING);
+    }
     // Versions other checkouts already stored: a file hashing to one maps to
     // it unparsed, so a second worktree parses only what differs.
     let versions = store.versions(checkout.repo)?;
@@ -694,11 +703,6 @@ fn run_index(
         None => "filesystem walk (lazy — time lands in walk+parse+write)".to_string(),
     });
     drop(enum_span);
-    // A checkout not yet complete says a pass is filling it, and how much
-    // there is to fill, so a search answering meanwhile can tell how much of
-    // the tree it read and whether anyone is still reading (D52).
-    let root_key = root_display.to_string_lossy().into_owned();
-    let marked = coverage_mark.as_ref().is_none_or(|(s, _)| s != "complete");
     let listed = git_candidates.as_ref().map(|paths| rel_paths(paths, root));
     let unlisted;
     let tracked = match &listed {
@@ -825,6 +829,9 @@ fn run_index(
         )
     });
     drop(fused_span);
+    if marked {
+        let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::FINISHING);
+    }
     // Both of these overlap the phase above rather than following it — the
     // workers parse while the consumer thread writes — so they are reported as
     // components of it, not as additional time.
