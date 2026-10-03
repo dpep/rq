@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 23;
+pub(crate) const VERSION: i64 = 24;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -68,7 +68,8 @@ CREATE TABLE symbols (
   visibility TEXT,                   -- public|crate|private|protected|local;
                                      -- NULL when unknown (pre-v9 rows
                                      -- backfill lazily)
-  stub INTEGER NOT NULL DEFAULT 0    -- declares what is defined elsewhere
+  stub INTEGER NOT NULL DEFAULT 0,   -- declares what is defined elsewhere
+  singleton INTEGER NOT NULL DEFAULT 0 -- the type's own member, not its instances'
 );
 CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE INDEX idx_symbols_repo_name ON symbols(repository_id, name_lower);
@@ -599,7 +600,34 @@ DELETE FROM name_index WHERE repository_id NOT IN (SELECT repository_id FROM che
 DELETE FROM repositories WHERE id NOT IN (SELECT repository_id FROM checkouts);
 "#;
 
+/// Migration v23 -> v24: symbols record whether they are the type's own
+/// member rather than its instances' (D55). Files of the languages that emit it
+/// are queued for re-extraction: each checkout's stat forgotten, each version's
+/// hash marked stale (distinct per path, as the `files` comment requires), and
+/// complete checkouts holding one demoted to warming. Go's rows read 0, which
+/// they are.
+const MIGRATION_V24: Step = Step::AddColumn {
+    table: "symbols",
+    column: "singleton",
+    decl: "INTEGER NOT NULL DEFAULT 0",
+};
+pub(crate) const MIGRATION_V24_REQUEUE: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND checkout_id IN (
+      SELECT cf.checkout_id FROM checkout_files cf JOIN files f ON f.id = cf.file_id
+      WHERE f.language IN ('ruby', 'rust', 'python', 'typescript', 'javascript'));
+UPDATE checkout_files SET mtime = NULL
+  WHERE file_id IN (
+    SELECT id FROM files
+    WHERE language IN ('ruby', 'rust', 'python', 'typescript', 'javascript'));
+UPDATE files SET content_hash = 'stale:' || content_hash
+  WHERE language IN ('ruby', 'rust', 'python', 'typescript', 'javascript')
+    AND content_hash NOT LIKE 'stale:%';
+"#;
+
 /// One rung of the migration ladder.
+#[derive(Clone, Copy)]
 pub(crate) enum Step {
     Sql(&'static str),
     /// What SQL alone can't decide, such as whether a root is still on disk.
@@ -632,7 +660,7 @@ pub(crate) const LADDER: Ladder = Ladder {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 25] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 27] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -658,4 +686,6 @@ pub(crate) const MIGRATIONS: [(i64, Step); 25] = [
     (22, Step::Sql(MIGRATION_V22)),
     (23, Step::Run(v23_targets)),
     (23, Step::Sql(MIGRATION_V23)),
+    (24, MIGRATION_V24),
+    (24, Step::Sql(MIGRATION_V24_REQUEUE)),
 ];

@@ -55,6 +55,7 @@ impl Ctx<'_> {
             parent: parent.map(str::to_string),
             visibility: None, // plugins that know it set it on the result
             stub: false,
+            singleton: false,
         }
     }
 }

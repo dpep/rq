@@ -2787,6 +2787,56 @@ fn symbols_outlines_a_file_in_line_order() {
 }
 
 #[test]
+fn a_class_method_says_it_is_one_everywhere_a_result_is_printed() {
+    let (dir, db) = scratch("singleton");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(
+        dir.join("lib/widget.rb"),
+        "class Widget\n  def self.clock\n    Clock.new\n  end\n  class << self\n    private\n    def register(name)\n      name\n    end\n  end\n  def size\n  end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+
+    // --symbols: true on the class's own methods, omitted (never false or
+    // null) on everything else
+    let (ok, out) = rq(&db, &dir, &["--symbols", "lib/widget.rb", "--ndjson"]);
+    assert!(ok, "{out}");
+    let rows: Vec<serde_json::Value> = out
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("ndjson line"))
+        .collect();
+    let row = |name: &str| rows.iter().find(|r| r["name"] == name).unwrap().clone();
+    assert_eq!(row("clock")["singleton"], true, "{out}");
+    assert_eq!(row("register")["singleton"], true, "{out}");
+    assert_eq!(row("register")["visibility"], "private", "{out}");
+    assert!(row("size").get("singleton").is_none(), "{out}");
+    assert!(row("Widget").get("singleton").is_none(), "{out}");
+
+    // a search hit, --json and batch alike
+    let (ok, out) = rq(&db, &dir, &["register", "--json"]);
+    assert!(ok, "{out}");
+    let hits: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(hits[0]["singleton"], true, "{out}");
+    let (ok, out) = rq_stdin(&db, &dir, &["-J", "-l", "1"], "clock\nsize\n");
+    assert!(ok, "{out}");
+    let rows: Vec<serde_json::Value> = out
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("ndjson line"))
+        .collect();
+    let answer = |q: &str| rows.iter().find(|r| r["query"] == q).unwrap().clone();
+    assert_eq!(answer("clock")["singleton"], true, "{out}");
+    assert!(answer("size").get("singleton").is_none(), "{out}");
+
+    // text says so where it names the kind
+    let (ok, out) = rq(&db, &dir, &["--symbols", "lib/widget.rb"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("singleton method clock · Widget"), "{out}");
+    assert!(out.contains("  method size · Widget"), "{out}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn symbols_reflects_the_file_as_it_is_on_disk_now() {
     // On a complete index the outline must track the file itself — an edit, a
     // brand-new untracked file, a deletion — without a repo-wide re-index.

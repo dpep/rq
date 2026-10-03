@@ -17,6 +17,7 @@ fn def(name: &str, kind: Kind, file: &str, lines: u32) -> (String, Symbol) {
         parent: None,
         visibility: None,
         stub: false,
+        singleton: false,
     };
     (file.to_string(), sym)
 }

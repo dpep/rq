@@ -225,6 +225,10 @@ pub(crate) struct Hit {
     /// expresses one. Omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
+    /// The type's own member rather than its instances' — a class method, a
+    /// `static` member (D55). Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub singleton: bool,
     #[serde(rename = "repo")]
     pub repo_identity: String,
     pub source: Source,
@@ -756,7 +760,8 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) -> usize {
 /// signatures, Rust's `#[cfg]` alternatives.
 fn collapse_declarations(hits: &mut Vec<Hit>) {
     use std::collections::HashMap;
-    type Key = (String, Option<String>, Option<String>, String, String);
+    // a class method and an instance method of one name are two definitions
+    type Key = (String, Option<String>, Option<String>, String, String, bool);
     let mut first: HashMap<Key, usize> = HashMap::new();
     let mut folded: Vec<Vec<String>> = vec![Vec::new(); hits.len()];
     let mut keep = Vec::with_capacity(hits.len());
@@ -767,6 +772,7 @@ fn collapse_declarations(hits: &mut Vec<Hit>) {
             hit.parent.is_none().then(|| hit.file.clone()),
             hit.name.clone(),
             hit.kind.clone(),
+            hit.singleton,
         );
         match first.get(&key) {
             Some(&at) => {
@@ -816,6 +822,7 @@ fn rank_one(
         end_line: c.end_line,
         parent: c.parent.clone(),
         visibility: c.visibility.clone(),
+        singleton: c.singleton,
         repo_identity: c.repo_identity.clone(),
         source: Source::Index,
         score: scored.total,
@@ -851,6 +858,7 @@ mod tests {
             end_line: None,
             parent: None,
             visibility: None,
+            singleton: false,
             score: 1.0,
             confidence: 0.5,
             signature: None,
@@ -907,6 +915,7 @@ mod tests {
             parent: None,
             visibility: None,
             stub: false,
+            singleton: false,
         }
     }
 
@@ -1130,6 +1139,7 @@ mod tests {
             end_line: Some(1),
             parent: None,
             visibility: None,
+            singleton: false,
             repo_identity: "r".into(),
             source: Source::Index,
             score,
@@ -1228,6 +1238,7 @@ mod tests {
             end_line: Some(1),
             parent: None,
             visibility: None,
+            singleton: false,
             repo_identity: "r".into(),
             source: Source::Index,
             score: 1.0,
@@ -1337,6 +1348,7 @@ mod tests {
             git_ts: None,
             visibility: None,
             stub: false,
+            singleton: false,
             generated: false,
         }
     }

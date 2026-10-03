@@ -50,6 +50,8 @@ pub(crate) struct SymbolRow {
     pub generated: bool,
     /// Declares a definition whose body lives elsewhere ([`Symbol::stub`]).
     pub stub: bool,
+    /// Belongs to the type, not its instances ([`Symbol::singleton`]).
+    pub singleton: bool,
 }
 
 impl SymbolRow {
@@ -72,6 +74,7 @@ impl SymbolRow {
             git_ts: None,
             visibility: s.visibility.map(str::to_string),
             stub: s.stub,
+            singleton: s.singleton,
             generated,
         }
     }
@@ -85,7 +88,7 @@ pub(crate) const LIVE: i64 = -1;
 /// by [`row_to_candidate`].
 const CANDIDATE_COLS: &str = "s.id, s.name, s.kind, s.language, fi.path, s.line, \
     s.end_line, s.parent, s.repository_id, r.identity, cf.mtime, cf.git_ts, s.visibility, \
-    fi.generated, s.stub, cf.checkout_id, co.root_path";
+    fi.generated, s.stub, cf.checkout_id, co.root_path, s.singleton";
 /// A symbol row once per checkout that maps its version: the checkout's map is
 /// what scopes a search to the tree it's asked from.
 const CANDIDATE_FROM: &str = "FROM symbols s \
@@ -749,8 +752,8 @@ impl Store {
                 let mut insert = tx.prepare(
                     "INSERT INTO symbols
                        (repository_id, file_id, name, name_lower, kind, language, line, end_line,
-                        parent, visibility, stub)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        parent, visibility, stub, singleton)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?;
                 // names new to the repo, for its name index
                 let indexing = names::current(&tx, repository_id)?;
@@ -816,6 +819,7 @@ impl Store {
                                     s.parent,
                                     s.visibility,
                                     s.stub,
+                                    s.singleton,
                                 ])?;
                             }
                             written.symbols += symbols.len();
@@ -1822,6 +1826,7 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             generated: r.get(13)?,
             checkout_id: r.get(15)?,
             root: r.get(16)?,
+            singleton: r.get(17)?,
         },
     ))
 }
@@ -1903,6 +1908,7 @@ mod tests {
             parent: parent.map(String::from),
             visibility: None,
             stub: false,
+            singleton: false,
         }
     }
 
@@ -2149,6 +2155,22 @@ mod tests {
         path
     }
 
+    /// Open `path` as the rq whose schema was `version` would: the ladder's
+    /// later steps unapplied, so a test can see what one step did.
+    fn open_at(path: &std::path::Path, version: i64) -> Result<Store> {
+        let steps: Vec<_> = schema::MIGRATIONS
+            .iter()
+            .copied()
+            .filter(|(v, _)| *v <= version)
+            .collect();
+        let ladder = schema::Ladder {
+            version,
+            fresh: schema::SCHEMA,
+            steps: Box::leak(steps.into_boxed_slice()),
+        };
+        recover::open(path, &ladder)
+    }
+
     fn remove(path: &std::path::Path) {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
@@ -2292,7 +2314,7 @@ mod tests {
                 from,
                 &two_repos(&[("a.go", "go"), ("b.rb", "ruby")]),
             );
-            let store = Store::open(&path).unwrap();
+            let store = open_at(&path, 23).unwrap();
             // both skips forgotten, so the next warm re-parses each file
             for p in ["a.go", "b.rb", "z.rb"] {
                 assert_eq!(stat(&store, p), (None, String::new()), "{p} from v{from}");
@@ -2312,7 +2334,7 @@ mod tests {
             19,
             &two_repos(&[("a.py", "python"), ("b.rb", "ruby")]),
         );
-        let store = Store::open(&path).unwrap();
+        let store = open_at(&path, 23).unwrap();
         assert_eq!(stat(&store, "a.py").1, "");
         assert_eq!(stat(&store, "b.rb").1, "h");
         let status = |root: &str| store.coverage_status(root).unwrap().unwrap();
@@ -2335,7 +2357,7 @@ mod tests {
                 two_repos(&[("a.d.ts", "typescript"), ("b.rb", "ruby")])
             ),
         );
-        let store = Store::open(&path).unwrap();
+        let store = open_at(&path, 23).unwrap();
         assert_eq!(stat(&store, "a.d.ts").1, "");
         assert_eq!(stat(&store, "b.rb").1, "h");
         assert_eq!(store.coverage_status("/mixed").unwrap().unwrap(), "warming");
@@ -2365,12 +2387,49 @@ mod tests {
                 ("e.rb", "ruby"),
             ]),
         );
-        let store = Store::open(&path).unwrap();
+        let store = open_at(&path, 23).unwrap();
         for p in ["a.rs", "b.go", "c.py", "d.ts"] {
             assert_eq!(stat(&store, p).1, "", "{p}");
         }
         assert_eq!(stat(&store, "e.rb").1, "h");
         assert_eq!(store.coverage_status("/mixed").unwrap().unwrap(), "warming");
+        drop(store);
+        remove(&path);
+    }
+
+    #[test]
+    fn v24_queues_every_language_that_emits_singleton_but_go() {
+        let path = legacy(
+            "migrate-v24",
+            22,
+            &two_repos(&[
+                ("a.rs", "rust"),
+                ("b.go", "go"),
+                ("c.py", "python"),
+                ("d.ts", "typescript"),
+                ("e.js", "javascript"),
+                ("f.rb", "ruby"),
+            ]),
+        );
+        let store = Store::open(&path).unwrap();
+        for p in ["a.rs", "c.py", "d.ts", "e.js", "f.rb", "z.rb"] {
+            assert_eq!(stat(&store, p), (None, "stale:h".to_string()), "{p}");
+        }
+        assert_eq!(stat(&store, "b.go"), (Some(1), "h".to_string()));
+        assert_eq!(store.coverage_status("/mixed").unwrap().unwrap(), "warming");
+        assert_eq!(store.coverage_status("/ruby").unwrap().unwrap(), "warming");
+        drop(store);
+        remove(&path);
+    }
+
+    #[test]
+    fn a_go_only_checkout_stays_complete_through_v24() {
+        let path = legacy("migrate-v24-go", 22, &two_repos(&[("b.go", "go")]));
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.coverage_status("/mixed").unwrap().unwrap(),
+            "complete"
+        );
         drop(store);
         remove(&path);
     }
@@ -2394,7 +2453,7 @@ mod tests {
                VALUES (1, 'full', 'complete'), (2, 'full', 'complete'); \
              INSERT INTO meta (key, value) VALUES ('head:1', 'abc'), ('warm_lock:x', '1:2');",
         );
-        let store = Store::open(&path).unwrap();
+        let store = open_at(&path, 23).unwrap();
         type Mapped = (i64, String, i64, Option<i64>, Option<i64>);
         let mapped: Vec<Mapped> = store
             .conn
@@ -2416,6 +2475,9 @@ mod tests {
             None,
             "indexes on need"
         );
+        // the rest reads through this rq's queries, which need its schema
+        drop(store);
+        let store = Store::open(&path).unwrap();
         let left = |sql: &str| -> i64 { store.conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(
             left("SELECT COUNT(*) FROM files"),

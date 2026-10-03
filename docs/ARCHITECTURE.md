@@ -168,8 +168,11 @@ symbols (
   visibility TEXT,                   -- public|crate|private|protected|local;
                                      -- NULL when unknown (pre-v9 rows
                                      -- backfill lazily)
-  stub INTEGER NOT NULL DEFAULT 0    -- declares what is defined elsewhere
+  stub INTEGER NOT NULL DEFAULT 0,   -- declares what is defined elsewhere
                                      -- (a .d.ts entry, an overload signature)
+  singleton INTEGER NOT NULL DEFAULT 0 -- the type's own member, not its
+                                     -- instances' (a class method, a static
+                                     -- member; v24, D55)
 );
 -- exact and prefix recall: every name query is scoped by repository, even
 -- unscoped (`-a`) ones, which seek it once per repo through `repositories`
@@ -272,7 +275,8 @@ Decisions worth calling out:
   also picked up Rust's variants, aliases, macros and macro-body items, and v20
   re-reads Go, Python and TS/JS for their types, variants and nested defs, and v21
   re-reads TS/JS for ambient declarations and overload signatures and Python
-  for its local classes, and v22 re-reads every language but Ruby for fields: users
+  for its local classes, v22 re-reads every language but Ruby for fields,
+  and v24 every language but Go for `singleton`: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to

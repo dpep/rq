@@ -1542,6 +1542,7 @@ mod tests {
             git_ts: None,
             visibility: None,
             stub: false,
+            singleton: false,
             generated: false,
         }
     }
@@ -1610,6 +1611,7 @@ mod tests {
             end_line: Some(200),
             visibility: Some("public".into()),
             stub: true,
+            singleton: false,
             ..row("Widget", "class", 1)
         };
         let implemented = SymbolRow {

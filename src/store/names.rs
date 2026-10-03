@@ -553,6 +553,7 @@ mod tests {
             parent: None,
             visibility: None,
             stub: false,
+            singleton: false,
         }
     }
 

@@ -1,4 +1,4 @@
-//! Go, Python, TypeScript and JavaScript plugins, end to end: index a fixture
+//! Ruby, Go, Python, TypeScript and JavaScript plugins, end to end: index a fixture
 //! file and assert the ordering — the named definition wins, with the right
 //! kind and qualification.
 
@@ -7,11 +7,61 @@ use std::fs;
 use crate::search::{self, Context};
 use crate::tests::support::{indexed, indexed_files, top};
 
+const WIDGET_RB: &str = include_str!("fixtures/ruby/widget.rb");
 const WIDGET_GO: &str = include_str!("fixtures/go/widget.go");
 const ACCOUNT_PY: &str = include_str!("fixtures/python/account.py");
 const WIDGET_TS: &str = include_str!("fixtures/typescript/widget.ts");
 const WIDGET_KIT_TS: &str = include_str!("fixtures/typescript/widget-kit.d.ts");
 const ACCOUNT_JSX: &str = include_str!("fixtures/javascript/account.jsx");
+
+/// Every hit for `query`, as (parent, singleton, visibility).
+fn members(
+    store: &crate::store::Store,
+    query: &str,
+) -> Vec<(Option<String>, bool, Option<String>)> {
+    let mut hits: Vec<_> = search::search(store, query, None, None, &Context::default(), 10)
+        .unwrap()
+        .hits
+        .into_iter()
+        .map(|h| (h.parent, h.singleton, h.visibility))
+        .collect();
+    hits.sort();
+    hits
+}
+
+#[test]
+fn ruby_class_methods_are_singletons() {
+    let (store, dir) = indexed("rb", "widget.rb", WIDGET_RB);
+    let widget = || Some("Widget".to_string());
+    let public = || Some("public".to_string());
+    let private = || Some("private".to_string());
+
+    // a class method and an instance method of one name are two definitions
+    assert_eq!(
+        members(&store, "Widget#clock"),
+        [(widget(), false, public()), (widget(), true, public())]
+    );
+    assert_eq!(members(&store, "registry"), [(widget(), true, public())]);
+    // `class << self`, its macros and its private section, which the class
+    // body's `private` after it doesn't reach back into
+    assert_eq!(
+        members(&store, "default_size"),
+        [(widget(), true, public())]
+    );
+    assert_eq!(members(&store, "register"), [(widget(), true, private())]);
+    assert_eq!(
+        members(&store, "Widget.size"),
+        [(widget(), false, private())]
+    );
+    // a module function is called on the module; its instance copy is private
+    assert_eq!(
+        members(&store, "format_size"),
+        [(Some("WidgetFormat".into()), true, public())]
+    );
+    assert!(!top(&store, "Widget").singleton);
+
+    fs::remove_dir_all(&dir).ok();
+}
 
 #[test]
 fn go_definitions_rank_and_classify() {

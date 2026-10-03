@@ -88,6 +88,11 @@ pub(crate) struct Symbol {
     /// `declare` or `.d.ts` entry, an overload signature. A ranking hint (the
     /// implementation outranks it), never a filter.
     pub stub: bool,
+    /// A member of a type that belongs to the type itself rather than to its
+    /// instances: a Ruby class method, a Python `@classmethod`/`@staticmethod`,
+    /// a TypeScript `static` member, a Rust associated fn without `self`. Only
+    /// members that could be either carry it — a constant or nested type never.
+    pub singleton: bool,
 }
 
 #[cfg(test)]

@@ -2239,7 +2239,7 @@ fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit], unshown: bool) ->
             "{}:{}  {} {}",
             hl_path(&hit.file, query, c),
             hit.line,
-            hit.kind,
+            kind_label(&hit.kind, hit.singleton),
             qualified
         );
         if let Some(sig) = &hit.signature {
@@ -2963,7 +2963,7 @@ fn show_top_definition(
                 "{}:{}  {} {}",
                 hl_path(&top.file, query, c),
                 top.line,
-                top.kind,
+                kind_label(&top.kind, top.singleton),
                 qualified
             );
             match (&top.body, &top.signature) {
@@ -3001,6 +3001,16 @@ fn signature_in(lines: &[&str], line: i64) -> Option<String> {
     (!l.is_empty()).then(|| l.to_string())
 }
 
+/// A result's kind as text prints it: a type's own member (a class method, a
+/// `static` one) says so, as JSON's `singleton` does.
+fn kind_label(kind: &str, singleton: bool) -> std::borrow::Cow<'_, str> {
+    if singleton {
+        format!("singleton {kind}").into()
+    } else {
+        kind.into()
+    }
+}
+
 /// One symbol in `rq --symbols` output. Same field names as a search hit
 /// (`repo`, `signature`) for agent consistency, but no score/features — an
 /// outline is structural, not ranked.
@@ -3019,6 +3029,8 @@ struct SymbolOut {
     parent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     visibility: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    singleton: bool,
     repo: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
@@ -3119,6 +3131,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
             end_line: r.end_line,
             parent: r.parent,
             visibility: r.visibility,
+            singleton: r.singleton,
             repo: r.repo_identity,
         })
         .collect();
@@ -3151,7 +3164,8 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
                     Some(p) => format!("{} · {p}", s.name),
                     None => s.name.clone(),
                 };
-                println!("{}:{}  {} {}", s.file, s.line, s.kind, qualified);
+                let kind = kind_label(&s.kind, s.singleton);
+                println!("{}:{}  {kind} {qualified}", s.file, s.line);
                 if let Some(sig) = &s.signature {
                     println!("    {sig}");
                 }

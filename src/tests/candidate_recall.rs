@@ -17,6 +17,7 @@ fn sym(name: &str) -> Symbol {
         parent: None,
         visibility: None,
         stub: false,
+        singleton: false,
     }
 }
 

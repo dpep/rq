@@ -32,7 +32,7 @@ impl LanguagePlugin for Ruby {
             tree_sitter_ruby::LANGUAGE.into(),
             file,
             source,
-            |ctx, root, out| walk(ctx, root, None, "public", out),
+            |ctx, root, out| walk(ctx, root, None, "public", false, out),
         )
     }
 }
@@ -40,11 +40,23 @@ impl LanguagePlugin for Ruby {
 /// Recursively collect definitions. `parent` is the enclosing qualified name;
 /// `vis` is the access section in effect (a bare `private`/`protected`/`public`
 /// marker flips it for everything after, including through wrapping nodes like
-/// `private def foo`).
-fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mut Vec<Symbol>) {
+/// `private def foo`). `singleton` is set inside `class << self`, whose
+/// definitions are the class's own.
+fn walk(
+    ctx: &Ctx,
+    node: Node,
+    parent: Option<&str>,
+    vis: &'static str,
+    singleton: bool,
+    out: &mut Vec<Symbol>,
+) {
     let mut vis = vis;
+    // a bare `module_function` makes what follows the module's own, until an
+    // access marker ends it
+    let mut module_function = false;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        let singleton = singleton || module_function;
         match child.kind() {
             "class" | "module" => {
                 let kind = if child.kind() == "class" {
@@ -63,20 +75,20 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mu
                     out.push(s);
                     let qualified = qualify(effective_parent.as_deref(), leaf, "::");
                     // a fresh body starts a fresh (public) access section
-                    walk(ctx, child, Some(&qualified), "public", out);
+                    walk(ctx, child, Some(&qualified), "public", false, out);
                 } else {
-                    walk(ctx, child, parent, vis, out);
+                    walk(ctx, child, parent, vis, singleton, out);
                 }
             }
+            // `class << self`: a fresh access section, on the class itself
+            "singleton_class" => walk(ctx, child, parent, "public", true, out),
             "method" | "singleton_method" => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     let mut s = ctx.symbol(&name, Kind::Method, child, parent);
                     // `private` sections don't apply to `def self.x`
-                    s.visibility = Some(if child.kind() == "singleton_method" {
-                        "public"
-                    } else {
-                        vis
-                    });
+                    let own = child.kind() == "singleton_method";
+                    s.visibility = Some(if own { "public" } else { vis });
+                    s.singleton = own || singleton;
                     out.push(s);
                 }
                 // method bodies rarely hold further definitions; don't recurse.
@@ -90,6 +102,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mu
                     let mut s =
                         ctx.symbol(name.trim_start_matches(':'), Kind::Method, child, parent);
                     s.visibility = Some(vis);
+                    s.singleton = singleton;
                     out.push(s);
                 }
             }
@@ -100,26 +113,63 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, vis: &'static str, out: &mu
                 if let Some(left) = child.child_by_field_name("left") {
                     constants(ctx, left, child, parent, out);
                 }
-                walk(ctx, child, parent, vis, out);
+                walk(ctx, child, parent, vis, singleton, out);
             }
             // a bare access marker flips the section for what follows
             "identifier" => match ctx.node_text(child).as_deref() {
-                Some("private") => vis = "private",
-                Some("protected") => vis = "protected",
-                Some("public") => vis = "public",
+                Some(marker @ ("private" | "protected" | "public")) => {
+                    vis = match marker {
+                        "private" => "private",
+                        "protected" => "protected",
+                        _ => "public",
+                    };
+                    module_function = false;
+                }
+                // the module's copy is public; its instance copy is private
+                Some("module_function") => {
+                    vis = "public";
+                    module_function = true;
+                }
                 _ => {}
             },
             "call" => {
                 // metaprogramming: `attr_accessor :x`, `has_many :users`, … are
                 // calls that *define* methods Tree-sitter can't see as defs.
                 // Emit the literal names, pointing at the macro's line.
-                dsl_symbols(ctx, child, parent, vis, out);
+                dsl_symbols(ctx, child, parent, vis, singleton, out);
+                module_functions(ctx, child, parent, out);
                 // still recurse: a call can wrap real definitions
                 // (`private def foo` — its `private` identifier flips `vis`
                 // on the way down — or `Class.new do … end`)
-                walk(ctx, child, parent, vis, out);
+                walk(ctx, child, parent, vis, singleton, out);
             }
-            _ => walk(ctx, child, parent, vis, out),
+            _ => walk(ctx, child, parent, vis, singleton, out),
+        }
+    }
+}
+
+/// `module_function :a, :b` names methods already defined above it: they
+/// become the module's own (and public there).
+fn module_functions(ctx: &Ctx, call: Node, parent: Option<&str>, out: &mut [Symbol]) {
+    if call.child_by_field_name("receiver").is_some()
+        || ctx.field_text(call, "method").as_deref() != Some("module_function")
+    {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut cursor = args.walk();
+    for name in args
+        .named_children(&mut cursor)
+        .filter_map(|a| literal_name(ctx, a))
+    {
+        for s in out
+            .iter_mut()
+            .filter(|s| s.kind == Kind::Method && s.name == name && s.parent.as_deref() == parent)
+        {
+            s.singleton = true;
+            s.visibility = Some("public");
         }
     }
 }
@@ -162,6 +212,7 @@ fn dsl_symbols(
     call: Node,
     parent: Option<&str>,
     vis: &'static str,
+    singleton: bool,
     out: &mut Vec<Symbol>,
 ) {
     if call.child_by_field_name("receiver").is_some() {
@@ -186,6 +237,7 @@ fn dsl_symbols(
         {
             let mut s = ctx.symbol(&name, Kind::Method, call, parent);
             s.visibility = Some(vis);
+            s.singleton = singleton;
             out.push(s);
         }
         if matches!(args, DslArgs::First) {
@@ -582,5 +634,81 @@ end
     fn language_tag_is_set() {
         let syms = extract("class Foo\nend\n");
         assert_eq!(syms[0].language, "ruby");
+    }
+
+    /// (name, singleton, visibility) of each method, in source order.
+    fn methods(src: &str) -> Vec<(String, bool, &'static str)> {
+        extract(src)
+            .into_iter()
+            .filter(|s| s.kind == Kind::Method)
+            .map(|s| (s.name, s.singleton, s.visibility.unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn class_methods_are_singletons_in_every_spelling() {
+        let src = r#"
+class Widget
+  private
+
+  class << self
+    alias_method :make, :build
+    def build; end
+
+    class Part
+      def fit; end
+    end
+  end
+
+  def self.reset; end
+  def size; end
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("make", true, "public"),
+            // the class body's `private` doesn't reach into `class << self`
+            ("build", true, "public"),
+            // a class nested in it has instance methods of its own
+            ("fit", false, "public"),
+            ("reset", true, "public"),
+            // nor does `class << self` reach out of it
+            ("size", false, "private"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn module_functions_are_singletons_until_an_access_marker() {
+        let src = r#"
+module Util
+  def mixin; end
+
+  module_function
+
+  def helper; end
+  attr_reader :limit
+
+  public
+
+  def instance_api; end
+  def retro; end
+  module_function :retro, :missing
+
+  module_function def wrapped; end
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("mixin", false, "public"),
+            ("helper", true, "public"),
+            ("limit", true, "public"),
+            ("instance_api", false, "public"),
+            ("retro", true, "public"),
+            ("wrapped", true, "public"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
     }
 }
