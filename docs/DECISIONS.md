@@ -3156,3 +3156,80 @@ restarts where the long steps begin.
 *Reverses if:* a profile (`RQ_PROFILE=1 rq --warm`, or `phase_secs` on a
 `finishing` pass) shows a step without a commit past 5 s on a real repo — then the
 stall bound needs the phase, and that exception gets weighed on its numbers.
+
+## D55 — A type's own member says so: `singleton`
+
+**Adopted**, 2026-10-03. `Symbol::singleton` in `src/core/symbol.rs`, set by the
+Ruby, Python, TypeScript/JavaScript and Rust plugins; `symbols.singleton` (v24);
+`kind_label` in `src/cli/mod.rs`; the fold key in `collapse_declarations`
+(`src/search/mod.rs`). Tests `ruby_class_methods_are_singletons` and the other
+plugins' fixture tests, e2e
+`a_class_method_says_it_is_one_everywhere_a_result_is_printed`.
+
+*The problem* (#29). `--symbols` showed a method inside `class << self` exactly
+like an instance method: same `parent`, a `def register(name)` signature, and
+`visibility: private`. A caller deciding what a private method is — reaper, which
+treats a private class method as a subclass DSL and a private instance method as
+a helper — couldn't tell. `def self.x` was recoverable from `signature`; nothing
+else was. trekr's `--symbols` carries `"singleton": true` for the same reason.
+
+*What.* A language-neutral flag on the shared model: the member belongs to the
+type itself, not its instances. Only members that could be either carry it, so a
+constant never does (a `static readonly`, a Rust associated const and a Ruby
+constant are the type's by being constants) and neither does a nested type.
+Per language:
+
+- **Ruby**: `def self.x` and `def Const.x`; everything inside `class << self`,
+  its access sections, `alias`/`alias_method` and `attr_*` included; a module
+  function, after a bare `module_function` (until an access marker ends it, as
+  in Ruby), wrapping a def (`module_function def x`) or named after one
+  (`module_function :x`). A module function is emitted once, as the module's
+  public method: its private instance copy is a mixin detail no one navigates
+  to. `class << self` now also starts a fresh, public access section, as Ruby
+  does; it used to inherit the class body's.
+- **Python**: a method decorated `@classmethod` or `@staticmethod` (any dotted
+  spelling, among other decorators).
+- **TypeScript/JavaScript**: a `static` method, accessor or field.
+- **Rust**: an associated fn without `self`, in an impl or a trait — already
+  kind `function` with the type as parent; the flag is what says `Widget::new`
+  is called on `Widget`.
+- **Go**: no such member; never set.
+
+JSON emits `"singleton": true` and omits it when false, like `declarations` and
+`also_in` at their defaults: most rows aren't, Go's never are, and an absent
+field is what every existing consumer already sees. Text prints the kind as
+`singleton method`. Storage is a column (v24, `INTEGER NOT NULL DEFAULT 0`)
+rather than something derived at read time, since only the parse knows; v24
+requeues every language but Go the way v21 and v22 did, per version, so a row
+reads `false` only until its file is re-read.
+
+A class method and an instance method of one name in one class are two
+definitions, so the fold key that merges repeat declarations (a reopened
+module, `impl` blocks) now includes the flag: `def self.call` and `def call`
+used to fold into one result with `declarations: 2`.
+
+*Not done.*
+- **`.` preferring a singleton and `#` an instance in a query.** `.` is every
+  language's scope separator (`django.db.models.QuerySet`, `hugolib.HugoSites`,
+  `Account.deposit` for a Python instance method), so it can't mean "class
+  method" without breaking those, and `rq Widget.clock` already finds both. `#`
+  alone could demote a singleton, but a class with both a `self.x` and an `x`
+  is rare enough that nothing measured asks for a scoring feature. Queries are
+  unchanged.
+- **`extend self`.** Its methods are instance methods that a module also
+  answers; they stay unmarked, since marking them would hide that they mix in.
+- **`define_singleton_method(:x)` and `private_class_method :x`.** The first
+  isn't extracted at all and adding it widens extraction; the second changes
+  visibility retroactively, which rq doesn't model for `private :x` either.
+- **A Rust associated fn inside a macro body in an impl** (`impl X { cfg_rt! {
+  fn new() … } }`): the body re-parses as a standalone fragment, which can't see
+  the impl around it, so the fn stays unmarked.
+
+*Recall* (`make recall BASE=main`): 6,879 queries, #1 75.6% → 75.6%, top 10
+90.1% → 90.1%, unchanged per language and per repo; regress 54 of 57 both. 14
+sources moved down within the top 10 and none lost #1 or the top 10 — what
+rows the fold no longer merges, and `class << self` methods no longer private,
+would do (not traced one by one).
+
+*Reverses if:* a caller needs the instance copy of a module function as its own
+row, or a measured query set shows `#`/`.` intent worth a scoring feature.

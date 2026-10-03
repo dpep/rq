@@ -75,7 +75,7 @@ rq.
   indexed yet, and `confidence` is scaled down to match (to 0 when `of` is
   missing: outside git nothing counts the tree). Use the answer; if it
   matters, ask again once indexing finishes (`hint` says how).
-- Fields that don't apply (`parent`, `visibility`, `end_line`, …) are omitted,
+- Fields that don't apply (`parent`, `visibility`, `end_line`, `singleton`, …) are omitted,
   never `null`. `declarations` and `also_in` appear when one name is declared in
   several places (a reopened module) and rq folded them into one result.
 
@@ -185,6 +185,12 @@ right span instead of scanning the whole thing.
 rq --symbols app/models/widget.rb --json
 rq --symbols app/models/widget.rb -k method --json   # just the methods
 ```
+
+A class method carries `"singleton": true` — `def self.x`, anything inside
+`class << self` (its `private` section too), a `module_function`, a Python
+`@classmethod`/`@staticmethod`, a TS/JS `static` member, a Rust associated fn
+without `self`. It is omitted on instance methods, so a private method with
+`singleton` is a private class method, not a private helper.
 
 ## Installing / updating the binary
 

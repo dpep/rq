@@ -7,6 +7,30 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+Results and `--symbols` rows may carry a new field, `singleton`. The first run
+after upgrading re-reads every Ruby, Rust, Python, TypeScript and JavaScript
+file in the background (Go is untouched); results answer from the old rows
+meanwhile, without the field.
+
+### Added
+- **A class method says it is one: `"singleton": true`.** `--symbols` showed a
+  method inside `class << self` exactly like an instance method, so a private
+  class method read as a private helper (#29). It is now set for Ruby's `def
+  self.x`, `def Const.x`, everything inside `class << self` and module
+  functions; Python's `@classmethod`/`@staticmethod`; a TypeScript/JavaScript
+  `static` method, accessor or field; and a Rust associated fn without `self`.
+  Omitted when false, on search results, `--show`, batch rows and `--symbols`
+  alike; text prints `singleton method` (DECISIONS D55).
+
+### Fixed
+- **A class method and an instance method of the same name are two results.**
+  `def self.call` and `def call` in one class folded into a single result with
+  `declarations: 2`.
+- **`class << self` starts public.** A `private` earlier in the class body made
+  every method in a later `class << self` read as private.
+
 ## 0.60.3 — 2026-10-01
 
 A result from an index still being built, a `warming` miss and a `--status` row

@@ -138,6 +138,7 @@ that doesn't apply is **omitted**, never `null`.
 | `end_line` | when known | Last line: `line..=end_line` is the whole definition. |
 | `parent` | when nested | The enclosing scope, e.g. `ActiveRecord::Migration`. |
 | `visibility` | when the language expresses one | `public`, `crate`, `private`, `protected` or `local` (a function nested in another). |
+| `singleton` | when true | `true`: the definition belongs to the type itself, not its instances — a Ruby class method (`def self.x`, anything in `class << self`, a `module_function`), a Python `@classmethod`/`@staticmethod`, a TypeScript/JavaScript `static` member, a Rust associated fn without `self`. Constants never carry it, and Go has no such member. Text output says `singleton method`. |
 | `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
 | `source` | search | `index`, or `live` when the result came from a live scan of files on disk because no index pass has finished for this directory yet: one rq doesn't track, or a repo asked with `--no-wait` before its first index (or after `--drop`). The hit is real; only its ranking is provisional. In a repo it carries `warming`, and its `confidence` is scaled as an index hit's is. See [Staying current](#staying-current). |
 | `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it; about 0.5 means it's level with the next result, a coin flip. |
