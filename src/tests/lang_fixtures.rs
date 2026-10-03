@@ -170,6 +170,11 @@ fn python_definitions_rank_and_classify() {
         );
         assert_eq!(f.parent.as_deref(), Some("Account"));
     }
+    // class and static methods are the class's own; an instance method isn't
+    assert!(top(&store, "from_owner").singleton);
+    assert!(top(&store, "is_valid_amount").singleton);
+    assert!(!top(&store, "withdraw").singleton);
+
     let settings = search::search(&store, "deposit", None, None, &Context::default(), 10)
         .unwrap()
         .hits;
@@ -236,6 +241,13 @@ fn typescript_definitions_rank_and_classify() {
         (owner.kind.as_str(), owner.visibility.as_deref()),
         ("field", Some("private"))
     );
+    // static members are the class's own: methods, getters and fields
+    for name in ["create", "registry", "instances"] {
+        assert!(top(&store, name).singleton, "{name}");
+    }
+    assert!(!top(&store, "resize").singleton);
+    // a `static readonly` constant is a constant, never an instance's
+    assert!(!top(&store, "DEFAULT_WIDTH").singleton);
     // a field ranks below the function it shares a name with
     let build = search::search(&store, "defaultWidget", None, None, &Context::default(), 10)
         .unwrap()
@@ -306,6 +318,8 @@ fn javascript_definitions_rank_and_classify() {
     let deposit = top(&store, "deposit");
     assert_eq!(deposit.kind, "method");
     assert_eq!(deposit.parent.as_deref(), Some("Account"));
+    assert!(!deposit.singleton);
+    assert!(top(&store, "Account.open").singleton);
 
     assert_eq!(top(&store, "buildAccount").kind, "function");
     // a JSX-returning component in a `.jsx` file still parses

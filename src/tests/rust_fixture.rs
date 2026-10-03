@@ -32,6 +32,13 @@ fn ranks_the_named_type_first_and_classifies_kinds() {
     // a free function is a function
     assert_eq!(top(&store, "build_widget").kind, "function");
 
+    // an associated fn without `self` is the type's own; a free fn isn't
+    // anyone's, and a `self` method is an instance's
+    let new = top(&store, "Widget::new");
+    assert_eq!((new.kind.as_str(), new.singleton), ("function", true));
+    assert!(!top(&store, "build_widget").singleton);
+    assert!(!resize.singleton);
+
     fs::remove_dir_all(&dir).ok();
 }
 

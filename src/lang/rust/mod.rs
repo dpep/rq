@@ -1,7 +1,8 @@
 //! Rust plugin — the second language, and what rq dogfoods on its own source.
 //!
 //! Extracts the definitions you navigate to: `fn` (free → function, inside an
-//! `impl`/`trait` → method), `struct`, `enum` and its variants, `trait`, `mod`,
+//! `impl`/`trait` → method, or without `self` the type's own function:
+//! `singleton`), `struct`, `enum` and its variants, `trait`, `mod`,
 //! `type` aliases, `macro_rules!`, `const`/`static` (→ constant), and a
 //! struct's named fields (→ field, parented by the struct). `parent`
 //! carries the enclosing qualified name (`::`-joined) so a method renders as
@@ -58,7 +59,9 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                     } else {
                         Kind::Function
                     };
-                    push(ctx, out, &name, kind, child, parent);
+                    // an associated fn is the type's own, called as `Widget::new()`
+                    push(ctx, out, &name, kind, child, parent).singleton =
+                        kind == Kind::Function && in_impl_or_trait(child);
                 }
                 // bodies rarely hold further definitions worth surfacing
             }
@@ -218,11 +221,20 @@ fn braced_body(node: Node) -> Option<(usize, usize, usize)> {
     (open.kind() == "{").then(|| (open.end_byte(), tt.end_byte() - 1, tt.start_position().row))
 }
 
-/// Emit a symbol carrying the item's declared visibility.
-fn push(ctx: &Ctx, out: &mut Vec<Symbol>, name: &str, kind: Kind, node: Node, p: Option<&str>) {
+/// Emit a symbol carrying the item's declared visibility, and return it for
+/// what only some callers set.
+fn push<'o>(
+    ctx: &Ctx,
+    out: &'o mut Vec<Symbol>,
+    name: &str,
+    kind: Kind,
+    node: Node,
+    p: Option<&str>,
+) -> &'o mut Symbol {
     let mut s = ctx.symbol(name, kind, node, p);
     s.visibility = item_visibility(ctx, node);
     out.push(s);
+    out.last_mut().expect("just pushed")
 }
 
 /// An item's visibility. A trait's items carry none of their own: they are as
@@ -513,5 +525,18 @@ pub enum Shape { Rect { width: u32 } }
         assert_eq!(find(&syms, "open").visibility, Some("public"));
         assert_eq!(find(&syms, "shared").visibility, Some("crate"));
         assert_eq!(find(&syms, "helper").visibility, Some("private"));
+    }
+
+    #[test]
+    fn associated_fns_without_self_are_the_types_own() {
+        let src = "trait Make {\n    fn make() -> Self;\n    fn id(&self) -> u32;\n}\nimpl Widget {\n    const LIMIT: u32 = 1;\n    fn new() -> Self { Widget }\n    fn size(&self) -> u32 { 1 }\n}\nfn free() {}\n";
+        let syms = extract(src);
+        let singleton: Vec<_> = syms
+            .iter()
+            .filter(|s| s.singleton)
+            .map(|s| s.name.as_str())
+            .collect();
+        // a const is the type's by being a const, not by a flag
+        assert_eq!(singleton, ["make", "new"]);
     }
 }

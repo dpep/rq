@@ -1,7 +1,7 @@
 // Fixture: a small, domain-neutral TypeScript file exercising the kinds the
 // plugin extracts (class, interface→trait, type, enum and its members, method,
 // function, an arrow assigned to a const, constants, and the properties of
-// classes, interfaces and object types).
+// classes, interfaces and object types, static or not).
 
 export const MAX_RETRIES = 3;
 
@@ -30,7 +30,17 @@ export class Widget implements Renderer {
   static readonly DEFAULT_WIDTH = 1;
   private owner?: string;
 
+  static instances = 0;
+
   constructor(private size: WidgetSize) {}
+
+  static create(): Widget {
+    return new Widget({ width: 1, height: 1 });
+  }
+
+  static get registry(): Widget[] {
+    return [];
+  }
 
   render(): string {
     return `${this.size.width}x${this.size.height}`;

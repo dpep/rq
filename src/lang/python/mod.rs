@@ -12,6 +12,8 @@
 //! is. A lowercase module variable is ordinary state and stays out. Any other
 //! name a class body binds or annotates (a dataclass or model field) → field of
 //! the class; an instance's `self.x = …` in a method is not a declaration.
+//! A `@classmethod` or `@staticmethod` is a method of the class itself
+//! (`singleton`).
 
 use tree_sitter::Node;
 
@@ -86,6 +88,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
                     };
                     let mut s = ctx.symbol(&name, kind, child, parent);
                     s.visibility = Some(vis);
+                    s.singleton = kind == Kind::Method && is_class_level(ctx, child);
                     out.push(s);
                     let qualified = qualify(parent, &name, ".");
                     walk(ctx, child, Some(&qualified), Scope::Function, out);
@@ -108,6 +111,24 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
             _ => walk(ctx, child, parent, scope, out),
         }
     }
+}
+
+/// Whether a def is decorated `@classmethod` or `@staticmethod`: called on
+/// the class, not an instance.
+fn is_class_level(ctx: &Ctx, def: Node) -> bool {
+    let Some(decorated) = def.parent().filter(|p| p.kind() == "decorated_definition") else {
+        return false;
+    };
+    let mut cursor = decorated.walk();
+    decorated
+        .named_children(&mut cursor)
+        .filter(|d| d.kind() == "decorator")
+        .filter_map(|d| ctx.node_text(d))
+        .any(|d| {
+            let name = d.trim_start_matches('@').trim();
+            let last = name.rsplit('.').next().unwrap_or(name);
+            matches!(last, "classmethod" | "staticmethod")
+        })
 }
 
 /// Whether a class visibly subclasses an enum: a base whose last dotted
@@ -480,5 +501,18 @@ class Point:
         assert_eq!(find(&syms, "_internal").visibility, Some("private"));
         assert_eq!(find(&syms, "__init__").visibility, Some("public"));
         assert_eq!(find(&syms, "fetch").visibility, Some("public"));
+    }
+
+    #[test]
+    fn class_and_static_methods_are_singletons_whatever_else_decorates_them() {
+        let src = "@dataclass\nclass Account:\n    @functools.cache\n    @builtins.staticmethod\n    def limit():\n        @classmethod\n        def inner(cls):\n            pass\n    @property\n    def size(self):\n        pass\n\n@classmethod\ndef stray(cls):\n    pass\n";
+        let syms = extract(src);
+        let singleton = |name| find(&syms, name).singleton;
+        assert!(singleton("limit"));
+        // not a method: a def local to another, and a free function
+        assert!(!singleton("inner"));
+        assert!(!singleton("stray"));
+        assert!(!singleton("size"));
+        assert!(!singleton("Account"));
     }
 }

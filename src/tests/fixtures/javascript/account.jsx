@@ -6,6 +6,10 @@
 const React = require("react");
 
 export class Account {
+  static open() {
+    return new Account();
+  }
+
   deposit(amount) {
     this.balance += amount;
     return this.balance;

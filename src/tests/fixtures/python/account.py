@@ -1,6 +1,6 @@
 """Fixture: a small, domain-neutral Python file exercising class, method,
 free-function, nested-function, enum, constant and class-attribute
-extraction."""
+extraction, and class and static methods."""
 
 import enum
 
@@ -29,6 +29,14 @@ class Account:
 
     def withdraw(self, amount):
         return amount
+
+    @classmethod
+    def from_owner(cls, owner):
+        return cls()
+
+    @staticmethod
+    def is_valid_amount(amount):
+        return amount > 0
 
 
 class AccountSettings:

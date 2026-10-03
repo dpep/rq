@@ -14,8 +14,9 @@
 //! keyword is the declaration of intent, whatever the casing, and a camelCase
 //! `const router = createRouter()` is as much a jump target as `MAX_RETRIES`. A
 //! `require(…)` binding is an import, not a definition; `let`/`var` are mutable.
-//! A class's `static readonly` field → constant of the class. `parent` is
-//! `.`-joined, so a method renders as `deposit · Account`.
+//! A class's `static readonly` field → constant of the class; any other
+//! `static` member (method, accessor, field) is the class's own (`singleton`).
+//! `parent` is `.`-joined, so a method renders as `deposit · Account`.
 //!
 //! Ambient declarations (`declare …`, and everything in a `.d.ts`) are
 //! extracted like the definitions they describe, as public stubs: a `declare
@@ -384,7 +385,9 @@ fn push_member(
         let vis = member_visibility(ctx, node, &raw);
         let name = raw.trim_start_matches('#');
         let stub = scope.ambient || overload;
-        push(ctx, out, name, kind, node, scope.parent, vis, stub);
+        // a `static readonly` constant is the class's by being a constant
+        push(ctx, out, name, kind, node, scope.parent, vis, stub).singleton =
+            kind != Kind::Constant && has_token(node, "static");
     }
 }
 
@@ -413,7 +416,8 @@ fn push_field(ctx: &Ctx, out: &mut Vec<Symbol>, node: Node, scope: Scope) {
             scope.parent,
             vis,
             scope.ambient,
-        );
+        )
+        .singleton = has_token(node, "static");
     }
 }
 
@@ -546,21 +550,23 @@ fn is_function(value: Option<Node>) -> bool {
     }
 }
 
+/// Emit a symbol, and return it for what only some callers set.
 #[allow(clippy::too_many_arguments)] // one call shape shared by every arm
-fn push(
+fn push<'o>(
     ctx: &Ctx,
-    out: &mut Vec<Symbol>,
+    out: &'o mut Vec<Symbol>,
     name: &str,
     kind: Kind,
     node: Node,
     parent: Option<&str>,
     visibility: &'static str,
     stub: bool,
-) {
+) -> &'o mut Symbol {
     let mut s = ctx.symbol(name, kind, node, parent);
     s.visibility = Some(visibility);
     s.stub = stub;
     out.push(s);
+    out.last_mut().expect("just pushed")
 }
 
 /// A member's declared access: the TypeScript modifier if it has one, else the
