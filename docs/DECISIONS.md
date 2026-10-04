@@ -3218,9 +3218,9 @@ used to fold into one result with `declarations: 2`.
   unchanged.
 - **`extend self`.** Its methods are instance methods that a module also
   answers; they stay unmarked, since marking them would hide that they mix in.
-- **`define_singleton_method(:x)` and `private_class_method :x`.** The first
-  isn't extracted at all and adding it widens extraction; the second changes
-  visibility retroactively, which rq doesn't model for `private :x` either.
+- **`define_singleton_method(:x)`.** It isn't extracted at all, and adding it
+  widens extraction. (`private_class_method :x`, once listed here, is the
+  addendum below.)
 - **A Rust associated fn inside a macro body in an impl** (`impl X { cfg_rt! {
   fn new() … } }`): the body re-parses as a standalone fragment, which can't see
   the impl around it, so the fn stays unmarked.
@@ -3233,3 +3233,65 @@ would do (not traced one by one).
 
 *Reverses if:* a caller needs the instance copy of a module function as its own
 row, or a measured query set shows `#`/`.` intent worth a scoring feature.
+
+### D55 addendum — access calls after the fact, and an alias's own visibility
+
+`access_call` and `alias_visibility` in `src/lang/ruby/mod.rs`. Tests
+`retroactive_access_calls_change_methods_already_defined`,
+`a_retroactive_call_reaches_only_its_own_side_of_the_class`,
+`an_alias_takes_its_originals_visibility_not_the_sections`, the fixture test
+`ruby_class_methods_are_singletons`, e2e
+`a_class_method_says_it_is_one_everywhere_a_result_is_printed`.
+
+*The problem.* A trekr hunt over 126 rails files with `class << self` or
+`private_class_method` found rq wrong on 47 methods, all one shape: a private
+class method that read public because it was made private by a call after its
+def (`private_class_method :valid_options, …` in the association builders).
+rq didn't model `private :x` either, on either side of a class, and gave an
+alias the section's visibility.
+
+*What.* Each rule checked against Ruby 3.4:
+
+- **An access call with arguments sets the visibility of what it names**:
+  `private`/`protected`/`public` aim at the side of the class the body is on
+  (instance methods in the class body, class methods inside `class << self`);
+  `private_class_method`/`public_class_method` at the class's own methods from
+  the class body. Arguments are symbols, strings, array literals (`[:a, :b]`,
+  `%i[a b]`, `%w[a b]`) and splats of them, plus what the call wraps
+  (`private_class_method def self.x`, `private attr_reader :y`). It reaches
+  methods defined above it, in this body or an earlier opening of the class in
+  the same file; the section after it is unchanged.
+- **A retroactive call stays on its side.** `private :x` in a class body leaves
+  `def self.x` public (Ruby raises; it can't hide it); after `module_function`
+  it hides the mixin copy, which rq doesn't emit, so the module's stays public.
+  `private_class_method` inside `class << self` addresses the singleton class's
+  own singleton and changes nothing here.
+- **An alias takes its original's visibility at alias time**, never the
+  section's: `alias a b` under `private` is public when `b` is, and private
+  under `public` when `b` is private; a later `private :b` doesn't reach `a`.
+  An original rq can't see above it (inherited — `alias send_action send`,
+  rails' `build_middleware_stack` aliasing an `Engine` method — or in another
+  file) is taken as public, as most are.
+
+*Not done.* A reopening in another file: extraction reads one file at a time,
+so `private :x` there leaves `x` as its own file defined it. Joining across
+files at index time would make one file's rows depend on another's parse.
+
+*Rails re-run* (rails `fadc0c7155`, `--symbols` over the 88 activerecord and
+activesupport files with either construct plus the two alias files, against
+trekr main `b9759b4`): 2,567 methods, 60 disagreements before, 16 after. 47
+were fixed: the 45 `private_class_method` rows and the two aliases. 3 are new,
+all `private :x` after a def, which trekr doesn't model. Of the 16, rq follows
+Ruby on 6: those 3 (one, inside `singleton_class.class_eval do`, is a class
+method both tools call an instance one) and 3 aliases of a private-section
+original (`aead_mode?`, `release`, `column_definitions`). The other 10 are
+`module_function` methods in `RactorConnectionHandler::Proxy`, where rq emits
+the module's public copy and trekr the private mixin one, by design (above).
+
+*Recall* (`make recall BASE=main`): 6,879 queries, #1 75.6% → 75.6%, top 10
+90.1% → 90.1%, unchanged per language and per repo; regress 54 of 57 both. 4
+sources moved up and 3 down, none lost #1 or the top 10.
+
+*Storage.* Visibility is already a column; this changes what extraction writes,
+not the schema. v24 is unreleased and requeues every Ruby file on upgrade, so
+no further version bump: the first run re-reads them anyway.

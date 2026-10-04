@@ -59,6 +59,11 @@ fn ruby_class_methods_are_singletons() {
         [(Some("WidgetFormat".into()), true, public())]
     );
     assert!(!top(&store, "Widget").singleton);
+    // a reopening makes a class method private after the fact, and an alias
+    // copies its original's visibility, not the section's
+    assert_eq!(members(&store, "build_part"), [(widget(), true, private())]);
+    assert_eq!(members(&store, "measure"), [(widget(), false, private())]);
+    assert_eq!(members(&store, "tick"), [(widget(), false, public())]);
 
     fs::remove_dir_all(&dir).ok();
 }

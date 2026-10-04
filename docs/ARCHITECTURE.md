@@ -470,7 +470,8 @@ why a result ranked where it did:
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:
-  Rust `pub`, Ruby access sections, Python underscore convention, Go
+  Rust `pub`, Ruby access sections and retroactive access calls (D55
+  addendum), Python underscore convention, Go
   capitalization, TypeScript member modifiers and ESM `export`. A `local`
   definition (Python's nested `def`) takes a larger one, `local`, which ranks
   it below every same-named definition outside a function body (D36)

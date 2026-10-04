@@ -38,3 +38,13 @@ module WidgetFormat
     size.to_s
   end
 end
+
+class Widget
+  def self.build_part(name)
+    name
+  end
+  private_class_method :build_part
+
+  alias_method :measure, :size
+  alias tick clock
+end

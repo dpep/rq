@@ -2792,7 +2792,7 @@ fn a_class_method_says_it_is_one_everywhere_a_result_is_printed() {
     fs::create_dir_all(dir.join("lib")).unwrap();
     fs::write(
         dir.join("lib/widget.rb"),
-        "class Widget\n  def self.clock\n    Clock.new\n  end\n  class << self\n    private\n    def register(name)\n      name\n    end\n  end\n  def size\n  end\nend\n",
+        "class Widget\n  def self.clock\n    Clock.new\n  end\n  class << self\n    private\n    def register(name)\n      name\n    end\n  end\n  def size\n  end\n  def self.hidden_build\n  end\n  private_class_method :hidden_build\nend\n",
     )
     .unwrap();
     git_init_commit(&dir);
@@ -2811,6 +2811,9 @@ fn a_class_method_says_it_is_one_everywhere_a_result_is_printed() {
     assert_eq!(row("register")["visibility"], "private", "{out}");
     assert!(row("size").get("singleton").is_none(), "{out}");
     assert!(row("Widget").get("singleton").is_none(), "{out}");
+    // `private_class_method` hides a class method after its def
+    assert_eq!(row("hidden_build")["singleton"], true, "{out}");
+    assert_eq!(row("hidden_build")["visibility"], "private", "{out}");
 
     // a search hit, --json and batch alike
     let (ok, out) = rq(&db, &dir, &["register", "--json"]);

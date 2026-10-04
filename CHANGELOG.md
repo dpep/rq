@@ -28,6 +28,12 @@ meanwhile, without the field.
 - **A class method and an instance method of the same name are two results.**
   `def self.call` and `def call` in one class folded into a single result with
   `declarations: 2`.
+- **Visibility set after the def is read.** `private :x`, `protected :x`,
+  `public :x`, `private_class_method :x` and `public_class_method :x` — with
+  strings, arrays, `*%i[…]` or a wrapped `def self.x` — now change the
+  methods they name, in the same body or an earlier reopening in the same file.
+  An `alias`/`alias_method` takes its original's visibility, as Ruby does,
+  rather than its section's (DECISIONS D55 addendum).
 - **`class << self` starts public.** A `private` earlier in the class body made
   every method in a later `class << self` read as private.
 

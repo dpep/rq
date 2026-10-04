@@ -51,6 +51,9 @@ fn walk(
     out: &mut Vec<Symbol>,
 ) {
     let mut vis = vis;
+    // the side of the class this body is on, before `module_function` (which
+    // makes a module's own copy but leaves `private :x` aimed at the mixin's)
+    let class_side = singleton;
     // a bare `module_function` makes what follows the module's own, until an
     // access marker ends it
     let mut module_function = false;
@@ -99,9 +102,11 @@ fn walk(
                 if let Some(name) = ctx.field_text(child, "name")
                     && !name.starts_with('$')
                 {
+                    let original = ctx.field_text(child, "alias").unwrap_or_default();
+                    let original = original.trim_start_matches(':');
                     let mut s =
                         ctx.symbol(name.trim_start_matches(':'), Kind::Method, child, parent);
-                    s.visibility = Some(vis);
+                    s.visibility = Some(alias_visibility(out, parent, singleton, original));
                     s.singleton = singleton;
                     out.push(s);
                 }
@@ -141,7 +146,9 @@ fn walk(
                 // still recurse: a call can wrap real definitions
                 // (`private def foo` — its `private` identifier flips `vis`
                 // on the way down — or `Class.new do … end`)
+                let wrapped = out.len();
                 walk(ctx, child, parent, vis, singleton, out);
+                access_call(ctx, child, parent, class_side, wrapped, out);
             }
             _ => walk(ctx, child, parent, vis, singleton, out),
         }
@@ -172,6 +179,90 @@ fn module_functions(ctx: &Ctx, call: Node, parent: Option<&str>, out: &mut [Symb
             s.visibility = Some("public");
         }
     }
+}
+
+/// An access call with arguments — `private :a, "b"`, `protected [:c]`,
+/// `private_class_method :x`, `public_class_method def self.y` — sets the
+/// visibility of the methods it names, already defined in this body or an
+/// earlier opening of the class in this file, and of the ones it wraps
+/// (`out[wrapped..]`). It leaves the section after it alone. Another file's
+/// reopening is out of reach: extraction sees one file.
+fn access_call(
+    ctx: &Ctx,
+    call: Node,
+    parent: Option<&str>,
+    class_side: bool,
+    wrapped: usize,
+    out: &mut [Symbol],
+) {
+    if call.child_by_field_name("receiver").is_some() {
+        return;
+    }
+    let Some(method) = ctx.field_text(call, "method") else {
+        return;
+    };
+    let (vis, singleton) = match method.as_str() {
+        "private" => ("private", class_side),
+        "protected" => ("protected", class_side),
+        "public" => ("public", class_side),
+        // inside `class << self` these address the singleton class's own
+        // singleton, which rq doesn't model (and Ruby raises for a plain def)
+        "private_class_method" if !class_side => ("private", true),
+        "public_class_method" if !class_side => ("public", true),
+        _ => return,
+    };
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut names = Vec::new();
+    literal_names(ctx, args, &mut names);
+    let ours = |s: &Symbol| {
+        s.kind == Kind::Method && s.singleton == singleton && s.parent.as_deref() == parent
+    };
+    let (before, inside) = out.split_at_mut(wrapped);
+    for s in before
+        .iter_mut()
+        .filter(|s| ours(s) && names.contains(&s.name))
+        .chain(inside.iter_mut().filter(|s| ours(s)))
+    {
+        s.visibility = Some(vis);
+    }
+}
+
+/// Every literal name among `node`'s arguments, through array literals
+/// (`[:a, :b]`, `%i[a b]`, `%w[a b]`) and splats of them (`*%i[a b]`).
+fn literal_names(ctx: &Ctx, node: Node, names: &mut Vec<String>) {
+    let mut cursor = node.walk();
+    for arg in node.named_children(&mut cursor) {
+        match arg.kind() {
+            "array" | "symbol_array" | "string_array" | "splat_argument" => {
+                literal_names(ctx, arg, names);
+            }
+            "bare_symbol" | "bare_string" => names.extend(ctx.node_text(arg)),
+            _ => names.extend(literal_name(ctx, arg)),
+        }
+    }
+}
+
+/// Ruby gives an alias its original's visibility at alias time, whatever
+/// section it sits in. An original not defined above it in this file
+/// (inherited, `Kernel#send`, another file) is taken as public, as most are.
+fn alias_visibility(
+    out: &[Symbol],
+    parent: Option<&str>,
+    singleton: bool,
+    original: &str,
+) -> &'static str {
+    out.iter()
+        .rev()
+        .find(|s| {
+            s.kind == Kind::Method
+                && s.singleton == singleton
+                && s.parent.as_deref() == parent
+                && s.name == original
+        })
+        .and_then(|s| s.visibility)
+        .unwrap_or("public")
 }
 
 /// How many of a DSL macro's arguments name methods it defines.
@@ -226,6 +317,17 @@ fn dsl_symbols(
     };
     let Some(arg_list) = call.child_by_field_name("arguments") else {
         return;
+    };
+    let vis = if method == "alias_method" {
+        let mut cursor = arg_list.walk();
+        let original = arg_list
+            .named_children(&mut cursor)
+            .nth(1)
+            .and_then(|a| literal_name(ctx, a))
+            .unwrap_or_default();
+        alias_visibility(out, parent, singleton, &original)
+    } else {
+        vis
     };
     let mut cursor = arg_list.walk();
     for arg in arg_list.children(&mut cursor) {
@@ -707,6 +809,156 @@ end
             ("instance_api", false, "public"),
             ("retro", true, "public"),
             ("wrapped", true, "public"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn retroactive_access_calls_change_methods_already_defined() {
+        let src = r#"
+class Widget
+  def self.a; end
+  def self.b; end
+  def self.c; end
+  def self.d; end
+  def self.e; end
+  def self.f; end
+  private_class_method :a, "b"
+  private_class_method [:c]
+  private_class_method(*%i[d e])
+  private_class_method :f
+  public_class_method :f
+  private_class_method def self.g; end
+  def self.h; end
+
+  def i; end
+  def j; end
+  def k; end
+  private :i, "j"
+  private def l; end
+  protected :k
+  private attr_reader :m
+
+  class << self
+    def n; end
+    def o; end
+    private :n
+    private
+    def p; end
+    public :p
+    private_class_method :o
+  end
+
+  def q; end
+end
+
+class Widget
+  private_class_method :h
+  private :q
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("a", true, "private"),
+            ("b", true, "private"),
+            ("c", true, "private"),
+            ("d", true, "private"),
+            ("e", true, "private"),
+            ("f", true, "public"),
+            ("g", true, "private"),
+            // made private by the reopening below
+            ("h", true, "private"),
+            ("i", false, "private"),
+            ("j", false, "private"),
+            ("k", false, "protected"),
+            ("l", false, "private"),
+            ("m", false, "private"),
+            ("n", true, "private"),
+            // `private_class_method` inside `class << self` is about the
+            // singleton class's own singleton, not these
+            ("o", true, "public"),
+            ("p", true, "public"),
+            ("q", false, "private"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn a_retroactive_call_reaches_only_its_own_side_of_the_class() {
+        let src = r#"
+class Widget
+  def self.x; end
+  def x; end
+  private :x
+end
+
+module Util
+  module_function
+  def helper; end
+  private :helper
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("x", true, "public"),
+            ("x", false, "private"),
+            // `private :helper` hides the mixin copy; the module's stays public
+            ("helper", true, "public"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn an_alias_takes_its_originals_visibility_not_the_sections() {
+        let src = r#"
+class Widget
+  def open; end
+  def shut; end
+  private :shut
+
+  private
+
+  alias a1 open
+  alias_method :a2, :open
+  alias a3 inherited_elsewhere
+  def hidden; end
+
+  public
+
+  alias a4 hidden
+  alias_method :a5, :shut
+  def later; end
+  alias a6 later
+  private :later
+
+  class << self
+    def build; end
+    private :build
+    alias a7 build
+    alias_method :a8, :build
+  end
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("open", false, "public"),
+            ("shut", false, "private"),
+            ("a1", false, "public"),
+            ("a2", false, "public"),
+            // an original defined elsewhere is assumed public, as most are
+            ("a3", false, "public"),
+            ("hidden", false, "private"),
+            ("a4", false, "private"),
+            ("a5", false, "private"),
+            // `private :later` after the alias doesn't reach the copy
+            ("later", false, "private"),
+            ("a6", false, "public"),
+            ("build", true, "private"),
+            ("a7", true, "private"),
+            ("a8", true, "private"),
         ]
         .map(|(n, s, v)| (n.to_string(), s, v));
         assert_eq!(got, expect);
