@@ -126,17 +126,21 @@ pub(crate) fn rq_bounded(
 
 /// A FIFO at `path`. On drop it releases any reader still blocked opening it,
 /// so a hang the test caught doesn't outlive the test.
-pub(crate) struct Fifo(PathBuf);
+pub(crate) struct Fifo(pub(crate) PathBuf);
 
 impl Fifo {
     pub(crate) fn new(path: PathBuf) -> Fifo {
-        let ok = Command::new("mkfifo")
-            .arg(&path)
-            .status()
-            .expect("run mkfifo");
-        assert!(ok.success(), "mkfifo {}", path.display());
+        mkfifo(&path);
         Fifo(path)
     }
+}
+
+pub(crate) fn mkfifo(path: &Path) {
+    let ok = Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("run mkfifo");
+    assert!(ok.success(), "mkfifo {}", path.display());
 }
 
 impl Drop for Fifo {
