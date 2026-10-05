@@ -7,6 +7,7 @@ use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The built binary, run from `cwd` against the database at `db`. Warming
 /// stays in-process so no detached child races a test's asserts or cleanup;
@@ -76,9 +77,13 @@ pub(crate) struct Scratch {
 }
 
 impl Scratch {
-    /// `rq-{label}-{pid}` under the temp dir, emptied first.
+    /// `rq-{label}-{pid}-{n}` under the temp dir, emptied first: `n` counts
+    /// up per process, so two tests that share a label never share a dir.
     pub(crate) fn new(label: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("rq-{label}-{}", std::process::id()));
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let name = format!("rq-{label}-{}-{n}", std::process::id());
+        let dir = std::env::temp_dir().join(name);
         let scratch = Scratch { dir };
         scratch.clean();
         fs::create_dir_all(&scratch.dir).unwrap();

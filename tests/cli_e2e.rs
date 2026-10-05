@@ -33,28 +33,40 @@ fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
     String::from_utf8_lossy(&run.stderr).contains("background warm")
 }
 
+/// Run git in `dir`, failing the test if it fails: a missing or broken git
+/// would otherwise surface as a puzzling assert much later.
+fn git(dir: &Path, args: &[&str]) {
+    let out = git_cmd(dir).args(args).output().expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// `git init` a directory (no commits needed) so it reads as a git repo.
 fn git_init(dir: &Path) {
-    let _ = git_cmd(dir).arg("init").arg("-q").output();
+    git(dir, &["init", "-q"]);
 }
 
 /// `git init` + commit everything, so files are *tracked* (warming enumerates a
 /// committed repo from `git ls-files`, not a filesystem walk).
 fn git_init_commit(dir: &Path) {
     git_init(dir);
-    let git = |args: &[&str]| {
-        let _ = git_cmd(dir).args(args).output();
-    };
-    git(&["add", "-A"]);
-    git(&[
-        "-c",
-        "user.email=t@e.st",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "init",
-    ]);
+    git(dir, &["add", "-A"]);
+    git(
+        dir,
+        &[
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=test",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "init",
+        ],
+    );
 }
 
 #[test]
