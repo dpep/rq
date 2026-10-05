@@ -10,6 +10,7 @@ use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 
 use crate::core::{Kind, now_unix};
+use crate::search::Verdict;
 use crate::store::{Checkout, Coverage, Store};
 
 /// Search is the default action (`rq <query>`). Operations are flags rather
@@ -442,7 +443,7 @@ fn record_usage(
     let _ = store.record_search(&crate::store::SearchRecord {
         source: &crate::origin::detect(),
         flags: &flag_summary(args),
-        status: verdict.as_str(),
+        status: verdict,
         coverage,
         live,
     });
@@ -1716,7 +1717,7 @@ fn emit_provisional(
             let obj = Provisional {
                 provisional: hits,
                 query: args.query,
-                status: "warming",
+                status: Verdict::Warming.status(),
                 warming,
             };
             emit_json(args.out, &obj)
@@ -2089,14 +2090,13 @@ fn no_match_code(
     incomplete_roots: &[String],
 ) -> Outcome {
     let incomplete = verdict == Verdict::Warming;
+    // a miss's reason, where structured callers can act on more than the verdict
     let status = if interrupted {
         "interrupted"
-    } else if incomplete {
-        "warming"
-    } else if elsewhere.is_some() {
+    } else if !incomplete && elsewhere.is_some() {
         "scope_not_found"
     } else {
-        "no_match"
+        verdict.status()
     };
     match out {
         Output::Json | Output::Ndjson => {
@@ -3170,7 +3170,7 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
     if syms.is_empty() {
         match out {
             Output::Json | Output::Ndjson => {
-                let obj = serde_json::json!({ "status": "no_match" });
+                let obj = serde_json::json!({ "status": Verdict::Miss.status() });
                 let _ = emit_json(out, &obj); // exit code below carries the miss
             }
             Output::Text => eprintln!("no symbols"),
@@ -3846,28 +3846,6 @@ fn db_location_from(
         ));
     }
     Ok(PathBuf::from(home).join(".local/share/rq/rq.db"))
-}
-
-/// What a search found, as its exit code and the usage counters tell it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Verdict {
-    /// An answer (0).
-    Hit,
-    /// The index is complete, and nothing matched (1): definitive.
-    Miss,
-    /// The index couldn't yet say (2): ask again.
-    Warming,
-}
-
-impl Verdict {
-    /// The label `--usage` counts it under.
-    fn as_str(self) -> &'static str {
-        match self {
-            Verdict::Hit => "hit",
-            Verdict::Miss => "miss",
-            Verdict::Warming => "warming",
-        }
-    }
 }
 
 /// How a search ended. Ordered by what a batch reports when its lines

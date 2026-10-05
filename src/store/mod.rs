@@ -16,7 +16,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::core::{Symbol, now_unix};
-use crate::search::Probe;
+use crate::search::{Probe, Verdict};
 
 pub(crate) type Result<T> = rusqlite::Result<T>;
 
@@ -247,10 +247,10 @@ pub(crate) struct SearchRecord<'a> {
     pub source: &'a str,
     /// Canonical flag set, comma-joined; empty for a bare search.
     pub flags: &'a str,
-    /// `hit`, `miss` (the symbol isn't there), or `warming` (the index wasn't
-    /// ready to say). rq separates the last two in its exit codes; conflating
-    /// them in the counts would overstate how often it truly finds nothing.
-    pub status: &'a str,
+    /// A miss (the symbol isn't there) and a not-yet (the index wasn't ready
+    /// to say) are counted apart, as their exit codes are: conflating them
+    /// would overstate how often rq truly finds nothing.
+    pub status: Verdict,
     /// Index state when the query arrived; `None` before any pass finished.
     pub coverage: Option<Coverage>,
     /// Answered from a live scan of an untracked directory, not the index.
@@ -1247,8 +1247,11 @@ impl Store {
 
     /// Count a search in `usage_daily`.
     pub(crate) fn record_search(&self, rec: &SearchRecord) -> Result<()> {
-        let miss = i64::from(rec.status == "miss");
-        let warming = i64::from(rec.status == "warming");
+        let (miss, warming) = match rec.status {
+            Verdict::Hit => (0, 0),
+            Verdict::Miss => (1, 0),
+            Verdict::Warming => (0, 1),
+        };
         let on_complete = i64::from(rec.coverage == Some(Coverage::Complete));
         let live = i64::from(rec.live);
         // Local date, not UTC: an evening search on the US west coast would

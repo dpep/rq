@@ -191,6 +191,29 @@ impl Context {
     }
 }
 
+/// What a search found, as its exit code and the usage counters tell it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    /// An answer (0).
+    Hit,
+    /// The index is complete, and nothing matched (1): definitive.
+    Miss,
+    /// The index couldn't yet say (2): ask again.
+    Warming,
+}
+
+impl Verdict {
+    /// The `status` a structured answer carries. A hit's rows carry none;
+    /// `hit` names it for completeness.
+    pub(crate) fn status(self) -> &'static str {
+        match self {
+            Verdict::Hit => "hit",
+            Verdict::Miss => "no_match",
+            Verdict::Warming => "warming",
+        }
+    }
+}
+
 /// Where a result was read from: the persisted index, or a live scan of a
 /// directory rq doesn't track. Carried per result, since the two blend.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
