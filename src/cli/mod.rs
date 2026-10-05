@@ -558,16 +558,7 @@ impl Session {
     /// Resolve the search context, or the exit code to fail with.
     fn open(out: Output) -> std::result::Result<Session, ExitCode> {
         let open_span = crate::profile::span("store open");
-        let store = match open_store() {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(fail(
-                    out,
-                    Failure::Database,
-                    format_args!("rq: cannot open database: {e}"),
-                ));
-            }
-        };
+        let store = open_store_or_fail(out, "rq")?;
         drop(open_span);
         let git_span = crate::profile::span("setup: git root");
         let cwd = std::env::current_dir().ok();
@@ -3059,15 +3050,9 @@ struct SymbolOut {
 /// --kind/--lang filters and --json/--ndjson.
 fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) -> ExitCode {
     let open_span = crate::profile::span("store open");
-    let mut store = match open_store() {
+    let mut store = match open_store_or_fail(out, "rq --symbols") {
         Ok(s) => s,
-        Err(e) => {
-            return fail(
-                out,
-                Failure::Database,
-                format_args!("rq: cannot open database: {e}"),
-            );
-        }
+        Err(code) => return code,
     };
     drop(open_span);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -3117,7 +3102,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let mut query_span = crate::profile::span("symbols: query");
     let mut rows = match store.symbols_in_file(checkout.id, &rel) {
         Ok(r) => r,
-        Err(e) => return fail(out, Failure::Database, format_args!("rq: {e}")),
+        Err(e) => return fail(out, Failure::Database, format_args!("rq --symbols: {e}")),
     };
     query_span.note(|| format!("{} rows", rows.len()));
     drop(query_span);
@@ -3443,15 +3428,9 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
         subdirs.push(rel.to_string_lossy().into_owned());
     }
     let open_span = crate::profile::span("store open");
-    let mut store = match open_store() {
+    let mut store = match open_store_or_fail(out, "rq --index") {
         Ok(s) => s,
-        Err(e) => {
-            return fail(
-                out,
-                Failure::Database,
-                format_args!("rq: cannot open database: {e}"),
-            );
-        }
+        Err(code) => return code,
     };
     drop(open_span);
     let on_long_wait = show_progress(out, stderr_interactive()).then_some(say_waiting as fn());
@@ -3506,15 +3485,9 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
 }
 
 fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
-    let mut store = match open_store() {
+    let mut store = match open_store_or_fail(out, "rq --drop") {
         Ok(s) => s,
-        Err(e) => {
-            return fail(
-                out,
-                Failure::Database,
-                format_args!("rq: cannot open database: {e}"),
-            );
-        }
+        Err(code) => return code,
     };
 
     // Resolve what to drop: TARGET as a path (→ repo root, like --index) drops
@@ -3620,15 +3593,9 @@ fn emit_rows<T: serde::Serialize>(out: Output, rows: &[T]) -> Option<ExitCode> {
 }
 
 fn cmd_status(out: Output) -> ExitCode {
-    let store = match open_store() {
+    let store = match open_store_or_fail(out, "rq --status") {
         Ok(s) => s,
-        Err(e) => {
-            return fail(
-                out,
-                Failure::Database,
-                format_args!("rq: cannot open database: {e}"),
-            );
-        }
+        Err(code) => return code,
     };
     crate::index::prune_missing_checkouts(&store);
     let mut rows = match store.coverage_overview() {
@@ -3673,7 +3640,7 @@ fn cmd_status(out: Output) -> ExitCode {
         }
     }
     if out == Output::Text
-        && let Ok(db) = db_path()
+        && let Ok(db) = db_location()
     {
         for line in leftovers(&db, store.file()) {
             println!("{line}");
@@ -3732,15 +3699,9 @@ fn leftovers(db: &std::path::Path, using: Option<&std::path::Path>) -> Vec<Strin
 /// `--usage`: how rq has actually been called, by day, caller, and flag set.
 /// Reads `usage_daily`, which outlives the pruned raw event log.
 fn cmd_usage(out: Output) -> ExitCode {
-    let store = match open_store() {
+    let store = match open_store_or_fail(out, "rq --usage") {
         Ok(s) => s,
-        Err(e) => {
-            return fail(
-                out,
-                Failure::Database,
-                format_args!("rq: cannot open database: {e}"),
-            );
-        }
+        Err(code) => return code,
     };
     let rows = match store.usage_overview() {
         Ok(rows) => rows,
@@ -3802,16 +3763,23 @@ fn cmd_usage(out: Output) -> ExitCode {
 
 /// Open the rq database, honoring `RQ_DB` and creating parent dirs.
 fn open_store() -> Result<Store, Box<dyn std::error::Error>> {
-    let path = db_path()?;
+    let path = db_location()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     Ok(Store::open(&path)?)
 }
 
-/// Resolve the database path: `$RQ_DB`, else `$HOME/.local/share/rq/rq.db`.
-fn db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(db_location()?)
+/// [`open_store`] for a command, or the exit code of the error it reported
+/// as `{mode}: …` (a structured caller gets it as JSON).
+fn open_store_or_fail(out: Output, mode: &str) -> std::result::Result<Store, ExitCode> {
+    open_store().map_err(|e| {
+        fail(
+            out,
+            Failure::Database,
+            format_args!("{mode}: cannot open database: {e}"),
+        )
+    })
 }
 
 /// The database path from the environment, or the usage error that refuses it.
