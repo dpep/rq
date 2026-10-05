@@ -962,6 +962,29 @@ fn a_tracked_file_deleted_without_git_rm_is_forgotten() {
 }
 
 #[test]
+fn a_file_deleted_without_git_rm_on_a_feature_branch_is_forgotten() {
+    // `git diff HEAD` names the delete, so it's a branch (active) file too
+    let (dir, db) = scratch("unstaged-delete-feature");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("doomed.rb"), "class Doomed\nend\n").unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git_init_commit(&dir);
+    git(&dir, &["checkout", "-qb", "feature"]);
+    fs::write(dir.join("feat.rb"), "class Feat\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    fs::remove_file(dir.join("doomed.rb")).unwrap();
+
+    let prod = [("RQ_WARM_DETACH", "wait")];
+    let (code, out, _) = rq_full(&db, &dir, &["Nosuch", "--json"], &prod, None);
+    assert_eq!(code, 2, "the delete is pending work: {out}");
+    for query in ["Nosuch", "Doomed"] {
+        let (code, out, _) = rq_full(&db, &dir, &[query, "--json"], &prod, None);
+        assert_eq!(code, 1, "{query}: {out}");
+    }
+}
+
+#[test]
 fn a_file_a_branch_switch_deleted_is_not_a_hit() {
     let (dir, db) = scratch("switched-away");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

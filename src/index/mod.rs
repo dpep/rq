@@ -1005,7 +1005,9 @@ fn note_candidate(
         .unwrap_or(file)
         .to_string_lossy()
         .into_owned();
-    if !is_source(&rel) {
+    // `git diff HEAD` lists a delete not yet `git rm`ed; unseen, reconcile
+    // forgets it, as in `stream_walk`
+    if !is_source(&rel) || !file.exists() {
         return;
     }
     if !seen.insert(rel.clone()) {
