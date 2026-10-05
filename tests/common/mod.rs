@@ -11,14 +11,23 @@ use std::process::{Command, Output};
 /// The built binary, run from `cwd` against the database at `db`. Warming
 /// stays in-process so no detached child races a test's asserts or cleanup;
 /// a test of the production default removes `RQ_WARM_DETACH`.
+///
+/// The wall-clock budgets are generous: a verdict must not depend on how
+/// loaded the machine is. A test that probes a budget sets it again.
 pub(crate) fn rq_cmd(db: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rq"));
     scrub_git(&mut cmd);
     cmd.current_dir(cwd)
         .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0");
+        .env("RQ_WARM_DETACH", "0")
+        .env("RQ_FALLBACK_BUDGET_MS", GENEROUS_MS)
+        .env("RQ_ANSWER_BUDGET_MS", GENEROUS_MS)
+        .env("RQ_DEFERRED_BUDGET_MS", GENEROUS_MS);
     cmd
 }
+
+/// A budget no test's tree comes near, but short of hanging a broken run.
+const GENEROUS_MS: &str = "20000";
 
 /// `git` in `cwd`, scrubbed like [`rq_cmd`].
 pub(crate) fn git_cmd(cwd: &Path) -> Command {
