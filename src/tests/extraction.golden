@@ -2,8 +2,8 @@
 # src/tests/extraction_guard.rs. Regenerate: UPDATE_GOLDEN=1 cargo test extraction_guard
 schema 24
 go c9c080e3c809d483
-javascript 1fe819ae3c657d5a
+javascript 2a52204e45917e09
 python 7a483be0494788ad
-ruby eaeb226fd91983cf
-rust 0c23861bf6158f33
-typescript c85d762f49c49af0
+ruby da51ffd265005404
+rust 0bce95a78041502e
+typescript e240692696c498c0
