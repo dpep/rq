@@ -855,8 +855,6 @@ pub(super) fn aligns(query: &[u8], name: &[u8], boundary: u128) -> bool {
         let m = at(c);
         // mid-word: one to three positions on, with no word start in between
         let near = (s << 1) | ((s << 2) & !(b << 1)) | ((s << 3) & !(b << 1) & !(b << 2));
-        // a word start: any position the current word reaches, plus one —
-        // `s` smeared forward through the positions that aren't word starts
         // a word start: any after the earliest position reached, since
         // words may be skipped
         let earliest = s.isolate_lowest_one();
