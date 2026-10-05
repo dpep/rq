@@ -3518,16 +3518,12 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     let here = Here::at(&store, &path);
     let root = here.root;
     let key = root_key(&root);
-    let dropped = |identity: &str, root: Option<&str>, (files, symbols): (i64, i64)| match out {
-        Output::Text => {
-            let what = root.map_or_else(|| identity.to_string(), |r| format!("{identity} at {r}"));
-            println!("dropped {what} ({files} file(s), {symbols} symbol(s))");
-            ExitCode::SUCCESS
-        }
-        _ => exit_code(emit_json(
-            out,
-            &serde_json::json!({"repo": identity, "root": root, "files": files, "symbols": symbols, "dropped": true}),
-        )),
+    let dropped = |repo: String, root: Option<String>, (files, symbols): (i64, i64)| Dropped {
+        dropped: true,
+        files,
+        repo,
+        root,
+        symbols,
     };
 
     if let Some(checkout) = here.checkout {
@@ -3538,7 +3534,7 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
             .unwrap_or_default();
         let totals = store.checkout_totals(checkout.id).unwrap_or((0, 0));
         return match store.forget_checkout(&key) {
-            Ok(()) => dropped(&identity, Some(&key), totals),
+            Ok(()) => dropped(identity, Some(key), totals).emit(out),
             Err(e) => fail(out, Failure::Database, format_args!("rq --drop: {e}")),
         };
     }
@@ -3555,21 +3551,54 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
         } else {
             (target.unwrap_or_default(), None)
         };
-        return match out {
-            Output::Text => {
-                println!("not indexed: {}", at.as_deref().unwrap_or(&identity));
-                ExitCode::SUCCESS
-            }
-            _ => exit_code(emit_json(
-                out,
-                &serde_json::json!({"repo": identity, "root": at, "files": 0, "symbols": 0, "dropped": false}),
-            )),
+        let nothing = Dropped {
+            dropped: false,
+            ..dropped(identity, at, (0, 0))
         };
+        return nothing.emit(out);
     };
     let totals = store.repo_totals(repo_id).unwrap_or((0, 0));
     match store.drop_repository(repo_id) {
-        Ok(()) => dropped(&identity, None, totals),
+        Ok(()) => dropped(identity, None, totals).emit(out),
         Err(e) => fail(out, Failure::Database, format_args!("rq --drop: {e}")),
+    }
+}
+
+/// What `--drop` did. Keys sorted, as they always went out.
+#[derive(serde::Serialize)]
+struct Dropped {
+    /// `false` when there was nothing to drop: idempotent, and a script can tell.
+    dropped: bool,
+    files: i64,
+    repo: String,
+    /// The checkout's root; `None` for a whole repo dropped by identity.
+    root: Option<String>,
+    symbols: i64,
+}
+
+impl Dropped {
+    fn emit(&self, out: Output) -> ExitCode {
+        let Dropped {
+            dropped,
+            files,
+            repo,
+            root,
+            symbols,
+        } = self;
+        match out {
+            Output::Text if *dropped => {
+                let what = root
+                    .as_ref()
+                    .map_or_else(|| repo.clone(), |r| format!("{repo} at {r}"));
+                println!("dropped {what} ({files} file(s), {symbols} symbol(s))");
+                ExitCode::SUCCESS
+            }
+            Output::Text => {
+                println!("not indexed: {}", root.as_deref().unwrap_or(repo));
+                ExitCode::SUCCESS
+            }
+            Output::Json | Output::Ndjson => exit_code(emit_json(out, self)),
+        }
     }
 }
 
