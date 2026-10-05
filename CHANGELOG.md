@@ -75,6 +75,10 @@ meanwhile, without the field.
 - **A file deleted without `git rm` no longer keeps misses `warming`.** Until
   the delete was staged or committed, the index held on to the file, and
   every miss in the repo answered `warming` (exit 2).
+- **`--no-wait` outside git, in a directory rq doesn't track, answers a miss
+  as a miss (exit 1).** It said "indexing stopped part-way (0 files read)"
+  (exit 2) on every run, though nothing was indexing and the plain search
+  answered 1.
 - **`--usage` with nothing recorded says so on stderr**, as an empty search
   and an empty `--symbols` do, so stdout carries only data.
 - **Two modes at once are a usage error (exit 64).** `--usage --drop`,

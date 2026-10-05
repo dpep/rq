@@ -2801,6 +2801,19 @@ fn a_miss_in_an_indexed_tree_outside_git_is_definitive() {
 }
 
 #[test]
+fn no_wait_outside_git_and_unindexed_is_a_plain_miss() {
+    // nothing indexes a dir rq doesn't track: the live scan is the answer
+    let (dir, db) = scratch("nongit-unindexed-nowait");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    for args in [["Nosuch", "--json"], ["Nosuch", "--no-wait"]] {
+        let (code, out) = rq(&db, &dir, &args);
+        assert_eq!(code, 1, "{args:?}: {out}");
+    }
+    let (code, out) = rq(&db, &dir, &["Widget", "--no-wait"]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
 fn a_file_rq_cannot_decode_or_open_does_not_keep_a_tree_warming() {
     use std::os::unix::fs::PermissionsExt;
     let (dir, db) = scratch("nongit-unreadable");

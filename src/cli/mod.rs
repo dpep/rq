@@ -1208,7 +1208,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // symbol is absent when the index simply hasn't reached it. `--no-wait`
         // returns without blocking, so its miss is judged the same way — an
         // incomplete index yields `warming` (exit 2, "retry"), not a false absence.
+        // Where nothing warms (a dir rq doesn't track) the live scan was whole.
         let mut incomplete = (block || no_wait)
+            && warming_ok
             && root
                 .as_deref()
                 .and_then(|r| store.coverage_status(&root_key(r)).ok().flatten())
