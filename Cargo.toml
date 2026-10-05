@@ -2,6 +2,8 @@
 name = "reference-query"
 version = "0.60.3"
 edition = "2024"
+# the newest std API in use (`isolate_lowest_one`); clippy flags anything newer
+rust-version = "1.97"
 description = "Reference Query — find the code you're looking for."
 license = "MIT"
 repository = "https://github.com/dpep/rq"
@@ -26,7 +28,7 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ignore = "0.4"
-rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 tree-sitter = "0.25"
 tree-sitter-ruby = "0.23"
 tree-sitter-rust = "0.24"
