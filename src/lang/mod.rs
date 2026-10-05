@@ -60,7 +60,6 @@ impl Ctx<'_> {
     }
 }
 
-/// Join a name onto its enclosing qualified name with the language's separator.
 impl Ctx<'_> {
     /// Parse the source between `start` and `end` (bytes, starting on `row`) as
     /// a standalone fragment and walk it: for code the grammar sees only as
@@ -101,6 +100,7 @@ impl Ctx<'_> {
     }
 }
 
+/// Join a name onto its enclosing qualified name with the language's separator.
 pub(crate) fn qualify(parent: Option<&str>, name: &str, sep: &str) -> String {
     match parent {
         Some(p) => format!("{p}{sep}{name}"),

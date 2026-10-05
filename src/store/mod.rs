@@ -334,12 +334,12 @@ pub(crate) fn warm_lock_held(pid: u32, ts: i64) -> bool {
 /// How often a pass renews its mark, well inside the TTL.
 pub(crate) const PASS_RENEWAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Whether a pass mark's or warm lock's stamp is inside the TTL.
 /// Whole seconds since `since` (unix seconds), never negative.
 pub(crate) fn phase_secs(since: i64) -> i64 {
     (now_unix() - since).max(0)
 }
 
+/// Whether a pass mark's stamp is inside the TTL.
 fn stamp_fresh(at: &str) -> bool {
     at.parse::<i64>()
         .is_ok_and(|at| now_unix() - at < WARM_LOCK_TTL_SECS)

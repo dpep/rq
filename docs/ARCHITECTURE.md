@@ -1,7 +1,7 @@
-# rq architecture (target model)
+# rq architecture
 
-This is the **design we are building toward**. No code exists yet; this
-document is the contract the implementation should satisfy.
+This is the design rq is built to, and the contract the code keeps: a change
+to the design changes this document in the same commit.
 [ROADMAP.md](ROADMAP.md) tracks what ships in which phase.
 
 ## Core principle

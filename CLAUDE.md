@@ -79,8 +79,9 @@ rq/
     lang/        ← Tree-sitter plugins (ruby, rust, go, python, typescript)
       ruby/      ← first plugin
       rust/      ← rq dogfoods on its own source
-  docs/          ← ARCHITECTURE.md, ROADMAP.md
-  tests/         ← integration tests + fixtures
+    tests/       ← tests through the crate's internals + fixtures/<lang>/
+  docs/          ← ARCHITECTURE.md, ROADMAP.md, DECISIONS.md
+  tests/         ← CLI tests: drive the built binary (common/ is the harness)
 ```
 
 Keep it a single crate until there's a concrete reason to split into a
@@ -105,7 +106,7 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
 - Write tests for new code, but keep them focused on quality, not quantity —
   edge cases and error handling over restating the happy path.
 - Ranking is the heart of the tool: test it with **fixture repos** under
-  `tests/fixtures/` and assert on *ordering* (the right result ranks first),
+  `src/tests/fixtures/` and assert on *ordering* (the right result ranks first),
   not just membership.
 - A new language plugin ships with a fixture file of source + expected symbols.
 - **Use generic, non-identifying test data** — neutral placeholders (`Widget`,
@@ -134,8 +135,8 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
 2. Implement `LanguagePlugin` in `src/lang/<lang>/`: `extensions()` +
    `extract(source) -> Vec<Symbol>`.
 3. Register it in the extension→plugin registry.
-4. Add a fixture (source + expected `Symbol`s) under `tests/fixtures/<lang>/`,
-   and assert on *ordering* end-to-end (see `tests/rust_fixture.rs`).
+4. Add a fixture (source + expected `Symbol`s) under `src/tests/fixtures/<lang>/`,
+   and assert on *ordering* end-to-end (see `src/tests/rust_fixture.rs`).
 
 `index/` and `search/` should not need to change — if they do, a language
 specific leaked and the design doc needs revisiting. The exception is the shared

@@ -3214,8 +3214,8 @@ fn split_kind_keyword(
     (None, target, dirs)
 }
 
-/// Normalize a `--kind` value (name or shortcut) to a canonical symbol kind.
-/// Unknown values pass through lowercased (so they simply match nothing).
+/// Normalize a `--kind` value (name or shortcut) to the canonical symbol kinds
+/// it selects; `None` for an unknown one, which is a usage error.
 fn canonical_kind(s: &str) -> Option<&'static [&'static str]> {
     Some(match s.to_ascii_lowercase().as_str() {
         "c" | "class" => &["class"],
@@ -3241,8 +3241,8 @@ fn canonical_kind(s: &str) -> Option<&'static [&'static str]> {
 /// known language name (so `r` → ruby+rust, `p`/`py` → python, `g` → go,
 /// `t` → typescript, `j` → javascript), plus a few non-prefix aliases
 /// (`rb`→ruby, `rs`→rust, `golang`→go, `ts`/`tsx`→typescript,
-/// `js`/`jsx`→javascript). An unknown value passes through lowercased so it
-/// simply matches nothing.
+/// `js`/`jsx`→javascript). An unknown value selects none, which is a usage
+/// error.
 fn canonical_langs(s: &str) -> Vec<String> {
     let t = s.to_ascii_lowercase();
     let alias = match t.as_str() {
