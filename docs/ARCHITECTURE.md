@@ -643,8 +643,11 @@ queries runs at most one warmer. On a complete repo the child is spawned after
 a hit and first asks whether anything moved; usually nothing has, and it
 exits after one `git status`, recording that verdict so hits over the next few
 seconds don't spawn at all (D16). Still no daemon: the child does one job and
-exits. `RQ_WARM_DETACH=0` reverts to finishing the (small) warm in-process —
-the hermetic mode tests and debugging use.
+exits. `RQ_WARM_DETACH=0` never spawns the child: the index is then only what
+a search's own warm reads and `rq --index` writes (recall runs, and tests that
+stage a half-built index). `RQ_WARM_DETACH=wait` spawns it as usual and waits
+for it to exit: the test harness's default, so tests run production's path
+without racing the child.
 
 Git-awareness (current branch, recent commits, ownership, recently-modified
 areas) enters later as additional **ranking hints — never hard filters**.

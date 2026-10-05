@@ -893,14 +893,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Warm the index on a background thread (its own connection — WAL lets it
     // write while we read) whenever there's work: a not-yet-complete repo, or a
     // complete one changed since it was indexed. The search below reads whatever
-    // it has committed so far. With detach on (the default), this in-process
-    // warm only serves *this* answer — leftover work goes to a detached child
-    // after results print, so the shell never waits on it.
-    let warm_budget = if warm_detach_enabled() {
-        answer_warm_budget()
-    } else {
-        answer_warm_budget() + deferred_warm_budget()
-    };
+    // it has committed so far. This in-process warm only serves *this*
+    // answer — leftover work goes to a detached child after results print, so
+    // the shell never waits on it.
     let was_warming = coverage != Some(Coverage::Complete);
 
     // On a complete repo the only question left is whether the worktree moved
@@ -921,15 +916,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let staleness = (!was_warming && warming_ok && !args.batch)
         .then(|| root.clone())
         .flatten()
-        .map(|c| {
-            if warm_detach_enabled() {
-                Staleness::Deferred(c, indexed_head)
-            } else {
-                Staleness::Running(std::thread::spawn(move || {
-                    worktree_edits(&c, indexed_head.as_deref())
-                }))
-            }
-        });
+        .map(|c| Staleness(c, indexed_head));
     // Only a repo that's still warming warms *before* the answer now; a
     // complete-but-edited one is reindexed by `settle_warm` afterwards.
     let want_warm = warming_ok && was_warming && root.is_some();
@@ -1156,31 +1143,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     });
     total = total.saturating_sub(before - hits.len());
 
-    // A miss, and the worktree may have moved since its index: with the warm
-    // in-process (detach off), settle it now, as the miss path would before
-    // exiting anyway, and ask again, so a definition saved a moment ago
-    // answers this query rather than the next. A hit doesn't wait on it.
-    let mut staleness = staleness;
-    if hits.is_empty()
-        && matches!(staleness, Some(Staleness::Running(_)))
-        && settle_warm(
-            store,
-            staleness.take(),
-            false,
-            was_warming,
-            warming_ok,
-            root.as_deref(),
-            active_paths,
-            query,
-            warm_budget,
-            no_wait,
-        )
-        && let Ok(m) = scope(current).search(store, query, current, &ctx, rank_limit)
-    {
-        total = m.total;
-        hits = m.hits;
-    }
-
     // Untracked non-git dir — nothing persisted, no warmer running — so scan it
     // live in-memory (substring, then fuzzy) and blend with whatever the index
     // gave. The only non-persisting scan left.
@@ -1242,13 +1204,8 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             was_warming,
             warming_ok,
             root.as_deref(),
-            active_paths,
-            query,
-            warm_budget,
-            no_wait,
         );
-        // only a deferred reindex leaves the miss open; an inline one ran
-        incomplete |= moved && warm_detach_enabled();
+        incomplete |= moved;
         // A named scope that matched nothing is a different miss from a name
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
@@ -1464,10 +1421,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         was_warming,
         warming_ok,
         root.as_deref(),
-        active_paths,
-        query,
-        warm_budget,
-        no_wait,
     );
 
     // "no answer yet" (2), whether nothing matched or nothing settled
@@ -1770,7 +1723,7 @@ fn maybe_detach_warm(
     changed: bool,
     root: Option<&std::path::Path>,
 ) {
-    if !warm_detach_enabled() || !want_warm {
+    if !want_warm {
         return;
     }
     let Some(root) = root else {
@@ -1791,6 +1744,9 @@ fn maybe_detach_warm(
 /// can't reach it. The child nices itself and is single-flighted per checkout.
 fn spawn_detached_warm(root: &std::path::Path) {
     use std::os::unix::process::CommandExt;
+    if !warm_detach_enabled() {
+        return;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
@@ -2665,16 +2621,11 @@ fn changed_since_index(
 
 /// The "has the worktree moved since it was indexed?" check on a complete
 /// repo. It forks `git status`, which grows with the worktree (~12 ms on
-/// rails, ~27 ms on a 14k-file repo) and decides nothing a hit depends on.
-enum Staleness {
-    /// Running alongside the search, collected after the answer — the
-    /// no-detach mode, where the reindex it may trigger runs in-process.
-    Running(std::thread::JoinHandle<Option<Vec<String>>>),
-    /// Not started: a hit hands it to the detached warm child, so the process
-    /// exits without waiting on git; a miss, whose exit code depends on it,
-    /// runs it inline. Holds the root and the HEAD the index reflects.
-    Deferred(PathBuf, Option<String>),
-}
+/// rails, ~27 ms on a 14k-file repo) and decides nothing a hit depends on: a
+/// hit hands it to the detached warm child, so the process exits without
+/// waiting on git; a miss, whose exit code depends on it, runs it inline.
+/// Holds the root and the HEAD the index reflects.
+struct Staleness(PathBuf, Option<String>);
 
 /// Settle warming once the answer is out: resolve the staleness check,
 /// reindex if the worktree moved, and hand any remainder to a detached child.
@@ -2682,7 +2633,6 @@ enum Staleness {
 /// Called from *both* exits. The miss path matters as much as the render one —
 /// a symbol added a moment ago is precisely a miss, and reindexing before we
 /// exit is what makes the immediate retry hit. `hit` says which exit this is.
-#[allow(clippy::too_many_arguments)]
 fn settle_warm(
     store: &Store,
     staleness: Option<Staleness>,
@@ -2690,16 +2640,12 @@ fn settle_warm(
     was_warming: bool,
     warming_ok: bool,
     root: Option<&std::path::Path>,
-    active: &[String],
-    query: &str,
-    budget: Duration,
-    no_wait: bool,
 ) -> bool {
     let changed = match staleness {
         None => false,
         // The answer is out and didn't depend on this: the warm child asks git
         // and reindexes only if something moved (see `cmd_warm`).
-        Some(Staleness::Deferred(r, head)) if hit => {
+        Some(Staleness(r, head)) if hit => {
             if recently_verified(store, &r, head.as_deref()) {
                 crate::trace!("warm: verified unchanged within the recheck window, not spawning");
             } else {
@@ -2707,20 +2653,9 @@ fn settle_warm(
             }
             return false;
         }
-        Some(Staleness::Deferred(r, head)) => {
+        Some(Staleness(r, head)) => {
             let _span = crate::profile::span("after: staleness check");
             changed_since_index(store, root, worktree_edits(&r, head.as_deref()))
-        }
-        Some(Staleness::Running(h)) => {
-            // the check ran alongside the search; this is only what's left of it
-            let mut span = crate::profile::span("after: staleness wait");
-            // A panicked check counts as changed: warming needlessly costs a
-            // little time, skipping it wrongly serves a stale index.
-            let changed = h
-                .join()
-                .map_or(true, |edits| changed_since_index(store, root, edits));
-            span.note(|| if changed { "changed" } else { "unchanged" }.to_string());
-            changed
         }
     };
     // Reindexing an edited worktree means sweeping every file to find the few
@@ -2729,21 +2664,9 @@ fn settle_warm(
     // working. The shell shouldn't wait for that: hand it to the detached
     // child, which is what "the shell never waits on it" already promises
     // everywhere else.
-    //
-    // With detach off (the harness pins it so no child races a test's cleanup)
-    // there's nobody to hand it to, so do it here as before.
-    if changed
-        && !no_wait
-        && !warm_detach_enabled()
-        && let Some(r) = root
-        && let Ok(mut idx) = open_store()
-    {
-        crate::trace!("background warm (deferred, {budget:?}): worktree changed since index");
-        let _ = crate::index::index_budgeted(&mut idx, r, active, budget, Some(query));
-    }
     maybe_detach_warm(store, warming_ok && (was_warming || changed), changed, root);
-    // Whether the worktree moved. With detach on the reindex was deferred,
-    // which makes a miss provisional; with it off it ran inline just above.
+    // Whether the worktree moved: the reindex is the child's, so a miss is
+    // provisional.
     changed
 }
 
@@ -2753,14 +2676,14 @@ fn settle_warm(
 /// genuinely huge, never-indexed repo — where a bigger budget buys a much better
 /// first answer (a tiny budget can return nothing, since a git repo has no
 /// live-scan fallback). 500 ms is a one-time cold-cache cost, trivial next to
-/// scanning a large tree from scratch; the deferred pass and later queries fill
-/// in the rest.
+/// scanning a large tree from scratch; the detached child and later queries
+/// fill in the rest.
 fn answer_warm_budget() -> Duration {
     env_budget("RQ_ANSWER_BUDGET_MS", 500)
 }
 
-/// Deferred warm budget, spent after results are printed: larger, to make real
-/// progress on coverage per query while keeping each invocation snappy.
+/// What `--symbols` adds to the answer budget for its synchronous warm: an
+/// outline has no answer to get out of the way of.
 fn deferred_warm_budget() -> Duration {
     env_budget("RQ_DEFERRED_BUDGET_MS", 250)
 }
@@ -2797,9 +2720,10 @@ fn warm_sweep_cap() -> Duration {
     Duration::from_secs(crate::store::WARM_LOCK_TTL_SECS as u64 / 2)
 }
 
-/// Whether a search hands leftover warming to a detached child (default) or
-/// finishes it in-process before exiting (`RQ_WARM_DETACH=0` — used by the
-/// test harness for hermetic runs, and handy for debugging).
+/// Whether a search hands leftover warming to a detached child (default), or
+/// never spawns one (`RQ_WARM_DETACH=0`): the index is then only what a
+/// search's own in-process warm reads and `rq --index` writes. Recall runs and
+/// tests that stage a half-built index use it.
 fn warm_detach_enabled() -> bool {
     std::env::var("RQ_WARM_DETACH").map_or(true, |v| v != "0")
 }

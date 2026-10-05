@@ -72,7 +72,7 @@ Still open (only matters for a long-lived consumer; the CLI is sub-millisecond):
       throttled I/O) that sweeps until coverage completes on a seconds-scale
       budget (`RQ_WARM_BUDGET_MS`), single-flighted per repo via a pid-stamped
       lock in `meta`. The foreground only ever waits on the answer;
-      `RQ_WARM_DETACH=0` keeps the warm in-process (tests, debugging)
+      `RQ_WARM_DETACH=0` spawns no child (recall runs, staged tests)
 - [x] fused walk→parse→write pipeline — `run_index` streams: one walk thread
       feeds parse workers, which feed a writer committing in batches *as results
       arrive*. Walk and parse overlap (indexing starts on the first file found),
