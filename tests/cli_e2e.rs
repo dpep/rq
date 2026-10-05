@@ -825,6 +825,24 @@ fn a_hit_skips_the_warm_spawn_once_a_warm_found_nothing_moved() {
 }
 
 #[test]
+fn outside_git_a_miss_that_found_nothing_moved_spares_hits_the_spawn() {
+    // every check outside git walks the tree; a fresh verdict is reused
+    let (dir, db) = scratch("warm-verified-nongit");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    let (code, _) = rq(&db, &dir, &["Nosuch"]);
+    assert_eq!(code, 1);
+    assert!(
+        !spawned_warm(&db, &dir, &[]),
+        "verified by the miss: no spawn"
+    );
+    assert!(
+        spawned_warm(&db, &dir, &[("RQ_WARM_RECHECK_MS", "0")]),
+        "an expired verdict spawns"
+    );
+}
+
+#[test]
 fn staging_or_committing_voids_the_verdict_but_a_bare_edit_waits() {
     let (dir, db) = scratch("warm-moved");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

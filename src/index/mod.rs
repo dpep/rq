@@ -1504,24 +1504,48 @@ fn has_unindexed_edits(store: &Store, checkout: i64, root: &Path, dirty: &[Strin
 /// and mtimes an index pass of the tree uses, so "unchanged" here means a
 /// pass would find nothing to do.
 pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) -> bool {
+    use ignore::WalkState;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
     let _span = crate::profile::span("walk: tree changed?");
-    let Ok(mut indexed) = store.file_mtimes(checkout) else {
+    let Ok(indexed) = store.file_mtimes(checkout) else {
         return true;
     };
-    for path in fs_walk_candidates(vec![root.to_path_buf()], None) {
-        let Some(rel) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
-            continue;
-        };
-        if !is_source(rel) {
-            continue;
-        }
-        match indexed.remove(rel) {
-            Some(Some(mtime)) if Some(mtime) == file_mtime(&path) => {}
-            _ if readable(&path) => return true,
-            _ => {}
-        }
-    }
-    !indexed.is_empty()
+    let (moved, held) = (AtomicBool::new(false), AtomicUsize::new(0));
+    // parallel: on a large tree the stats are the whole cost of a miss
+    WalkBuilder::new(root)
+        .threads(parse_jobs())
+        .build_parallel()
+        .run(|| {
+            let (indexed, moved, held) = (&indexed, &moved, &held);
+            Box::new(move |entry| {
+                if moved.load(Relaxed) {
+                    return WalkState::Quit;
+                }
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
+                let path = entry.path();
+                let rel = path.strip_prefix(root).ok().and_then(Path::to_str);
+                let Some(rel) = rel.filter(|r| is_source(r)) else {
+                    return WalkState::Continue;
+                };
+                if !entry.file_type().is_some_and(|t| t.is_file()) {
+                    return WalkState::Continue;
+                }
+                let stored = indexed.get(rel);
+                let same = matches!(stored, Some(&Some(m)) if Some(m) == file_mtime(path));
+                if !same && readable(path) {
+                    moved.store(true, Relaxed);
+                    return WalkState::Quit;
+                }
+                if stored.is_some() {
+                    held.fetch_add(1, Relaxed);
+                }
+                WalkState::Continue
+            })
+        });
+    // a held file the walk never reached was removed
+    moved.into_inner() || held.into_inner() != indexed.len()
 }
 
 /// Whether the worktree holds anything the index doesn't reflect, given the

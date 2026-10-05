@@ -1785,7 +1785,7 @@ fn warm_recheck_window() -> Duration {
 /// git's state untouched since, that spawning another would find nothing.
 fn recently_verified(store: &Store, root: &std::path::Path, indexed_head: Option<&str>) -> bool {
     let _span = crate::profile::span("after: warm recently verified?");
-    let Some(stamp) = indexed_head.and_then(|h| crate::index::git_state_stamp(root, h)) else {
+    let Some(stamp) = verified_stamp(root, indexed_head) else {
         return false;
     };
     let Ok(Some((seen, at))) = store.warm_verified(&root_key(root)) else {
@@ -1793,6 +1793,23 @@ fn recently_verified(store: &Store, root: &std::path::Path, indexed_head: Option
     };
     let age = now_unix().saturating_sub(at);
     seen == stamp && (0..warm_recheck_window().as_secs() as i64).contains(&age)
+}
+
+/// What a "nothing moved" verdict is recorded against: the git state, or
+/// outside git (where only the files could say) the root alone, so any change
+/// there waits out the window.
+fn verified_stamp(root: &std::path::Path, indexed_head: Option<&str>) -> Option<String> {
+    match indexed_head {
+        Some(head) => crate::index::git_state_stamp(root, head),
+        None => (!crate::index::is_git_repo(root)).then(|| root.display().to_string()),
+    }
+}
+
+/// Record that a check begun at `checked_at` found the worktree unchanged.
+fn record_verified(store: &Store, root: &std::path::Path, head: Option<&str>, checked_at: i64) {
+    if let Some(stamp) = verified_stamp(root, head) {
+        let _ = store.set_warm_verified(&root_key(root), &stamp, checked_at);
+    }
 }
 
 /// `rq --warm [PATH]`: the detached child a search re-execs after printing —
@@ -1865,12 +1882,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
             if let Some(c) = checkout {
                 let _ = store.maintain_name_index(c.repo);
             }
-            if let Some(stamp) = head
-                .as_deref()
-                .and_then(|h| crate::index::git_state_stamp(&root, h))
-            {
-                let _ = store.set_warm_verified(&key, &stamp, checked_at);
-            }
+            record_verified(&store, &root, head.as_deref(), checked_at);
             let _ = store.clear_warm_lock(&key);
             return ExitCode::SUCCESS;
         }
@@ -2670,7 +2682,12 @@ fn settle_warm(
         }
         Some(Staleness(r, head)) => {
             let _span = crate::profile::span("after: staleness check");
-            changed_since_index(store, root, worktree_edits(&r, head.as_deref()))
+            let checked_at = now_unix();
+            let changed = changed_since_index(store, root, worktree_edits(&r, head.as_deref()));
+            if !changed {
+                record_verified(store, &r, head.as_deref(), checked_at);
+            }
+            changed
         }
     };
     // Reindexing an edited worktree means sweeping every file to find the few

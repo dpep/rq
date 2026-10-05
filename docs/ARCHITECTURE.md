@@ -404,11 +404,14 @@ search only reads.
   Where git can't speak for the tree — outside git, or before a first commit
   with nothing staged — the question is answered by walking the tree and
   comparing paths and mtimes with the index, leaving out a file no pass could
-  open (it would read as moved forever). A child
-  that finds nothing moved records the verdict with a git-state stamp (HEAD
-  commit + `.git/index` mtime), and for 10 s (`RQ_WARM_RECHECK_MS`) a hit whose
-  stamp still matches skips the spawn too. Staging, commits, checkouts and pulls
-  change the stamp; an unstaged edit doesn't, so it waits out the window (D16).
+  open (it would read as moved forever); the walk runs in parallel, since its
+  stats are a miss's whole cost. A child or a miss that finds nothing moved
+  records the verdict with a git-state stamp (HEAD commit + `.git/index`
+  mtime), and for 10 s (`RQ_WARM_RECHECK_MS`) a hit whose stamp still matches
+  skips the spawn too. Staging, commits, checkouts and pulls change the stamp;
+  an unstaged edit doesn't, so it waits out the window (D16). Outside git the
+  stamp is the root alone, so any change waits it out — on a hit only; a miss
+  always checks.
 - **Language-isolated** — the indexer is blind to language; plugins emit the
   common symbol model.
 
