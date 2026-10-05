@@ -2739,6 +2739,35 @@ fn batch_answers_every_piped_query_and_says_which_is_which() {
 }
 
 #[test]
+fn a_miss_in_an_indexed_tree_outside_git_is_definitive() {
+    // No git to ask whether the tree moved: rq compares it with the index.
+    // Unchanged, a miss is absent (1), every time; it used to say `warming`
+    // (2) forever, with nothing pending.
+    let (dir, db) = scratch("nongit-miss");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    let prod = [("RQ_WARM_DETACH", "wait")];
+    for _ in 0..2 {
+        let (code, out, _) = rq_full(&db, &dir, &["Nosuch", "--json"], &prod, None);
+        assert_eq!(
+            (code, json(&out)["status"].as_str()),
+            (1, Some("no_match")),
+            "{out}"
+        );
+    }
+    // an edit is pending work: the miss says retry, and the retry finds it
+    fs::write(dir.join("b.rb"), "class Nosuch\nend\n").unwrap();
+    let (code, out, _) = rq_full(&db, &dir, &["Gadget", "--json"], &prod, None);
+    assert_eq!(
+        (code, json(&out)["status"].as_str()),
+        (2, Some("warming")),
+        "{out}"
+    );
+    let (code, out, _) = rq_full(&db, &dir, &["Nosuch", "--json"], &prod, None);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
 fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     let (dir, db) = scratch("batch-flags");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

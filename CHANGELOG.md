@@ -44,6 +44,12 @@ meanwhile, without the field.
 - **A damaged name index no longer crashes a search.** A truncated row in the
   index fuzzy recall reads made the search panic; the repo is now read from
   its symbols for that search and its name index rebuilt on the next.
+- **A miss in an indexed directory outside git is a miss (exit 1).** With no
+  git to ask whether the tree had changed, rq assumed it had: every miss in an
+  `rq --index`ed non-git directory answered `warming` (exit 2), forever, with
+  nothing left to index. rq now compares the tree with the index (files added,
+  removed, or modified since), and says `warming` only when something did
+  change.
 - **A live scan spends its budget reading files.** A `--no-wait` search of a
   checkout still being indexed asked git for the repo's identity and file list
   twice, inside the scan's 250 ms; on a busy machine that could leave no time

@@ -1476,6 +1476,30 @@ fn has_unindexed_edits(store: &Store, checkout: i64, root: &Path, dirty: &[Strin
     })
 }
 
+/// Whether a tree git can't speak for differs from its index: a source file
+/// added, removed, or with an mtime the index didn't record. The same walk
+/// and mtimes an index pass of the tree uses, so "unchanged" here means a
+/// pass would find nothing to do.
+pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) -> bool {
+    let _span = crate::profile::span("walk: tree changed?");
+    let Ok(mut indexed) = store.file_mtimes(checkout) else {
+        return true;
+    };
+    for path in fs_walk_candidates(vec![root.to_path_buf()], None) {
+        let Some(rel) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
+            continue;
+        };
+        if !is_source(rel) {
+            continue;
+        }
+        match indexed.remove(rel) {
+            Some(Some(mtime)) if Some(mtime) == file_mtime(&path) => {}
+            _ => return true,
+        }
+    }
+    !indexed.is_empty()
+}
+
 /// Whether the worktree holds anything the index doesn't reflect, given the
 /// files `git status` calls dirty — and the files the index last held as edits.
 ///

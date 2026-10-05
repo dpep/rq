@@ -2647,8 +2647,15 @@ fn changed_since_index(
     root: Option<&std::path::Path>,
     edits: Option<Vec<String>>,
 ) -> bool {
-    let (Some(dirty), Some(root)) = (edits, root) else {
+    let Some(root) = root else {
         return true;
+    };
+    let Some(dirty) = edits else {
+        // git couldn't say (a moved HEAD, or no git at all): outside git, the
+        // tree is compared with what the index recorded of it
+        return crate::index::is_git_repo(root)
+            || checkout_at(store, root)
+                .is_none_or(|c| crate::index::untracked_tree_moved(store, c.id, root));
     };
     match checkout_at(store, root) {
         Some(c) => crate::index::has_unindexed_changes(store, c.id, root, &dirty),
