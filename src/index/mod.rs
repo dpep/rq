@@ -1070,10 +1070,23 @@ fn parse_file(
     })
 }
 
+/// Bytes of a file's head searched for a NUL: git's and ripgrep's binary test.
+const BINARY_SNIFF: u64 = 8 * 1024;
+
 /// A source file's text. Bytes that aren't UTF-8 (a Latin-1 comment) become
-/// U+FFFD rather than dropping the file: its names are still ASCII.
+/// U+FFFD rather than dropping the file: its names are still ASCII. A binary
+/// file (an MPEG-TS video named `.ts`) reads as empty, unread past its head:
+/// parsed, it costs seconds and yields junk names. Empty, not an error, so an
+/// index still holds it and a tree walk doesn't read it as unindexed.
 pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
-    let bytes = std::fs::read(path)?;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    (&mut file).take(BINARY_SNIFF).read_to_end(&mut bytes)?;
+    if bytes.contains(&0) {
+        return Ok(String::new());
+    }
+    file.read_to_end(&mut bytes)?;
     Ok(String::from_utf8(bytes)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }

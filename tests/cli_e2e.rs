@@ -2854,6 +2854,31 @@ fn a_file_rq_cannot_decode_or_open_does_not_keep_a_tree_warming() {
 }
 
 #[test]
+fn a_binary_file_with_a_source_extension_is_held_but_not_parsed() {
+    // an MPEG-TS video named `.ts`: parsed, it costs seconds and yields junk
+    let binary = b"G\0\x11\0\nexport class Hidden {}\n";
+    let prod = [("RQ_WARM_DETACH", "wait")];
+
+    let (live, live_db) = scratch("binary-live");
+    fs::write(live.join("widget.ts"), "export class Widget {}\n").unwrap();
+    fs::write(live.join("clip.ts"), binary).unwrap();
+    let (code, out) = rq(&live_db, &live, &["Hidden", "--json"]);
+    assert_eq!(code, 1, "the live scan skips it: {out}");
+    let (code, out) = rq(&live_db, &live, &["--symbols", "clip.ts", "--json"]);
+    assert_eq!(code, 1, "nothing to outline: {out}");
+
+    let (dir, db) = scratch("binary-indexed");
+    fs::write(dir.join("widget.ts"), "export class Widget {}\n").unwrap();
+    fs::write(dir.join("clip.ts"), binary).unwrap();
+    rq(&db, &dir, &["--index"]);
+    // held with no symbols, so the tree reads as unchanged: a miss settles
+    for query in ["Hidden", "Nosuch"] {
+        let (code, out, _) = rq_full(&db, &dir, &[query, "--json"], &prod, None);
+        assert_eq!(code, 1, "{query}: {out}");
+    }
+}
+
+#[test]
 fn an_edit_in_a_repo_with_no_commits_is_noticed() {
     // git tracks nothing yet, so it can't say what moved: the tree is compared
     let (dir, db) = scratch("unborn-edit");

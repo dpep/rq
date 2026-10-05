@@ -57,7 +57,8 @@ meanwhile, without the field.
   comparison until it can, so one no longer keeps every miss at `warming`.
 - **A source file that isn't UTF-8 is indexed.** A Latin-1 comment made rq
   skip the whole file; its definitions are now found, the stray bytes read as
-  `�`.
+  `�`. A binary file with a source extension (a NUL in its first 8 KB, such
+  as an MPEG-TS video named `.ts`) is still skipped: it holds no definitions.
 - **A live scan spends its budget reading files.** A `--no-wait` search of a
   checkout still being indexed asked git for the repo's identity and file list
   twice, inside the scan's 250 ms; on a busy machine that could leave no time
