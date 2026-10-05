@@ -1,6 +1,6 @@
 //! Phase timing for `--profile`.
 //!
-//! [`trace`](crate::trace) answers "what did this run decide?" — the resolved
+//! [`trace`](mod@crate::trace) answers "what did this run decide?" — the resolved
 //! root, coverage, what got warmed. This answers "where did the time go?", and
 //! keeps the two apart: trace lines are prose meant to be read as they happen,
 //! phases are a table meant to be compared against another run.

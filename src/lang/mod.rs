@@ -1,6 +1,6 @@
 //! Language plugins — the only seam languages plug into.
 //!
-//! A plugin maps source text to the common [`Symbol`](crate::core::Symbol)
+//! A plugin maps source text to the common [`Symbol`]
 //! model. The core stays language-agnostic; adding a language is a new plugin,
 //! not a core change.
 

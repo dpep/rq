@@ -185,9 +185,9 @@ No pull requests for this repo — commit or merge directly to `main` and push.
 It's a solo project; the PR ceremony is overhead we skip here.
 
 Keep changes small, focused, and logically connected; change behavior or
-structure, not both at once. Make sure CI is green
-(`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`)
-before pushing.
+structure, not both at once. Make sure CI is green before pushing:
+`script/check.sh` runs what CI does — fmt, clippy `-D warnings`, tests, and
+`RUSTDOCFLAGS=-D warnings cargo doc --no-deps --document-private-items`.
 
 ## Versioning / releasing
 

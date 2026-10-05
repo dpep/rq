@@ -991,7 +991,7 @@ fn note_candidate(
     to_parse.push(file.to_path_buf());
 }
 
-/// Read + parse one source file into a [`FileSymbols`], or `None` if it isn't a
+/// Read + parse one source file into a [`FileSymbols`](crate::store::FileSymbols), or `None` if it isn't a
 /// known language, can't be read, or (when `needle` is set) doesn't contain the
 /// query — the ripgrep-style content pre-filter, applied here so it runs on the
 /// worker thread. Touches no store — safe to run in parallel (each call builds
@@ -1756,7 +1756,8 @@ pub(crate) fn branch_changed_files(root: &Path) -> Vec<String> {
 ///
 /// Deliberately *not* a complete invalidation signal — editing a tracked file
 /// touches neither, so a caller must pair this with a freshness window rather
-/// than trusting it alone. `None` when `.git` isn't a plain directory, which
+/// than trusting it alone. `None` outside git, or when `.git` names no git
+/// dir rq can read (a linked worktree's pointer file is followed), which
 /// means "don't cache this".
 pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
     let (git_dir, _) = git_dirs(root)?;
@@ -1776,8 +1777,9 @@ pub(crate) fn branch_files_stamp(root: &Path) -> Option<String> {
 /// mtime to the nanosecond. A commit, checkout, reset, pull, merge, stash or
 /// `git add` moves one of them; an unstaged edit to a tracked file moves
 /// neither, so a caller must pair this with a time window. `None` unless HEAD
-/// is still `head`, or when `.git` isn't a plain directory, since resolving
-/// HEAD there means forking git.
+/// is still `head`, or when rq can't find the git dir by reading `.git` (a
+/// directory, or a linked worktree's pointer file), since resolving HEAD
+/// then means forking git.
 pub(crate) fn git_state_stamp(root: &Path, head: &str) -> Option<String> {
     let (git_dir, _) = git_dirs(root)?;
     if head_state(root)? != head {

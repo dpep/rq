@@ -31,7 +31,7 @@ pub(crate) struct Scored {
     pub features: Vec<Feature>,
 }
 
-/// Absolute match quality in [0,1] — how good the match *itself* is, independent
+/// Absolute match quality in `[0, 1]` — how good the match *itself* is, independent
 /// of ranking boosts. The dominant term in [`confidence`]. Exact is certain; a
 /// prefix nearly so; a fuzzy/abbreviation match scales with its alignment; a
 /// path-only match (name didn't match) is weak.
@@ -74,7 +74,7 @@ pub(crate) fn name_evidence(features: &[Feature]) -> f64 {
         .map_or(0.0, |f| f.value)
 }
 
-/// Presented confidence in [0,1]: match quality scaled by *dominance* — how much
+/// Presented confidence in `[0, 1]`: match quality scaled by *dominance* — how much
 /// this result leads the strongest other one. A unique strong match → ~1.0;
 /// evenly-tied candidates → ~0.5 (rq isn't sure which you mean); a lone weak
 /// fuzzy match stays low. `best_other` is the top score among the other results

@@ -235,7 +235,7 @@ pub(crate) struct Hit {
     /// Not serialized: JSON exposes the normalized `confidence` instead.
     #[serde(skip)]
     pub score: f64,
-    /// Normalized match confidence in [0,1], filled before output (see
+    /// Normalized match confidence in `[0, 1]`, filled before output (see
     /// [`score::confidence`]). This is what JSON carries in place of the raw score.
     pub confidence: f64,
     /// The scoring features, serialized as their names in descending weight order

@@ -35,3 +35,8 @@ jobs:
 
       - name: test
         run: cargo test
+
+      - name: docs
+        run: cargo doc --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings

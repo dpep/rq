@@ -1,7 +1,7 @@
 //! The name index's matcher: a fixed-size [`Signature`] per name, and the
 //! [`Probe`] a query compiles to. Recall screens every signature in a repo
 //! with a few AND instructions, then verifies the few survivors exactly, so the
-//! names it hands on are the names [`score`](super::score) accepts — no more,
+//! names it hands on are the names [`score`] accepts — no more,
 //! no fewer (docs/NAME_INDEX.md, DECISIONS D23).
 //!
 //! Language-blind: it sees a name's characters and word boundaries, and the

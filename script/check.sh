@@ -42,6 +42,10 @@ gate() {
 
   step "tests"
   cargo test
+
+  # a broken intra-doc link is a doc comment that went false
+  step "docs"
+  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 }
 
 # Keep the full run on disk. A failure here is often the first sighting of an

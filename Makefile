@@ -6,7 +6,7 @@
 #   make install    - cargo install --path . (into ~/.cargo/bin)
 #   make uninstall  - cargo uninstall rq
 #   make test       - cargo test
-#   make check      - the pre-push gate: fmt + clippy + tests, stop on failure
+#   make check      - the pre-push gate: fmt + clippy + tests + docs, stop on failure
 #   make dogfood    - run rq on its own source (Q=<query>); reproducible
 #   make bench      - search-latency benchmark over REPO (default: .)
 #   make recall     - fuzzy-ranking recall on pinned Ruby + Rust corpora (BASE=<ref>)
@@ -32,7 +32,7 @@ help:
 	@echo "  make install    cargo install --path . (→ ~/.cargo/bin)"
 	@echo "  make uninstall  cargo uninstall $(BIN)"
 	@echo "  make test       cargo test"
-	@echo "  make check      pre-push gate: fmt + clippy + tests"
+	@echo "  make check      pre-push gate: fmt + clippy + tests + docs"
 	@echo "  make dogfood    run rq on real source (Q=<query>, REPO=<path>, ARGS=<flags>)"
 	@echo "  make bench      search-latency benchmark (REPO=. by default)"
 	@echo "  make recall     fuzzy-ranking recall on pinned corpora (BASE=<ref>, ARGS=<flags>)"
