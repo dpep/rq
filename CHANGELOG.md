@@ -53,6 +53,8 @@ meanwhile, without the field.
   batch ending in a miss (1) hid an earlier query that only found the index
   still warming (2). It now exits 2 when any query could still hit, 1 only
   when every query is a definite miss, and an error's own code before either.
+- **`--usage` with nothing recorded says so on stderr**, as an empty search
+  and an empty `--symbols` do, so stdout carries only data.
 - **Two modes at once are a usage error (exit 64).** `--usage --drop`,
   `--symbols FILE --usage`, `--warm --usage` and the like ran whichever mode
   rq checked first and ignored the other. `--show`, `--open`, `--web` and

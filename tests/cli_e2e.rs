@@ -1870,6 +1870,9 @@ fn usage_counts_searches_by_caller_and_flags() {
     // nothing recorded yet exits 1, like a search that finds nothing
     let (code, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
     assert_ne!(code, 0, "empty usage should exit non-zero: {out}");
+    // and says so on stderr, as an empty search does: stdout stays data
+    let (_, out, err) = rq_both(&db, &dir, &["--usage"]);
+    assert_eq!((out.as_str(), err.trim()), ("", "no usage recorded yet"));
 
     rq(&db, &dir, &["Widget", "--ndjson"]);
     rq(&db, &dir, &["Widget", "--json", "--all-repos"]);

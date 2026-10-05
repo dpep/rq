@@ -3713,7 +3713,7 @@ fn cmd_usage(out: Output) -> ExitCode {
     match out {
         Output::Json | Output::Ndjson => {}
         Output::Text if rows.is_empty() => {
-            println!("no usage recorded yet");
+            eprintln!("no usage recorded yet");
         }
         Output::Text => {
             // Columns of bare numbers need naming; `--status` gets away without
