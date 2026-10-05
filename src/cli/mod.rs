@@ -602,9 +602,10 @@ struct Session {
     identity: Option<String>,
     /// Where the queries are asked from (`--anchor`), resolved once.
     anchor: Option<crate::search::Anchor>,
-    /// A batch found the worktree moved and left the reindex to a child: its
-    /// misses are provisional.
-    moved: bool,
+    /// Whether the worktree has moved since its index ([`worktree_moved`]),
+    /// once someone in this process asked — and dispatched the reindex that
+    /// answer called for. A batch asks up front; a single search on a miss.
+    moved: Option<bool>,
 }
 
 impl Session {
@@ -657,7 +658,7 @@ impl Session {
             branch_refresh,
             identity,
             anchor: None,
-            moved: false,
+            moved: None,
         })
     }
 
@@ -786,17 +787,13 @@ fn cmd_batch(
         && here.coverage == Some(Coverage::Complete)
     {
         let store = &session.store;
-        let root = &here.root;
         let head = here
             .checkout
             .and_then(|c| store.indexed_head(c.id).ok().flatten());
-        let checked_at = now_unix();
-        moved = changed_since_index(store, Some(root), worktree_edits(root, head.as_deref()));
-        if !moved {
-            record_verified(store, root, head.as_deref(), checked_at);
-        } else if cli.no_wait {
-            session.moved = true;
-            spawn_detached_warm(root);
+        moved = worktree_moved(store, &here.root, head.as_deref());
+        session.moved = Some(moved);
+        if moved && cli.no_wait {
+            spawn_detached_warm(&here.root);
         }
     }
 
@@ -815,6 +812,8 @@ fn cmd_batch(
         let active = &session.active_paths;
         let _ = crate::index::index_budgeted(&mut session.store, &here.root, active, budget, None);
         here.refresh(&session.store);
+        // the index has just caught up with the worktree
+        session.moved = Some(false);
     }
 
     let codes: Vec<ExitCode> = queries
@@ -905,7 +904,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         branch_refresh,
         identity,
         anchor,
-        moved: batch_moved,
+        moved,
     } = session;
     let root = place.as_ref().map(|h| h.root.as_path());
     let coverage = place.as_ref().and_then(|h| h.coverage);
@@ -963,9 +962,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let indexed_head = (!was_warming)
         .then(|| current.and_then(|c| store.indexed_head(c.id).ok().flatten()))
         .flatten();
-    // Whether the worktree moved is a property of the repo, not of the query,
-    // so a batch asks once (`cmd_batch`) instead of forking `git status` per line.
-    let staleness = (!was_warming && warming_ok && !args.batch)
+    let staleness = (!was_warming && warming_ok)
         .then_some(root)
         .flatten()
         .map(|c| Staleness(c.to_path_buf(), indexed_head));
@@ -1249,8 +1246,15 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // detached warm hasn't caught up with. Say "warming" (exit 2, retry)
         // rather than "no match" (exit 1, absent) — a just-added symbol is
         // exactly this case, and a confident no is the wrong answer to it.
-        let moved = settle_warm(store, staleness, false, was_warming, warming_ok, root);
-        incomplete |= moved || *batch_moved;
+        incomplete |= settle_warm(
+            store,
+            staleness,
+            moved,
+            false,
+            was_warming,
+            warming_ok,
+            root,
+        );
         // A named scope that matched nothing is a different miss from a name
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
@@ -1459,7 +1463,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     if let Some(h) = indexer {
         let _ = h.join();
     }
-    let _ = settle_warm(store, staleness, true, was_warming, warming_ok, root);
+    let _ = settle_warm(store, staleness, moved, true, was_warming, warming_ok, root);
 
     // "no answer yet" (2), whether nothing matched or nothing settled
     verdict.exit_code()
@@ -1910,18 +1914,12 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     if here.coverage == Some(Coverage::Complete) {
         let checkout = here.checkout;
         let head = checkout.and_then(|c| store.indexed_head(c.id).ok().flatten());
-        // The window runs from before `git status`, so an edit made during it
-        // still falls inside. The stamp is read after: status may rewrite
-        // `.git/index` itself, and a HEAD that moved meanwhile yields none.
-        let checked_at = now_unix();
-        let edits = worktree_edits(&root, head.as_deref());
-        if !changed_since_index(&store, Some(&root), edits) {
+        if !worktree_moved(&store, &root, head.as_deref()) {
             crate::trace!("warm: unchanged since indexed, nothing to do");
             // but a database from before the name index has none yet
             if let Some(c) = checkout {
                 let _ = store.maintain_name_index(c.repo);
             }
-            record_verified(&store, &root, head.as_deref(), checked_at);
             let _ = store.clear_warm_lock(&key);
             return ExitCode::SUCCESS;
         }
@@ -2668,10 +2666,7 @@ fn worktree_edits(cwd: &std::path::Path, indexed_head: Option<&str>) -> Worktree
 
 /// Whether the worktree holds anything the index doesn't yet reflect, given
 /// what [`worktree_edits`] found.
-fn changed_since_index(store: &Store, root: Option<&std::path::Path>, edits: Worktree) -> bool {
-    let Some(root) = root else {
-        return true;
-    };
+fn changed_since_index(store: &Store, root: &std::path::Path, edits: Worktree) -> bool {
     let checkout = checkout_at(store, root);
     match edits {
         Worktree::Moved => true,
@@ -2683,6 +2678,21 @@ fn changed_since_index(store: &Store, root: Option<&std::path::Path>, edits: Wor
             None => !dirty.is_empty(),
         },
     }
+}
+
+/// Whether the worktree at `root` has moved since it was indexed at `head`,
+/// recording a "nothing moved" verdict that spares warm children the same
+/// question within the recheck window.
+fn worktree_moved(store: &Store, root: &std::path::Path, head: Option<&str>) -> bool {
+    // The window runs from before `git status`, so an edit made during it
+    // still falls inside. The stamp is read after: status may rewrite
+    // `.git/index` itself, and a HEAD that moved meanwhile yields none.
+    let checked_at = now_unix();
+    let moved = changed_since_index(store, root, worktree_edits(root, head));
+    if !moved {
+        record_verified(store, root, head, checked_at);
+    }
+    moved
 }
 
 /// The "has the worktree moved since it was indexed?" check on a complete
@@ -2698,10 +2708,12 @@ struct Staleness(PathBuf, Option<String>);
 ///
 /// Called from *both* exits. The miss path matters as much as the render one —
 /// a symbol added a moment ago is precisely a miss, and reindexing before we
-/// exit is what makes the immediate retry hit. `hit` says which exit this is.
+/// exit is what makes the immediate retry hit. `hit` says which exit this is;
+/// `moved` is the session's memo of the answer.
 fn settle_warm(
     store: &Store,
     staleness: Option<Staleness>,
+    moved: &mut Option<bool>,
     hit: bool,
     was_warming: bool,
     warming_ok: bool,
@@ -2709,6 +2721,8 @@ fn settle_warm(
 ) -> bool {
     let changed = match staleness {
         None => false,
+        // asked already, and its reindex dispatched then (a batch, up front)
+        Some(_) if let Some(m) = *moved => return m,
         // The answer is out and didn't depend on this: the warm child asks git
         // and reindexes only if something moved (see `cmd_warm`).
         Some(Staleness(r, head)) if hit => {
@@ -2721,12 +2735,7 @@ fn settle_warm(
         }
         Some(Staleness(r, head)) => {
             let _span = crate::profile::span("after: staleness check");
-            let checked_at = now_unix();
-            let changed = changed_since_index(store, root, worktree_edits(&r, head.as_deref()));
-            if !changed {
-                record_verified(store, &r, head.as_deref(), checked_at);
-            }
-            changed
+            *moved.insert(worktree_moved(store, &r, head.as_deref()))
         }
     };
     // Reindexing an edited worktree means sweeping every file to find the few
