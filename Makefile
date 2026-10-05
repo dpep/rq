@@ -10,7 +10,7 @@
 #   make dogfood    - run rq on its own source (Q=<query>); reproducible
 #   make bench      - search-latency benchmark over REPO (default: .)
 #   make recall     - fuzzy-ranking recall on pinned Ruby + Rust corpora (BASE=<ref>)
-#   make fuzz       - name index vs scorer on many random names (N=, SEED=)
+#   make fuzz       - name index vs scorer on many names and every recall query (N=, SEED=)
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
 #   make fmt        - cargo fmt
 #   make clean      - cargo clean
@@ -103,15 +103,16 @@ BASE ?=
 recall: release
 	@CARGO="$(CARGO)" script/recall.py $(if $(BASE),--base $(BASE)) $(ARGS)
 
-# The random-names property test, large and in release. `cargo test` runs it
-# small with a fixed seed; this picks a fresh seed unless SEED is given, and
-# prints it so a failure can be replayed.
+# The name index's property tests, large and in release. `cargo test` runs
+# them small: the random names with a fixed seed, the recall queries sampled.
+# This picks a fresh seed unless SEED is given, and prints it so a failure can
+# be replayed, and sweeps every recall query.
 N    ?= 20000
 SEED ?= $(shell od -An -N6 -tu8 /dev/urandom | tr -d ' ')
 fuzz:
-	@echo "fuzz: $(N) names, SEED=$(SEED)"
-	@RQ_FUZZ_NAMES=$(N) RQ_FUZZ_SEED=$(SEED) $(CARGO) test --release --lib \
-		the_index_takes_exactly_what_score_accepts_on_random_names
+	@echo "fuzz: $(N) names, SEED=$(SEED), every recall query"
+	@RQ_FUZZ_NAMES=$(N) RQ_FUZZ_SEED=$(SEED) RQ_FUZZ_STRIDE=1 $(CARGO) test --release --lib \
+		the_index_takes_exactly_what_score_accepts
 
 lint:
 	$(CARGO) fmt --check

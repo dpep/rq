@@ -469,8 +469,17 @@ mod tests {
         out
     }
 
+    /// Every recall query, and queries derived from every name it targets.
+    /// `cargo test` checks every `RQ_FUZZ_STRIDE`th (8) of each, since the
+    /// corpus grows with every recall case; `make fuzz` sweeps all of them in
+    /// release.
     #[test]
     fn the_index_takes_exactly_what_score_accepts() {
+        let stride: usize = std::env::var("RQ_FUZZ_STRIDE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8)
+            .max(1);
         let harness = harness();
         let mut words: Vec<String> = harness
             .iter()
@@ -489,7 +498,7 @@ mod tests {
         let mut seed = 0x9E37_79B9_7F4A_7C15;
         // every harness query against its own source and a sample of the rest
         let mut bad = Vec::new();
-        for (i, (query, source)) in harness.iter().enumerate() {
+        for (i, (query, source)) in harness.iter().enumerate().step_by(stride) {
             let leaf = score::parse_qualified(query).0;
             let mut sample: Vec<(String, Signature)> =
                 names.iter().skip(i % 16).step_by(16).cloned().collect();
@@ -500,11 +509,15 @@ mod tests {
         }
         // and against file stems named like the sources
         let stems: Vec<String> = words.iter().step_by(4).cloned().collect();
-        for (query, _) in harness.iter().step_by(8) {
+        for (query, _) in harness.iter().step_by(8 * stride) {
             bad.extend(stem_disagreements(score::parse_qualified(query).0, &stems));
         }
         // queries derived from every name, against it and a sample of the rest
-        for (i, w) in words.iter().enumerate() {
+        let picked = words
+            .iter()
+            .enumerate()
+            .filter(|&(i, w)| i % stride == 0 || EDGES.contains(&w.as_str()));
+        for (i, w) in picked {
             let mut sample: Vec<(String, Signature)> =
                 names.iter().skip(i % 8).step_by(8).cloned().collect();
             sample.push((w.clone(), Signature::of(w)));
