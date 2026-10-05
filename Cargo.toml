@@ -21,6 +21,9 @@ path = "src/main.rs"
 [lints.rust]
 unreachable_pub = "warn"
 
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

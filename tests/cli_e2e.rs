@@ -4081,6 +4081,7 @@ fn rq_at_terminal(
             break Some(s);
         }
         if !signalled && interrupt.is_some_and(|after| start.elapsed() >= after) {
+            // SAFETY: SIGINT to our own child, which `try_wait` just saw running.
             unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
             signalled = true;
         }

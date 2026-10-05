@@ -8,7 +8,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -303,15 +302,14 @@ impl Lock {
         else {
             return Ok(Lock(None));
         };
-        let op = if exclusive {
-            libc::LOCK_EX
-        } else {
-            libc::LOCK_SH
-        };
         let deadline = Instant::now() + UPGRADE_WAIT;
         loop {
-            // SAFETY: flock on a descriptor this function owns.
-            if unsafe { libc::flock(file.as_raw_fd(), op | libc::LOCK_NB) } == 0 {
+            let held = if exclusive {
+                file.try_lock()
+            } else {
+                file.try_lock_shared()
+            };
+            if held.is_ok() {
                 return Ok(Lock(Some(file)));
             }
             if Instant::now() >= deadline {
@@ -328,8 +326,8 @@ impl Lock {
 impl Drop for Lock {
     fn drop(&mut self) {
         if let Some(file) = &self.0 {
-            // SAFETY: as above; closing the file would release it too.
-            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+            // closing the file would release it too
+            let _ = file.unlock();
         }
     }
 }

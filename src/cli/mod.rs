@@ -1848,6 +1848,8 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
             policy: libc::c_int,
         ) -> libc::c_int;
     }
+    // SAFETY: plain syscalls on this process with constant arguments; neither
+    // touches memory we own.
     unsafe {
         libc::nice(10);
         #[cfg(target_os = "macos")]
@@ -2840,6 +2842,8 @@ extern "C" fn on_sigint(_: libc::c_int) {
 /// query keeps the default behavior (Ctrl-C kills it outright).
 fn install_interrupt_handler() {
     static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: a zeroed sigaction is valid (empty mask, no flags), its handler
+    // is async-signal-safe, and `Once` keeps the install single-threaded.
     ONCE.call_once(|| unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction = on_sigint as *const () as usize;

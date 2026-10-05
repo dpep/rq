@@ -317,6 +317,8 @@ pub(crate) fn pid_alive(pid: i64) -> bool {
     };
     // EPERM: alive, but another user's
     pid > 0
+        // SAFETY: signal 0 sends nothing, only checks; `pid > 0` keeps it off
+        // the process-group forms (0, -1, -pgid).
         && (unsafe { libc::kill(pid, 0) } == 0
             || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
 }
