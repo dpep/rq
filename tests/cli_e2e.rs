@@ -4,61 +4,18 @@
 //! isolated `RQ_DB`, a fresh temp repo, and sets the subprocess working
 //! directory, so the shell's cwd is irrelevant.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// Unique temp paths for this test (repo dir + db file), cleaned first.
-fn scratch(label: &str) -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir();
-    let dir = base.join(format!("rq-e2e-{}-{label}", std::process::id()));
-    let db = base.join(format!("rq-e2e-{}-{label}.db", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = fs::remove_file(format!("{}{suffix}", db.display()));
-    }
-    fs::create_dir_all(&dir).unwrap();
+use common::{Scratch, git_cmd, rq, rq_both, rq_cmd};
+
+/// A fresh repo dir for this test, removed on drop, and a db path beside it.
+fn scratch(label: &str) -> (Scratch, PathBuf) {
+    let dir = Scratch::new(&format!("e2e-{label}"));
+    let db = dir.db();
     (dir, db)
-}
-
-/// Run the built binary with an isolated db and a set working directory.
-/// Detached warming is off so each invocation is hermetic (no child process
-/// racing the test's asserts/cleanup); the detach path has its own test.
-fn rq(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(args)
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
-        .output()
-        .expect("run rq");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-    )
-}
-
-/// Run the binary and hand back stdout *and* stderr — `--profile` reports to
-/// stderr so stdout stays exactly the machine-readable result.
-fn rq_both(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(args)
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
-        .output()
-        .expect("run rq");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
 }
 
 fn first_line(s: &str) -> &str {
@@ -69,14 +26,8 @@ fn first_line(s: &str) -> &str {
 /// Detach is off so the decision runs in-process: with it on, a hit hands the
 /// same check to a child (`rq --warm`), which would race the assert.
 fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(db, cwd)
         .args(["-v", query])
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
         .output()
         .expect("run rq");
     String::from_utf8_lossy(&run.stderr).contains("background warm")
@@ -84,14 +35,7 @@ fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
 
 /// `git init` a directory (no commits needed) so it reads as a git repo.
 fn git_init(dir: &Path) {
-    let _ = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .arg("init")
-        .arg("-q")
-        .current_dir(dir)
-        .output();
+    let _ = git_cmd(dir).arg("init").arg("-q").output();
 }
 
 /// `git init` + commit everything, so files are *tracked* (warming enumerates a
@@ -99,13 +43,7 @@ fn git_init(dir: &Path) {
 fn git_init_commit(dir: &Path) {
     git_init(dir);
     let git = |args: &[&str]| {
-        let _ = Command::new("git")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .args(args)
-            .current_dir(dir)
-            .output();
+        let _ = git_cmd(dir).args(args).output();
     };
     git(&["add", "-A"]);
     git(&[
@@ -126,24 +64,22 @@ fn index_search_and_status_through_the_cli() {
     fs::write(dir.join("beta.rb"), "class HandlerB\nend\n").unwrap();
 
     // index the working directory
-    let (ok, out) = rq(&db, &dir, &["--index"]);
-    assert!(ok, "index failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index"]);
+    assert_eq!(code, 0, "index failed: {out}");
     assert!(out.contains("symbol"), "index output: {out}");
 
     // search — the tie breaks alphabetically, so HandlerA leads
-    let (ok, out) = rq(&db, &dir, &["handler"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["handler"]);
+    assert_eq!(code, 0, "search failed: {out}");
     assert!(
         first_line(&out).contains("HandlerA"),
         "search output: {out}"
     );
 
     // status shows the repo
-    let (ok, out) = rq(&db, &dir, &["--status"]);
-    assert!(ok, "status failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--status"]);
+    assert_eq!(code, 0, "status failed: {out}");
     assert!(out.contains("local:"), "status output: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -170,8 +106,6 @@ fn a_strong_match_suppresses_the_scattered_tail() {
         !out.contains("EmployeeStatusController"),
         "scattered fuzzy dropped: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -187,8 +121,8 @@ fn a_wildcard_bridges_an_explicit_gap() {
     fs::write(dir.join("gadget_service.rb"), "class GadgetService\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["widget*controller", "--ndjson"]);
-    assert!(ok, "wildcard search should match: {out}");
+    let (code, out) = rq(&db, &dir, &["widget*controller", "--ndjson"]);
+    assert_eq!(code, 0, "wildcard search should match: {out}");
     assert!(
         out.contains("WidgetAlphaBravoController"),
         "star bridges the gap: {out}"
@@ -196,13 +130,11 @@ fn a_wildcard_bridges_an_explicit_gap() {
     assert!(!out.contains("GadgetService"), "non-match excluded: {out}");
 
     // without the star, the fuzzy matcher skips the words too, at a price
-    let (matched, out) = rq(&db, &dir, &["widgetcontroller"]);
+    let (code, out) = rq(&db, &dir, &["widgetcontroller"]);
     assert!(
-        matched && out.contains("WidgetAlphaBravoController"),
+        code == 0 && out.contains("WidgetAlphaBravoController"),
         "{out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -212,15 +144,13 @@ fn cold_index_builds_a_working_fuzzy_index() {
     // through fuzzy recall, so this proves the bulk pass produced a usable index
     let (dir, db) = scratch("coldindex");
     fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
-    let (ok, out) = rq(&db, &dir, &["--index"]);
-    assert!(ok, "index failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index"]);
+    assert_eq!(code, 0, "index failed: {out}");
 
     // "widget" is mid-word in AlphaWidgetController — exact/prefix can't reach it
-    let (ok, out) = rq(&db, &dir, &["widget"]);
-    assert!(ok, "fuzzy recall should find it: {out}");
+    let (code, out) = rq(&db, &dir, &["widget"]);
+    assert_eq!(code, 0, "fuzzy recall should find it: {out}");
     assert!(out.contains("AlphaWidgetController"), "fuzzy recall: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -230,17 +160,11 @@ fn the_name_index_answers_fuzzy_queries_and_keeps_up_with_edits() {
     let (dir, db) = scratch("nameindex");
     fs::write(dir.join("a.rb"), "class AlphaWidgetController\nend\n").unwrap();
     fs::write(dir.join("connection_pool.rb"), "module Base\nend\n").unwrap();
-    let (ok, out) = rq(&db, &dir, &["--index"]);
-    assert!(ok, "index failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index"]);
+    assert_eq!(code, 0, "index failed: {out}");
     let scan = |query: &str| {
-        let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        let out = rq_cmd(&db, &dir)
             .args([query, "--json"])
-            .current_dir(&dir)
-            .env("RQ_DB", &db)
-            .env("RQ_WARM_DETACH", "0")
             .output()
             .expect("run rq");
         String::from_utf8_lossy(&out.stdout).into_owned()
@@ -251,14 +175,12 @@ fn the_name_index_answers_fuzzy_queries_and_keeps_up_with_edits() {
     assert!(scan("conpool").contains("\"Base\""));
 
     fs::write(dir.join("b.rb"), "class BetaGadgetFactory\nend\n").unwrap();
-    let (ok, out) = rq(&db, &dir, &["--index"]);
-    assert!(ok, "reindex failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index"]);
+    assert_eq!(code, 0, "reindex failed: {out}");
     assert!(
         scan("gdgfac").contains("BetaGadgetFactory"),
         "an appended name"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -271,12 +193,13 @@ fn a_search_that_warms_a_cold_repo_leaves_a_working_fuzzy_index() {
     fs::write(dir.join("b.rb"), "class BetaGadget\nend\n").unwrap();
     git_init_commit(&dir);
 
-    let (ok, out) = rq(&db, &dir, &["widget"]);
-    assert!(ok && out.contains("AlphaWidgetController"), "warm: {out}");
-    let (ok, out) = rq(&db, &dir, &["gadget"]);
-    assert!(ok && out.contains("BetaGadget"), "next query: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["widget"]);
+    assert!(
+        code == 0 && out.contains("AlphaWidgetController"),
+        "warm: {out}"
+    );
+    let (code, out) = rq(&db, &dir, &["gadget"]);
+    assert!(code == 0 && out.contains("BetaGadget"), "next query: {out}");
 }
 
 #[test]
@@ -297,13 +220,11 @@ fn a_compact_namespaced_class_is_found_by_its_leaf_name() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["employeescontroller", "--ndjson"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["employeescontroller", "--ndjson"]);
+    assert_eq!(code, 0, "search failed: {out}");
     // both files surface — the namespaced one isn't pruned
     assert!(out.contains("a.rb"), "namespaced class kept: {out}");
     assert!(out.contains("b.rb"), "top-level class kept: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -330,8 +251,8 @@ fn a_bare_class_name_answers_the_top_level_class_first() {
     }
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Account", "--json"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["Account", "--json"]);
+    assert_eq!(code, 0, "search failed: {out}");
     let hits: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(hits[0]["file"], "app/models/account.rb", "{out}");
     assert!(
@@ -340,8 +261,6 @@ fn a_bare_class_name_answers_the_top_level_class_first() {
             .unwrap()
             .contains(&"top_level".into())
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -361,23 +280,26 @@ fn foo_dot_new_finds_the_constructor() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Widget.new", "--ndjson"]);
-    assert!(ok, "Widget.new should resolve: {out}");
+    let (code, out) = rq(&db, &dir, &["Widget.new", "--ndjson"]);
+    assert_eq!(code, 0, "Widget.new should resolve: {out}");
     assert!(out.contains("\"initialize\""), "finds initialize: {out}");
     assert!(out.contains("\"line\":2"), "the one in Widget: {out}");
     assert!(!out.contains("\"line\":6"), "not Other's: {out}");
 
-    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--ndjson"]);
-    assert!(ok && out.contains("__init__"), "python too: {out}");
+    let (code, out) = rq(&db, &dir, &["Gadget.new", "--ndjson"]);
+    assert!(code == 0 && out.contains("__init__"), "python too: {out}");
 
     // `.` is a scope separator generally, not only for `new`
-    let (ok, out) = rq(&db, &dir, &["Widget.build", "--ndjson"]);
-    assert!(ok && out.contains("\"build\""), "class method: {out}");
+    let (code, out) = rq(&db, &dir, &["Widget.build", "--ndjson"]);
+    assert!(
+        code == 0 && out.contains("\"build\""),
+        "class method: {out}"
+    );
 
     // a slip in the scope recovers on the typo retry, flagged as a guess
-    let (ok, out) = rq(&db, &dir, &["Widgit.new", "--ndjson"]);
+    let (code, out) = rq(&db, &dir, &["Widgit.new", "--ndjson"]);
     assert!(
-        ok && out.contains("\"line\":2"),
+        code == 0 && out.contains("\"line\":2"),
         "scope typo recovers: {out}"
     );
     assert!(!out.contains("\"confidence\":1.0"), "not certain: {out}");
@@ -385,13 +307,11 @@ fn foo_dot_new_finds_the_constructor() {
     // no scope answers `Widget.Builder`, so `.` falls back to a one-char wildcard
     fs::write(dir.join("c.rb"), "class Widget2Builder\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
-    let (ok, out) = rq(&db, &dir, &["Widget.Builder", "--ndjson"]);
+    let (code, out) = rq(&db, &dir, &["Widget.Builder", "--ndjson"]);
     assert!(
-        ok && out.contains("Widget2Builder"),
+        code == 0 && out.contains("Widget2Builder"),
         "wildcard fallback: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -411,8 +331,8 @@ fn foo_dot_new_without_its_own_constructor_finds_the_class() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Widget.new", "--ndjson"]);
-    assert!(ok, "Widget.new should resolve: {out}");
+    let (code, out) = rq(&db, &dir, &["Widget.new", "--ndjson"]);
+    assert_eq!(code, 0, "Widget.new should resolve: {out}");
     assert_eq!(out.lines().count(), 1, "just the class: {out}");
     assert!(
         out.contains("\"class\"") && out.contains("\"line\":4"),
@@ -421,10 +341,8 @@ fn foo_dot_new_without_its_own_constructor_finds_the_class() {
     assert!(out.contains("constructor_owner"), "flagged: {out}");
     assert!(out.contains("\"confidence\":0.75"), "not certain: {out}");
 
-    let (ok, out) = rq(&db, &dir, &["Gadget.new", "--ndjson"]);
-    assert!(ok && out.contains("\"Gadget\""), "python too: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["Gadget.new", "--ndjson"]);
+    assert!(code == 0 && out.contains("\"Gadget\""), "python too: {out}");
 }
 
 #[test]
@@ -444,8 +362,8 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Foo::Bar#baz", "--ndjson"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["Foo::Bar#baz", "--ndjson"]);
+    assert_eq!(code, 0, "search failed: {out}");
     assert!(out.contains("a.rb"), "in-scope baz surfaces: {out}");
     assert!(
         !out.contains("b.rb"),
@@ -455,13 +373,11 @@ fn a_qualified_query_resolves_to_the_method_in_the_named_scope() {
     // A scope nothing lives in is a miss, not a fallback to every candidate.
     // It used to fall back, which made a made-up owner indistinguishable from
     // the real one whenever the leaf name was unique.
-    let (ok, out) = rq(&db, &dir, &["Nope::Bar#baz", "--ndjson"]);
-    assert!(!ok, "an unmatched scope must not succeed: {out}");
+    let (code, out) = rq(&db, &dir, &["Nope::Bar#baz", "--ndjson"]);
+    assert_ne!(code, 0, "an unmatched scope must not succeed: {out}");
     assert!(out.contains("scope_not_found"), "and says why: {out}");
     // reported as "not there, but here" — the useful half of the answer
     assert!(out.contains("found_in"), "names where it does live: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -480,28 +396,26 @@ fn a_package_or_module_scope_is_found_in_the_path() {
     }
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["store.Widget", "--ndjson"]);
-    assert!(ok, "package scope resolves: {out}");
+    let (code, out) = rq(&db, &dir, &["store.Widget", "--ndjson"]);
+    assert_eq!(code, 0, "package scope resolves: {out}");
     assert!(first_line(&out).contains("store/widget.go"), "{out}");
     assert!(
         !out.contains("shop/"),
         "the other package is out of scope: {out}"
     );
 
-    let (ok, out) = rq(&db, &dir, &["pkg.db.models.Widget", "--ndjson"]);
-    assert!(ok && first_line(&out).contains("query.py"), "{out}");
+    let (code, out) = rq(&db, &dir, &["pkg.db.models.Widget", "--ndjson"]);
+    assert!(code == 0 && first_line(&out).contains("query.py"), "{out}");
 
     // a scope neither a parent nor a path holds is still a miss, and the
     // name's real home is reported only for that very name
-    let (ok, out) = rq(&db, &dir, &["orders.Widget", "--ndjson"]);
-    assert!(!ok && out.contains("found_in"), "{out}");
-    let (ok, out) = rq(&db, &dir, &["orders.Widgt", "--ndjson"]);
+    let (code, out) = rq(&db, &dir, &["orders.Widget", "--ndjson"]);
+    assert!(code != 0 && out.contains("found_in"), "{out}");
+    let (code, out) = rq(&db, &dir, &["orders.Widgt", "--ndjson"]);
     assert!(
-        !ok && !out.contains("found_in"),
+        code != 0 && !out.contains("found_in"),
         "a fuzzy leaf is no home: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -515,15 +429,13 @@ fn a_godoc_receiver_reads_as_its_type() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["(*Widget).Build", "--ndjson"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["(*Widget).Build", "--ndjson"]);
+    assert_eq!(code, 0, "search failed: {out}");
     assert!(
         first_line(&out).contains("\"parent\":\"Widget\""),
         "Widget's Build: {out}"
     );
     assert!(!out.contains("Gadget"), "not Gadget's: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -537,8 +449,8 @@ fn json_results_carry_the_definition_span() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Widget", "-l", "1", "--ndjson"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["Widget", "-l", "1", "--ndjson"]);
+    assert_eq!(code, 0, "search failed: {out}");
     // class Widget spans line 1 through its `end` on line 5
     assert!(out.contains("\"line\":1"), "start line present: {out}");
     assert!(out.contains("\"end_line\":5"), "end line present: {out}");
@@ -547,8 +459,6 @@ fn json_results_carry_the_definition_span() {
         !out.contains("\"parent\":null"),
         "no null fields in hit JSON: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -564,8 +474,8 @@ fn show_prints_the_body_when_confident_and_lists_when_not() {
     rq(&db, &dir, &["--index"]);
 
     // confident (exact, dominant): --show prints the full source span as `body`
-    let (ok, out) = rq(&db, &dir, &["--show", "Widget", "-j"]);
-    assert!(ok, "show failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--show", "Widget", "-j"]);
+    assert_eq!(code, 0, "show failed: {out}");
     assert!(
         out.contains("\"body\""),
         "confident show carries body: {out}"
@@ -583,8 +493,6 @@ fn show_prints_the_body_when_confident_and_lists_when_not() {
         !out.contains("\"body\""),
         "ambiguous show prints no body: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -600,8 +508,8 @@ fn a_leading_kind_keyword_filters_like_dash_k() {
     rq(&db, &dir, &["--index"]);
 
     // unquoted keyword restricts to the class, dropping the module of the same name
-    let (ok, out) = rq(&db, &dir, &["class", "Widget", "--ndjson"]);
-    assert!(ok, "keyword search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["class", "Widget", "--ndjson"]);
+    assert_eq!(code, 0, "keyword search failed: {out}");
     assert!(out.contains("\"kind\":\"class\""), "class kept: {out}");
     assert!(
         !out.contains("\"kind\":\"module\""),
@@ -609,19 +517,17 @@ fn a_leading_kind_keyword_filters_like_dash_k() {
     );
 
     // the method keyword finds the def; equivalent to -k method
-    let (ok, out) = rq(&db, &dir, &["method", "go", "--ndjson"]);
-    assert!(ok, "method keyword failed: {out}");
+    let (code, out) = rq(&db, &dir, &["method", "go", "--ndjson"]);
+    assert_eq!(code, 0, "method keyword failed: {out}");
     assert!(out.contains("\"kind\":\"method\""), "method found: {out}");
 
     // constants are indexed and reachable via the keyword form too
-    let (ok, out) = rq(&db, &dir, &["constant", "SIZE", "--ndjson"]);
-    assert!(ok, "constant keyword failed: {out}");
+    let (code, out) = rq(&db, &dir, &["constant", "SIZE", "--ndjson"]);
+    assert_eq!(code, 0, "constant keyword failed: {out}");
     assert!(
         out.contains("\"kind\":\"constant\""),
         "constant found: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -629,17 +535,15 @@ fn a_search_does_not_leak_another_indexed_repo() {
     // two repos in one index; a query from inside repo A must never surface repo
     // B's definitions — the reported leak. `--all-repos` opts back into both.
     let (dir_a, db) = scratch("repo-a");
-    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-repo-b", std::process::id()));
-    let _ = fs::remove_dir_all(&dir_b);
-    fs::create_dir_all(&dir_b).unwrap();
+    let dir_b = Scratch::new("e2e-repo-b");
     fs::write(dir_a.join("a.rb"), "class Alpha\nend\n").unwrap();
     fs::write(dir_b.join("b.rb"), "class Gadget\nend\n").unwrap();
     rq(&db, &dir_a, &["--index"]);
     rq(&db, &dir_b, &["--index"]);
 
     // Gadget lives only in repo B; from repo A it's a definitive miss, not B's hit
-    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--ndjson"]);
-    assert!(!ok, "no Gadget in repo A — should miss");
+    let (code, out) = rq(&db, &dir_a, &["Gadget", "--ndjson"]);
+    assert_ne!(code, 0, "no Gadget in repo A — should miss");
     assert!(!out.contains("b.rb"), "must not leak repo B: {out}");
     assert!(
         out.contains("\"status\":\"no_match\""),
@@ -647,17 +551,14 @@ fn a_search_does_not_leak_another_indexed_repo() {
     );
 
     // --all-repos opts into the cross-repo search and finds it
-    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--all-repos", "--ndjson"]);
-    assert!(ok, "--all-repos should find Gadget in repo B: {out}");
+    let (code, out) = rq(&db, &dir_a, &["Gadget", "--all-repos", "--ndjson"]);
+    assert_eq!(code, 0, "--all-repos should find Gadget in repo B: {out}");
     assert!(out.contains("b.rb"), "cross-repo hit surfaces: {out}");
 
     // -a is the short form of the same flag
-    let (ok, out) = rq(&db, &dir_a, &["Gadget", "-a", "--ndjson"]);
-    assert!(ok, "-a should find Gadget in repo B: {out}");
+    let (code, out) = rq(&db, &dir_a, &["Gadget", "-a", "--ndjson"]);
+    assert_eq!(code, 0, "-a should find Gadget in repo B: {out}");
     assert!(out.contains("b.rb"), "cross-repo hit surfaces: {out}");
-
-    let _ = fs::remove_dir_all(&dir_a);
-    let _ = fs::remove_dir_all(&dir_b);
 }
 
 #[test]
@@ -667,30 +568,25 @@ fn a_repo_with_no_commits_is_a_repo_like_any_other() {
     // and once indexed it settles like a committed repo instead of reindexing
     // (and calling every miss provisional) on each search.
     let (dir_a, db) = scratch("unborn-a");
-    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-unborn-b", std::process::id()));
-    let _ = fs::remove_dir_all(&dir_b);
-    fs::create_dir_all(&dir_b).unwrap();
+    let dir_b = Scratch::new("e2e-unborn-b");
     fs::write(dir_b.join("b.rb"), "class Widget\nend\n").unwrap();
     git_init_commit(&dir_b);
     rq(&db, &dir_b, &["--index"]);
     fs::write(dir_a.join("a.rb"), "class Gadget\nend\n").unwrap();
     git_init(&dir_a);
 
-    let (ok, out) = rq(&db, &dir_a, &["Widget", "--json"]);
-    assert!(!ok, "no Widget here — the first query must miss: {out}");
+    let (code, out) = rq(&db, &dir_a, &["Widget", "--json"]);
+    assert_ne!(code, 0, "no Widget here — the first query must miss: {out}");
     assert!(!out.contains("b.rb"), "must not leak the other repo: {out}");
 
-    let (ok, out) = rq(&db, &dir_a, &["Gadget", "--json"]);
-    assert!(ok, "its own untracked file is indexed: {out}");
+    let (code, out) = rq(&db, &dir_a, &["Gadget", "--json"]);
+    assert_eq!(code, 0, "its own untracked file is indexed: {out}");
     let root = dir_a.canonicalize().unwrap();
     assert!(out.contains(&*root.to_string_lossy()), "{out}");
     assert!(
         !warmed(&db, &dir_a, "gadget"),
         "an indexed, unchanged unborn repo does not re-warm"
     );
-
-    let _ = fs::remove_dir_all(&dir_a);
-    let _ = fs::remove_dir_all(&dir_b);
 }
 
 #[test]
@@ -698,8 +594,7 @@ fn structured_results_name_the_checkout_root_their_file_is_relative_to() {
     // Each result carries its own `root`: `--all-repos` spans checkouts, so a
     // caller can't assume the cwd's repo is the one `file` is relative to.
     let (dir_a, db) = scratch("root-a");
-    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-root-b", std::process::id()));
-    let _ = fs::remove_dir_all(&dir_b);
+    let dir_b = Scratch::new("e2e-root-b");
     fs::create_dir_all(dir_b.join("lib")).unwrap();
     fs::write(dir_a.join("a.rb"), "class Widget\nend\n").unwrap();
     fs::write(dir_b.join("lib/b.rb"), "class Widget\nend\n").unwrap();
@@ -716,8 +611,8 @@ fn structured_results_name_the_checkout_root_their_file_is_relative_to() {
         }
     };
 
-    let (ok, out) = rq(&db, &dir_a, &["Widget", "--all-repos", "--json"]);
-    assert!(ok, "hit: {out}");
+    let (code, out) = rq(&db, &dir_a, &["Widget", "--all-repos", "--json"]);
+    assert_eq!(code, 0, "hit: {out}");
     let rows: Vec<serde_json::Value> = serde_json::from_str(&out).expect("json array");
     assert_eq!(rows.len(), 2, "both repos: {out}");
     for row in &rows {
@@ -726,8 +621,8 @@ fn structured_results_name_the_checkout_root_their_file_is_relative_to() {
     }
 
     // ndjson carries the same field, from a subdirectory of the other repo too
-    let (ok, out) = rq(&db, &dir_b.join("lib"), &["Widget", "-a", "--ndjson"]);
-    assert!(ok, "hit: {out}");
+    let (code, out) = rq(&db, &dir_b.join("lib"), &["Widget", "-a", "--ndjson"]);
+    assert_eq!(code, 0, "hit: {out}");
     for line in out.lines() {
         let row: serde_json::Value = serde_json::from_str(line).expect("ndjson line");
         let file = row["file"].as_str().unwrap();
@@ -735,14 +630,11 @@ fn structured_results_name_the_checkout_root_their_file_is_relative_to() {
     }
 
     // an outline names its root as well
-    let (ok, out) = rq(&db, &dir_b.join("lib"), &["--symbols", "b.rb", "--ndjson"]);
-    assert!(ok, "outline: {out}");
+    let (code, out) = rq(&db, &dir_b.join("lib"), &["--symbols", "b.rb", "--ndjson"]);
+    assert_eq!(code, 0, "outline: {out}");
     let row: serde_json::Value = serde_json::from_str(first_line(&out)).expect("ndjson");
     assert_eq!(row["file"], "lib/b.rb");
     assert_eq!(row["root"].as_str(), Some(root_of(&dir_b).as_str()));
-
-    let _ = fs::remove_dir_all(&dir_a);
-    let _ = fs::remove_dir_all(&dir_b);
 }
 
 #[test]
@@ -751,21 +643,16 @@ fn another_repos_exact_match_does_not_hide_a_fuzzy_one_here() {
     // match. Searching from A must still find Widget — B's exact hit is out of
     // scope, so it can't be what lets recall skip the fuzzy layers.
     let (dir_a, db) = scratch("fuzzy-a");
-    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-fuzzy-b", std::process::id()));
-    let _ = fs::remove_dir_all(&dir_b);
-    fs::create_dir_all(&dir_b).unwrap();
+    let dir_b = Scratch::new("e2e-fuzzy-b");
     fs::write(dir_a.join("a.rb"), "class Widget\nend\n").unwrap();
     fs::write(dir_b.join("b.rb"), "def wdgt\nend\n").unwrap();
     rq(&db, &dir_a, &["--index"]);
     rq(&db, &dir_b, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir_a, &["wdgt", "--ndjson"]);
-    assert!(ok, "Widget in repo A should answer `wdgt`: {out}");
+    let (code, out) = rq(&db, &dir_a, &["wdgt", "--ndjson"]);
+    assert_eq!(code, 0, "Widget in repo A should answer `wdgt`: {out}");
     assert!(out.contains("a.rb"), "finds this repo's Widget: {out}");
     assert!(!out.contains("b.rb"), "must not leak repo B: {out}");
-
-    let _ = fs::remove_dir_all(&dir_a);
-    let _ = fs::remove_dir_all(&dir_b);
 }
 
 #[test]
@@ -782,8 +669,6 @@ fn a_clean_complete_repo_does_not_re_warm_on_search() {
         !warmed(&db, &dir, "widget"),
         "clean complete repo should not re-warm"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -812,8 +697,6 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
         !warmed(&db, &dir, "widget"),
         "a new untracked file does not trigger a warm (accepted tradeoff)"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -822,39 +705,30 @@ fn two_clones_of_one_repo_each_read_their_own_files() {
     // search from either must revalidate and read source from *that* checkout
     // — not whichever was recorded first or last.
     let (dir_a, db) = scratch("clone-a");
-    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-clone-b", std::process::id()));
-    let _ = fs::remove_dir_all(&dir_b);
-    fs::create_dir_all(&dir_b).unwrap();
+    let dir_b = Scratch::new("e2e-clone-b");
     for (dir, tag) in [(&dir_a, "a"), (&dir_b, "b")] {
         fs::write(dir.join("w.rb"), format!("class Widget # {tag}\nend\n")).unwrap();
         git_init_commit(dir);
-        let _ = Command::new("git")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        let _ = git_cmd(dir)
             .args([
                 "remote",
                 "add",
                 "origin",
                 "https://github.com/acme/widgets.git",
             ])
-            .current_dir(dir)
             .output();
     }
     rq(&db, &dir_a, &["--index"]);
     rq(&db, &dir_b, &["--index"]);
 
     for (dir, tag) in [(&dir_a, "a"), (&dir_b, "b"), (&dir_a, "a")] {
-        let (ok, out) = rq(&db, dir, &["Widget", "--ndjson"]);
-        assert!(ok, "hit: {out}");
+        let (code, out) = rq(&db, dir, &["Widget", "--ndjson"]);
+        assert_eq!(code, 0, "hit: {out}");
         assert!(
             out.contains(&format!("\"signature\":\"class Widget # {tag}\"")),
             "clone {tag} reads its own source: {out}"
         );
     }
-
-    let _ = fs::remove_dir_all(&dir_a);
-    let _ = fs::remove_dir_all(&dir_b);
 }
 
 #[test]
@@ -869,13 +743,9 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
     rq(&db, &dir, &["--index"]);
 
     let warm = |dir: &Path| {
-        let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        let out = rq_cmd(&db, dir)
+            .env_remove("RQ_WARM_DETACH")
             .args(["-v", "--warm"])
-            .current_dir(dir)
-            .env("RQ_DB", &db)
             .output()
             .expect("run rq --warm");
         String::from_utf8_lossy(&out.stderr).into_owned()
@@ -892,13 +762,9 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
     assert!(busy.contains("(budget"), "an edit is swept: {busy}");
 
     // last: the child this hit spawns holds the single-flight lock a while
-    let hit = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let hit = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["Widget", "--profile", "--json"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .output()
         .expect("run rq");
     let profile = String::from_utf8_lossy(&hit.stderr);
@@ -907,20 +773,13 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
         !profile.contains("worktree changed?") && !profile.contains("staleness"),
         "a hit must not run the check itself: {profile}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// Run a `-v` hit with detach on (and optional extra env), and report whether
 /// it spawned the detached warm child.
 fn spawned_warm(db: &Path, cwd: &Path, env: &[(&str, &str)]) -> bool {
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = rq_cmd(db, cwd)
         .args(["-v", "Widget"])
-        .current_dir(cwd)
-        .env("RQ_DB", db)
         .env("RQ_WARM_DETACH", "1")
         .envs(env.iter().copied())
         .output()
@@ -931,13 +790,9 @@ fn spawned_warm(db: &Path, cwd: &Path, env: &[(&str, &str)]) -> bool {
 
 /// Run `rq --warm` to completion, as the detached child would.
 fn warm_now(db: &Path, cwd: &Path) {
-    Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    rq_cmd(db, cwd)
+        .env_remove("RQ_WARM_DETACH")
         .arg("--warm")
-        .current_dir(cwd)
-        .env("RQ_DB", db)
         .output()
         .expect("run rq --warm");
 }
@@ -958,8 +813,6 @@ fn a_hit_skips_the_warm_spawn_once_a_warm_found_nothing_moved() {
         spawned_warm(&db, &dir, &[("RQ_WARM_RECHECK_MS", "0")]),
         "an expired verdict spawns"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -978,19 +831,11 @@ fn staging_or_committing_voids_the_verdict_but_a_bare_edit_waits() {
         "a bare edit waits out the recheck window"
     );
 
-    let _ = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(["add", "c.rb"])
-        .current_dir(&dir)
-        .output();
+    let _ = git_cmd(&dir).args(["add", "c.rb"]).output();
     assert!(spawned_warm(&db, &dir, &[]), "staging spawns");
 
     git_init_commit(&dir);
     assert!(spawned_warm(&db, &dir, &[]), "a commit spawns");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1010,13 +855,9 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
         !warmed(&db, &dir, "widget"),
         "an indexed edit (and a non-source one) must not re-warm"
     );
-    let miss = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let miss = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["Nonexistent"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .output()
         .expect("run rq");
     assert_eq!(
@@ -1028,18 +869,10 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
     // a further edit is still seen
     fs::write(dir.join("c.rb"), "class Gizmo\n  def stop; end\nend\n").unwrap();
     assert!(warmed(&db, &dir, "widget"), "a new edit still warms");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 fn git_checkout_file(dir: &Path, file: &str) {
-    let _ = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(["checkout", "--", file])
-        .current_dir(dir)
-        .output();
+    let _ = git_cmd(dir).args(["checkout", "--", file]).output();
 }
 
 /// Symbols the index holds for the repo, per `--status`.
@@ -1064,8 +897,8 @@ fn a_discarded_edit_is_reindexed() {
 
     fs::write(dir.join("c.rb"), "class Gizmo\n  def spin; end\nend\n").unwrap();
     // the query that notices the edit reindexes it, and answers from it
-    let (ok, out) = rq(&db, &dir, &["spin", "--ndjson"]);
-    assert!(ok, "the edit is found at once: {out}");
+    let (code, out) = rq(&db, &dir, &["spin", "--ndjson"]);
+    assert_eq!(code, 0, "the edit is found at once: {out}");
     assert_eq!(indexed_symbols(&db, &dir), clean + 1);
 
     git_checkout_file(&dir, "c.rb");
@@ -1079,10 +912,8 @@ fn a_discarded_edit_is_reindexed() {
         clean,
         "the edit's symbol is gone"
     );
-    let (found, out) = rq(&db, &dir, &["spin", "--ndjson"]);
-    assert!(!found, "no longer found: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["spin", "--ndjson"]);
+    assert_ne!(code, 0, "no longer found: {out}");
 }
 
 #[test]
@@ -1091,22 +922,16 @@ fn a_file_a_branch_switch_deleted_is_not_a_hit() {
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
     git_init_commit(&dir);
     let git = |args: &[&str]| {
-        let out = Command::new("git")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        let out = git_cmd(&dir)
             .args(["-c", "user.email=t@e.st", "-c", "user.name=test"])
             .args(args)
-            .current_dir(&dir)
             .output()
             .unwrap();
         assert!(out.status.success(), "git {args:?}");
     };
     let trunk = String::from_utf8(
-        Command::new("git")
+        git_cmd(&dir)
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&dir)
-            .env_remove("GIT_DIR")
             .output()
             .unwrap()
             .stdout,
@@ -1123,10 +948,8 @@ fn a_file_a_branch_switch_deleted_is_not_a_hit() {
     rq(&db, &dir, &["--index"]);
     git(&["checkout", "-q", trunk.trim()]);
 
-    let (found, out) = rq(&db, &dir, &["branch_only", "--ndjson"]);
-    assert!(!found, "b.rb is gone with the branch: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["branch_only", "--ndjson"]);
+    assert_ne!(code, 0, "b.rb is gone with the branch: {out}");
 }
 
 #[test]
@@ -1141,19 +964,17 @@ fn a_discarded_deletion_is_found_again() {
 
     fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
     rq(&db, &dir, &["spin"]); // revalidates c.rb: the method is gone
-    let (found, _) = rq(&db, &dir, &["spin"]);
-    assert!(!found, "the deletion is indexed");
+    let (code, _) = rq(&db, &dir, &["spin"]);
+    assert_ne!(code, 0, "the deletion is indexed");
 
     git_checkout_file(&dir, "c.rb");
     rq(&db, &dir, &["spin"]); // notices the discard and reindexes
-    let (found, out) = rq(&db, &dir, &["spin", "--ndjson"]);
-    assert!(found, "the restored method is found: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["spin", "--ndjson"]);
+    assert_eq!(code, 0, "the restored method is found: {out}");
 }
 
 /// Three `save`s; unanchored, the tie falls to path order and Gadget's leads.
-fn three_saves(label: &str) -> (PathBuf, PathBuf) {
+fn three_saves(label: &str) -> (Scratch, PathBuf) {
     let (dir, db) = scratch(label);
     fs::create_dir_all(dir.join("app/models")).unwrap();
     fs::create_dir_all(dir.join("lib")).unwrap();
@@ -1186,12 +1007,12 @@ fn an_anchor_ranks_the_enclosing_class_first() {
 
     // line 5 is the `save` call inside Widget#persist
     let at = "app/models/widget.rb:5";
-    let (ok, out) = rq(
+    let (code, out) = rq(
         &db,
         &dir,
         &["save", "-k", "method", "--anchor", at, "--ndjson"],
     );
-    assert!(ok, "{out}");
+    assert_eq!(code, 0, "{out}");
     assert_eq!(top_file(&out), "app/models/widget.rb", "{out}");
     let row: serde_json::Value = serde_json::from_str(first_line(&out)).unwrap();
     let features: Vec<&str> = row["features"]
@@ -1241,14 +1062,8 @@ fn an_anchor_ranks_the_enclosing_class_first() {
     assert_eq!(rows[0]["file"], "app/models/widget.rb", "{sub}");
 
     // every line of a batch is asked from the same place
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let mut child = rq_cmd(&db, &dir)
         .args(["-J", "-k", "method", "--anchor", at])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
-        .env("RQ_WARM_DETACH", "0")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -1276,8 +1091,6 @@ fn an_anchor_ranks_the_enclosing_class_first() {
         Some("app/models/widget.rb"),
         "{batch}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1300,16 +1113,14 @@ fn an_anchor_in_a_test_file_waives_that_files_test_penalty() {
     let (_, plain) = rq(&db, &dir, &["request", "--ndjson"]);
     assert_eq!(top_file(&plain), "lib/api.ts", "baseline: {plain}");
     // asked from inside the test helper, its own method is the context
-    let (ok, out) = rq(
+    let (code, out) = rq(
         &db,
         &dir,
         &["request", "--anchor", "tests/helpers/api.ts:3", "--ndjson"],
     );
-    assert!(ok, "{out}");
+    assert_eq!(code, 0, "{out}");
     assert_eq!(top_file(&out), "tests/helpers/api.ts", "{out}");
     assert!(!first_line(&out).contains("test_path"), "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1323,29 +1134,21 @@ fn an_anchor_file_the_index_has_not_seen_is_read_live() {
     )
     .unwrap();
     let at = "app/models/widget_ext.rb:3";
-    let (ok, out) = rq(
+    let (code, out) = rq(
         &db,
         &dir,
         &["save", "-k", "method", "--anchor", at, "--ndjson"],
     );
-    assert!(ok, "{out}");
+    assert_eq!(code, 0, "{out}");
     assert_eq!(top_file(&out), "app/models/widget.rb", "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn two_modes_at_once_are_a_usage_error() {
     let (dir, db) = scratch("two-modes");
     let code = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_rq"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        rq_cmd(&db, &dir)
             .args(args)
-            .current_dir(&dir)
-            .env("RQ_DB", &db)
-            .env("RQ_WARM_DETACH", "0")
             .output()
             .expect("run rq")
             .status
@@ -1370,7 +1173,6 @@ fn two_modes_at_once_are_a_usage_error() {
     ] {
         assert_ne!(code(args), Some(64), "{args:?}");
     }
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1382,11 +1184,10 @@ fn an_anchor_is_rejected_where_it_means_nothing() {
         &["save", "--anchor", "a.rb"],
         &["save", "--anchor", "a.rb:0"],
     ] {
-        let (ok, out, err) = rq_both(&db, &dir, args);
-        assert!(!ok, "{args:?} should fail: {out}");
+        let (code, out, err) = rq_both(&db, &dir, args);
+        assert_ne!(code, 0, "{args:?} should fail: {out}");
         assert!(err.contains("--anchor"), "{args:?}: {err}");
     }
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1400,8 +1201,8 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
     fs::write(dir.join("other/b.rb"), "class OutOfScope\nend\n").unwrap();
     git_init_commit(&dir);
 
-    let (ok, out) = rq(&db, &dir, &["--index", "sub"]);
-    assert!(ok, "scoped index failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index", "sub"]);
+    assert_eq!(code, 0, "scoped index failed: {out}");
     assert!(out.contains("subtree"), "subdir index is a seed: {out}");
     assert!(
         out.contains("1 files"),
@@ -1409,8 +1210,8 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
     );
 
     // the seeded class is found, at a repo-root-relative path
-    let (ok, out) = rq(&db, &dir, &["inscope", "--ndjson"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["inscope", "--ndjson"]);
+    assert_eq!(code, 0, "search failed: {out}");
     assert!(out.contains("InScope"), "in-scope class indexed: {out}");
     assert!(
         out.contains("\"file\":\"sub/a.rb\""),
@@ -1419,16 +1220,14 @@ fn indexing_a_subdir_scopes_to_it_but_keeps_root_relative_paths() {
 
     // the seed is not a fence: searching warms the rest of the repo, so the
     // out-of-scope class is found — and persisted
-    let (found, out) = rq(&db, &dir, &["outofscope", "--ndjson"]);
-    assert!(found, "warming finds the out-of-scope class: {out}");
+    let (code, out) = rq(&db, &dir, &["outofscope", "--ndjson"]);
+    assert_eq!(code, 0, "warming finds the out-of-scope class: {out}");
     assert!(out.contains("\"file\":\"other/b.rb\""), "warm hit: {out}");
     let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
     assert!(
         status.contains("\"files\":2"),
         "warming persisted the rest of the repo: {status}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1436,11 +1235,9 @@ fn empty_status_points_at_the_real_index_flag() {
     // the hint must name the actual flag (`rq --index`), not a non-existent
     // `rq index` subcommand
     let (dir, db) = scratch("empty-status");
-    let (ok, out) = rq(&db, &dir, &["--status"]);
-    assert!(ok, "status on an empty db should succeed: {out}");
+    let (code, out) = rq(&db, &dir, &["--status"]);
+    assert_eq!(code, 0, "status on an empty db should succeed: {out}");
     assert!(out.contains("rq --index"), "hint names the flag: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1452,13 +1249,9 @@ fn open_launches_the_top_hit() {
     rq(&db, &dir, &["--index"]);
 
     // RQ_OPEN runs `true` — exits 0, no editor needed; non-TTY takes the top hit
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["--open", "user"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .env("RQ_OPEN", "true")
         .output()
         .expect("run rq");
@@ -1467,13 +1260,9 @@ fn open_launches_the_top_hit() {
     // a launcher with no placeholder is handed path:line as its last argument;
     // one with a placeholder gets exactly what it asked for
     let launched = |template: &str| {
-        let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        let run = rq_cmd(&db, &dir)
+            .env_remove("RQ_WARM_DETACH")
             .args(["--open", "user"])
-            .current_dir(&dir)
-            .env("RQ_DB", &db)
             .env("RQ_OPEN", template)
             .output()
             .expect("run rq");
@@ -1487,13 +1276,9 @@ fn open_launches_the_top_hit() {
     assert_eq!(launched("echo line={line}"), "line=1");
 
     // with no launcher and no editor, --open prints the resolved path:line
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["--open", "user"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .env_remove("EDITOR")
         .env_remove("VISUAL")
         .env("PATH", "/nonexistent") // hide any `code` on PATH
@@ -1504,8 +1289,6 @@ fn open_launches_the_top_hit() {
         printed.trim().ends_with("user.rb:1"),
         "prints resolved path:line: {printed}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1513,30 +1296,21 @@ fn open_resolves_a_hit_against_its_own_checkout() {
     // under --all-repos the top hit can live in another repo; its file is
     // relative to that checkout, not the one rq was run from
     let (dir_a, db) = scratch("open-a");
-    let dir_b = dir_a.with_file_name(format!("rq-e2e-{}-open-b", std::process::id()));
-    let _ = fs::remove_dir_all(&dir_b);
-    fs::create_dir_all(&dir_b).unwrap();
+    let dir_b = Scratch::new("e2e-open-b");
     fs::write(dir_a.join("a.rb"), "class Alpha\nend\n").unwrap();
     fs::write(dir_b.join("b.rb"), "class Gadget\nend\n").unwrap();
     rq(&db, &dir_a, &["--index"]);
     rq(&db, &dir_b, &["--index"]);
 
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(&db, &dir_a)
+        .env_remove("RQ_WARM_DETACH")
         .args(["-a", "--open", "Gadget"])
-        .current_dir(&dir_a)
-        .env("RQ_DB", &db)
         .env("RQ_OPEN", "echo {file}")
         .output()
         .expect("run rq");
     let opened = String::from_utf8_lossy(&run.stdout).trim().to_string();
     let expected = dir_b.canonicalize().unwrap().join("b.rb");
     assert_eq!(opened, expected.to_string_lossy());
-
-    let _ = fs::remove_dir_all(&dir_a);
-    let _ = fs::remove_dir_all(&dir_b);
 }
 
 #[test]
@@ -1545,26 +1319,13 @@ fn web_links_the_newest_pushed_commit() {
     fs::write(dir.join("user.rb"), "\nclass User\nend\n").unwrap();
     git_init_commit(&dir);
     let git = |args: &[&str]| {
-        let out = Command::new("git")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .expect("run git");
+        let out = git_cmd(&dir).args(args).output().expect("run git");
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     // BROWSER=echo stands in for the browser, so the URL lands on stdout
     let web = || {
-        let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        let run = rq_cmd(&db, &dir)
             .args(["-w", "user"])
-            .current_dir(&dir)
-            .env("RQ_DB", &db)
-            .env("RQ_WARM_DETACH", "0")
             .env("BROWSER", "echo")
             .output()
             .expect("run rq");
@@ -1611,8 +1372,6 @@ fn web_links_the_newest_pushed_commit() {
         web().1,
         format!("https://github.com/org/app/blob/{pushed}/user.rb#L2")
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1622,21 +1381,19 @@ fn drop_honors_json_output() {
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["--drop", "--json"]);
-    assert!(ok, "drop --json failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--drop", "--json"]);
+    assert_eq!(code, 0, "drop --json failed: {out}");
     assert!(out.trim_start().starts_with('{'), "json object: {out}");
     assert!(out.contains("\"dropped\": true"), "reports dropped: {out}");
 
     // already gone → compact ndjson, dropped:false, still exit 0 (idempotent)
-    let (ok, out) = rq(&db, &dir, &["--drop", "--ndjson"]);
-    assert!(ok, "second drop should not error: {out}");
+    let (code, out) = rq(&db, &dir, &["--drop", "--ndjson"]);
+    assert_eq!(code, 0, "second drop should not error: {out}");
     let line = out.lines().next().unwrap_or("");
     assert!(
         line.starts_with('{') && line.contains("\"dropped\":false"),
         "ndjson dropped:false: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1650,23 +1407,21 @@ fn drop_removes_a_repos_index() {
     let (_, before) = rq(&db, &dir, &["--status"]);
     assert!(before.contains("symbol"), "indexed before drop: {before}");
 
-    let (ok, out) = rq(&db, &dir, &["--drop"]);
-    assert!(ok, "drop failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--drop"]);
+    assert_eq!(code, 0, "drop failed: {out}");
     assert!(out.contains("dropped"), "drop confirms: {out}");
 
-    let (ok2, after) = rq(&db, &dir, &["--status"]);
-    assert!(ok2, "status after drop: {after}");
+    let (code, after) = rq(&db, &dir, &["--status"]);
+    assert_eq!(code, 0, "status after drop: {after}");
     assert!(
         !after.contains("symbol"),
         "coverage gone after drop: {after}"
     );
 
     // idempotent: nothing left to drop, but not an error
-    let (ok3, again) = rq(&db, &dir, &["--drop"]);
-    assert!(ok3, "second drop should not error: {again}");
+    let (code, again) = rq(&db, &dir, &["--drop"]);
+    assert_eq!(code, 0, "second drop should not error: {again}");
     assert!(again.contains("not indexed"), "idempotent message: {again}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1681,12 +1436,10 @@ fn status_reads_a_first_index_in_progress_as_warming() {
         .execute("DELETE FROM coverage", [])
         .unwrap();
 
-    let (ok, out) = rq(&db, &dir, &["--status", "--ndjson"]);
-    assert!(ok, "status failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--status", "--ndjson"]);
+    assert_eq!(code, 0, "status failed: {out}");
     assert!(out.contains("\"status\":\"warming\""), "mid-pass: {out}");
     assert!(out.contains("\"symbols\":1"), "keeps its totals: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1696,11 +1449,9 @@ fn record_is_a_searchable_word_not_a_subcommand() {
     rq(&db, &dir, &["--index"]);
 
     // `rq record` searches for the symbol "record" (no hook, no match here)
-    let (ok, out) = rq(&db, &dir, &["record"]);
-    assert!(!ok, "no-match search should exit non-zero");
+    let (code, out) = rq(&db, &dir, &["record"]);
+    assert_ne!(code, 0, "no-match search should exit non-zero");
     assert!(out.is_empty(), "expected no result lines, got: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1709,8 +1460,8 @@ fn status_and_index_honor_json_output() {
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
 
     // --index --json: a single object with this-run and total counts
-    let (ok, out) = rq(&db, &dir, &["--index", "--json"]);
-    assert!(ok, "index --json failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index", "--json"]);
+    assert_eq!(code, 0, "index --json failed: {out}");
     assert!(
         out.trim_start().starts_with('{'),
         "index json object: {out}"
@@ -1719,8 +1470,8 @@ fn status_and_index_honor_json_output() {
     assert!(out.contains("\"repo\""), "index repo field: {out}");
 
     // --status --json: an array of coverage rows
-    let (ok, out) = rq(&db, &dir, &["--status", "--json"]);
-    assert!(ok, "status --json failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert_eq!(code, 0, "status --json failed: {out}");
     assert!(
         out.trim_start().starts_with('['),
         "status json array: {out}"
@@ -1731,8 +1482,8 @@ fn status_and_index_honor_json_output() {
     );
 
     // --status -J: one compact object per line
-    let (ok, out) = rq(&db, &dir, &["--status", "--ndjson"]);
-    assert!(ok, "status -J failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--status", "--ndjson"]);
+    assert_eq!(code, 0, "status -J failed: {out}");
     let line = out.lines().next().unwrap_or("");
     assert!(
         line.starts_with('{') && line.ends_with('}') && line.contains("\"repo\""),
@@ -1741,10 +1492,11 @@ fn status_and_index_honor_json_output() {
 
     // with nothing indexed, --status --json is still well-formed (an empty array)
     rq(&db, &dir, &["--drop"]);
-    let (ok, out) = rq(&db, &dir, &["--status", "--json"]);
-    assert!(ok && out.trim() == "[]", "empty status json is []: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert!(
+        code == 0 && out.trim() == "[]",
+        "empty status json is []: {out}"
+    );
 }
 
 #[test]
@@ -1754,8 +1506,8 @@ fn json_and_ndjson_output() {
     rq(&db, &dir, &["--index"]);
 
     // --json: a pretty array with named fields
-    let (ok, out) = rq(&db, &dir, &["handler", "--json"]);
-    assert!(ok, "json search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["handler", "--json"]);
+    assert_eq!(code, 0, "json search failed: {out}");
     assert!(
         out.trim_start().starts_with('['),
         "expected a JSON array: {out}"
@@ -1769,8 +1521,8 @@ fn json_and_ndjson_output() {
     );
 
     // --ndjson: one compact object per line
-    let (ok, out) = rq(&db, &dir, &["handler", "--ndjson"]);
-    assert!(ok, "ndjson search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["handler", "--ndjson"]);
+    assert_eq!(code, 0, "ndjson search failed: {out}");
     let first = out.lines().next().unwrap_or("");
     assert!(
         first.starts_with('{') && first.ends_with('}'),
@@ -1780,8 +1532,6 @@ fn json_and_ndjson_output() {
         first.contains("\"name\":\"HandlerA\""),
         "compact name: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1809,8 +1559,8 @@ fn path_filter_restricts_results() {
     );
 
     // --path app/services: only the services result survives
-    let (ok, out) = rq(&db, &dir, &["widget", "--path", "app/services", "--ndjson"]);
-    assert!(ok, "path search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["widget", "--path", "app/services", "--ndjson"]);
+    assert_eq!(code, 0, "path search failed: {out}");
     assert!(
         out.contains("app/services/widget.rb"),
         "services hit kept: {out}"
@@ -1819,8 +1569,6 @@ fn path_filter_restricts_results() {
         !out.contains("app/models/widget.rb"),
         "models hit filtered out: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1841,8 +1589,8 @@ fn path_filter_accepts_absolute_and_relative_paths() {
     let abs = dir.join("app/services");
     let abs = abs.to_str().unwrap();
     for spec in [abs, "./app/services", "app/services"] {
-        let (ok, out) = rq(&db, &dir, &["widget", "--path", spec, "--ndjson"]);
-        assert!(ok, "path search failed for {spec:?}: {out}");
+        let (code, out) = rq(&db, &dir, &["widget", "--path", spec, "--ndjson"]);
+        assert_eq!(code, 0, "path search failed for {spec:?}: {out}");
         assert!(
             out.contains("app/services/widget.rb"),
             "services kept for {spec:?}: {out}"
@@ -1863,8 +1611,6 @@ fn path_filter_accepts_absolute_and_relative_paths() {
         !out.contains("\"file\":"),
         "outside path yields no hits: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1878,20 +1624,18 @@ fn limit_caps_the_number_of_results() {
     fs::write(dir.join("a.rb"), body).unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["handler", "--limit", "1", "--ndjson"]);
-    assert!(ok, "limited search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["handler", "--limit", "1", "--ndjson"]);
+    assert_eq!(code, 0, "limited search failed: {out}");
     assert_eq!(out.lines().count(), 1, "expected exactly one result: {out}");
 
-    let (ok, out) = rq(&db, &dir, &["handler", "--ndjson"]);
-    assert!(ok, "default search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["handler", "--ndjson"]);
+    assert_eq!(code, 0, "default search failed: {out}");
     assert_eq!(out.lines().count(), 10, "default caps at 10: {out}");
 
     // 0 lifts the cap rather than asking for nothing
-    let (ok, out) = rq(&db, &dir, &["handler", "--limit", "0", "--ndjson"]);
-    assert!(ok, "unlimited search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["handler", "--limit", "0", "--ndjson"]);
+    assert_eq!(code, 0, "unlimited search failed: {out}");
     assert_eq!(out.lines().count(), 12, "expected every match: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1907,15 +1651,15 @@ fn a_scope_that_matches_nothing_is_a_miss_not_the_top_hit() {
     rq(&db, &dir, &["--index"]);
 
     // the real owner resolves
-    let (ok, out) = rq(&db, &dir, &["Cart#recalculate_totals", "--ndjson"]);
-    assert!(ok, "real owner should resolve: {out}");
+    let (code, out) = rq(&db, &dir, &["Cart#recalculate_totals", "--ndjson"]);
+    assert_eq!(code, 0, "real owner should resolve: {out}");
     assert!(out.contains("recalculate_totals"), "found it: {out}");
 
     // a made-up owner must not return that same definition. It used to, at
     // confidence 1.0 — the strongest signal available, on the one query whose
     // constraint had been thrown away.
-    let (ok, out) = rq(&db, &dir, &["NoSuchClass#recalculate_totals", "--ndjson"]);
-    assert!(!ok, "a bogus owner must not succeed: {out}");
+    let (code, out) = rq(&db, &dir, &["NoSuchClass#recalculate_totals", "--ndjson"]);
+    assert_ne!(code, 0, "a bogus owner must not succeed: {out}");
     assert!(
         !out.contains("\"confidence\":1.0"),
         "and never at full confidence: {out}"
@@ -1933,8 +1677,6 @@ fn a_scope_that_matches_nothing_is_a_miss_not_the_top_hit() {
         out.contains("no_match"),
         "an absent name is still a plain miss: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1948,11 +1690,9 @@ fn a_class_is_reachable_by_the_name_of_its_file() {
     .unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["billing", "--ndjson"]);
-    assert!(ok, "path recall should find it: {out}");
+    let (code, out) = rq(&db, &dir, &["billing", "--ndjson"]);
+    assert_eq!(code, 0, "path recall should find it: {out}");
     assert!(out.contains("Invoicer"), "the class in billing.rb: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1967,14 +1707,12 @@ fn a_short_abbreviation_still_reaches_a_longer_name() {
 
     // `usr` skips letters, so neither an exact nor a prefix match reaches it —
     // this is what the first-character anchor pass exists for
-    let (ok, out) = rq(&db, &dir, &["usr", "--ndjson"]);
-    assert!(ok, "short abbreviation should resolve: {out}");
+    let (code, out) = rq(&db, &dir, &["usr", "--ndjson"]);
+    assert_eq!(code, 0, "short abbreviation should resolve: {out}");
     assert!(
         out.contains("UserAccount"),
         "reached the longer name: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1991,8 +1729,8 @@ fn one_name_declared_in_several_files_is_one_result() {
     fs::write(dir.join("c.rb"), "module Shop\n  module Cart\n  end\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq(&db, &dir, &["Cart", "--ndjson"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["Cart", "--ndjson"]);
+    assert_eq!(code, 0, "search failed: {out}");
     assert_eq!(out.lines().count(), 1, "one result for one name: {out}");
     // and the fold is lossless — the other declarations are still reported
     assert!(
@@ -2000,8 +1738,6 @@ fn one_name_declared_in_several_files_is_one_result() {
         "counts the declarations: {out}"
     );
     assert!(out.contains("also_in"), "names where the others are: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2012,8 +1748,8 @@ fn a_non_ascii_name_is_an_exact_match_however_it_is_cased() {
     fs::write(dir.join("a.py"), "class Über:\n    pass\n").unwrap();
     rq(&db, &dir, &["--index"]);
     for query in ["Über", "über", "ÜBER", "übe"] {
-        let (ok, out) = rq(&db, &dir, &[query, "--ndjson"]);
-        assert!(ok, "{query}: {out}");
+        let (code, out) = rq(&db, &dir, &[query, "--ndjson"]);
+        assert_eq!(code, 0, "{query}: {out}");
         let row: serde_json::Value = serde_json::from_str(first_line(&out)).expect("ndjson");
         assert_eq!(row["name"], "Über", "{query}: {out}");
         let features = row["features"].to_string();
@@ -2022,7 +1758,6 @@ fn a_non_ascii_name_is_an_exact_match_however_it_is_cased() {
             "{query} is a literal match: {out}"
         );
     }
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2038,15 +1773,13 @@ fn a_typo_still_finds_the_definition() {
     // swapped letters and a doubled one both used to be hard misses: every
     // query character has to appear in order for a subsequence match
     for typo in ["connectoin_pool", "connection_poool"] {
-        let (ok, out) = rq(&db, &dir, &[typo, "--ndjson"]);
-        assert!(ok, "{typo} should find something: {out}");
+        let (code, out) = rq(&db, &dir, &[typo, "--ndjson"]);
+        assert_eq!(code, 0, "{typo} should find something: {out}");
         assert!(out.contains("ConnectionPool"), "{typo} finds it: {out}");
     }
     // a real word that simply isn't there is still a definitive miss
-    let (ok, _) = rq(&db, &dir, &["WidgetFactory", "--ndjson"]);
-    assert!(!ok, "an absent symbol is still a miss");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, _) = rq(&db, &dir, &["WidgetFactory", "--ndjson"]);
+    assert_ne!(code, 0, "an absent symbol is still a miss");
 }
 
 #[test]
@@ -2101,8 +1834,6 @@ fn confidence_and_total_do_not_depend_on_the_limit() {
         assert_eq!(v, v.round(), "{name} is whole: {out}");
         assert!(text.contains(&format!("{name} {v}")), "{name} {v}: {text}");
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2113,23 +1844,21 @@ fn an_unknown_kind_or_lang_is_an_error_not_a_miss() {
 
     // a typo used to come back as a definitive no_match — the one exit code a
     // script is supposed to trust as "this symbol does not exist"
-    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "banana"]);
-    assert!(!ok, "unknown kind should fail: {out}");
+    let (code, out) = rq(&db, &dir, &["Widget", "-k", "banana"]);
+    assert_ne!(code, 0, "unknown kind should fail: {out}");
     assert!(
         !out.contains("no_match"),
         "reported as an error, not a miss: {out}"
     );
-    let (ok, out) = rq(&db, &dir, &["Widget", "-x", "cobol"]);
-    assert!(!ok, "unknown lang should fail: {out}");
+    let (code, out) = rq(&db, &dir, &["Widget", "-x", "cobol"]);
+    assert_ne!(code, 0, "unknown lang should fail: {out}");
     assert!(
         !out.contains("no_match"),
         "reported as an error, not a miss: {out}"
     );
     // a real one still works
-    let (ok, out) = rq(&db, &dir, &["Widget", "-k", "class"]);
-    assert!(ok, "known kind still searches: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["Widget", "-k", "class"]);
+    assert_eq!(code, 0, "known kind still searches: {out}");
 }
 
 #[test]
@@ -2139,15 +1868,15 @@ fn usage_counts_searches_by_caller_and_flags() {
     rq(&db, &dir, &["--index"]);
 
     // nothing recorded yet exits 1, like a search that finds nothing
-    let (ok, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
-    assert!(!ok, "empty usage should exit non-zero: {out}");
+    let (code, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    assert_ne!(code, 0, "empty usage should exit non-zero: {out}");
 
     rq(&db, &dir, &["Widget", "--ndjson"]);
     rq(&db, &dir, &["Widget", "--json", "--all-repos"]);
     rq(&db, &dir, &["NoSuchThing", "--ndjson"]);
 
-    let (ok, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
-    assert!(ok, "usage failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    assert_eq!(code, 0, "usage failed: {out}");
     // the flag set is recorded, so agentic calls are separable from bare ones
     assert!(
         out.contains("\"flags\":\"ndjson\""),
@@ -2188,8 +1917,6 @@ fn usage_counts_searches_by_caller_and_flags() {
         .find(|l| l.contains("\"flags\":\"ndjson,show\""))
         .unwrap_or_else(|| panic!("no --show row: {out}"));
     assert!(show_row.contains("\"searches\":2"), "{show_row}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2204,8 +1931,8 @@ fn index_a_subset_of_a_repo() {
 
     // seed only the services subtree: this run indexes just that, and
     // coverage stays warming (a seed, not a fence)
-    let (ok, out) = rq(&db, &dir, &["--index", "--path", "app/services", "-J"]);
-    assert!(ok, "subset index failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index", "--path", "app/services", "-J"]);
+    assert_eq!(code, 0, "subset index failed: {out}");
     assert!(out.contains("\"scope\":\"subtree\""), "seed marker: {out}");
     assert!(out.contains("\"files\":1"), "seeded one file: {out}");
     let (_, status) = rq(&db, &dir, &["--status", "--ndjson"]);
@@ -2215,8 +1942,8 @@ fn index_a_subset_of_a_repo() {
     );
 
     // the seeded subtree is searchable, with a repo-relative path
-    let (ok, out) = rq(&db, &dir, &["charge", "--ndjson"]);
-    assert!(ok, "charge search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["charge", "--ndjson"]);
+    assert_eq!(code, 0, "charge search failed: {out}");
     assert!(
         out.contains("\"file\":\"app/services/charge.rb\""),
         "subset hit: {out}"
@@ -2224,8 +1951,8 @@ fn index_a_subset_of_a_repo() {
 
     // a symbol outside the seed: warming continues over the rest of the repo,
     // finds it, and persists it
-    let (ok, out) = rq(&db, &dir, &["account", "--ndjson"]);
-    assert!(ok, "warming finds the unseeded symbol: {out}");
+    let (code, out) = rq(&db, &dir, &["account", "--ndjson"]);
+    assert_eq!(code, 0, "warming finds the unseeded symbol: {out}");
     assert!(
         out.contains("\"file\":\"app/models/account.rb\""),
         "warm hit: {out}"
@@ -2235,8 +1962,6 @@ fn index_a_subset_of_a_repo() {
         status.contains("\"files\":2"),
         "warming persisted the rest: {status}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2253,8 +1978,8 @@ fn positional_paths_filter_like_rg() {
     rq(&db, &dir, &["--index"]);
 
     // path given positionally after the query, rg-style
-    let (ok, out) = rq(&db, &dir, &["widget", "app/services", "--ndjson"]);
-    assert!(ok, "positional-path search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["widget", "app/services", "--ndjson"]);
+    assert_eq!(code, 0, "positional-path search failed: {out}");
     assert!(
         out.contains("app/services/widget.rb"),
         "services hit kept: {out}"
@@ -2263,8 +1988,6 @@ fn positional_paths_filter_like_rg() {
         !out.contains("app/models/widget.rb"),
         "models hit filtered out: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2279,15 +2002,13 @@ fn kind_filter_scopes_by_symbol_kind() {
     assert!(out.contains("\"kind\":\"method\""), "method present: {out}");
 
     // -k m (shortcut for method) keeps only the method
-    let (ok, out) = rq(&db, &dir, &["charge", "-k", "m", "--ndjson"]);
-    assert!(ok, "kind search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["charge", "-k", "m", "--ndjson"]);
+    assert_eq!(code, 0, "kind search failed: {out}");
     assert!(out.contains("\"kind\":\"method\""), "method kept: {out}");
     assert!(
         !out.contains("\"kind\":\"class\""),
         "class filtered out: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2305,8 +2026,8 @@ fn gizmo() {}
     rq(&db, &dir, &["--index"]);
 
     // `type` is an alias or a struct; `alias` only the alias
-    let (ok, out) = rq(&db, &dir, &["giz", "-k", "type", "--ndjson"]);
-    assert!(ok, "kind search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["giz", "-k", "type", "--ndjson"]);
+    assert_eq!(code, 0, "kind search failed: {out}");
     assert!(out.contains("\"name\":\"GizmoRef\""), "alias kept: {out}");
     assert!(out.contains("\"name\":\"Gizmo\""), "struct kept: {out}");
     assert!(!out.contains("\"kind\":\"function\""), "fn dropped: {out}");
@@ -2314,8 +2035,6 @@ fn gizmo() {}
     assert!(!out.contains("\"name\":\"Gizmo\""), "struct dropped: {out}");
     let (_, out) = rq(&db, &dir, &["Gizmos", "-k", "member", "--ndjson"]);
     assert!(out.contains("\"kind\":\"variant\""), "variant found: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2343,8 +2062,8 @@ fn kind_constant_selects_constants_across_languages() {
         ("MAX_RETRIES", "python"),
         ("retryLimit", "typescript"),
     ] {
-        let (ok, out) = rq(&db, &dir, &[query, "-k", "constant", "--ndjson"]);
-        assert!(ok, "{lang} constant search failed: {out}");
+        let (code, out) = rq(&db, &dir, &[query, "-k", "constant", "--ndjson"]);
+        assert_eq!(code, 0, "{lang} constant search failed: {out}");
         assert!(
             out.contains(&format!("\"kind\":\"constant\",\"language\":\"{lang}\"")),
             "{lang} constant kept: {out}"
@@ -2354,8 +2073,6 @@ fn kind_constant_selects_constants_across_languages() {
             "{lang} function filtered: {out}"
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2390,8 +2107,6 @@ fn generated_code_ranks_below_hand_written_code() {
     }
     rq(&db, &dir, &["--index"]);
     assert!(first(&db).contains("widget.go"), "{}", first(&db));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2421,8 +2136,8 @@ fn an_index_from_before_constants_gains_them_on_the_next_search() {
     // The repo is warming. A search that the old rows can't answer then holds
     // for the in-process warm (detach is off here), which re-parses the file
     // the migration un-stamped.
-    let (ok, out) = rq(&db, &dir, &["MaxRetries", "--ndjson"]);
-    assert!(ok, "constant found after the upgrade: {out}");
+    let (code, out) = rq(&db, &dir, &["MaxRetries", "--ndjson"]);
+    assert_eq!(code, 0, "constant found after the upgrade: {out}");
     assert!(
         first_line(&out).contains("\"kind\":\"constant\""),
         "constant ranks first: {out}"
@@ -2432,8 +2147,6 @@ fn an_index_from_before_constants_gains_them_on_the_next_search() {
         status.contains("\"status\": \"complete\""),
         "the sweep completed: {status}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2444,11 +2157,9 @@ fn first_query_warms_the_index_without_an_explicit_reindex() {
     git_init(&dir);
     fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
 
-    let (ok, out) = rq(&db, &dir, &["widget", "--ndjson"]);
-    assert!(ok, "cold search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["widget", "--ndjson"]);
+    assert_eq!(code, 0, "cold search failed: {out}");
     assert!(out.contains("\"name\":\"Widget\""), "result present: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2458,19 +2169,17 @@ fn explicitly_indexes_and_recognizes_a_non_git_directory() {
     let (dir, db) = scratch("nongit");
     fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
 
-    let (ok, out) = rq(&db, &dir, &["--index"]);
-    assert!(ok, "index of a non-git dir failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--index"]);
+    assert_eq!(code, 0, "index of a non-git dir failed: {out}");
 
-    let (ok, out) = rq(&db, &dir, &["widget", "--ndjson"]);
-    assert!(ok, "search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["widget", "--ndjson"]);
+    assert_eq!(code, 0, "search failed: {out}");
     assert!(out.contains("\"name\":\"Widget\""), "result present: {out}");
     // recognized as the current repo → the current-repo boost applies
     assert!(
         out.contains("current_repo"),
         "current-repo boost applied: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2486,8 +2195,8 @@ fn lang_filter_scopes_by_language() {
     assert!(out.contains("\"language\":\"rust\""), "rust present: {out}");
 
     // -x rs keeps only rust
-    let (ok, out) = rq(&db, &dir, &["widget", "-x", "rs", "--ndjson"]);
-    assert!(ok, "lang search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["widget", "-x", "rs", "--ndjson"]);
+    assert_eq!(code, 0, "lang search failed: {out}");
     assert!(out.contains("\"language\":\"rust\""), "rust kept: {out}");
     assert!(
         !out.contains("\"language\":\"ruby\""),
@@ -2510,14 +2219,12 @@ fn lang_filter_scopes_by_language() {
     );
 
     // -x py matches neither → no results
-    let (ok, out) = rq(&db, &dir, &["widget", "-x", "py", "--ndjson"]);
-    assert!(!ok, "no python here, should exit non-zero");
+    let (code, out) = rq(&db, &dir, &["widget", "-x", "py", "--ndjson"]);
+    assert_ne!(code, 0, "no python here, should exit non-zero");
     assert!(
         out.contains("\"status\":\"no_match\""),
         "a definitive miss reports no_match: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2534,8 +2241,8 @@ fn searching_from_a_subdirectory_uses_the_repo_root() {
     fs::write(sub.join("deep.rb"), "class DeepWidget\nend\n").unwrap();
 
     // index the whole repo from its root — paths are repo-root-relative
-    let (ok, _) = rq(&db, &dir, &["--index"]);
-    assert!(ok);
+    let (code, _) = rq(&db, &dir, &["--index"]);
+    assert_eq!(code, 0);
     let (_, out) = rq(&db, &dir, &["DeepWidget"]);
     assert!(out.contains("nested/deep.rb"), "root-relative path: {out}");
 
@@ -2554,8 +2261,6 @@ fn searching_from_a_subdirectory_uses_the_repo_root() {
         "one repo, not re-keyed: {status}"
     );
     assert!(status.contains("2 files"), "both files retained: {status}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2570,14 +2275,12 @@ fn warming_a_committed_repo_indexes_tracked_source() {
     fs::write(dir.join("README.md"), "# docs, not source\n").unwrap();
     git_init_commit(&dir);
 
-    let (ok, out) = rq(&db, &dir, &["Widget"]);
-    assert!(ok, "warmed search failed: {out}");
+    let (code, out) = rq(&db, &dir, &["Widget"]);
+    assert_eq!(code, 0, "warmed search failed: {out}");
     assert!(
         out.contains("lib/widget.rb"),
         "tracked source warmed: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2592,13 +2295,9 @@ fn a_cold_repo_blocks_to_an_answer_instead_of_a_false_miss() {
     fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
     git_init_commit(&dir);
 
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["Widget", "--json"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .env("RQ_ANSWER_BUDGET_MS", "1") // bounded path would give up immediately
         .output()
         .expect("run rq");
@@ -2610,8 +2309,6 @@ fn a_cold_repo_blocks_to_an_answer_instead_of_a_false_miss() {
         String::from_utf8_lossy(&run.stderr)
     );
     assert!(out.contains("widget.rb"), "found in the right file: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2622,13 +2319,9 @@ fn an_interactive_cold_repo_shows_progress_and_finds_the_answer() {
     fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
     git_init_commit(&dir);
 
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["Widget"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .env("RQ_ANSWER_BUDGET_MS", "1")
         .env("RQ_ASSUME_INTERACTIVE", "1") // pretend a TTY
         .output()
@@ -2636,8 +2329,6 @@ fn an_interactive_cold_repo_shows_progress_and_finds_the_answer() {
     let out = String::from_utf8_lossy(&run.stdout);
     assert!(run.status.success(), "should find the symbol: {out:?}");
     assert!(out.contains("widget.rb"), "found in the right file: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2656,13 +2347,9 @@ fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
     }
     git_init_commit(&dir);
 
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["Nonexistent", "--json"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .env("RQ_COLLECT_CAP", "5") // one pass can't finish → stays "warming"
         .output()
         .expect("run rq");
@@ -2676,8 +2363,6 @@ fn an_incomplete_index_reports_an_indeterminate_miss_not_a_definitive_one() {
         Some(2),
         "an incomplete-index miss is indeterminate (exit 2), not definitive"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2700,14 +2385,8 @@ fn a_cold_search_finds_a_symbol_beyond_what_one_pass_parses() {
     .unwrap();
     git_init_commit(&dir);
 
-    let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let run = rq_cmd(&db, &dir)
         .args(["M19#render_totals", "--json"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
-        .env("RQ_WARM_DETACH", "0")
         .env("RQ_COLLECT_CAP", "2")
         .output()
         .expect("run rq");
@@ -2718,8 +2397,6 @@ fn a_cold_search_finds_a_symbol_beyond_what_one_pass_parses() {
         "answered on the first search: {out}"
     );
     assert!(out.contains("m19.rb"), "found in the right file: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2742,14 +2419,8 @@ fn no_wait_returns_without_blocking_on_a_rebuild() {
     for flags in [["--no-wait"].as_slice(), ["--wait", "0"].as_slice()] {
         let mut args = vec!["Nonexistent", "--json"];
         args.extend_from_slice(flags);
-        let run = Command::new(env!("CARGO_BIN_EXE_rq"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        let run = rq_cmd(&db, &dir)
             .args(&args)
-            .current_dir(&dir)
-            .env("RQ_DB", &db)
-            .env("RQ_WARM_DETACH", "0") // hermetic: no detached child races cleanup
             .env("RQ_WAIT_BUDGET_MS", "600000") // a block, if it happened, would hang the test
             .output()
             .expect("run rq");
@@ -2765,8 +2436,6 @@ fn no_wait_returns_without_blocking_on_a_rebuild() {
             "{flags:?} miss on an incomplete index is indeterminate (exit 2)"
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2781,8 +2450,8 @@ fn symbols_outlines_a_file_in_line_order() {
     git_init_commit(&dir);
 
     // ndjson outline: the file's symbols, in line order, with kind/parent/signature.
-    let (ok, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
-    assert!(ok, "symbols failed: {out}");
+    let (code, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
+    assert_eq!(code, 0, "symbols failed: {out}");
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 3, "class + two methods: {out}");
     assert!(
@@ -2802,12 +2471,12 @@ fn symbols_outlines_a_file_in_line_order() {
     assert!(!out.contains("Other"), "other file excluded: {out}");
 
     // --kind filters the outline to just methods (drops the class).
-    let (ok, out) = rq(
+    let (code, out) = rq(
         &db,
         &dir,
         &["--symbols", "widget.rb", "-k", "method", "--ndjson"],
     );
-    assert!(ok, "filtered symbols failed: {out}");
+    assert_eq!(code, 0, "filtered symbols failed: {out}");
     assert_eq!(out.lines().count(), 2, "two methods only: {out}");
     assert!(
         !out.contains("\"name\":\"Widget\""),
@@ -2815,14 +2484,15 @@ fn symbols_outlines_a_file_in_line_order() {
     );
 
     // a file that defines nothing (of that kind) is a miss, as a search's is
-    let (ok, out) = rq(
+    let (code, out) = rq(
         &db,
         &dir,
         &["--symbols", "other.rb", "-k", "method", "--json"],
     );
-    assert!(!ok && out.contains("\"status\": \"no_match\""), "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    assert!(
+        code != 0 && out.contains("\"status\": \"no_match\""),
+        "{out}"
+    );
 }
 
 #[test]
@@ -2838,8 +2508,8 @@ fn a_class_method_says_it_is_one_everywhere_a_result_is_printed() {
 
     // --symbols: true on the class's own methods, omitted (never false or
     // null) on everything else
-    let (ok, out) = rq(&db, &dir, &["--symbols", "lib/widget.rb", "--ndjson"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &dir, &["--symbols", "lib/widget.rb", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
     let rows: Vec<serde_json::Value> = out
         .lines()
         .map(|l| serde_json::from_str(l).expect("ndjson line"))
@@ -2855,12 +2525,12 @@ fn a_class_method_says_it_is_one_everywhere_a_result_is_printed() {
     assert_eq!(row("hidden_build")["visibility"], "private", "{out}");
 
     // a search hit, --json and batch alike
-    let (ok, out) = rq(&db, &dir, &["register", "--json"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &dir, &["register", "--json"]);
+    assert_eq!(code, 0, "{out}");
     let hits: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(hits[0]["singleton"], true, "{out}");
-    let (ok, out) = rq_stdin(&db, &dir, &["-J", "-l", "1"], "clock\nsize\n");
-    assert!(ok, "{out}");
+    let (code, out) = rq_stdin(&db, &dir, &["-J", "-l", "1"], "clock\nsize\n");
+    assert_eq!(code, 0, "{out}");
     let rows: Vec<serde_json::Value> = out
         .lines()
         .map(|l| serde_json::from_str(l).expect("ndjson line"))
@@ -2870,12 +2540,10 @@ fn a_class_method_says_it_is_one_everywhere_a_result_is_printed() {
     assert!(answer("size").get("singleton").is_none(), "{out}");
 
     // text says so where it names the kind
-    let (ok, out) = rq(&db, &dir, &["--symbols", "lib/widget.rb"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &dir, &["--symbols", "lib/widget.rb"]);
+    assert_eq!(code, 0, "{out}");
     assert!(out.contains("singleton method clock · Widget"), "{out}");
     assert!(out.contains("  method size · Widget"), "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2892,28 +2560,26 @@ fn symbols_reflects_the_file_as_it_is_on_disk_now() {
         "class Widget\n  def added\n  end\nend\n",
     )
     .unwrap();
-    let (ok, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
+    let (code, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
     assert!(
-        ok && out.contains("\"name\":\"added\""),
+        code == 0 && out.contains("\"name\":\"added\""),
         "edit shows: {out}"
     );
 
     fs::write(dir.join("fresh.rb"), "class Fresh\nend\n").unwrap();
-    let (ok, out) = rq(&db, &dir, &["--symbols", "fresh.rb", "--ndjson"]);
+    let (code, out) = rq(&db, &dir, &["--symbols", "fresh.rb", "--ndjson"]);
     assert!(
-        ok && out.contains("\"name\":\"Fresh\""),
+        code == 0 && out.contains("\"name\":\"Fresh\""),
         "new file shows: {out}"
     );
 
     fs::remove_file(dir.join("widget.rb")).unwrap();
-    let (ok, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
-    assert!(!ok, "a deleted file has no outline: {out}");
+    let (code, out) = rq(&db, &dir, &["--symbols", "widget.rb", "--ndjson"]);
+    assert_ne!(code, 0, "a deleted file has no outline: {out}");
     assert!(!out.contains("Widget"), "no stale rows: {out}");
 
-    let (ok, out) = rq(&db, &dir, &["--symbols", "notes.txt", "--ndjson"]);
-    assert!(!ok, "an unsupported file has no outline: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["--symbols", "notes.txt", "--ndjson"]);
+    assert_ne!(code, 0, "an unsupported file has no outline: {out}");
 }
 
 #[test]
@@ -2930,14 +2596,8 @@ fn symbols_outlines_its_file_on_a_cold_repo_too_big_for_one_pass() {
     }
     git_init_commit(&dir);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = rq_cmd(&db, &dir)
         .args(["--symbols", "m19.rb", "--ndjson"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
-        .env("RQ_WARM_DETACH", "0")
         .env("RQ_COLLECT_CAP", "2")
         .output()
         .expect("run rq");
@@ -2946,22 +2606,18 @@ fn symbols_outlines_its_file_on_a_cold_repo_too_big_for_one_pass() {
         out.status.success() && text.contains("\"name\":\"M19\""),
         "the file is outlined: {text}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn bare_invocation_prints_help() {
     let (dir, db) = scratch("help");
-    let (ok, out) = rq(&db, &dir, &[]);
-    assert!(ok, "bare rq should exit 0");
+    let (code, out) = rq(&db, &dir, &[]);
+    assert_eq!(code, 0, "bare rq should exit 0");
     assert!(
         out.contains("rq finds the code you're looking for"),
         "help banner: {out}"
     );
     assert!(out.contains("Usage:"), "usage in help: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2980,13 +2636,8 @@ fn detached_warm_finishes_coverage_in_the_background() {
     // sweep itself; detached warming (on) must pick up the remainder. The
     // child inherits the cap, so it needs several passes — exercising its
     // sweep-until-complete loop too.
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = rq_cmd(&db, &dir)
         .args(["K00"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .env("RQ_WARM_DETACH", "1")
         .env("RQ_COLLECT_CAP", "5")
         .output()
@@ -3010,21 +2661,13 @@ fn detached_warm_finishes_coverage_in_the_background() {
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// Run the binary with queries piped on stdin, returning stdout.
-fn rq_stdin(db: &Path, cwd: &Path, args: &[&str], stdin: &str) -> (bool, String) {
+fn rq_stdin(db: &Path, cwd: &Path, args: &[&str], stdin: &str) -> (i32, String) {
     use std::io::Write;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let mut child = rq_cmd(db, cwd)
         .args(args)
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -3038,7 +2681,7 @@ fn rq_stdin(db: &Path, cwd: &Path, args: &[&str], stdin: &str) -> (bool, String)
         .expect("write queries");
     let out = child.wait_with_output().expect("rq exits");
     (
-        out.status.success(),
+        common::code(&out),
         String::from_utf8_lossy(&out.stdout).into_owned(),
     )
 }
@@ -3053,13 +2696,13 @@ fn batch_answers_every_piped_query_and_says_which_is_which() {
     git_init_commit(&dir);
     rq(&db, &dir, &["--index"]);
 
-    let (ok, out) = rq_stdin(
+    let (code, out) = rq_stdin(
         &db,
         &dir,
         &["-J", "-l", "1"],
         "widget\ngadget\nnosuchthing\n",
     );
-    assert!(ok, "a batch that found something exits 0: {out}");
+    assert_eq!(code, 0, "a batch that found something exits 0: {out}");
 
     let rows: Vec<serde_json::Value> = out
         .lines()
@@ -3077,8 +2720,6 @@ fn batch_answers_every_piped_query_and_says_which_is_which() {
     // a miss is reported, not silently dropped — otherwise it's
     // indistinguishable from a query that never ran
     assert_eq!(for_query("nosuchthing")["status"], "no_match");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3090,13 +2731,11 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
 
     // --json would have to frame N result sets as one array; --ndjson is the
     // shape that streams
-    let (ok, _) = rq_stdin(&db, &dir, &["--json"], "widget\n");
-    assert!(!ok, "--json is refused for a batch");
+    let (code, _) = rq_stdin(&db, &dir, &["--json"], "widget\n");
+    assert_ne!(code, 0, "--json is refused for a batch");
     // --show/--open act on one result
-    let (ok, _) = rq_stdin(&db, &dir, &["-J", "--show"], "widget\n");
-    assert!(!ok, "--show is refused for a batch");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, _) = rq_stdin(&db, &dir, &["-J", "--show"], "widget\n");
+    assert_ne!(code, 0, "--show is refused for a batch");
 }
 
 /// Run the binary with extra env and optional piped stdin; hand back the exit
@@ -3109,14 +2748,8 @@ fn rq_full(
     stdin: Option<&str>,
 ) -> (i32, String, String) {
     use std::io::Write;
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rq"));
-    cmd.env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(args)
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
+    let mut cmd = rq_cmd(db, cwd);
+    cmd.args(args)
         .stdin(if stdin.is_some() {
             std::process::Stdio::piped()
         } else {
@@ -3238,8 +2871,6 @@ fn a_structured_caller_gets_its_errors_as_json() {
     // a value that merely contains `j` is not the flag
     let (_, out, _) = rq_full(&db, &dir, &["Widget", "-xj", "-k", "banana"], &[], None);
     assert!(out.is_empty(), "`-xj` is --lang j, not --json: {out:?}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3253,8 +2884,6 @@ fn help_and_version_are_not_usage_errors() {
     let (_, help, _) = rq_full(&db, &dir, &["--help"], &[], None);
     assert!(help.contains("EXIT CODES"), "--help lists them: {help}");
     assert!(help.contains("--drop"), "and the commands' own: {help}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3266,8 +2895,6 @@ fn commands_with_nothing_to_do_still_succeed() {
         let (code, out, _) = rq_full(&db, &dir, args, &[], None);
         assert_eq!(code, 0, "{args:?}: {out}");
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// `--profile` on an index run reports phases, counters and the slowest files —
@@ -3279,8 +2906,8 @@ fn index_profile_reports_phases_and_counters() {
     fs::write(dir.join("beta.rb"), "class HandlerB\ndef go\nend\nend\n").unwrap();
 
     // off: stdout carries the result, stderr stays silent
-    let (ok, out, err) = rq_both(&db, &dir, &["--index"]);
-    assert!(ok, "index failed: {out}");
+    let (code, out, err) = rq_both(&db, &dir, &["--index"]);
+    assert_eq!(code, 0, "index failed: {out}");
     assert!(
         !err.contains("walk+parse+write"),
         "profile leaked with --profile off: {err}"
@@ -3289,8 +2916,8 @@ fn index_profile_reports_phases_and_counters() {
     // text: a human-readable table on stderr, stdout untouched
     let (dir2, db2) = scratch("index-profile-text");
     fs::write(dir2.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
-    let (ok, out, err) = rq_both(&db2, &dir2, &["--index", "--profile"]);
-    assert!(ok, "index failed: {out}");
+    let (code, out, err) = rq_both(&db2, &dir2, &["--index", "--profile"]);
+    assert_eq!(code, 0, "index failed: {out}");
     for phase in [
         "index: setup",
         "index: walk+parse+write",
@@ -3310,8 +2937,8 @@ fn index_profile_reports_phases_and_counters() {
     // json: one object on stderr with the same phase names; stdout stays parseable
     let (dir3, db3) = scratch("index-profile-json");
     fs::write(dir3.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
-    let (ok, out, err) = rq_both(&db3, &dir3, &["--index", "--profile", "--json"]);
-    assert!(ok, "index failed: {out}");
+    let (code, out, err) = rq_both(&db3, &dir3, &["--index", "--profile", "--json"]);
+    assert_eq!(code, 0, "index failed: {out}");
     let stdout_json: serde_json::Value =
         serde_json::from_str(&out).unwrap_or_else(|e| panic!("stdout not json ({e}): {out}"));
     assert_eq!(stdout_json["scope"], "full");
@@ -3344,8 +2971,8 @@ fn index_profile_reports_phases_and_counters() {
 fn search_profile_covers_the_whole_run() {
     let (dir, db) = scratch("search-profile");
     fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
-    let (ok, out, _) = rq_both(&db, &dir, &["--index"]);
-    assert!(ok, "index failed: {out}");
+    let (code, out, _) = rq_both(&db, &dir, &["--index"]);
+    assert_eq!(code, 0, "index failed: {out}");
 
     let phases = |args: &[&str]| {
         let (_, _, err) = rq_both(&db, &dir, args);
@@ -3405,17 +3032,18 @@ fn a_ruby_predicate_is_found_by_its_full_name() {
     rq(&db, &dir, &["--index"]);
 
     for q in ["empty?", "Widget#empty?", "save!", "only_uploads?"] {
-        let (ok, out) = rq(&db, &dir, &[q]);
-        assert!(ok && out.contains("a.rb"), "{q}: {out}");
+        let (code, out) = rq(&db, &dir, &[q]);
+        assert!(code == 0 && out.contains("a.rb"), "{q}: {out}");
     }
     // a `?` inside a query is still a wildcard
-    let (ok, out) = rq(&db, &dir, &["emp?y?"]);
-    assert!(ok && out.contains("empty?"), "glob: {out}");
+    let (code, out) = rq(&db, &dir, &["emp?y?"]);
+    assert!(code == 0 && out.contains("empty?"), "glob: {out}");
     // and a glob crosses the name's `_` the way it ignores the query's
-    let (ok, out) = rq(&db, &dir, &["only_up*s"]);
-    assert!(ok && out.contains("only_uploads?"), "glob over _: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
+    let (code, out) = rq(&db, &dir, &["only_up*s"]);
+    assert!(
+        code == 0 && out.contains("only_uploads?"),
+        "glob over _: {out}"
+    );
 }
 
 #[test]
@@ -3429,14 +3057,12 @@ fn foo_dot_new_finds_the_class_outside_git_too() {
     )
     .unwrap();
     for q in ["Ledger.new", "Account::Ledger.new"] {
-        let (ok, out) = rq(&db, &dir, &[q, "--ndjson"]);
+        let (code, out) = rq(&db, &dir, &[q, "--ndjson"]);
         assert!(
-            ok && out.contains("\"class\"") && out.contains("\"line\":2"),
+            code == 0 && out.contains("\"class\"") && out.contains("\"line\":2"),
             "{q}: {out}"
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3482,8 +3108,6 @@ fn no_wait_on_an_unindexed_repo_answers_from_a_live_scan() {
         (Some(0), Some(1), Some(0.0)),
         "dropped: {out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3533,8 +3157,6 @@ fn a_live_scan_answer_says_so() {
     rq(&db, &dir, &["--index"]);
     let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J"], &[], None);
     assert_eq!(source(&out), "index", "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3561,14 +3183,8 @@ fn an_index_pass_whose_writes_fail_exits_instead_of_hanging() {
         )
         .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let mut child = rq_cmd(&db, &dir)
         .args(["--index", "."])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
-        .env("RQ_WARM_DETACH", "0")
         .env("RQ_JOBS", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -3586,7 +3202,6 @@ fn an_index_pass_whose_writes_fail_exits_instead_of_hanging() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    let _ = fs::remove_dir_all(&dir);
 
     let status = status.expect("rq --index hung after a failed write");
     assert!(!status.success(), "a failed write is an error, not success");
@@ -3602,14 +3217,8 @@ fn concurrent_first_queries_share_a_fresh_database() {
     git_init_commit(&dir);
     let runs: Vec<_> = (0..16)
         .map(|_| {
-            Command::new(env!("CARGO_BIN_EXE_rq"))
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .env_remove("GIT_INDEX_FILE")
+            rq_cmd(&db, &dir)
                 .args(["--no-wait", "--json", "Widget"])
-                .current_dir(&dir)
-                .env("RQ_DB", &db)
-                .env("RQ_WARM_DETACH", "0")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -3628,23 +3237,17 @@ fn concurrent_first_queries_share_a_fresh_database() {
                 .to_string()
         })
         .collect();
-    let _ = fs::remove_dir_all(&dir);
     assert!(failures.is_empty(), "{failures:?}");
 }
 
 #[test]
 fn an_empty_query_points_at_the_outline() {
     let (dir, db) = scratch("empty-query");
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
         .args(["", "-k", "interface", "--json"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
         .output()
         .expect("run rq");
-    let _ = fs::remove_dir_all(&dir);
 
     assert_eq!(out.status.code(), Some(64));
     let err: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error json");
@@ -3658,18 +3261,11 @@ fn an_empty_query_points_at_the_outline() {
 #[test]
 fn a_relative_rq_db_is_a_usage_error() {
     let (dir, _) = scratch("relative-db");
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = rq_cmd(Path::new("dbs/rq.db"), &dir)
         .args(["Widget", "--json"])
-        .current_dir(&dir)
-        .env("RQ_DB", "dbs/rq.db")
-        .env("RQ_WARM_DETACH", "0")
         .output()
         .expect("run rq");
     let created = dir.join("dbs").exists();
-    let _ = fs::remove_dir_all(&dir);
 
     assert_eq!(out.status.code(), Some(64));
     let err: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error json");
@@ -3682,14 +3278,10 @@ fn a_relative_rq_db_is_a_usage_error() {
 fn an_empty_rq_db_means_the_default_and_a_directory_is_refused() {
     let (dir, _) = scratch("empty-db");
     let run = |db: &str| {
-        Command::new(env!("CARGO_BIN_EXE_rq"))
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
+        rq_cmd(Path::new(db), &dir)
+            .env_remove("RQ_WARM_DETACH")
             .args(["--status", "--json"])
-            .current_dir(&dir)
-            .env("RQ_DB", db)
-            .env("HOME", &dir)
+            .env("HOME", &*dir)
             .output()
             .expect("run rq")
     };
@@ -3698,7 +3290,6 @@ fn an_empty_rq_db_means_the_default_and_a_directory_is_refused() {
     let slash = format!("{}/dbs/", dir.display());
     let trailing = run(&slash);
     let dir_made = dir.join("dbs").exists();
-    let _ = fs::remove_dir_all(&dir);
 
     assert_eq!(empty.status.code(), Some(0));
     assert!(default_made, "the default path under HOME");
@@ -3745,8 +3336,8 @@ fn kind_field_selects_fields_across_languages() {
         assert!(!first.contains("\"kind\":\"field\""), "{lang}: {all}");
 
         for args in [vec![query, "-k", "field"], vec!["field", query]] {
-            let (ok, out) = rq(&db, &dir, &[&args[..], &["--ndjson"]].concat());
-            assert!(ok, "{lang} field search failed: {out}");
+            let (code, out) = rq(&db, &dir, &[&args[..], &["--ndjson"]].concat());
+            assert_eq!(code, 0, "{lang} field search failed: {out}");
             assert!(
                 out.contains(&format!("\"kind\":\"field\",\"language\":\"{lang}\"")),
                 "{lang} field kept: {out}"
@@ -3758,13 +3349,11 @@ fn kind_field_selects_fields_across_languages() {
             assert_eq!(out.lines().count(), 1, "{lang}: {out}");
         }
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// A repo where a prefix match for `User` sits in one directory and the exact
 /// definition in another, so seeding one directory leaves a partial index.
-fn prefix_and_exact(label: &str) -> (PathBuf, PathBuf) {
+fn prefix_and_exact(label: &str) -> (Scratch, PathBuf) {
     let (dir, db) = scratch(label);
     fs::create_dir_all(dir.join("app")).unwrap();
     fs::create_dir_all(dir.join("models")).unwrap();
@@ -3807,8 +3396,6 @@ fn a_prefix_match_from_a_partial_index_is_provisional_not_an_answer() {
     assert_eq!(code, 2);
     assert!(err.contains("no settled match"), "{err}");
     assert!(!err.contains("narrow the query"), "{err}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3870,8 +3457,6 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
     let top = &json(&out)[0];
     assert!(top.get("warming").is_none(), "{out}");
     assert!(top["confidence"].as_f64().unwrap() > partial, "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3883,14 +3468,8 @@ fn a_search_waits_on_another_process_still_indexing() {
     rq(&db, &dir, &["--index", "app"]);
     let (conn, mark) = hold_as_another_indexer(&db, &dir);
 
-    let child = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let child = rq_cmd(&db, &dir)
         .args(["User", "--json", "--wait", "30s"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
-        .env("RQ_WARM_DETACH", "0")
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("run rq");
@@ -3903,8 +3482,6 @@ fn a_search_waits_on_another_process_still_indexing() {
     let out = String::from_utf8_lossy(&run.stdout);
     assert_eq!(run.status.code(), Some(0), "{out}");
     assert_eq!(json(&out)[0]["name"], "User", "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// Hold `db` the way another rq mid-pass does: a live pass mark on the
@@ -3930,14 +3507,8 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
     let (conn, mark) = hold_as_another_indexer(&db, &dir);
 
     let start = std::time::Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let mut child = rq_cmd(&db, &dir)
         .args(["User", "--wait", "1s"])
-        .current_dir(&dir)
-        .env("RQ_DB", &db)
-        .env("RQ_WARM_DETACH", "0")
         .env("RQ_ASSUME_INTERACTIVE", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -3962,13 +3533,11 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
     }
     // the writer's busy timeout bounds the join after the answer, not the wait
     assert_eq!(status.and_then(|s| s.code()), Some(2), "after {waited:?}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// A checkout indexed only under `a/`, where a prefix match for `Widget`
 /// lives; the exact definition under `z/` is unread.
-fn partly_indexed_elsewhere(label: &str) -> (PathBuf, PathBuf) {
+fn partly_indexed_elsewhere(label: &str) -> (Scratch, PathBuf) {
     let (dir, db) = scratch(label);
     fs::create_dir_all(dir.join("a")).unwrap();
     fs::create_dir_all(dir.join("z")).unwrap();
@@ -3980,7 +3549,7 @@ fn partly_indexed_elsewhere(label: &str) -> (PathBuf, PathBuf) {
 }
 
 /// A second repo, committed, sharing `db`'s index.
-fn another_repo(label: &str) -> PathBuf {
+fn another_repo(label: &str) -> Scratch {
     let (dir, _) = scratch(label);
     fs::write(dir.join("other.rb"), "class Other\nend\n").unwrap();
     git_init_commit(&dir);
@@ -4012,9 +3581,6 @@ fn across_checkouts_a_partial_one_nothing_is_indexing_answers_and_says_so() {
         hint.contains(&format!("rq --index {}", r1_root.display())),
         "names the checkout to index: {out}"
     );
-
-    let _ = fs::remove_dir_all(&r1);
-    let _ = fs::remove_dir_all(&r2);
 }
 
 #[test]
@@ -4041,9 +3607,6 @@ fn across_checkouts_this_ones_demand_walk_does_not_settle_another_still_indexing
     );
     assert_eq!(code, 2, "{out}");
     assert_eq!(json(&out)["provisional"][0]["name"], "WidgetThing", "{out}");
-
-    let _ = fs::remove_dir_all(&r1);
-    let _ = fs::remove_dir_all(&r3);
 }
 
 #[test]
@@ -4073,8 +3636,6 @@ fn files_read_and_the_tree_count_the_same_files() {
     assert_eq!(code, 2, "{out}");
     let w = &json(&out)["warming"];
     assert_eq!((&w["read"], &w["of"]), (&4.into(), &5.into()), "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4105,8 +3666,6 @@ fn a_tree_never_counted_is_counted_when_asked_and_never_null() {
         )
         .unwrap();
     assert_eq!(kept, 1);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4129,8 +3688,6 @@ fn a_tree_that_cannot_be_counted_backs_no_confidence() {
     assert!(!out.contains("null"), "omitted, never null: {out}");
     assert!(top["warming"].get("of").is_none(), "{out}");
     assert_eq!(top["confidence"], 0.0, "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4155,8 +3712,6 @@ fn status_reads_a_checkout_a_live_pass_is_filling_as_warming() {
     assert_eq!((&row["files"], &row["of"]), (&0.into(), &2.into()), "{out}");
     let (_, out, _) = rq_full(&db, &dir, &["--status"], &[], None);
     assert!(out.contains("0 of 2 files"), "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4183,8 +3738,6 @@ fn a_warming_miss_says_how_far_the_index_got() {
         out.contains("\"warming\":{\"read\":1,\"of\":2,\"interrupted\":"),
         "{out}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4228,8 +3781,6 @@ fn a_live_candidate_is_scaled_as_an_indexed_one_is() {
             assert!(hit["confidence"].as_f64().unwrap() <= 0.5, "{query}: {out}");
         }
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4286,8 +3837,6 @@ fn a_pass_past_its_reads_says_it_is_finishing() {
     assert!(err.contains("1 of 2 files read, finishing"), "{err}");
     let (_, out, _) = rq_full(&db, &dir, &["--status"], &[], None);
     assert!(out.contains("1 of 2 files, finishing"), "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4309,14 +3858,12 @@ fn a_provisional_match_has_a_results_shape() {
     };
     let provisional = out.split("\"provisional\": [").nth(1).unwrap_or_default();
     assert_eq!(keys(provisional), keys(&hit), "{out}\n{hit}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// A complete repo holding only a prefix match for `Widget`, and another
 /// whose exact `class Widget` is unread while a live process (this test)
 /// marks a pass over it.
-fn complete_here_partial_elsewhere(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+fn complete_here_partial_elsewhere(label: &str) -> (Scratch, Scratch, PathBuf) {
     let (other, db) = scratch(label);
     fs::create_dir_all(other.join("x")).unwrap();
     fs::create_dir_all(other.join("y")).unwrap();
@@ -4372,16 +3919,13 @@ fn across_checkouts_a_complete_ones_match_waits_on_another_still_indexing() {
         err.contains(&format!("rq --index {}", root.display())),
         "text names it too: {err}"
     );
-
-    let _ = fs::remove_dir_all(&other);
-    let _ = fs::remove_dir_all(&here);
 }
 
 #[test]
 fn across_checkouts_a_complete_ones_search_follows_another_indexer() {
     let (other, here, db) = complete_here_partial_elsewhere("all-follow");
     let indexer = {
-        let (db, other) = (db.clone(), other.clone());
+        let (db, other) = (db.clone(), other.to_path_buf());
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(800));
             rq(&db, &other, &["--index"]);
@@ -4398,9 +3942,6 @@ fn across_checkouts_a_complete_ones_search_follows_another_indexer() {
     indexer.join().unwrap();
     assert_eq!(code, 0, "{out}");
     assert_eq!(json(&out)[0]["name"], "Widget", "{out}");
-
-    let _ = fs::remove_dir_all(&other);
-    let _ = fs::remove_dir_all(&here);
 }
 
 #[test]
@@ -4425,8 +3966,6 @@ fn a_warm_child_keeps_going_past_its_budget_while_it_makes_progress() {
     let rows = json(&out);
     assert_eq!(rows[0]["status"], "complete", "{out}");
     assert_eq!(rows[0]["files"], 60, "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4444,14 +3983,7 @@ fn a_sparse_checkout_spans_only_the_files_it_has() {
     }
     git_init_commit(&dir);
     let git = |args: &[&str]| {
-        let out = Command::new("git")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .unwrap();
+        let out = git_cmd(&dir).args(args).output().unwrap();
         assert!(out.status.success(), "{out:?}");
     };
     git(&["sparse-checkout", "set", "d0"]);
@@ -4469,8 +4001,6 @@ fn a_sparse_checkout_spans_only_the_files_it_has() {
         &v["warming"]
     };
     assert_eq!((&w["read"], &w["of"]), (&2.into(), &2.into()), "{out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4496,8 +4026,6 @@ fn an_untracked_file_an_explicit_index_read_survives_a_warm_completing_the_check
     assert_eq!(code, 0, "still on disk, still indexed: {out}");
     let (code, out, _) = rq_full(&db, &dir, &["Gone", "--json"], &[], None);
     assert_eq!(code, 1, "deleted, forgotten: {out}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -4516,8 +4044,6 @@ fn an_explicit_index_waits_out_another_writer_holding_the_lock_a_while() {
     let (code, out, err) = rq_full(&db, &dir, &["--index", "--json"], &[], None);
     holder.join().unwrap();
     assert_eq!(code, 0, "{out}{err}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// Run `rq` at a pretend terminal from `cwd`, sending SIGINT after `interrupt`
@@ -4532,14 +4058,8 @@ fn rq_at_terminal(
 ) -> (Option<i32>, std::time::Duration, String, String) {
     use std::io::Read;
     let start = std::time::Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let mut child = rq_cmd(db, cwd)
         .args(args)
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
         .env("RQ_ASSUME_INTERACTIVE", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -4598,14 +4118,11 @@ fn across_checkouts_a_terminal_search_shows_the_indexer_it_follows_and_leaves_on
     assert!(out.contains("widget_maker"), "{out}");
     let label = other.file_name().unwrap().to_string_lossy();
     assert!(err.contains(&format!("indexing {label}")), "{err}");
-
-    let _ = fs::remove_dir_all(&other);
-    let _ = fs::remove_dir_all(&here);
 }
 
 #[test]
 fn across_checkouts_ctrl_c_at_a_terminal_prints_what_is_known() {
-    let (other, here, db) = complete_here_partial_elsewhere("all-tty-int");
+    let (_other, here, db) = complete_here_partial_elsewhere("all-tty-int");
 
     let (code, waited, out, err) = rq_at_terminal(
         &db,
@@ -4616,9 +4133,6 @@ fn across_checkouts_ctrl_c_at_a_terminal_prints_what_is_known() {
     );
     assert_eq!(code, Some(2), "after {waited:?}: {err}");
     assert!(out.contains("widget_maker"), "{out}");
-
-    let _ = fs::remove_dir_all(&other);
-    let _ = fs::remove_dir_all(&here);
 }
 
 #[test]
@@ -4649,6 +4163,4 @@ fn an_index_blocked_by_another_writer_says_so_and_gives_up_after_one_wait() {
     assert!(err.contains("waiting for another rq"), "{err}");
     // one wait, not one per write
     assert!(waited < std::time::Duration::from_secs(4), "{waited:?}");
-
-    let _ = fs::remove_dir_all(&dir);
 }

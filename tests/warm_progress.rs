@@ -14,21 +14,19 @@
 //! tracked files when it can; with nothing tracked it falls back to the
 //! filesystem walk, which is the path the original bug lived on.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use common::{Scratch, code, git_cmd, rq_cmd};
 
 const FILES: usize = 1000;
 const CAP: usize = 200;
 
-fn scratch() -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir();
-    let dir = base.join(format!("rq-warmprog-{}", std::process::id()));
-    let db = base.join(format!("rq-warmprog-{}.db", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+fn scratch() -> (Scratch, PathBuf) {
+    let dir = Scratch::new("warmprog");
+    let db = dir.db();
     for d in 0..50 {
         let sub = dir.join(format!("d{d:02}"));
         fs::create_dir_all(&sub).unwrap();
@@ -40,34 +38,22 @@ fn scratch() -> (PathBuf, PathBuf) {
             .unwrap();
         }
     }
-    let _ = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(["init", "-q"])
-        .current_dir(&dir)
-        .output();
+    let _ = git_cmd(&dir).args(["init", "-q"]).output();
     (dir, db)
 }
 
 /// One capped warm pass: a search that misses drives the sweep and returns.
 /// Detached warming is off so no child races the next assertion.
 fn warm_pass(db: &Path, dir: &Path) {
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = rq_cmd(db, dir)
         .args(["Nonexistent"])
-        .current_dir(dir)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
         .env("RQ_COLLECT_CAP", CAP.to_string())
         .output()
         .expect("run rq");
     // a miss is exit 1 (definitive) or 2 (still warming) — both are fine here
     assert_ne!(
-        out.status.code(),
-        Some(101),
+        code(&out),
+        101,
         "rq panicked: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -75,13 +61,8 @@ fn warm_pass(db: &Path, dir: &Path) {
 
 /// Files this repo has indexed so far, per `rq --status`.
 fn indexed_files(db: &Path, dir: &Path) -> usize {
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = rq_cmd(db, dir)
         .args(["--status", "--ndjson"])
-        .current_dir(dir)
-        .env("RQ_DB", db)
         .output()
         .expect("run rq --status");
     let text = String::from_utf8_lossy(&out.stdout);
@@ -116,9 +97,4 @@ fn a_bounded_pass_makes_incremental_progress() {
         last = now;
     }
     assert_eq!(last, FILES, "every file indexed after enough passes");
-
-    let _ = fs::remove_dir_all(&dir);
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }

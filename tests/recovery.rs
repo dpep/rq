@@ -1,20 +1,23 @@
 //! A database rq can't use as it is — damaged, half-upgraded, or a newer rq's —
 //! still leaves the command working (DECISIONS D51).
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::PathBuf;
+use std::process::Output;
+
+use common::rq_cmd;
 
 /// A repo with one class, and a database path in a directory of its own:
 /// set-aside copies and side stores land beside the database.
 struct Scratch {
-    dir: PathBuf,
+    dir: common::Scratch,
 }
 
 impl Scratch {
     fn new(label: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("rq-recovery-{}-{label}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = common::Scratch::new(&format!("recovery-{label}"));
         fs::create_dir_all(dir.join("repo")).unwrap();
         fs::write(dir.join("repo/widget.rb"), "class Widget\nend\n").unwrap();
         Scratch { dir }
@@ -25,7 +28,8 @@ impl Scratch {
     }
 
     fn rq(&self, args: &[&str]) -> Output {
-        rq_command(&self.db(), &self.dir.join("repo"), args)
+        rq_cmd(&self.db(), &self.dir.join("repo"))
+            .args(args)
             .output()
             .expect("run rq")
     }
@@ -45,26 +49,6 @@ impl Scratch {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap()
     }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn rq_command(db: &Path, cwd: &Path, args: &[&str]) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rq"));
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            cmd.env_remove(key);
-        }
-    }
-    cmd.args(args)
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0");
-    cmd
 }
 
 fn stderr(out: &Output) -> String {
@@ -169,7 +153,8 @@ fn concurrent_commands_on_a_broken_database_rebuild_it_once() {
     fs::write(s.db(), "not a database ".repeat(1000)).unwrap();
     let children: Vec<_> = (0..6)
         .map(|_| {
-            rq_command(&s.db(), &s.dir.join("repo"), &["--status", "--json"])
+            rq_cmd(&s.db(), &s.dir.join("repo"))
+                .args(["--status", "--json"])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()

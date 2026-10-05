@@ -2,30 +2,26 @@
 //! HEAD — share an identity but not their files. Each must answer from its own
 //! tree, and indexing one must not overwrite another.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
+use common::{Scratch, git_cmd, rq};
 use serde_json::Value;
 
-/// A fresh base directory and database for one test.
-fn scratch(label: &str) -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("rq-co-{}-{label}", std::process::id()));
-    let _ = fs::remove_dir_all(&base);
-    fs::create_dir_all(&base).unwrap();
-    let base = base.canonicalize().unwrap();
-    let db = base.join("rq.db");
+/// A fresh base directory for one test, by its real path (git reports one),
+/// and a database beside it.
+fn scratch(label: &str) -> (Scratch, PathBuf) {
+    let base = Scratch::new(&format!("co-{label}")).canonical();
+    let db = base.db();
     (base, db)
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let out = git_cmd(dir)
         .args(["-c", "user.email=t@e.st", "-c", "user.name=test"])
         .args(args)
-        .current_dir(dir)
         .output()
         .expect("run git");
     assert!(
@@ -39,24 +35,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn commit_all(dir: &Path, msg: &str) {
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-qm", msg]);
-}
-
-/// Run rq with an isolated database, warming in-process. Returns (exit ok, stdout).
-fn rq(db: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_rq"))
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .args(args)
-        .current_dir(cwd)
-        .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
-        .output()
-        .expect("run rq");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-    )
 }
 
 /// The hits of an `--ndjson` search, as `(name, file, root)`.
@@ -144,11 +122,9 @@ fn worktrees_each_answer_from_their_own_branch() {
     diverge(&a, &b);
 
     // index A, then B: B's pass must not overwrite what A indexed
-    assert!(rq(&db, &a, &["--index"]).0);
-    assert!(rq(&db, &b, &["--index"]).0);
+    assert_eq!(rq(&db, &a, &["--index"]).0, 0);
+    assert_eq!(rq(&db, &b, &["--index"]).0, 0);
     assert_each_reads_its_own(&db, &a, &b);
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -174,11 +150,9 @@ fn clones_of_one_remote_each_answer_from_their_own_files() {
     }
     diverge(&a, &b);
 
-    assert!(rq(&db, &a, &["--index"]).0);
-    assert!(rq(&db, &b, &["--index"]).0);
+    assert_eq!(rq(&db, &a, &["--index"]).0, 0);
+    assert_eq!(rq(&db, &b, &["--index"]).0, 0);
     assert_each_reads_its_own(&db, &a, &b);
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -205,19 +179,17 @@ fn a_detached_checkout_answers_from_its_commit() {
         ],
     );
 
-    assert!(rq(&db, &main, &["--index"]).0);
-    assert!(rq(&db, &old, &["--index"]).0);
+    assert_eq!(rq(&db, &main, &["--index"]).0, 0);
+    assert_eq!(rq(&db, &old, &["--index"]).0, 0);
     let found = hits(&db, &main, "alpha", &["-k", "method"]);
     assert_eq!(names(&found), ["alpha"], "main has alpha: {found:?}");
     let found = hits(&db, &old, "alpha", &["-k", "method"]);
     assert!(found.is_empty(), "the old commit has no alpha: {found:?}");
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 /// Two diverged worktrees, both indexed, and a third on `main` holding only
 /// content its siblings already hold.
-fn three_worktrees(label: &str) -> (PathBuf, PathBuf, [PathBuf; 3]) {
+fn three_worktrees(label: &str) -> (Scratch, PathBuf, [PathBuf; 3]) {
     let (base, db) = scratch(label);
     let main = origin(&base);
     let wt = |name: &str, branch: &str| {
@@ -230,8 +202,8 @@ fn three_worktrees(label: &str) -> (PathBuf, PathBuf, [PathBuf; 3]) {
     };
     let (a, b, c) = (wt("wt-a", "a"), wt("wt-b", "b"), wt("wt-c", "c"));
     diverge(&a, &b);
-    assert!(rq(&db, &a, &["--index"]).0);
-    assert!(rq(&db, &b, &["--index"]).0);
+    assert_eq!(rq(&db, &a, &["--index"]).0, 0);
+    assert_eq!(rq(&db, &b, &["--index"]).0, 0);
     (base, db, [a, b, c])
 }
 
@@ -241,10 +213,10 @@ fn json(out: &str) -> Value {
 
 #[test]
 fn a_new_worktree_parses_nothing_its_siblings_hold() {
-    let (base, db, [a, _, c]) = three_worktrees("shared");
+    let (_base, db, [a, _, c]) = three_worktrees("shared");
     // C's widget.rb is B's and its gadget.rb is A's: both versions are held
-    let (ok, out) = rq(&db, &c, &["--index", "--json"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &c, &["--index", "--json"]);
+    assert_eq!(code, 0, "{out}");
     let index = json(&out);
     assert_eq!(index["files"], 2, "{out}");
     assert_eq!(index["files_added"], 0, "nothing parsed: {out}");
@@ -254,13 +226,11 @@ fn a_new_worktree_parses_nothing_its_siblings_hold() {
     assert!(hits(&db, &c, "alpha", &["-k", "method"]).is_empty());
     // and A is untouched by C's pass
     assert_eq!(names(&hits(&db, &a, "alpha", &["-k", "method"])), ["alpha"]);
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn all_repos_folds_a_definition_the_checkouts_share() {
-    let (base, db, [a, b, _]) = three_worktrees("all");
+    let (_base, db, [a, b, _]) = three_worktrees("all");
     let root = |d: &Path| d.to_string_lossy().into_owned();
     // `Widget` is at widget.rb:1 in both, though the files differ: one hit,
     // from the checkout asked in
@@ -273,16 +243,14 @@ fn all_repos_folds_a_definition_the_checkouts_share() {
     let found = hits(&db, &b, "alpha", &["-a", "-k", "method"]);
     assert_eq!(names(&found), ["alpha"]);
     assert_eq!(found[0].2, root(&a));
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn status_and_drop_name_each_checkout() {
-    let (base, db, [a, b, c]) = three_worktrees("status");
-    assert!(rq(&db, &c, &["--index"]).0);
-    let (ok, out) = rq(&db, &a, &["--status", "--json"]);
-    assert!(ok, "{out}");
+    let (_base, db, [a, b, c]) = three_worktrees("status");
+    assert_eq!(rq(&db, &c, &["--index"]).0, 0);
+    let (code, out) = rq(&db, &a, &["--status", "--json"]);
+    assert_eq!(code, 0, "{out}");
     let rows = json(&out);
     let rows = rows.as_array().expect("array");
     assert_eq!(rows.len(), 3, "one row per checkout: {out}");
@@ -294,8 +262,8 @@ fn status_and_drop_name_each_checkout() {
     }
 
     // dropping C leaves A and B, and every version they map
-    let (ok, out) = rq(&db, &c, &["--drop", "--json"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &c, &["--drop", "--json"]);
+    assert_eq!(code, 0, "{out}");
     let dropped = json(&out);
     assert_eq!(dropped["dropped"], true);
     assert_eq!(dropped["root"], c.to_string_lossy().as_ref());
@@ -305,24 +273,22 @@ fn status_and_drop_name_each_checkout() {
 
     // dropping the repo by name drops every checkout of it, counted as
     // `--status` counted them
-    let (ok, out) = rq(&db, &a, &["--drop", "github.com/acme/widgets", "--json"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &a, &["--drop", "github.com/acme/widgets", "--json"]);
+    assert_eq!(code, 0, "{out}");
     assert_eq!(json(&out)["files"], 4, "{out}");
     let (_, out) = rq(&db, &a, &["--status", "--json"]);
     assert_eq!(json(&out).as_array().map(Vec::len), Some(0), "{out}");
     // nothing left to drop: `repo` is still an identity, not a path
-    let (ok, out) = rq(&db, &a, &["--drop", "--json"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &a, &["--drop", "--json"]);
+    assert_eq!(code, 0, "{out}");
     let dropped = json(&out);
     assert_eq!(dropped["dropped"], false, "{out}");
     assert_eq!(dropped["repo"], "github.com/acme/widgets", "{out}");
     assert_eq!(dropped["root"], a.to_string_lossy().as_ref(), "{out}");
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 /// `n` files each defining `perform_task`, in `k` worktrees, every one indexed.
-fn crowded(label: &str, n: usize, k: usize) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+fn crowded(label: &str, n: usize, k: usize) -> (Scratch, PathBuf, Vec<PathBuf>) {
     let (base, db) = scratch(label);
     let main = base.join("main");
     fs::create_dir_all(main.join("jobs")).unwrap();
@@ -349,7 +315,7 @@ fn crowded(label: &str, n: usize, k: usize) -> (PathBuf, PathBuf, Vec<PathBuf>) 
         roots.push(dir);
     }
     for dir in &roots {
-        assert!(rq(&db, dir, &["--index"]).0);
+        assert_eq!(rq(&db, dir, &["--index"]).0, 0);
     }
     (base, db, roots)
 }
@@ -358,13 +324,13 @@ fn crowded(label: &str, n: usize, k: usize) -> (PathBuf, PathBuf, Vec<PathBuf>) 
 fn all_repos_counts_each_definition_once_however_many_checkouts_hold_it() {
     // more rows than the candidate cap once multiplied by the checkouts
     let (n, k) = (2000, 5);
-    let (base, db, roots) = crowded("crowded", n, k);
-    let (ok, out) = rq(
+    let (_base, db, roots) = crowded("crowded", n, k);
+    let (code, out) = rq(
         &db,
         &roots[1],
         &["perform_task", "-a", "--limit", "0", "--ndjson"],
     );
-    assert!(ok);
+    assert_eq!(code, 0);
     let rows: Vec<Value> = out.lines().map(json).collect();
     assert_eq!(rows.len(), n, "every definition, once");
     assert_eq!(rows[0]["total"], n);
@@ -373,15 +339,13 @@ fn all_repos_counts_each_definition_once_however_many_checkouts_hold_it() {
         rows.iter().all(|r| r["root"] == root.as_ref()),
         "read from the checkout asked in"
     );
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
 fn a_checkout_gone_from_disk_is_forgotten() {
     let (base, db, [a, b, c]) = three_worktrees("gone");
     // C, the newest, shares A's gadget.rb; then it's deleted without a word
-    assert!(rq(&db, &c, &["--index"]).0);
+    assert_eq!(rq(&db, &c, &["--index"]).0, 0);
     fs::remove_dir_all(&c).unwrap();
     let elsewhere = base.join("elsewhere");
     fs::create_dir_all(&elsewhere).unwrap();
@@ -391,8 +355,8 @@ fn a_checkout_gone_from_disk_is_forgotten() {
     assert_eq!(names(&found), ["old_name"], "{found:?}");
     assert_eq!(found[0].2, root(&a), "read from a checkout that exists");
 
-    let (ok, out) = rq(&db, &elsewhere, &["--status", "--json"]);
-    assert!(ok, "{out}");
+    let (code, out) = rq(&db, &elsewhere, &["--status", "--json"]);
+    assert_eq!(code, 0, "{out}");
     let rows = json(&out);
     let roots: Vec<&str> = rows
         .as_array()
@@ -408,15 +372,13 @@ fn a_checkout_gone_from_disk_is_forgotten() {
     let (_, out) = rq(&db, &elsewhere, &["--status", "--json"]);
     assert_eq!(json(&out).as_array().map(Vec::len), Some(0), "{out}");
     assert!(hits(&db, &elsewhere, "old_name", &["-a"]).is_empty());
-    let (ok, out) = rq(
+    let (code, out) = rq(
         &db,
         &elsewhere,
         &["--drop", "github.com/acme/widgets", "--json"],
     );
-    assert!(ok, "{out}");
+    assert_eq!(code, 0, "{out}");
     assert_eq!(json(&out)["dropped"], false, "nothing left to drop: {out}");
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -429,7 +391,7 @@ fn all_repos_folds_a_definition_the_rest_of_its_file_moved() {
     )
     .unwrap();
     commit_all(&b, "note");
-    assert!(rq(&db, &b, &["--index"]).0);
+    assert_eq!(rq(&db, &b, &["--index"]).0, 0);
     let elsewhere = base.join("elsewhere");
     fs::create_dir_all(&elsewhere).unwrap();
     let found = hits(&db, &elsewhere, "Gadget", &["-a", "-k", "class"]);
@@ -437,8 +399,6 @@ fn all_repos_folds_a_definition_the_rest_of_its_file_moved() {
     let found = hits(&db, &a, "Gadget", &["-a", "-k", "class"]);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].2, a.to_string_lossy(), "the checkout asked in");
-
-    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -473,11 +433,9 @@ fn a_checkout_nothing_indexed_says_so() {
     // only B defines new_name: a miss across checkouts names B, not `warming`
     let elsewhere = base.join("elsewhere");
     fs::create_dir_all(&elsewhere).unwrap();
-    let (ok, out) = rq(&db, &elsewhere, &["new_name", "-a", "--json"]);
-    assert!(!ok);
+    let (code, out) = rq(&db, &elsewhere, &["new_name", "-a", "--json"]);
+    assert_ne!(code, 0);
     let miss = json(&out);
     assert_eq!(miss["status"], "no_match", "{out}");
     assert_eq!(miss["incomplete"], serde_json::json!([b_root]), "{out}");
-
-    let _ = fs::remove_dir_all(&base);
 }
