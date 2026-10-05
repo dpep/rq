@@ -770,41 +770,56 @@ fn cmd_batch(
         }
     }
 
-    let mut worst = ExitCode::SUCCESS;
-    let mut any_hit = false;
-    for query in &queries {
-        let code = cmd_search(
-            &mut session,
-            &SearchArgs {
-                query,
-                explain: cli.explain,
-                out,
-                paths,
-                kinds,
-                langs,
-                want: requested_limit(cli.limit),
-                // The warm happened above, once. Per-query warming would undo
-                // the point of batching, and block-until-answered is meaningless
-                // when the queries were all read up front.
-                no_wait: true,
-                wait: cli.wait,
-                open: false,
-                web: false,
-                all_repos: cli.all_repos,
-                show: false,
-                batch: true,
-                anchored: cli.anchor.is_some(),
-            },
-        );
-        if code == ExitCode::SUCCESS {
-            any_hit = true;
-        } else {
-            worst = code;
-        }
+    let codes: Vec<ExitCode> = queries
+        .iter()
+        .map(|query| {
+            cmd_search(
+                &mut session,
+                &SearchArgs {
+                    query,
+                    explain: cli.explain,
+                    out,
+                    paths,
+                    kinds,
+                    langs,
+                    want: requested_limit(cli.limit),
+                    // The warm happened above, once. Per-query warming would undo
+                    // the point of batching, and block-until-answered is meaningless
+                    // when the queries were all read up front.
+                    no_wait: true,
+                    wait: cli.wait,
+                    open: false,
+                    web: false,
+                    all_repos: cli.all_repos,
+                    show: false,
+                    batch: true,
+                    anchored: cli.anchor.is_some(),
+                },
+            )
+        })
+        .collect();
+    batch_exit(&codes)
+}
+
+/// A batch's exit code. The batch ran, and per-line `status` carries each
+/// query's outcome, so only a wholly fruitless batch reports failure,
+/// mirroring one query's contract — then with the code the caller can act on
+/// most: an error, then "retry" (2), and a miss (1) only when a retry would
+/// change nothing.
+fn batch_exit(codes: &[ExitCode]) -> ExitCode {
+    let retry = ExitCode::from(2);
+    if codes.contains(&ExitCode::SUCCESS) {
+        ExitCode::SUCCESS
+    } else if let Some(&error) = codes
+        .iter()
+        .find(|&&c| c != retry && c != ExitCode::FAILURE)
+    {
+        error
+    } else if codes.contains(&retry) {
+        retry
+    } else {
+        ExitCode::FAILURE
     }
-    // The batch ran; per-line `status` carries each query's outcome. Only a
-    // wholly fruitless batch reports failure, mirroring one query's contract.
-    if any_hit { ExitCode::SUCCESS } else { worst }
 }
 
 fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
@@ -4234,6 +4249,22 @@ mod tests {
         assert_eq!(branch_files_ttl(Some(u64::MAX)), BRANCH_FILES_TTL_MAX_SECS);
         // an entry written before the cost was recorded falls back to default
         assert_eq!(branch_files_ttl(None), BRANCH_FILES_TTL_SECS);
+    }
+
+    #[test]
+    fn a_fruitless_batch_exits_with_what_the_caller_can_act_on() {
+        let (hit, miss, retry) = (ExitCode::SUCCESS, ExitCode::FAILURE, ExitCode::from(2));
+        let error = ExitCode::from(Failure::Database.exit_code());
+        let cases = [
+            (vec![miss, hit, retry], hit),
+            (vec![retry, miss], retry),
+            (vec![miss, retry], retry),
+            (vec![miss, miss], miss),
+            (vec![retry, error, miss], error),
+        ];
+        for (codes, want) in cases {
+            assert_eq!(batch_exit(&codes), want, "{codes:?}");
+        }
     }
 
     #[test]

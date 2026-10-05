@@ -46,6 +46,11 @@ meanwhile, without the field.
   checkout still being indexed asked git for the repo's identity and file list
   twice, inside the scan's 250 ms; on a busy machine that could leave no time
   to find the answer. Both are now resolved once, before the scan starts.
+- **A batch with nothing found says "retry" when a retry could help.** Piped
+  queries that all came up empty exited with the last query's code, so a
+  batch ending in a miss (1) hid an earlier query that only found the index
+  still warming (2). It now exits 2 when any query could still hit, 1 only
+  when every query is a definite miss, and an error's own code before either.
 - **Two modes at once are a usage error (exit 64).** `--usage --drop`,
   `--symbols FILE --usage`, `--warm --usage` and the like ran whichever mode
   rq checked first and ignored the other. `--show`, `--open`, `--web` and
