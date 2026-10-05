@@ -38,3 +38,9 @@ tree-sitter-rust = "0.24"
 tree-sitter-go = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-typescript = "0.23.2"
+
+# Dependencies optimized in dev builds: SQLite and the grammars are C, and at
+# -O0 they slow every test run and `make dogfood`'s indexing. rq itself stays
+# at -O0, so the edit-compile loop and the debugger are unchanged.
+[profile.dev.package."*"]
+opt-level = 2
