@@ -42,6 +42,11 @@ meanwhile, without the field.
 - **A damaged name index no longer crashes a search.** A truncated row in the
   index fuzzy recall reads made the search panic; the repo is now read from
   its symbols for that search and its name index rebuilt on the next.
+- **Two modes at once are a usage error (exit 64).** `--usage --drop`,
+  `--symbols FILE --usage`, `--warm --usage` and the like ran whichever mode
+  rq checked first and ignored the other. `--show`, `--open`, `--web` and
+  `--anchor` are refused beside any mode, `--usage` and `--completions`
+  included.
 
 ## 0.60.3 — 2026-10-01
 

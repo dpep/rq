@@ -16,6 +16,12 @@ use crate::store::{Checkout, Store};
 /// than subcommands so no word is reserved — `rq index`, `rq status`, and
 /// `rq record` all search for those symbols. This also matches the rg/fd feel.
 #[derive(Parser)]
+// modes are exclusive: `dispatch` would run whichever it checks first
+#[command(group(
+    clap::ArgGroup::new("mode")
+        .args(["symbols", "index", "status", "drop", "usage", "warm", "completions"])
+        .multiple(false)
+))]
 #[command(
     name = "rq",
     version,
@@ -114,7 +120,7 @@ struct Cli {
     /// the scopes around that line come first, then ones in the same file and
     /// nearby directories. It's context, not a filter. FILE is relative to the
     /// current directory; COL is accepted and ignored.
-    #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with_all = ["index", "status", "usage", "symbols", "drop", "warm"])]
+    #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with = "mode")]
     anchor: Option<AnchorSpec>,
 
     /// Search every indexed checkout, not just this one.
@@ -142,7 +148,7 @@ struct Cli {
     ///
     /// Otherwise prints the list. Pipe it to a pager: `rq --show foo | less`.
     /// JSON adds a `body` field.
-    #[arg(help_heading = "Output", long, conflicts_with_all = ["open", "web", "index", "status", "symbols", "drop"])]
+    #[arg(help_heading = "Output", long, conflicts_with_all = ["open", "web", "mode"])]
     show: bool,
 
     /// Open the best match in your editor.
@@ -151,7 +157,7 @@ struct Cli {
     /// template with `{file}`, `{line}`, or `{}` for path:line; with none of them,
     /// path:line is appended), else VS Code (`code`), else `$VISUAL`/`$EDITOR`,
     /// else prints path:line.
-    #[arg(help_heading = "Output", short = 'o', long, conflicts_with_all = ["index", "status", "json", "ndjson"])]
+    #[arg(help_heading = "Output", short = 'o', long, conflicts_with_all = ["mode", "json", "ndjson"])]
     open: bool,
 
     /// Open the best match on its git host, in the browser.
@@ -159,7 +165,7 @@ struct Cli {
     /// A GitHub-style `blob/<sha>/<file>#L<line>` link, pinned to the newest
     /// pushed commit in HEAD's history so it resolves and stays accurate.
     /// Launcher: `$BROWSER`, else `open`/`xdg-open`, else prints the URL.
-    #[arg(help_heading = "Output", short = 'w', long, conflicts_with_all = ["open", "index", "status", "json", "ndjson"])]
+    #[arg(help_heading = "Output", short = 'w', long, conflicts_with_all = ["open", "mode", "json", "ndjson"])]
     web: bool,
 
     // Waiting on the index
@@ -186,34 +192,34 @@ struct Cli {
     /// List a file's definitions, in line order.
     ///
     /// Honors -k and -x.
-    #[arg(help_heading = "The index", long, value_name = "FILE", value_hint = clap::ValueHint::FilePath, conflicts_with_all = ["index", "status", "drop", "open", "web"])]
+    #[arg(help_heading = "The index", long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     symbols: Option<String>,
 
     /// Index a checkout now (PATH, or this one).
     ///
     /// Searches index on their own; this just does it up front.
-    #[arg(help_heading = "The index", long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with = "status")]
+    #[arg(help_heading = "The index", long, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath)]
     index: Option<Option<String>>,
 
     /// Show what's indexed, per checkout.
-    #[arg(help_heading = "The index", long, conflicts_with = "index")]
+    #[arg(help_heading = "The index", long)]
     status: bool,
 
     /// Forget a checkout's index (the opposite of --index).
     ///
     /// TARGET is the checkout's path (default: this one), or a repo identity as
     /// --status shows it, which forgets every checkout of the repo.
-    #[arg(help_heading = "The index", long, conflicts_with_all = ["index", "status", "open", "web"])]
+    #[arg(help_heading = "The index", long)]
     drop: bool,
 
     /// Show searches per day, by caller and flags.
-    #[arg(help_heading = "The index", long, conflicts_with_all = ["index", "status"])]
+    #[arg(help_heading = "The index", long)]
     usage: bool,
 
     /// Finish warming a repository's index in the background — the target a
     /// search re-execs after printing results, detached, so the shell never
     /// waits on it. Single-flighted per checkout; safe to run by hand.
-    #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath, conflicts_with_all = ["index", "status", "drop", "symbols", "open", "web", "show"])]
+    #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath)]
     warm: Option<Option<String>>,
 
     // Debugging

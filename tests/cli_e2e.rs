@@ -1335,6 +1335,45 @@ fn an_anchor_file_the_index_has_not_seen_is_read_live() {
 }
 
 #[test]
+fn two_modes_at_once_are_a_usage_error() {
+    let (dir, db) = scratch("two-modes");
+    let code = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rq"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args(args)
+            .current_dir(&dir)
+            .env("RQ_DB", &db)
+            .env("RQ_WARM_DETACH", "0")
+            .output()
+            .expect("run rq")
+            .status
+            .code()
+    };
+    for args in [
+        &["--usage", "--drop"][..],
+        &["--symbols", "a.rb", "--usage"],
+        &["--warm", "--usage"],
+        &["--status", "--index"],
+        &["--completions", "bash", "--status"],
+        &["--usage", "--show", "Widget"],
+    ] {
+        assert_eq!(code(args), Some(64), "{args:?}");
+    }
+    // a mode still takes the flags that shape it
+    for args in [
+        &["--status", "--json"][..],
+        &["--usage", "--ndjson"],
+        &["--index", ".", "--path", "lib", "--json"],
+        &["--drop", "--json"],
+    ] {
+        assert_ne!(code(args), Some(64), "{args:?}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_anchor_is_rejected_where_it_means_nothing() {
     let (dir, db) = scratch("anchor-bad");
     for args in [
