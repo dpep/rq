@@ -531,6 +531,57 @@ struct SearchArgs<'a> {
     anchored: bool,
 }
 
+/// Where a command is asked from, and what the index knows of it. Every
+/// command that acts on "this checkout" builds one, so they agree on which
+/// checkout that is and whether rq may warm it.
+struct Here {
+    /// The git work tree's root, else the directory itself — never a subdir
+    /// of a repo, which would re-key it under subdir-relative paths that the
+    /// deletion reconcile would then forget. Canonical, as indexing keys it.
+    root: PathBuf,
+    is_git: bool,
+    coverage: Option<Coverage>,
+    checkout: Option<Checkout>,
+}
+
+impl Here {
+    fn at(store: &Store, start: &std::path::Path) -> Here {
+        let (root, is_git) = checkout_root(start);
+        let mut here = Here {
+            root,
+            is_git,
+            coverage: None,
+            checkout: None,
+        };
+        here.refresh(store);
+        here
+    }
+
+    /// Re-read what the index knows, after a pass here.
+    fn refresh(&mut self, store: &Store) {
+        self.coverage = store.coverage_status(&root_key(&self.root)).ok().flatten();
+        self.checkout = checkout_at(store, &self.root);
+    }
+
+    /// Whether rq may index here: a git work tree (safe to auto-discover), or
+    /// any dir it already tracks — one earns tracking by being explicitly
+    /// `--index`ed. Never an unknown non-git dir: don't walk a random directory.
+    fn warms(&self) -> bool {
+        self.is_git || self.coverage.is_some()
+    }
+}
+
+/// [`Here::root`] for a command at `start`, and whether it's a git work tree.
+fn checkout_root(start: &std::path::Path) -> (PathBuf, bool) {
+    match crate::index::repo_root(start) {
+        Some(root) => (root, true),
+        None => (
+            start.canonicalize().unwrap_or_else(|_| start.to_path_buf()),
+            false,
+        ),
+    }
+}
+
 /// Default action: search the index and print ranked results.
 /// Everything a search needs that doesn't depend on the query: the open store,
 /// the repo it's rooted in, the branch's changed files, and who that repo is.
@@ -544,12 +595,11 @@ struct SearchArgs<'a> {
 struct Session {
     store: Store,
     cwd: Option<PathBuf>,
-    cwd_is_git: bool,
-    root: Option<PathBuf>,
+    /// The checkout the cwd is in; `None` when there's no cwd to ask from.
+    here: Option<Here>,
     active_paths: Vec<String>,
     branch_refresh: Option<BranchRefresh>,
     identity: Option<String>,
-    coverage: Option<Coverage>,
     /// Where the queries are asked from (`--anchor`), resolved once.
     anchor: Option<crate::search::Anchor>,
     /// A batch found the worktree moved and left the reindex to a child: its
@@ -565,25 +615,14 @@ impl Session {
         drop(open_span);
         let git_span = crate::profile::span("setup: git root");
         let cwd = std::env::current_dir().ok();
-        let cwd_is_git = cwd.as_deref().is_some_and(crate::index::is_git_repo);
-
-        // Index relative to the repo ROOT, not wherever the search happens to run.
-        // Paths and the stored checkout root must be repo-root-relative and stable, or
-        // a search from a subdirectory would re-key the same repo under subdir-relative
-        // paths — and the deletion reconcile / staleness revalidation would then forget
-        // everything indexed from the root. Outside git, the root is just the cwd.
-        // Canonical, as indexing records it: the root is the checkout's key.
-        let root = cwd.as_deref().map(|c| {
-            let r = crate::index::repo_root(c).unwrap_or_else(|| c.to_path_buf());
-            r.canonicalize().unwrap_or(r)
-        });
+        let here = cwd.as_deref().map(|c| Here::at(&store, c));
         drop(git_span);
 
         // Files you're changing on this feature branch (and their directory
         // neighbors): the branch ranking boost, and the warm pass's priority set.
         let mut branch_span = crate::profile::span("setup: branch files");
-        let (active_paths, branch_refresh, cached_cost) = match &root {
-            Some(c) if cwd_is_git => cached_branch_files(&store, c),
+        let (active_paths, branch_refresh, cached_cost) = match &here {
+            Some(h) if h.is_git => cached_branch_files(&store, &h.root),
             _ => (Vec::new(), None, None),
         };
         branch_span.note(|| {
@@ -604,22 +643,19 @@ impl Session {
         // repo. Computed even for non-git dirs so an explicitly `--index`ed one is
         // still recognized as the current repo below.
         let mut identity_span = crate::profile::span("setup: identity");
-        let identity = root.as_deref().map(|c| resolve_identity(&store, c));
-        let coverage = root
-            .as_deref()
-            .and_then(|r| store.coverage_status(&root_key(r)).ok())
-            .flatten();
-        identity_span.note(|| coverage.map_or("unknown", Coverage::as_str).to_string());
+        let identity = here.as_ref().map(|h| resolve_identity(&store, &h.root));
+        identity_span.note(|| {
+            let coverage = here.as_ref().and_then(|h| h.coverage);
+            coverage.map_or("unknown", Coverage::as_str).to_string()
+        });
         drop(identity_span);
         Ok(Session {
             store,
             cwd,
-            cwd_is_git,
-            root,
+            here,
             active_paths,
             branch_refresh,
             identity,
-            coverage,
             anchor: None,
             moved: false,
         })
@@ -634,8 +670,9 @@ impl Session {
         let abs = here.join(&spec.file);
         let abs = abs.canonicalize().unwrap_or(abs);
         let root = self
-            .root
-            .clone()
+            .here
+            .as_ref()
+            .map(|h| h.root.clone())
             .filter(|r| abs.starts_with(r))
             .or_else(|| crate::index::repo_root(&abs))
             .or_else(|| abs.parent().map(PathBuf::from))
@@ -742,21 +779,24 @@ fn cmd_batch(
 
     // Whether the worktree moved is the repo's question, not a query's: a
     // batch asks it once, here, where a single search asks after answering.
-    let warming_ok = session.cwd_is_git || session.coverage.is_some();
+    let warming_ok = session.here.as_ref().is_some_and(Here::warms);
     let mut moved = false;
     if warming_ok
-        && session.coverage == Some(Coverage::Complete)
-        && let Some(root) = session.root.clone()
+        && let Some(here) = &session.here
+        && here.coverage == Some(Coverage::Complete)
     {
         let store = &session.store;
-        let head = checkout_at(store, &root).and_then(|c| store.indexed_head(c.id).ok().flatten());
+        let root = &here.root;
+        let head = here
+            .checkout
+            .and_then(|c| store.indexed_head(c.id).ok().flatten());
         let checked_at = now_unix();
-        moved = changed_since_index(store, Some(&root), worktree_edits(&root, head.as_deref()));
+        moved = changed_since_index(store, Some(root), worktree_edits(root, head.as_deref()));
         if !moved {
-            record_verified(store, &root, head.as_deref(), checked_at);
+            record_verified(store, root, head.as_deref(), checked_at);
         } else if cli.no_wait {
             session.moved = true;
-            spawn_detached_warm(&root);
+            spawn_detached_warm(root);
         }
     }
 
@@ -764,23 +804,17 @@ fn cmd_batch(
     // doesn't return a page of misses that only mean "not indexed yet".
     if !cli.no_wait
         && warming_ok
-        && (session.coverage != Some(Coverage::Complete) || moved)
-        && let Some(root) = session.root.clone()
+        && let Some(here) = &mut session.here
+        && (here.coverage != Some(Coverage::Complete) || moved)
     {
-        {
-            let budget = cli.wait.unwrap_or_else(wait_budget);
-            crate::trace!(
-                "batch: warming {} queries' worth of index first",
-                queries.len()
-            );
-            let active = session.active_paths.clone();
-            let _ = crate::index::index_budgeted(&mut session.store, &root, &active, budget, None);
-            session.coverage = session
-                .store
-                .coverage_status(&root_key(&root))
-                .ok()
-                .flatten();
-        }
+        let budget = cli.wait.unwrap_or_else(wait_budget);
+        crate::trace!(
+            "batch: warming {} queries' worth of index first",
+            queries.len()
+        );
+        let active = &session.active_paths;
+        let _ = crate::index::index_budgeted(&mut session.store, &here.root, active, budget, None);
+        here.refresh(&session.store);
     }
 
     let codes: Vec<ExitCode> = queries
@@ -866,42 +900,36 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let Session {
         store,
         cwd,
-        cwd_is_git,
-        root,
+        here: place,
         active_paths,
         branch_refresh,
         identity,
-        coverage,
         anchor,
         moved: batch_moved,
     } = session;
-    let cwd_is_git = *cwd_is_git;
-    let coverage = *coverage;
+    let root = place.as_ref().map(|h| h.root.as_path());
+    let coverage = place.as_ref().and_then(|h| h.coverage);
     // `-a` reads every checkout, so none may be one deleted from disk
     if all_repos {
         crate::index::prune_missing_checkouts(store);
     }
 
     // Opportunistic indexing (Layer 5), time-bounded so the first query in a
-    // large repo never blocks on a full walk. We may warm a git work tree (safe
-    // to auto-discover) *or* any dir we already track — one earns tracking by
-    // being explicitly `--index`ed, which opts a non-git dir in. We never warm
-    // an unknown non-git dir (don't walk a random directory). A subtree index
-    // (`--index --path …`) is a seed, not a fence: coverage stays `warming`, so
-    // warming continues over the rest of the repo from here.
-    let known = coverage.is_some();
-    let warming_ok = cwd_is_git || known;
+    // large repo never blocks on a full walk, wherever `Here::warms`. A subtree
+    // index (`--index --path …`) is a seed, not a fence: coverage stays
+    // `warming`, so warming continues over the rest of the repo from here.
+    let warming_ok = place.as_ref().is_some_and(Here::warms);
     if crate::trace::enabled() {
         crate::trace!(
             "query {query:?}: root={} identity={} coverage={} warming_ok={warming_ok} active={}",
-            root.as_deref().map_or("?".into(), crate::trace::abbrev),
+            root.map_or("?".into(), crate::trace::abbrev),
             identity.as_deref().unwrap_or("none"),
             coverage.map_or("none", Coverage::as_str),
             active_paths.len(),
         );
     }
     let repo_span = crate::profile::span("setup: repo state");
-    let checkout_here = |store: &Store| root.as_deref().and_then(|r| checkout_at(store, r));
+    let checkout_here = |store: &Store| root.and_then(|r| checkout_at(store, r));
     let mut current = checkout_here(store);
     // Default: scope results to the current checkout so a search never leaks
     // another tree's definitions. `--all-repos` searches everything.
@@ -938,9 +966,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Whether the worktree moved is a property of the repo, not of the query,
     // so a batch asks once (`cmd_batch`) instead of forking `git status` per line.
     let staleness = (!was_warming && warming_ok && !args.batch)
-        .then(|| root.clone())
+        .then_some(root)
         .flatten()
-        .map(|c| Staleness(c, indexed_head));
+        .map(|c| Staleness(c.to_path_buf(), indexed_head));
     // Only a repo that's still warming warms *before* the answer now; a
     // complete-but-edited one is reindexed by `settle_warm` afterwards.
     let want_warm = warming_ok && was_warming && root.is_some();
@@ -959,7 +987,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // escalation *and* the in-process warm (no lock contention, no join) — leftover
     // warming still detaches below, so the index keeps improving for next time.
     let block = want_warm && !no_wait;
-    let here = root.as_deref().map(root_key);
+    let here = root.map(root_key);
     // `-a` reads other checkouts too: one another process is still filling
     // can hold a better match, so the search waits on it as on its own warm
     let follow_others =
@@ -984,7 +1012,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             "background warm ({wait_budget:?}, progress_ui={progress_ui}, {} jobs)",
             crate::index::parse_jobs()
         );
-        let root = root.clone().expect("checked");
+        let root = root.expect("checked").to_path_buf();
         let active = active_paths.clone();
         let q = query.to_string();
         let warm_done = std::sync::Arc::clone(&warm_done);
@@ -1042,7 +1070,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // toward the first-answer budget even though no searching happened yet.
     drop(setup_span);
     let mut query_span = crate::profile::span("query");
-    let label = repo_label(root.as_deref());
+    let label = repo_label(root);
     // What a retry would read that this search hasn't, which is what a
     // partial index's top match must not be beatable by to answer (D52).
     let unread = |store: &Store, name_read: bool| Unread {
@@ -1079,7 +1107,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                     break h;
                 }
                 let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
-                let answered = shown(args, cwd.as_deref(), root.as_deref(), &h)
+                let answered = shown(args, cwd.as_deref(), root, &h)
                     .first()
                     .is_some_and(|top| held_back_by(top, here.as_deref(), &unread).is_none());
                 let version = store.data_version().ok();
@@ -1093,10 +1121,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 // another process is still filling it.
                 let indexing = own
                     || !stalled
-                        && (root.as_deref().is_some_and(|r| others_indexing(store, r))
+                        && (root.is_some_and(|r| others_indexing(store, r))
                             || unread.elsewhere.is_some());
-                let complete = root.as_deref().is_some_and(|r| is_complete(store, r))
-                    && unread.elsewhere.is_none();
+                let complete =
+                    root.is_some_and(|r| is_complete(store, r)) && unread.elsewhere.is_none();
                 let stopped = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
                 // A poll costs what the last one did (about a second while a
                 // cold pass holds the name index), so stop rather than start
@@ -1174,7 +1202,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     if !hits.iter().any(strong)
         && indexer.is_none()
         && coverage.is_none()
-        && let (Some(root), Some(identity)) = (&root, &identity)
+        && let (Some(root), Some(identity)) = (root, &identity)
     {
         let tree = crate::index::LiveTree::new(root, identity.clone());
         let (tail, cost) = live_fallback(&tree, query, rank_limit, &ctx);
@@ -1184,7 +1212,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     }
 
     apply_gates(query, &mut hits);
-    apply_post_filters(args, cwd.as_deref(), root.as_deref(), &mut hits);
+    apply_post_filters(args, cwd.as_deref(), root, &mut hits);
     // A filtered search reports what survived the filter — that's the set the
     // caller asked about — counted before any cut. The runner-up stays for
     // confidence; `--limit` applies once that's assigned.
@@ -1210,9 +1238,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // Where nothing warms (a dir rq doesn't track) the live scan was whole.
         let mut incomplete = (block || no_wait)
             && warming_ok
-            && root
-                .as_deref()
-                .and_then(|r| store.coverage_status(&root_key(r)).ok().flatten())
+            && root.and_then(|r| store.coverage_status(&root_key(r)).ok().flatten())
                 != Some(Coverage::Complete);
         // a "not yet" miss leaves work behind — reindex an edited worktree and
         // let a detached child keep warming, so the retry lands on a better
@@ -1223,14 +1249,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // detached warm hasn't caught up with. Say "warming" (exit 2, retry)
         // rather than "no match" (exit 1, absent) — a just-added symbol is
         // exactly this case, and a confident no is the wrong answer to it.
-        let moved = settle_warm(
-            store,
-            staleness,
-            false,
-            was_warming,
-            warming_ok,
-            root.as_deref(),
-        );
+        let moved = settle_warm(store, staleness, false, was_warming, warming_ok, root);
         incomplete |= moved || *batch_moved;
         // A named scope that matched nothing is a different miss from a name
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
@@ -1244,7 +1263,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 crate::search::scope_miss_owner(store, query, here_id, Some(c), &ctx)
             }
         };
-        if let (Some(cost), Some(root)) = (&live_scan, root.as_deref()) {
+        if let (Some(cost), Some(root)) = (&live_scan, root) {
             note_live_scan(root, cost, false);
         }
         // `-a` can't vouch for a checkout nothing has indexed, and warms only
@@ -1289,7 +1308,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         .iter()
         .take(want)
         .any(|h| h.source == crate::search::Source::Live);
-    if let (Some(cost), Some(root)) = (&live_scan, root.as_deref()) {
+    if let (Some(cost), Some(root)) = (&live_scan, root) {
         note_live_scan(root, cost, live);
     }
 
@@ -1387,7 +1406,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         {
             eprintln!("{note}");
         }
-        return finish_open(&hits, root.as_deref(), web);
+        return finish_open(&hits, root, web);
     }
 
     if let Some(by) = held_back.as_deref() {
@@ -1440,14 +1459,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     if let Some(h) = indexer {
         let _ = h.join();
     }
-    let _ = settle_warm(
-        store,
-        staleness,
-        true,
-        was_warming,
-        warming_ok,
-        root.as_deref(),
-    );
+    let _ = settle_warm(store, staleness, true, was_warming, warming_ok, root);
 
     // "no answer yet" (2), whether nothing matched or nothing settled
     verdict.exit_code()
@@ -1871,7 +1883,8 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
-    let root = crate::index::repo_root(&start).unwrap_or(start);
+    let here = Here::at(&store, &start);
+    let root = here.root;
     let key = root_key(&root);
 
     // Single-flight: if another live rq is already warming this checkout, bow out.
@@ -1894,8 +1907,8 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
 
     // A search on a complete repo hands us the staleness check rather than
     // wait on `git status` itself, so most runs end here: nothing moved.
-    if store.coverage_status(&key).ok().flatten() == Some(Coverage::Complete) {
-        let checkout = store.checkout(&key).ok().flatten();
+    if here.coverage == Some(Coverage::Complete) {
+        let checkout = here.checkout;
         let head = checkout.and_then(|c| store.indexed_head(c.id).ok().flatten());
         // The window runs from before `git status`, so an edit made during it
         // still falls inside. The stamp is read after: status may rewrite
@@ -3052,13 +3065,15 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     };
     drop(open_span);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let root = crate::index::repo_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let here = Here::at(&store, &cwd);
+    let warming_ok = here.warms();
+    let Here {
+        root,
+        is_git,
+        coverage,
+        checkout: current,
+    } = here;
     let rel = repo_relative(&root, &cwd, file_arg);
-
-    let coverage = store.coverage_status(&root_key(&root)).ok().flatten();
-    let is_git = crate::index::is_git_repo(&root);
-    let warming_ok = is_git || coverage.is_some();
-    let current = checkout_at(&store, &root);
     // Outside git, a file the index doesn't hold may be one its walk skips
     // (`.ignore`d): stored, it would read as a tree change on every miss. So
     // it's read live, and a new one is left to the walk.
@@ -3421,11 +3436,8 @@ fn resolve_identity(store: &Store, cwd: &std::path::Path) -> String {
 fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode {
     let explicit = path.is_some();
     let target = path.unwrap_or_else(|| PathBuf::from("."));
-    // Normalize to the repo root: the index is repo-root-relative, so indexing
-    // from a subdirectory must still key off the root (a subdir-relative index
-    // would mismatch a later search and get reconciled away). `--path` scopes a
-    // subset; outside git the target is used as-is.
-    let root = crate::index::repo_root(&target).unwrap_or_else(|| target.clone());
+    // The repo root even from a subdirectory: `--path` scopes a subset.
+    let (root, _) = checkout_root(&target);
     // An explicit TARGET *inside* the repo scopes the index to that subtree — the
     // user pointed at a subdir, not the whole repo, and shouldn't pay to walk
     // everything. Folded in alongside any `--path` subdirs. (A bare `rq --index`
@@ -3507,7 +3519,8 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     // with every checkout of it — so cruft shown by --status can be dropped by
     // name even if the checkout is gone.
     let path = PathBuf::from(target.clone().unwrap_or_else(|| ".".to_string()));
-    let root = crate::index::repo_root(&path).unwrap_or(path);
+    let here = Here::at(&store, &path);
+    let root = here.root;
     let key = root_key(&root);
     let dropped = |identity: &str, root: Option<&str>, (files, symbols): (i64, i64)| match out {
         Output::Text => {
@@ -3521,7 +3534,7 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
         ),
     };
 
-    if let Some(checkout) = checkout_at(&store, &root) {
+    if let Some(checkout) = here.checkout {
         let identity = store
             .identity_for_root(&key)
             .ok()
@@ -4409,5 +4422,35 @@ mod tests {
             out.ends_with("controller\u{1b}[0m.rb"),
             "`.rb` left un-highlighted: {out:?}"
         );
+    }
+
+    #[test]
+    fn here_is_the_checkout_root_and_warms_only_git_or_tracked() {
+        let base = std::env::temp_dir().join(format!("rq-here-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (repo, plain) = (base.join("repo"), base.join("plain"));
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("a.rb"), "class Widget; end\n").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+
+        let here = Here::at(&store, &repo.join("sub"));
+        assert_eq!(
+            here.root,
+            repo.canonicalize().unwrap(),
+            "a subdir keys its repo"
+        );
+        assert!(here.is_git && here.warms());
+
+        let here = Here::at(&store, &plain);
+        assert_eq!(here.root, plain.canonicalize().unwrap());
+        assert!(!here.warms(), "an unknown non-git dir is never walked");
+
+        crate::index::index_path(&mut store, &plain).unwrap();
+        let here = Here::at(&store, &plain);
+        assert!(here.warms(), "an indexed one is tracked");
+        assert!(here.checkout.is_some());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
