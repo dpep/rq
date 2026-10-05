@@ -87,7 +87,8 @@ impl Signature {
     }
 
     pub(crate) fn from_bytes(b: &[u8; SIG_BYTES]) -> Signature {
-        let word = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        let words = b.as_chunks::<8>().0;
+        let word = |i: usize| u64::from_le_bytes(words[i]);
         let head = word(0);
         Signature {
             chars: head & ((1 << PAIR_CODES) - 1),
