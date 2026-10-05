@@ -216,5 +216,4 @@
 .dropped: bool
 .files: int
 .repo: string
-.root: null
 .symbols: int

@@ -3473,14 +3473,17 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
             let totals = checkout_at(&store, &root).and_then(|c| store.checkout_totals(c.id).ok());
             match out {
                 Output::Json | Output::Ndjson => {
-                    // keys sorted, as they always went out
+                    // keys sorted, as they always went out; totals absent when
+                    // the checkout can't be counted
                     #[derive(serde::Serialize)]
                     struct Indexed {
+                        #[serde(skip_serializing_if = "Option::is_none")]
                         files: Option<i64>,
                         files_added: usize,
                         repo: String,
                         root: String,
                         scope: &'static str,
+                        #[serde(skip_serializing_if = "Option::is_none")]
                         symbols: Option<i64>,
                         symbols_added: usize,
                     }
@@ -3582,7 +3585,8 @@ struct Dropped {
     dropped: bool,
     files: i64,
     repo: String,
-    /// The checkout's root; `None` for a whole repo dropped by identity.
+    /// The checkout's root; absent for a whole repo dropped by identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
     root: Option<String>,
     symbols: i64,
 }

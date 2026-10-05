@@ -45,7 +45,7 @@ fn run(db: &Path, cwd: &Path, args: &[&str], stdin: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// Fold `value` into `shape` as `path → types`. An object's keys extend the
+/// Fold `value` into `shape` as `path → types`, refusing a `null`. An object's keys extend the
 /// path; an array's elements share `[]`; `explain`'s keys are feature names,
 /// data rather than shape, so they fold into `*`.
 fn fold(
@@ -55,7 +55,7 @@ fn fold(
 ) {
     use serde_json::Value;
     let kind = match value {
-        Value::Null => "null",
+        Value::Null => panic!("`{path}` is null: a field that doesn't apply is omitted"),
         Value::Bool(_) => "bool",
         Value::Number(n) if n.is_f64() => "float",
         Value::Number(_) => "int",

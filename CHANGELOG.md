@@ -9,6 +9,13 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Changed
+- **`--drop --json` omits `root` rather than sending `null`** when it dropped a
+  whole repo by identity or found nothing at a path that doesn't exist, as the
+  README has always said fields that don't apply are. `--index --json` likewise
+  omits `files`/`symbols` in the rare case the checkout can't be counted. A
+  reader that took `null` as "no root" should treat a missing key the same.
+
 ### Fixed
 - **A FIFO or device at a source path no longer hangs rq.** A FIFO where a
   tracked `.rb` used to be blocked a search, and the background warm it left
