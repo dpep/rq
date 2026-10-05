@@ -2945,6 +2945,23 @@ fn a_file_rq_cannot_stat_is_not_forgotten() {
 }
 
 #[test]
+fn a_symlinked_source_file_is_held_by_no_pass() {
+    // the walk an explicit index takes doesn't follow it, so a warm mustn't
+    // either, or its definitions come and go with whichever ran last
+    let (dir, db) = scratch("symlink");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    std::os::unix::fs::symlink("a.rb", dir.join("link.rb")).unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    fs::write(dir.join("a.rb"), "class Widget\n  def added; end\nend\n").unwrap();
+    assert!(warmed(&db, &dir), "the edit is taken in");
+
+    let (_, out) = rq(&db, &dir, &["--status", "--json"]);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).expect("status json");
+    assert_eq!(rows[0]["files"], 1, "{out}");
+}
+
+#[test]
 fn a_fifo_or_device_at_a_tracked_path_is_not_read() {
     // opening a FIFO for reading blocks until a writer comes; /dev/zero never ends
     let (dir, db) = scratch("fifo");

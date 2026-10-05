@@ -19,6 +19,12 @@ and aren't listed; see `git log` for those.
   error on the way to a file (or to a whole checkout's root) read as "deleted",
   so an index pass dropped the file and `--status`, `-a` or any pass dropped
   the checkout. Only a path known to be absent is forgotten now.
+- **A symlinked source file is indexed by no pass, rather than by some.** A
+  background warm read a tracked symlink while `rq --index` and the live walk
+  skipped it, so its definitions came and went with whichever ran last. Its
+  target, when it's in the tree, is still found. Likewise a file whose name
+  isn't valid UTF-8 (Linux only; macOS refuses such names) is skipped
+  everywhere: a lossy key couldn't lead back to the file.
 
 ## 0.60.4 — 2026-10-05
 

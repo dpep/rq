@@ -641,10 +641,8 @@ impl Session {
             .or_else(|| abs.parent().map(PathBuf::from))
             .unwrap_or(here);
         let identity = resolve_identity(&self.store, &root);
-        let rel = abs
-            .strip_prefix(&root)
-            .map_or_else(|_| spec.file.to_string_lossy(), |r| r.to_string_lossy())
-            .into_owned();
+        let rel = crate::index::rel_key(&root, &abs)
+            .unwrap_or_else(|| spec.file.to_string_lossy().into_owned());
         let checkout = checkout_at(&self.store, &root);
         let defs = crate::index::current_definitions(&self.store, checkout, &identity, &root, &rel);
         crate::search::Anchor::new(root_key(&root), rel, spec.line, &defs)
@@ -3369,9 +3367,7 @@ fn repo_relative(root: &std::path::Path, cwd: &std::path::Path, file: &str) -> S
         cwd.join(p)
     };
     let abs = abs.canonicalize().unwrap_or(abs);
-    abs.strip_prefix(root)
-        .map(|r| r.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| file.to_string())
+    crate::index::rel_key(root, &abs).unwrap_or_else(|| file.to_string())
 }
 
 /// Revalidate the files behind the top hits against disk — each in the

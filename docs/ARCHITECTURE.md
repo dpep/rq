@@ -304,13 +304,19 @@ search only reads.
 
 - **One core, two entry points** — explicit (`index_under`, unbounded) and
   opportunistic (`index_budgeted`, time-bounded) both call `run_index`, which
-  differs only by parameters (active files, subtrees, deadline): collect
-  candidates serially → parse the changed/new ones → write a batch.
+  differs only by parameters (active files, subtrees, deadline): one walk
+  thread streams candidates to parse workers, whose results are written in
+  batches as they arrive — never collect-then-parse, so a pass cut short
+  still keeps what it parsed.
 - **Incremental** — a cheap `mtime` match short-circuits before any read; the
   content `hash` then guards the write. The walker respects `.gitignore`, and
   no pass indexes a hidden path (a `.`-prefixed file or directory): a warm
-  enumerates with `git ls-files`, which lists tracked ones, so one filter
-  (`is_source`) keeps the indexed set the same whichever pass finishes.
+  enumerates with `git ls-files`, which lists tracked ones. So every
+  enumeration and both moved-detectors ask one owner — `index_key` (a source
+  file below the root, named in UTF-8) and `on_disk` (one `lstat`: a regular
+  file, absent, or unknown on an I/O error) — and the indexed set is the same
+  whichever pass finishes. A symlink, FIFO or device is never read; an error
+  is never taken for a delete.
   Untracked files are in a checkout's index too: an explicit index walks the
   disk and reads them, and a warm, which can't list them cheaply, re-reads the
   ones the index holds while they're still on disk rather than reconciling

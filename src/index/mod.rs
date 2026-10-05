@@ -345,7 +345,8 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
             .split(|&b| b == 0)
             .filter_map(|entry| {
                 let (tag, path) = (entry.first()?, entry.get(2..)?);
-                let path = root.join(String::from_utf8_lossy(path).as_ref());
+                // a name that isn't UTF-8 has no key (see `rel_key`)
+                let path = root.join(std::str::from_utf8(path).ok()?);
                 // skip-worktree also hides local edits to a file still there
                 (*tag != b'S' || !gone(&path)).then_some(path)
             })
@@ -353,17 +354,9 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
     )
 }
 
-/// Repo-relative paths of `paths` under `root`, as the index keys its files.
+/// The keys of the source files among `paths`.
 fn rel_paths(paths: &[std::path::PathBuf], root: &Path) -> HashSet<String> {
-    paths
-        .iter()
-        .map(|p| {
-            p.strip_prefix(root)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect()
+    paths.iter().filter_map(|p| index_key(root, p)).collect()
 }
 
 /// The source files git tracks under `root`; `None` outside git, or before a
@@ -435,7 +428,7 @@ fn stream_walk(
     needle: Option<&[u8]>,
     versions: &Versions,
     seen: HashSet<String>,
-    keep: impl Fn(&str, &Path) -> bool + Send,
+    keep: impl Fn(&str, Option<i64>) -> bool + Send,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     mut sink: impl FnMut(crate::store::FileSymbols) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(HashSet<String>, bool), Box<dyn std::error::Error>> {
@@ -461,25 +454,11 @@ fn stream_walk(
                     finished = false;
                     break;
                 }
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
-                if !is_source(&rel) {
+                let Some((rel, mtime)) = admit(root, &path, &mut seen) else {
                     continue;
-                }
-                if !seen.insert(rel.clone()) {
-                    continue; // already handled (active file), or a duplicate
-                }
-                if !keep(&rel, &path) {
+                };
+                if !keep(&rel, mtime) {
                     continue; // caller skipped it (unchanged / already indexed)
-                }
-                // git still lists a tracked file deleted without `git rm`;
-                // unseen, reconcile forgets it
-                if gone(&path) {
-                    seen.remove(&rel);
-                    continue;
                 }
                 if path_tx.send(path).is_err() {
                     finished = false; // workers gone (deadline) — walk didn't complete
@@ -752,8 +731,8 @@ fn run_index(
     // pass keeps what it parsed). Only new or changed files are parsed; every
     // source file seen lands in `seen` for deletion reconcile.
     let stored_ref = &stored;
-    let changed = move |rel: &str, path: &Path| match stored_ref.get(rel) {
-        Some(&Some(m)) => Some(m) != file_mtime(path),
+    let changed = move |rel: &str, mtime: Option<i64>| match stored_ref.get(rel) {
+        Some(&Some(m)) => Some(m) != mtime,
         _ => true, // new file, or one stored without an mtime
     };
     let skipped = std::sync::atomic::AtomicU64::new(0);
@@ -799,11 +778,11 @@ fn run_index(
         };
         let demanded = &demanded;
         let skipped = &skipped;
-        let keep = move |rel: &str, path: &Path| {
+        let keep = move |rel: &str, mtime: Option<i64>| {
             if demanded.contains(rel) {
                 return false;
             }
-            let changed = changed(rel, path);
+            let changed = changed(rel, mtime);
             if profiling && !changed {
                 skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
@@ -1000,22 +979,12 @@ fn note_candidate(
     seen: &mut HashSet<String>,
     to_parse: &mut Vec<std::path::PathBuf>,
 ) {
-    let rel = file
-        .strip_prefix(root)
-        .unwrap_or(file)
-        .to_string_lossy()
-        .into_owned();
-    // `git diff HEAD` lists a delete not yet `git rm`ed; unseen, reconcile
-    // forgets it, as in `stream_walk`
-    if !is_source(&rel) || gone(file) {
+    let Some((rel, mtime)) = admit(root, file, seen) else {
         return;
-    }
-    if !seen.insert(rel.clone()) {
-        return; // already noted (e.g. an active file re-seen by the walk)
-    }
+    };
     // unchanged by mtime → already indexed, no need to re-parse
     if let Some(&Some(m)) = stored.get(&rel)
-        && Some(m) == file_mtime(file)
+        && Some(m) == mtime
     {
         return;
     }
@@ -1036,11 +1005,7 @@ fn parse_file(
     let timing = crate::profile::enabled().then(Instant::now);
     let ext = file.extension().and_then(|e| e.to_str())?;
     let plugin = lang::plugin_for_extension(ext)?;
-    let rel = file
-        .strip_prefix(root)
-        .unwrap_or(file)
-        .to_string_lossy()
-        .into_owned();
+    let rel = index_key(root, file)?;
     let source = read_source(file).ok()?;
     // pre-filter: skip the expensive parse on files that can't hold the match
     if let Some(n) = needle
@@ -1360,7 +1325,7 @@ pub(crate) fn scan(
         None => Box::new(fs_walk_candidates(vec![root.to_path_buf()], deadline)),
     };
     let mut out: Vec<crate::store::FileSymbols> = Vec::new();
-    let keep = |rel: &str, _: &Path| !skip.contains(rel); // skip already-indexed
+    let keep = |rel: &str, _| !skip.contains(rel); // skip already-indexed
     let _ = stream_walk(
         root,
         candidates,
@@ -1521,17 +1486,19 @@ pub(crate) fn dirty_files(root: &Path) -> Vec<String> {
 
 /// Paths from `git status --porcelain -z`: one `XY path` entry per file, with
 /// a rename's or copy's source following as an entry of its own. Porcelain
-/// paths are always repo-root-relative, whatever the cwd.
+/// paths are always repo-root-relative, whatever the cwd. A name that isn't
+/// UTF-8 is left out, as no pass holds one (see [`rel_key`]).
 fn parse_porcelain_z(out: &[u8]) -> Vec<String> {
     let mut paths = Vec::new();
     let mut entries = out.split(|&b| b == 0).filter(|e| e.len() > 3);
+    let mut push = |path: &[u8]| paths.extend(std::str::from_utf8(path).map(str::to_owned));
     while let Some(entry) = entries.next() {
         let (xy, path) = entry.split_at(3);
-        paths.push(String::from_utf8_lossy(path).into_owned());
+        push(path);
         if xy[..2].iter().any(|c| matches!(c, b'R' | b'C'))
             && let Some(source) = entries.next()
         {
-            paths.push(String::from_utf8_lossy(source).into_owned());
+            push(source);
         }
     }
     paths
@@ -1548,13 +1515,16 @@ fn has_unindexed_edits(store: &Store, checkout: i64, root: &Path, dirty: &[Strin
             return false;
         }
         let path = root.join(rel);
-        let on_disk = file_mtime(&path);
-        let differs = match store.file_mtime(checkout, rel) {
-            Ok(Some(indexed)) => indexed.is_none() || indexed != on_disk,
-            Ok(None) => on_disk.is_some(),
-            Err(_) => return true,
+        let Ok(held) = store.file_mtime(checkout, rel) else {
+            return true;
         };
-        differs && (on_disk.is_none() || readable(&path))
+        match (on_disk(&path), held) {
+            (OnDisk::Unknown, _) => false,
+            (OnDisk::Absent, held) => held.is_some(),
+            (OnDisk::File(now), Some(Some(indexed))) => Some(indexed) != now && readable(&path),
+            // never read, or held without an mtime
+            (OnDisk::File(_), _) => readable(&path),
+        }
     })
 }
 
@@ -1584,17 +1554,22 @@ pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) ->
                     return WalkState::Continue;
                 };
                 let path = entry.path();
-                // keyed as an index pass stores it, or a non-UTF-8 name is
-                // held but never counted
-                let rel = path.strip_prefix(root).ok().map(Path::to_string_lossy);
-                let Some(rel) = rel.filter(|r| is_source(r)) else {
+                let Some(rel) = index_key(root, path) else {
                     return WalkState::Continue;
                 };
-                if !entry.file_type().is_some_and(|t| t.is_file()) {
-                    return WalkState::Continue;
-                }
-                let stored = indexed.get(rel.as_ref());
-                let same = matches!(stored, Some(&Some(m)) if Some(m) == file_mtime(path));
+                let stored = indexed.get(&rel);
+                let now = match on_disk(path) {
+                    OnDisk::File(now) => now,
+                    OnDisk::Absent => return WalkState::Continue,
+                    OnDisk::Unknown => {
+                        // nothing known: held as it is
+                        if stored.is_some() {
+                            held.fetch_add(1, Relaxed);
+                        }
+                        return WalkState::Continue;
+                    }
+                };
+                let same = matches!(stored, Some(&Some(m)) if Some(m) == now);
                 if !same && readable(path) {
                     moved.store(true, Relaxed);
                     return WalkState::Quit;
@@ -1646,6 +1621,66 @@ pub(crate) fn has_unindexed_changes(
         let _ = store.set_edited_files(checkout, &edited);
     }
     changed
+}
+
+/// `path` below `root`, spelled as the index keys files. `None` outside
+/// `root`, or for a name that isn't UTF-8: a lossy key wouldn't lead back to
+/// the file, so no pass holds one (Linux only; APFS refuses such names).
+pub(crate) fn rel_key(root: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(root).ok()?.to_str().map(str::to_owned)
+}
+
+/// The key an index pass holds `path` under, if it holds it at all: a source
+/// file below `root`. Every enumeration — git's lists, the filesystem walk,
+/// the moved-detectors — asks this, so they agree on the set. What's on disk
+/// there is [`on_disk`]'s half.
+pub(crate) fn index_key(root: &Path, path: &Path) -> Option<String> {
+    rel_key(root, path).filter(|key| is_source(key))
+}
+
+/// What one `lstat` says about a path an enumeration named.
+enum OnDisk {
+    /// A regular file, with its mtime.
+    File(Option<i64>),
+    /// Not there — or not a regular file: no pass reads a FIFO or a device,
+    /// nor follows a symlink (the walk doesn't, and its target, when in the
+    /// tree, is held in its own right).
+    Absent,
+    /// The stat failed (EACCES, ESTALE): nothing is known, so nothing moves.
+    Unknown,
+}
+
+fn on_disk(path: &Path) -> OnDisk {
+    use std::io::ErrorKind::{NotADirectory, NotFound};
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_file() => OnDisk::File(mtime_of(&m)),
+        Ok(_) => OnDisk::Absent,
+        Err(e) if matches!(e.kind(), NotFound | NotADirectory) => OnDisk::Absent,
+        Err(_) => OnDisk::Unknown,
+    }
+}
+
+/// Admit a path an enumeration named into a pass: its key and mtime when it's
+/// a source file on disk the pass hasn't seen yet. Records it in `seen`, which
+/// reconcile keeps — so an absent file (git still lists one deleted without
+/// `git rm`) stays out and is forgotten, and one that can't be stat'ed stays
+/// in, unread.
+fn admit(root: &Path, path: &Path, seen: &mut HashSet<String>) -> Option<(String, Option<i64>)> {
+    let key = index_key(root, path)?;
+    if seen.contains(&key) {
+        return None; // an active file re-seen by the walk, or a duplicate
+    }
+    match on_disk(path) {
+        OnDisk::File(mtime) => {
+            seen.insert(key.clone());
+            Some((key, mtime))
+        }
+        OnDisk::Absent => None,
+        OnDisk::Unknown => {
+            seen.insert(key);
+            None
+        }
+    }
 }
 
 /// Whether `path` is known to be absent. An I/O error (EACCES, ESTALE) says
@@ -1975,7 +2010,11 @@ fn content_hash(source: &str) -> String {
 }
 
 fn file_mtime(path: &Path) -> Option<i64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    mtime_of(&std::fs::metadata(path).ok()?)
+}
+
+fn mtime_of(meta: &std::fs::Metadata) -> Option<i64> {
+    let modified = meta.modified().ok()?;
     // nanosecond resolution (like git's racy-mtime handling): two edits within
     // the same second still get distinct mtimes, so an index taken between them
     // can't mistake the second edit for "unchanged". Fits i64 until 2262.
@@ -2140,6 +2179,63 @@ mod tests {
             ["a.rb", "lib/b.rb", "new.rb", "old.rb", "gone.rb"]
         );
         assert!(parse_porcelain_z(b"").is_empty());
+        // a rename from a name that isn't UTF-8 still pairs
+        let out = b"R  new.rb\0caf\xe9.rb\0 M a.rb\0";
+        assert_eq!(parse_porcelain_z(out), ["new.rb", "a.rb"]);
+    }
+
+    #[test]
+    fn index_key_is_a_source_file_below_the_root() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = Path::new("/r");
+        let non_utf8 = Path::new(std::ffi::OsStr::from_bytes(b"/r/caf\xe9.rb"));
+        let cases: [(&Path, Option<&str>); 6] = [
+            (Path::new("/r/app/a.rb"), Some("app/a.rb")),
+            (Path::new("/elsewhere/a.rb"), None),
+            (Path::new("/r/.hidden/a.rb"), None),
+            (Path::new("/r/README.md"), None),
+            (non_utf8, None),
+            (Path::new("/r"), None),
+        ];
+        for (path, want) in cases {
+            assert_eq!(index_key(root, path).as_deref(), want, "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn on_disk_holds_regular_files_only_and_knows_an_error_is_not_absence() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rq-on-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("locked")).unwrap();
+        std::fs::write(dir.join("a.rb"), "").unwrap();
+        std::fs::write(dir.join("locked/b.rb"), "").unwrap();
+        std::os::unix::fs::symlink("a.rb", dir.join("link.rb")).unwrap();
+        let lock = |mode| {
+            let perms = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(dir.join("locked"), perms).unwrap();
+        };
+        lock(0o000);
+        let seen = |name: &str| match on_disk(&dir.join(name)) {
+            OnDisk::File(_) => "file",
+            OnDisk::Absent => "absent",
+            OnDisk::Unknown => "unknown",
+        };
+        let got = [
+            "a.rb",
+            "link.rb",
+            "gone.rb",
+            "a.rb/x.rb",
+            ".",
+            "locked/b.rb",
+        ]
+        .map(seen);
+        lock(0o755);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            got,
+            ["file", "absent", "absent", "absent", "absent", "unknown"]
+        );
     }
 
     #[test]
