@@ -73,6 +73,9 @@ meanwhile, without the field.
   --resolve` saw. A batch now asks once, before its first query: it reads the
   edit in before answering, or with `--no-wait` answers a miss `warming`
   (exit 2) and leaves the reading to the background.
+- **A batch no longer indexes a directory rq doesn't track.** Piped queries
+  outside git indexed the directory they ran in, where a single search only
+  reads it live; only `rq --index` opts a non-git directory in.
 - **A file deleted without `git rm` no longer keeps misses `warming`.** Until
   the delete was staged or committed, the index held on to the file, and
   every miss in the repo answered `warming` (exit 2).

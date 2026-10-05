@@ -2872,6 +2872,17 @@ fn an_edit_in_a_repo_with_no_commits_is_noticed() {
 }
 
 #[test]
+fn a_batch_does_not_index_a_dir_rq_does_not_track() {
+    // a stray batch outside git is answered live, as a single search is
+    let (dir, db) = scratch("batch-untracked");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    let (code, out, _) = rq_full(&db, &dir, &["-J"], &NO_CHILD, Some("Widget\n"));
+    assert_eq!(code, 0, "{out}");
+    let (_, status) = rq(&db, &dir, &["--status", "--json"]);
+    assert!(!status.contains("\"complete\""), "indexed: {status}");
+}
+
+#[test]
 fn a_batch_notices_an_edit_to_a_complete_repo() {
     let (dir, db) = scratch("batch-edit");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

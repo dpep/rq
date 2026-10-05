@@ -765,6 +765,7 @@ fn cmd_batch(
     // Warm to completion before answering anything, so a cold or edited repo
     // doesn't return a page of misses that only mean "not indexed yet".
     if !cli.no_wait
+        && warming_ok
         && (session.coverage != Some(Coverage::Complete) || moved)
         && let Some(root) = session.root.clone()
     {
