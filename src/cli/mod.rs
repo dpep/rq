@@ -1184,9 +1184,10 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     if !hits.iter().any(strong)
         && indexer.is_none()
         && coverage.is_none()
-        && let Some(root) = &root
+        && let (Some(root), Some(identity)) = (&root, &identity)
     {
-        let (tail, cost) = live_fallback(root, query, rank_limit, &ctx);
+        let tree = crate::index::LiveTree::new(root, identity.clone());
+        let (tail, cost) = live_fallback(&tree, query, rank_limit, &ctx);
         hits = crate::search::merge(hits, tail, rank_limit);
         total = total.max(hits.len());
         live_scan = Some(cost);
@@ -1950,7 +1951,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
 /// Live in-memory scan of an untracked (non-git, never-indexed) dir: substring
 /// pre-filtered first, then the unfiltered fuzzy retry. Persists nothing.
 fn live_fallback(
-    root: &std::path::Path,
+    tree: &crate::index::LiveTree,
     query: &str,
     limit: usize,
     ctx: &crate::search::Context,
@@ -1965,7 +1966,7 @@ fn live_fallback(
             "live scan: unfiltered"
         });
         let found = crate::search::live_search(
-            root,
+            tree,
             query,
             limit,
             &HashSet::new(),

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::search;
+use crate::{index, search};
 
 fn scratch_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rq-live-{}-{label}", std::process::id()));
@@ -24,7 +24,7 @@ fn live_search_finds_symbols_without_an_index() {
 
     // No Store, no `rq index` — scan the directory live (unbounded, skip nothing).
     let scan = search::live_search(
-        &dir,
+        &index::LiveTree::detect(&dir),
         "refundproc",
         10,
         &HashSet::new(),
@@ -54,7 +54,7 @@ fn live_search_skips_already_indexed_files() {
     // pretend a.rb is already in the index: a live fallback shouldn't re-surface it
     let skip: HashSet<String> = ["a.rb".to_string()].into_iter().collect();
     let alpha = search::live_search(
-        &dir,
+        &index::LiveTree::detect(&dir),
         "alpha",
         10,
         &skip,
@@ -66,7 +66,7 @@ fn live_search_skips_already_indexed_files() {
     assert!(alpha.is_empty(), "skipped file's symbols are not rescanned");
     // a file not in the skip set is still found
     let beta = search::live_search(
-        &dir,
+        &index::LiveTree::detect(&dir),
         "beta",
         10,
         &skip,
@@ -87,7 +87,7 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
 
     // substring query: the pre-filter keeps the file and finds it
     let hit = search::live_search(
-        &dir,
+        &index::LiveTree::detect(&dir),
         "alph",
         10,
         &HashSet::new(),
@@ -103,7 +103,7 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
     // is why the CLI retries unfiltered when a filtered scan is empty).
     assert!(
         search::live_search(
-            &dir,
+            &index::LiveTree::detect(&dir),
             "apa",
             10,
             &HashSet::new(),
@@ -116,7 +116,7 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
         "pre-filter can't see a fuzzy (non-substring) match"
     );
     let full = search::live_search(
-        &dir,
+        &index::LiveTree::detect(&dir),
         "apa",
         10,
         &HashSet::new(),

@@ -15,7 +15,6 @@ pub(crate) use score::{
 };
 
 use std::collections::HashSet;
-use std::path::Path;
 use std::time::Instant;
 
 use crate::core::now_unix;
@@ -604,7 +603,7 @@ pub(crate) fn literal_leaf(query: &str) -> Option<&str> {
     (!leaf.is_empty() && !score::has_wildcard(leaf)).then_some(leaf)
 }
 
-/// Layer 4: scan `root` live (no index required) and return ranked hits.
+/// Layer 4: scan `tree` live (no index required) and return ranked hits.
 /// Results are treated as the current repo, so the current-repo boost applies.
 /// `skip` names already-indexed files to ignore, and `deadline` bounds the scan
 /// — both empty/`None` for an unbounded scan of a never-indexed directory. When
@@ -612,7 +611,7 @@ pub(crate) fn literal_leaf(query: &str) -> Option<&str> {
 /// fast for exact/prefix/substring queries, but blind to fuzzy abbreviations, so
 /// callers retry with `prefilter = false` if a filtered scan finds nothing.
 pub(crate) fn live_search(
-    root: &Path,
+    tree: &crate::index::LiveTree,
     query: &str,
     limit: usize,
     skip: &HashSet<String>,
@@ -621,9 +620,9 @@ pub(crate) fn live_search(
     ctx: &Context,
 ) -> LiveScan {
     let needle = prefilter.then_some(query.as_bytes());
-    let identity = crate::index::detect_identity(root).to_string();
-    let root_str = root.to_string_lossy();
-    let files = crate::index::scan(root, skip, deadline, needle);
+    let identity = &tree.identity;
+    let root_str = tree.root.to_string_lossy();
+    let files = crate::index::scan(tree, skip, deadline, needle);
     let scanned = files.len();
     let rows: Vec<SymbolRow> = files
         .into_iter()
@@ -634,7 +633,7 @@ pub(crate) fn live_search(
                 .into_iter()
                 .map(move |s| (s, generated))
         })
-        .map(|(s, generated)| SymbolRow::live(s, &identity, &root_str, generated))
+        .map(|(s, generated)| SymbolRow::live(s, identity, &root_str, generated))
         .collect();
     let rank = |q: &str| -> Vec<Hit> {
         rows.iter()

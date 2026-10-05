@@ -42,6 +42,10 @@ meanwhile, without the field.
 - **A damaged name index no longer crashes a search.** A truncated row in the
   index fuzzy recall reads made the search panic; the repo is now read from
   its symbols for that search and its name index rebuilt on the next.
+- **A live scan spends its budget reading files.** A `--no-wait` search of a
+  checkout still being indexed asked git for the repo's identity and file list
+  twice, inside the scan's 250 ms; on a busy machine that could leave no time
+  to find the answer. Both are now resolved once, before the scan starts.
 - **Two modes at once are a usage error (exit 64).** `--usage --drop`,
   `--symbols FILE --usage`, `--warm --usage` and the like ran whichever mode
   rq checked first and ignored the other. `--show`, `--open`, `--web` and

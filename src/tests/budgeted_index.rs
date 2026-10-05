@@ -224,7 +224,12 @@ fn a_content_scan_returns_only_matching_files_to_persist() {
 
     // content-scan for "widget": only a.rb contains it, so only it comes back —
     // ready for the warming fallback to persist (fold the scan into the index)
-    let scanned = index::scan(&dir, &HashSet::new(), None, Some(b"widget"));
+    let scanned = index::scan(
+        &index::LiveTree::detect(&dir),
+        &HashSet::new(),
+        None,
+        Some(b"widget"),
+    );
     assert_eq!(scanned.len(), 1, "only the matching file: {scanned:?}");
     assert_eq!(scanned[0].path, "a.rb");
     assert!(

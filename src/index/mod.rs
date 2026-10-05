@@ -1234,7 +1234,34 @@ fn parse_git_log(text: &str) -> HashMap<String, i64> {
     map
 }
 
-/// Live, budgeted scan (search Layer 4): stream-walk `root` on the same fused
+/// A tree to scan live, resolved once: a live fallback scans it twice (filtered,
+/// then not), and each scan would otherwise fork git again for the same answers.
+pub(crate) struct LiveTree<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) identity: String,
+    /// git's tracked source files; `None` walks the filesystem instead
+    tracked: Option<Vec<std::path::PathBuf>>,
+}
+
+impl<'a> LiveTree<'a> {
+    /// `root` under an identity the caller already resolved.
+    pub(crate) fn new(root: &'a Path, identity: String) -> LiveTree<'a> {
+        let tracked = git_source_candidates(root).filter(|paths| !paths.is_empty());
+        LiveTree {
+            root,
+            identity,
+            tracked,
+        }
+    }
+
+    /// `root`, asking git for its identity.
+    #[cfg(test)]
+    pub(crate) fn detect(root: &'a Path) -> LiveTree<'a> {
+        LiveTree::new(root, detect_identity(root).to_string())
+    }
+}
+
+/// Live, budgeted scan (search Layer 4): stream-walk `tree` on the same fused
 /// [`stream_walk`] engine as the indexer, parsing source files and returning the
 /// parsed `FileSymbols` *without* touching the store — so `rq` answers at zero
 /// coverage. Bounded and filtered:
@@ -1254,19 +1281,19 @@ fn parse_git_log(text: &str) -> HashMap<String, i64> {
 /// into). Streaming — never collect-then-parse — keeps a scan too big to finish
 /// from coming up empty.
 pub(crate) fn scan(
-    root: &Path,
+    tree: &LiveTree,
     skip: &HashSet<String>,
     deadline: Option<Instant>,
     needle: Option<&[u8]>,
 ) -> Vec<crate::store::FileSymbols> {
+    let root = tree.root;
     let needle = needle.filter(|n| !n.is_empty());
     // git's index for a git repo (content-scan a huge repo without traversing it),
     // else a filesystem walk (the live scan of a non-git dir)
-    let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> =
-        match git_source_candidates(root).filter(|paths| !paths.is_empty()) {
-            Some(paths) => Box::new(paths.into_iter()),
-            None => Box::new(fs_walk_candidates(vec![root.to_path_buf()], deadline)),
-        };
+    let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send + '_> = match &tree.tracked {
+        Some(paths) => Box::new(paths.iter().cloned()),
+        None => Box::new(fs_walk_candidates(vec![root.to_path_buf()], deadline)),
+    };
     let mut out: Vec<crate::store::FileSymbols> = Vec::new();
     let keep = |rel: &str, _: &Path| !skip.contains(rel); // skip already-indexed
     let _ = stream_walk(
