@@ -435,14 +435,14 @@ fn requested_limit(limit: usize) -> usize {
 fn record_usage(
     store: &Store,
     args: &SearchArgs,
-    status: &str,
+    verdict: Verdict,
     coverage: Option<Coverage>,
     live: bool,
 ) {
     let _ = store.record_search(&crate::store::SearchRecord {
         source: &crate::origin::detect(),
         flags: &flag_summary(args),
-        status,
+        status: verdict.as_str(),
         coverage,
         live,
     });
@@ -797,18 +797,16 @@ fn cmd_batch(
 /// most: an error, then "retry" (2), and a miss (1) only when a retry would
 /// change nothing.
 fn batch_exit(codes: &[ExitCode]) -> ExitCode {
-    let retry = ExitCode::from(2);
-    if codes.contains(&ExitCode::SUCCESS) {
-        ExitCode::SUCCESS
-    } else if let Some(&error) = codes
-        .iter()
-        .find(|&&c| c != retry && c != ExitCode::FAILURE)
-    {
+    let [hit, miss, retry] =
+        [Verdict::Hit, Verdict::Miss, Verdict::Warming].map(Verdict::exit_code);
+    if codes.contains(&hit) {
+        hit
+    } else if let Some(&error) = codes.iter().find(|&&c| c != retry && c != miss) {
         error
     } else if codes.contains(&retry) {
         retry
     } else {
-        ExitCode::FAILURE
+        miss
     }
 }
 
@@ -1280,11 +1278,16 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 let continuing = warm_detach_enabled() && warming_ok;
                 warming_state(store, r, true, continuing)
             });
+        let verdict = if incomplete {
+            Verdict::Warming
+        } else {
+            Verdict::Miss
+        };
         let code = no_match_code(
             out,
             query,
             interrupted,
-            incomplete,
+            verdict,
             warming.as_ref(),
             elsewhere.as_deref(),
             &incomplete_roots,
@@ -1293,13 +1296,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         // definitive miss or a not-ready one is only known on this path, and
         // counting them as one number overstates how often rq truly finds nothing.
         let _span = crate::profile::span("after: record usage");
-        record_usage(
-            store,
-            args,
-            if incomplete { "warming" } else { "miss" },
-            coverage,
-            false,
-        );
+        record_usage(store, args, verdict, coverage, false);
         return code;
     }
 
@@ -1329,7 +1326,11 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         .and_then(|top| held_back_by(top, here.as_deref(), &unread))
         .map(str::to_string);
     let provisional = held_back.is_some();
-    let verdict = if provisional { "warming" } else { "hit" };
+    let verdict = if provisional {
+        Verdict::Warming
+    } else {
+        Verdict::Hit
+    };
 
     // A process's first write can stall for milliseconds on a busy machine
     // (DECISIONS D13), so the ranked list counts itself once it has printed.
@@ -1469,12 +1470,8 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         no_wait,
     );
 
-    // exit 2 is "no answer yet", whether nothing matched or nothing settled
-    if provisional {
-        ExitCode::from(2)
-    } else {
-        ExitCode::SUCCESS
-    }
+    // "no answer yet" (2), whether nothing matched or nothing settled
+    verdict.exit_code()
 }
 
 /// The hits as the caller would see them: gated and filtered, uncut. What the
@@ -2094,7 +2091,8 @@ fn no_match_code(
     out: Output,
     query: &str,
     interrupted: bool,
-    incomplete: bool,
+    // `Warming` when the index couldn't vouch for the miss
+    verdict: Verdict,
     warming: Option<&crate::search::Warming>,
     // Where the unqualified name *does* live, when a scope was named and
     // nothing in it matched. "Not in that scope" and "no such name" are
@@ -2103,6 +2101,7 @@ fn no_match_code(
     // checkouts `-a` read that aren't fully indexed, so the miss isn't theirs
     incomplete_roots: &[String],
 ) -> ExitCode {
+    let incomplete = verdict == Verdict::Warming;
     let status = if interrupted {
         "interrupted"
     } else if incomplete {
@@ -2163,11 +2162,7 @@ fn no_match_code(
         ),
         Output::Text => eprintln!("no matches for {query:?}"),
     }
-    if incomplete {
-        ExitCode::from(2)
-    } else {
-        ExitCode::FAILURE
-    }
+    verdict.exit_code()
 }
 
 /// Normalized confidence per hit: match quality scaled by dominance over the
@@ -3165,7 +3160,7 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
             }
             Output::Text => eprintln!("no symbols"),
         }
-        return ExitCode::FAILURE;
+        return Verdict::Miss.exit_code();
     }
     if let Some(code) = emit_rows(out, syms) {
         return code;
@@ -3768,7 +3763,7 @@ fn cmd_usage(out: Output) -> ExitCode {
     // Nothing recorded exits 1, like a search that finds nothing. (An empty
     // --status exits 0: it ran, and "no repos" is its answer.)
     if rows.is_empty() {
-        return ExitCode::from(1);
+        return Verdict::Miss.exit_code();
     }
     ExitCode::SUCCESS
 }
@@ -3838,6 +3833,36 @@ fn db_location_from(
         ));
     }
     Ok(PathBuf::from(home).join(".local/share/rq/rq.db"))
+}
+
+/// What a search found, as its exit code and the usage counters tell it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// An answer (0).
+    Hit,
+    /// The index is complete, and nothing matched (1): definitive.
+    Miss,
+    /// The index couldn't yet say (2): ask again.
+    Warming,
+}
+
+impl Verdict {
+    /// The label `--usage` counts it under.
+    fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Hit => "hit",
+            Verdict::Miss => "miss",
+            Verdict::Warming => "warming",
+        }
+    }
+
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Verdict::Hit => ExitCode::SUCCESS,
+            Verdict::Miss => ExitCode::FAILURE,
+            Verdict::Warming => ExitCode::from(2),
+        }
+    }
 }
 
 /// What kind of thing went wrong: the stable `kind` of a structured error.
@@ -4224,7 +4249,8 @@ mod tests {
 
     #[test]
     fn a_fruitless_batch_exits_with_what_the_caller_can_act_on() {
-        let (hit, miss, retry) = (ExitCode::SUCCESS, ExitCode::FAILURE, ExitCode::from(2));
+        let [hit, miss, retry] =
+            [Verdict::Hit, Verdict::Miss, Verdict::Warming].map(Verdict::exit_code);
         let error = ExitCode::from(Failure::Database.exit_code());
         let cases = [
             (vec![miss, hit, retry], hit),
