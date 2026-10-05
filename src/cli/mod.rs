@@ -943,7 +943,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // background rebuild rewrites the index. It suppresses the block-until-answered
     // escalation *and* the in-process warm (no lock contention, no join) — leftover
     // warming still detaches below, so the index keeps improving for next time.
-    let block = want_warm && was_warming && !no_wait;
+    let block = want_warm && !no_wait;
     let here = root.as_deref().map(root_key);
     // `-a` reads other checkouts too: one another process is still filling
     // can hold a better match, so the search waits on it as on its own warm
@@ -954,7 +954,6 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // are bounded by a wait budget instead, since there's nothing to draw to and
     // no one to interrupt.
     let progress_ui = (block || follow_others) && show_progress(out, stderr_interactive());
-    let indexer_budget = if block { wait_budget } else { warm_budget };
     if progress_ui {
         install_interrupt_handler();
     }
@@ -965,9 +964,9 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // Set once the warm has read every file containing the query's name: from
     // then on no unread file can hold an exact or prefix match for it.
     let demanded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let indexer = (want_warm && root.is_some() && !no_wait).then(|| {
+    let indexer = block.then(|| {
         crate::trace!(
-            "background warm ({indexer_budget:?}, block={block}, progress_ui={progress_ui}, {} jobs)",
+            "background warm ({wait_budget:?}, progress_ui={progress_ui}, {} jobs)",
             crate::index::parse_jobs()
         );
         let root = root.clone().expect("checked");
@@ -977,22 +976,19 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         let demanded = std::sync::Arc::clone(&demanded);
         std::thread::spawn(move || {
             if let Ok(mut idx) = open_store() {
-                // path-prioritize toward the query so the relevant file indexes first
-                let pass = if block {
-                    // the abort flag (`INTERRUPTED`) lets a Ctrl-C, a wait timeout,
-                    // or an early answer stop the pass without losing committed work
-                    crate::index::index_budgeted_cancellable(
-                        &mut idx,
-                        &root,
-                        &active,
-                        indexer_budget,
-                        Some(&q),
-                        &INTERRUPTED,
-                        &demanded,
-                    )
-                } else {
-                    crate::index::index_budgeted(&mut idx, &root, &active, indexer_budget, Some(&q))
-                };
+                // path-prioritize toward the query so the relevant file indexes
+                // first; the abort flag (`INTERRUPTED`) lets a Ctrl-C, a wait
+                // timeout, or an early answer stop the pass without losing
+                // committed work
+                let pass = crate::index::index_budgeted_cancellable(
+                    &mut idx,
+                    &root,
+                    &active,
+                    wait_budget,
+                    Some(&q),
+                    &INTERRUPTED,
+                    &demanded,
+                );
                 if let Err(e) = pass {
                     crate::trace!("warm {}: pass failed: {e}", crate::trace::abbrev(&root));
                 }
@@ -1025,7 +1021,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         Some(poll_start + answer_warm_budget())
     };
     drop(warm_span);
-    let polling = (indexer.is_some() && was_warming) || follow_others;
+    let polling = block || follow_others;
     // Everything before the first search: resolving the repo root, checking
     // coverage, deciding whether to warm. It runs on every query, so it counts
     // toward the first-answer budget even though no searching happened yet.
