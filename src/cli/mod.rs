@@ -3093,11 +3093,18 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
         _ => {}
     }
 
-    let Some(checkout) = checkout_at(&store, &root) else {
-        return emit_symbols(out, &[]); // unknown / un-indexed repo → nothing
-    };
     let mut query_span = crate::profile::span("symbols: query");
-    let mut rows = match store.symbols_in_file(checkout.id, &rel) {
+    let rows = match checkout_at(&store, &root) {
+        Some(checkout) => store.symbols_in_file(checkout.id, &rel),
+        // a dir rq doesn't warm: read the file live, as an anchor is
+        None => {
+            let identity = resolve_identity(&store, &root);
+            let mut defs = crate::index::current_definitions(&store, None, &identity, &root, &rel);
+            defs.sort_by(|a, b| (a.line, &a.name).cmp(&(b.line, &b.name)));
+            Ok(defs)
+        }
+    };
+    let mut rows = match rows {
         Ok(r) => r,
         Err(e) => return fail(out, Failure::Database, format_args!("rq --symbols: {e}")),
     };

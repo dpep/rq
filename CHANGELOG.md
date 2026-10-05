@@ -82,6 +82,9 @@ meanwhile, without the field.
   answered 1.
 - **An empty `--lang` is a usage error (exit 64), as an empty `--kind` is.**
   `-x ""` and a trailing comma (`-x ruby,`) selected every language.
+- **`--symbols FILE` outlines a file in a directory rq doesn't track.**
+  Outside git and never `--index`ed, it printed "no symbols" (exit 1) for any
+  file; it now reads the file, as it does in a repo.
 - **`--usage` with nothing recorded says so on stderr**, as an empty search
   and an empty `--symbols` do, so stdout carries only data.
 - **Two modes at once are a usage error (exit 64).** `--usage --drop`,

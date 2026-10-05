@@ -2819,6 +2819,15 @@ fn no_wait_outside_git_and_unindexed_is_a_plain_miss() {
 }
 
 #[test]
+fn symbols_outlines_a_file_in_a_dir_rq_does_not_track() {
+    let (dir, db) = scratch("nongit-symbols");
+    fs::write(dir.join("a.rb"), "class Widget\n  def size; end\nend\n").unwrap();
+    let (code, out) = rq(&db, &dir, &["--symbols", "a.rb", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"size\""), "{out}");
+}
+
+#[test]
 fn a_file_rq_cannot_decode_or_open_does_not_keep_a_tree_warming() {
     use std::os::unix::fs::PermissionsExt;
     let (dir, db) = scratch("nongit-unreadable");
