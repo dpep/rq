@@ -382,6 +382,30 @@ fn a_checkout_gone_from_disk_is_forgotten() {
 }
 
 #[test]
+fn a_checkout_rq_cannot_stat_is_not_forgotten() {
+    use std::os::unix::fs::PermissionsExt;
+    let (base, db) = scratch("unstattable");
+    let locked = base.join("locked");
+    let repo = locked.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    fs::write(repo.join("a.rb"), WIDGET).unwrap();
+    assert_eq!(rq(&db, &repo, &["--index"]).0, 0);
+    let elsewhere = base.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+
+    // EACCES on the way to the root: the stat fails, but nothing is gone
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let (code, out) = rq(&db, &elsewhere, &["--status", "--json"]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(code, 0, "{out}");
+
+    let (_, out) = rq(&db, &elsewhere, &["--status", "--json"]);
+    let rows = json(&out);
+    assert_eq!(rows.as_array().map(Vec::len), Some(1), "{out}");
+    assert_eq!(rows[0]["root"], repo.to_string_lossy().as_ref(), "{out}");
+}
+
+#[test]
 fn all_repos_folds_a_definition_the_rest_of_its_file_moved() {
     let (base, db, [a, b, _]) = three_worktrees("moved");
     // A's `alpha` pushed `base` nowhere, but B grows a comment above `Gadget`

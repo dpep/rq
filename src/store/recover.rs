@@ -153,7 +153,7 @@ fn open_as(path: &Path, ladder: &Ladder, main: bool) -> Result<Store> {
 /// The index this rq keeps while a newer one owns `path`.
 fn side(path: &Path, ladder: &Ladder, newer: i64) -> Result<Store> {
     let side = side_path(path, ladder.version);
-    let first = !side.exists();
+    let first = !side.try_exists().unwrap_or(false);
     let store = open_as(&side, ladder, false)?;
     if first {
         let by = written_by(path).unwrap_or_else(|| format!("schema v{newer}"));
@@ -249,7 +249,7 @@ pub(crate) fn side_stores(
 ) -> Vec<(PathBuf, i64)> {
     versions
         .map(|v| (side_path(path, v), v))
-        .filter(|(p, _)| p.exists())
+        .filter(|(p, _)| p.try_exists().unwrap_or(false))
         .collect()
 }
 
@@ -535,18 +535,18 @@ mod tests {
         drop(open(&dir.db(), &newer()).unwrap());
         drop(Store::open(&dir.db()).unwrap());
         let side = side_path(&dir.db(), schema::VERSION);
-        assert!(side.exists());
+        assert!(side.try_exists().unwrap());
         // ...then the path was rebuilt at this rq's own schema
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(with_suffix(&dir.db(), suffix));
         }
         drop(Store::open(&dir.db()).unwrap());
-        assert!(!side.exists());
+        assert!(!side.try_exists().unwrap());
         // an older rq's side store in use stays
         let older = side_path(&dir.db(), schema::VERSION - 1);
         std::fs::write(&older, "").unwrap();
         drop(open(&dir.db(), &newer()).unwrap());
-        assert!(older.exists());
+        assert!(older.try_exists().unwrap());
     }
 
     #[test]

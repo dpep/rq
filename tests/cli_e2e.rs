@@ -2921,6 +2921,30 @@ fn a_binary_file_with_a_source_extension_is_held_but_not_parsed() {
 }
 
 #[test]
+fn a_file_rq_cannot_stat_is_not_forgotten() {
+    // EACCES on its dir isn't a delete: a pass must keep what it can't see
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, db) = scratch("unstattable-file");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join("sub/b.rb"), "class Gadget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    let held = indexed_symbols(&db, &dir);
+
+    fs::set_permissions(dir.join("sub"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::write(dir.join("a.rb"), "class Widget\n  def added; end\nend\n").unwrap();
+    let warmed = warmed(&db, &dir);
+    fs::set_permissions(dir.join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(warmed, "the edit is taken in");
+    assert_eq!(
+        indexed_symbols(&db, &dir),
+        held + 1,
+        "and nothing forgotten"
+    );
+}
+
+#[test]
 fn a_fifo_or_device_at_a_tracked_path_is_not_read() {
     // opening a FIFO for reading blocks until a writer comes; /dev/zero never ends
     let (dir, db) = scratch("fifo");
@@ -3556,7 +3580,7 @@ fn a_relative_rq_db_is_a_usage_error() {
         .args(["Widget", "--json"])
         .output()
         .expect("run rq");
-    let created = dir.join("dbs").exists();
+    let created = dir.join("dbs").try_exists().unwrap();
 
     assert_eq!(out.status.code(), Some(64));
     let err: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error json");
@@ -3577,10 +3601,10 @@ fn an_empty_rq_db_means_the_default_and_a_directory_is_refused() {
             .expect("run rq")
     };
     let empty = run("");
-    let default_made = dir.join(".local/share/rq/rq.db").exists();
+    let default_made = dir.join(".local/share/rq/rq.db").try_exists().unwrap();
     let slash = format!("{}/dbs/", dir.display());
     let trailing = run(&slash);
-    let dir_made = dir.join("dbs").exists();
+    let dir_made = dir.join("dbs").try_exists().unwrap();
 
     assert_eq!(empty.status.code(), Some(0));
     assert!(default_made, "the default path under HOME");
@@ -4307,7 +4331,10 @@ fn a_sparse_checkout_spans_only_the_files_it_has() {
     git(&["sparse-checkout", "set", "d0"]);
     // skip-worktree on a file still on disk (hiding local edits) keeps it
     git(&["update-index", "--skip-worktree", "d0/w0.rb"]);
-    assert!(!dir.join("d1").exists(), "the cone leaves d1 out");
+    assert!(
+        !dir.join("d1").try_exists().unwrap(),
+        "the cone leaves d1 out"
+    );
     rq(&db, &dir, &["--index", "--path", "d0"]);
 
     let (code, out, _) = rq_full(&db, &dir, &["W0x", "--json", "--no-wait"], &[], None);

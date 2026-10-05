@@ -15,6 +15,10 @@ and aren't listed; see `git log` for those.
   it left behind, until something wrote to the FIFO. rq now reads regular files
   only (a symlink to one is fine), and treats a file over 64 MiB as it does a
   binary one: held, not parsed.
+- **A file or checkout rq can't stat is no longer forgotten.** A permission
+  error on the way to a file (or to a whole checkout's root) read as "deleted",
+  so an index pass dropped the file and `--status`, `-a` or any pass dropped
+  the checkout. Only a path known to be absent is forgotten now.
 
 ## 0.60.4 — 2026-10-05
 

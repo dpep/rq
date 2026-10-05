@@ -516,7 +516,11 @@ pub(crate) fn v23_targets(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         let verified_at: Option<i64> = verified
             .as_deref()
             .and_then(|v| v.split_once('\n')?.0.parse().ok());
-        (std::path::Path::new(root).exists(), verified_at, *id)
+        (
+            std::path::Path::new(root).try_exists().unwrap_or(false),
+            verified_at,
+            *id,
+        )
     };
     let mut best: std::collections::HashMap<i64, &(i64, i64, String, Option<String>)> =
         std::collections::HashMap::new();

@@ -3545,7 +3545,7 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     let Some((identity, repo_id)) = repo else {
         // nothing to drop — idempotent. `dropped: false` lets a script tell.
         // `repo` stays an identity: a path's is what `--index` would record.
-        let (identity, at) = if root.exists() {
+        let (identity, at) = if root.try_exists().unwrap_or(false) {
             (crate::index::detect_identity(&root).to_string(), Some(key))
         } else {
             (target.unwrap_or_default(), None)

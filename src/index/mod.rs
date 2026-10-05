@@ -347,7 +347,7 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
                 let (tag, path) = (entry.first()?, entry.get(2..)?);
                 let path = root.join(String::from_utf8_lossy(path).as_ref());
                 // skip-worktree also hides local edits to a file still there
-                (*tag != b'S' || path.exists()).then_some(path)
+                (*tag != b'S' || !gone(&path)).then_some(path)
             })
             .collect(),
     )
@@ -477,7 +477,7 @@ fn stream_walk(
                 }
                 // git still lists a tracked file deleted without `git rm`;
                 // unseen, reconcile forgets it
-                if !path.exists() {
+                if gone(&path) {
                     seen.remove(&rel);
                     continue;
                 }
@@ -585,7 +585,7 @@ fn sweep_outcome(
 /// busy writer kept is pruned next time.
 pub(crate) fn prune_missing_checkouts(store: &Store) {
     for root in store.all_checkout_roots().unwrap_or_default() {
-        if !Path::new(&root).exists() {
+        if gone(Path::new(&root)) {
             let _ = store.forget_checkout(&root);
         }
     }
@@ -737,7 +737,7 @@ fn run_index(
                     .keys()
                     .filter(|f| !listed.contains(*f))
                     .map(|f| root.join(f))
-                    .filter(|p| p.exists()),
+                    .filter(|p| !gone(p)),
             );
             paths
         });
@@ -1007,7 +1007,7 @@ fn note_candidate(
         .into_owned();
     // `git diff HEAD` lists a delete not yet `git rm`ed; unseen, reconcile
     // forgets it, as in `stream_walk`
-    if !is_source(&rel) || !file.exists() {
+    if !is_source(&rel) || gone(file) {
         return;
     }
     if !seen.insert(rel.clone()) {
@@ -1418,7 +1418,7 @@ pub(crate) fn repo_root(path: &Path) -> Option<std::path::PathBuf> {
     let start = path.canonicalize().ok()?;
     start
         .ancestors()
-        .find(|a| a.join(".git").exists())
+        .find(|a| a.join(".git").try_exists().unwrap_or(false))
         .map(Path::to_path_buf)
 }
 
@@ -1648,6 +1648,12 @@ pub(crate) fn has_unindexed_changes(
     changed
 }
 
+/// Whether `path` is known to be absent. An I/O error (EACCES, ESTALE) says
+/// nothing about it, and treating one as gone forgets what the index holds.
+fn gone(path: &Path) -> bool {
+    matches!(path.try_exists(), Ok(false))
+}
+
 /// Whether a repo-relative path is something a language plugin indexes. Hidden
 /// paths (any `.`-prefixed component) aren't: the filesystem walk skips them,
 /// and `git ls-files` doesn't, so every enumeration filters through here to
@@ -1781,7 +1787,11 @@ fn trunk_ref(root: &Path) -> Option<String> {
     // to look at than a `git rev-parse` fork.
     let packed = read_git_file(&git_dir.join("packed-refs")).unwrap_or_default();
     ["main", "master"].into_iter().find_map(|name| {
-        let loose = git_dir.join("refs/heads").join(name).exists();
+        let loose = git_dir
+            .join("refs/heads")
+            .join(name)
+            .try_exists()
+            .unwrap_or(false);
         let is_packed = packed
             .lines()
             .any(|l| l.ends_with(&format!(" refs/heads/{name}")));
