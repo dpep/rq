@@ -219,14 +219,48 @@ fn access_call(
     let ours = |s: &Symbol| {
         s.kind == Kind::Method && s.singleton == singleton && s.parent.as_deref() == parent
     };
+    let root = std::iter::successors(Some(call), Node::parent)
+        .last()
+        .unwrap_or(call);
+    let scope = block_scope(call);
     let (before, inside) = out.split_at_mut(wrapped);
     for s in before
         .iter_mut()
         .filter(|s| ours(s) && names.contains(&s.name))
+        .filter(|s| block_scope_at(ctx, root, s.line) == scope)
         .chain(inside.iter_mut().filter(|s| ours(s)))
     {
         s.visibility = Some(vis);
     }
+}
+
+/// The block a node sits in, short of a class body: a def there lands
+/// wherever the block is evaluated (`Struct.new do`, `included do`), so an
+/// access call reaches it only from inside the same block.
+fn block_scope(node: Node) -> Option<usize> {
+    std::iter::successors(node.parent(), Node::parent)
+        .find_map(|n| match n.kind() {
+            "block" | "do_block" => Some(Some(n.id())),
+            "class" | "module" | "singleton_class" => Some(None),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// [`block_scope`] of the definition at `line` (a def, or a DSL call like
+/// `attr_reader`), found by descending from `root`.
+fn block_scope_at(ctx: &Ctx, root: Node, line: u32) -> Option<usize> {
+    let mut node = root;
+    // not into a def's body, whose blocks hold no defs of the class
+    while !matches!(node.kind(), "method" | "singleton_method") {
+        let mut cursor = node.walk();
+        let next = node.children(&mut cursor).find(|c| {
+            (ctx.line(c.start_position().row)..=ctx.line(c.end_position().row)).contains(&line)
+        });
+        let Some(next) = next else { break };
+        node = next;
+    }
+    block_scope(node)
 }
 
 /// Every literal name among `node`'s arguments, through array literals
@@ -906,6 +940,34 @@ end
             ("x", false, "private"),
             // `private :helper` hides the mixin copy; the module's stays public
             ("helper", true, "public"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn a_retroactive_call_does_not_reach_into_a_block() {
+        // a block's defs land wherever it's evaluated (`Helper`, the includer)
+        let src = r#"
+class Thing
+  def go; end
+  Helper = Struct.new(:a) do
+    def go; end
+    def stop; end
+    attr_reader :size
+    private :stop
+  end
+  attr_reader :size
+  private :go, :size
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("go", false, "private"),
+            ("go", false, "public"),
+            ("stop", false, "private"),
+            ("size", false, "public"),
+            ("size", false, "private"),
         ]
         .map(|(n, s, v)| (n.to_string(), s, v));
         assert_eq!(got, expect);

@@ -1,5 +1,6 @@
 # Fixture for the extraction guard only: the forms widget.rb leaves out —
-# constants, protected, the macros that define methods, a rooted class.
+# constants, protected, the macros that define methods, a rooted class, an
+# access call beside a block that defines the same name.
 
 module Gadgets
   LIMIT = 10
@@ -29,4 +30,12 @@ module Gadgets
 
   class ::RootedGadget
   end
+end
+
+class Thing
+  def go; end
+  Helper = Struct.new(:a) do
+    def go; end
+  end
+  private :go
 end

@@ -33,7 +33,8 @@ meanwhile, without the field.
 - **Visibility set after the def is read.** `private :x`, `protected :x`,
   `public :x`, `private_class_method :x` and `public_class_method :x` — with
   strings, arrays, `*%i[…]` or a wrapped `def self.x` — now change the
-  methods they name, in the same body or an earlier reopening in the same file.
+  methods they name, in the same body or an earlier reopening in the same
+  file — not a same-named def inside a block (`Struct.new do … end`).
   An `alias`/`alias_method` takes its original's visibility, as Ruby does,
   rather than its section's (DECISIONS D55 addendum).
 - **A Rust fn with a typed receiver is a method.** `self: Pin<&mut Self>`,

@@ -38,6 +38,11 @@ impl Ctx<'_> {
     }
 
     /// Build a [`Symbol`] for `node` (1-based line span).
+    /// The 1-based line in the real file of a parse-tree row.
+    pub(crate) fn line(&self, row: usize) -> u32 {
+        (self.row_offset + row) as u32 + 1
+    }
+
     pub(crate) fn symbol(
         &self,
         name: &str,
@@ -50,8 +55,8 @@ impl Ctx<'_> {
             kind,
             language: self.language.to_string(),
             file: self.file.to_string(),
-            line: (self.row_offset + node.start_position().row) as u32 + 1,
-            end_line: (self.row_offset + node.end_position().row) as u32 + 1,
+            line: self.line(node.start_position().row),
+            end_line: self.line(node.end_position().row),
             parent: parent.map(str::to_string),
             visibility: None, // plugins that know it set it on the result
             stub: false,
