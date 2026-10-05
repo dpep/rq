@@ -326,6 +326,11 @@ pub(crate) fn pid_alive(pid: i64) -> bool {
 /// and a new warmer takes over. A pass renews its mark as it writes.
 pub(crate) const WARM_LOCK_TTL_SECS: i64 = 600;
 
+/// Whether a warm lock's holder, `pid` stamped at `ts`, still has it.
+pub(crate) fn warm_lock_held(pid: u32, ts: i64) -> bool {
+    pid_alive(i64::from(pid)) && now_unix() - ts < WARM_LOCK_TTL_SECS
+}
+
 /// How often a pass renews its mark, well inside the TTL.
 pub(crate) const PASS_RENEWAL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -1945,6 +1950,24 @@ mod tests {
         assert_eq!((written.files, written.symbols), (1, 1));
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn a_warm_lock_is_held_only_by_a_live_pid_inside_the_ttl() {
+        let me = std::process::id();
+        let fresh = now_unix();
+        let stale = fresh - WARM_LOCK_TTL_SECS;
+        // pid 1 is another user's: kill() says EPERM, which is still alive
+        let cases = [
+            (me, fresh, true),
+            (1, fresh, true),
+            (me, stale, false),
+            (0, fresh, false),
+            (u32::MAX, fresh, false),
+        ];
+        for (pid, ts, held) in cases {
+            assert_eq!(warm_lock_held(pid, ts), held, "pid {pid} at {ts}");
         }
     }
 

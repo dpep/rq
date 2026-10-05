@@ -36,6 +36,9 @@ meanwhile, without the field.
   rather than its section's (DECISIONS D55 addendum).
 - **`class << self` starts public.** A `private` earlier in the class body made
   every method in a later `class << self` read as private.
+- **A background warm run by another user is left alone.** A second warmer
+  read another user's live warm as dead and took over its lock, so two warmed
+  the same checkout at once.
 
 ## 0.60.3 — 2026-10-01
 

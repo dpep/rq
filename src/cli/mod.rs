@@ -1866,11 +1866,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     // Single-flight: if another live rq is already warming this checkout, bow out.
     // A dead pid or a stale stamp is a crashed warmer — take over. A claim that
     // can't be made at all means another writer is busy; the next search retries.
-    let held = |pid: u32, ts: i64| {
-        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
-        alive && now_unix() - ts < crate::store::WARM_LOCK_TTL_SECS
-    };
-    match store.claim_warm_lock(&key, std::process::id(), held) {
+    match store.claim_warm_lock(&key, std::process::id(), crate::store::warm_lock_held) {
         Ok(true) => {}
         Ok(false) => {
             crate::trace!(
