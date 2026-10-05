@@ -66,6 +66,12 @@ meanwhile, without the field.
   batch ending in a miss (1) hid an earlier query that only found the index
   still warming (2). It now exits 2 when any query could still hit, 1 only
   when every query is a definite miss, and an error's own code before either.
+- **A batch notices an edit.** Piped queries against a fully indexed repo
+  never asked whether the worktree had changed, so a method added since the
+  last index was a definite miss (exit 1) on every run — what `gqls
+  --resolve` saw. A batch now asks once, before its first query: it reads the
+  edit in before answering, or with `--no-wait` answers a miss `warming`
+  (exit 2) and leaves the reading to the background.
 - **`--usage` with nothing recorded says so on stderr**, as an empty search
   and an empty `--symbols` do, so stdout carries only data.
 - **Two modes at once are a usage error (exit 64).** `--usage --drop`,

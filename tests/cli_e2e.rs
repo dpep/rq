@@ -2826,6 +2826,31 @@ fn an_edit_in_a_repo_with_no_commits_is_noticed() {
 }
 
 #[test]
+fn a_batch_notices_an_edit_to_a_complete_repo() {
+    let (dir, db) = scratch("batch-edit");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    fs::write(dir.join("a.rb"), "class Widget\n  def added; end\nend\n").unwrap();
+
+    // --no-wait: the miss is provisional, and the child it leaves reads the edit
+    let (code, out, _) = rq_full(&db, &dir, &["-J", "--no-wait"], &NO_CHILD, Some("added\n"));
+    assert_eq!(
+        (code, json(&out)["status"].as_str()),
+        (2, Some("warming")),
+        "{out}"
+    );
+    let prod = [("RQ_WARM_DETACH", "wait")];
+    let (code, out, _) = rq_full(&db, &dir, &["-J", "--no-wait"], &prod, Some("added\n"));
+    assert_eq!(code, 0, "{out}");
+
+    // otherwise a batch takes the edit in before answering
+    fs::write(dir.join("a.rb"), "class Widget\n  def later; end\nend\n").unwrap();
+    let (code, out, _) = rq_full(&db, &dir, &["-J"], &NO_CHILD, Some("later\n"));
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
 fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     let (dir, db) = scratch("batch-flags");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

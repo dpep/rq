@@ -552,6 +552,9 @@ struct Session {
     coverage: Option<Coverage>,
     /// Where the queries are asked from (`--anchor`), resolved once.
     anchor: Option<crate::search::Anchor>,
+    /// A batch found the worktree moved and left the reindex to a child: its
+    /// misses are provisional.
+    moved: bool,
 }
 
 impl Session {
@@ -618,6 +621,7 @@ impl Session {
             identity,
             coverage,
             anchor: None,
+            moved: false,
         })
     }
 
@@ -738,10 +742,30 @@ fn cmd_batch(
     };
     session.anchor = cli.anchor.as_ref().map(|a| session.anchor_at(a));
 
-    // Warm to completion before answering anything, so a cold repo doesn't
-    // return a page of misses that only mean "not indexed yet".
+    // Whether the worktree moved is the repo's question, not a query's: a
+    // batch asks it once, here, where a single search asks after answering.
+    let warming_ok = session.cwd_is_git || session.coverage.is_some();
+    let mut moved = false;
+    if warming_ok
+        && session.coverage == Some(Coverage::Complete)
+        && let Some(root) = session.root.clone()
+    {
+        let store = &session.store;
+        let head = checkout_at(store, &root).and_then(|c| store.indexed_head(c.id).ok().flatten());
+        let checked_at = now_unix();
+        moved = changed_since_index(store, Some(&root), worktree_edits(&root, head.as_deref()));
+        if !moved {
+            record_verified(store, &root, head.as_deref(), checked_at);
+        } else if cli.no_wait {
+            session.moved = true;
+            spawn_detached_warm(&root);
+        }
+    }
+
+    // Warm to completion before answering anything, so a cold or edited repo
+    // doesn't return a page of misses that only mean "not indexed yet".
     if !cli.no_wait
-        && session.coverage != Some(Coverage::Complete)
+        && (session.coverage != Some(Coverage::Complete) || moved)
         && let Some(root) = session.root.clone()
     {
         {
@@ -850,6 +874,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         identity,
         coverage,
         anchor,
+        moved: batch_moved,
     } = session;
     let cwd_is_git = *cwd_is_git;
     let coverage = *coverage;
@@ -912,7 +937,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         .then(|| current.and_then(|c| store.indexed_head(c.id).ok().flatten()))
         .flatten();
     // Whether the worktree moved is a property of the repo, not of the query,
-    // so a batch asks once (up front) instead of forking `git status` per line.
+    // so a batch asks once (`cmd_batch`) instead of forking `git status` per line.
     let staleness = (!was_warming && warming_ok && !args.batch)
         .then(|| root.clone())
         .flatten()
@@ -1205,7 +1230,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             warming_ok,
             root.as_deref(),
         );
-        incomplete |= moved;
+        incomplete |= moved || *batch_moved;
         // A named scope that matched nothing is a different miss from a name
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
