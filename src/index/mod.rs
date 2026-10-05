@@ -1546,14 +1546,16 @@ pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) ->
                     return WalkState::Continue;
                 };
                 let path = entry.path();
-                let rel = path.strip_prefix(root).ok().and_then(Path::to_str);
+                // keyed as an index pass stores it, or a non-UTF-8 name is
+                // held but never counted
+                let rel = path.strip_prefix(root).ok().map(Path::to_string_lossy);
                 let Some(rel) = rel.filter(|r| is_source(r)) else {
                     return WalkState::Continue;
                 };
                 if !entry.file_type().is_some_and(|t| t.is_file()) {
                     return WalkState::Continue;
                 }
-                let stored = indexed.get(rel);
+                let stored = indexed.get(rel.as_ref());
                 let same = matches!(stored, Some(&Some(m)) if Some(m) == file_mtime(path));
                 if !same && readable(path) {
                     moved.store(true, Relaxed);

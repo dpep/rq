@@ -2920,6 +2920,20 @@ fn a_binary_file_with_a_source_extension_is_held_but_not_parsed() {
     }
 }
 
+#[cfg(target_os = "linux")] // APFS refuses a non-UTF-8 name
+#[test]
+fn a_non_utf8_file_name_does_not_keep_a_tree_warming() {
+    use std::os::unix::ffi::OsStrExt;
+    let (dir, db) = scratch("nongit-non-utf8-name");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    let name = std::ffi::OsStr::from_bytes(b"caf\xe9.rb");
+    fs::write(dir.join(name), "class Cafe\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+    let prod = [("RQ_WARM_DETACH", "wait")];
+    let (code, out, _) = rq_full(&db, &dir, &["Nosuch", "--json"], &prod, None);
+    assert_eq!(code, 1, "{out}");
+}
+
 #[test]
 fn an_edit_in_a_repo_with_no_commits_is_noticed() {
     // git tracks nothing yet, so it can't say what moved: the tree is compared
