@@ -49,7 +49,12 @@ meanwhile, without the field.
   `rq --index`ed non-git directory answered `warming` (exit 2), forever, with
   nothing left to index. rq now compares the tree with the index (files added,
   removed, or modified since), and says `warming` only when something did
-  change.
+  change. The same goes for a git repo with nothing committed or staged,
+  where an edit used to go unnoticed. A file rq can't open is left out of the
+  comparison until it can, so one no longer keeps every miss at `warming`.
+- **A source file that isn't UTF-8 is indexed.** A Latin-1 comment made rq
+  skip the whole file; its definitions are now found, the stray bytes read as
+  `�`.
 - **A live scan spends its budget reading files.** A `--no-wait` search of a
   checkout still being indexed asked git for the repo's identity and file list
   twice, inside the scan's 250 ms; on a busy machine that could leave no time

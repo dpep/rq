@@ -2764,6 +2764,50 @@ fn a_miss_in_an_indexed_tree_outside_git_is_definitive() {
 }
 
 #[test]
+fn a_file_rq_cannot_decode_or_open_does_not_keep_a_tree_warming() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, db) = scratch("nongit-unreadable");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("latin.rb"), b"# \xe9 latin-1\nclass Gadget\nend\n").unwrap();
+    let locked = dir.join("locked.rb");
+    fs::write(&locked, "class Locked\nend\n").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    rq(&db, &dir, &["--index"]);
+    let prod = [("RQ_WARM_DETACH", "wait")];
+
+    let (code, out, _) = rq_full(&db, &dir, &["Gadget", "--json"], &prod, None);
+    assert_eq!(code, 0, "a non-UTF-8 file is still read: {out}");
+    for _ in 0..2 {
+        let (code, out, _) = rq_full(&db, &dir, &["Nosuch", "--json"], &prod, None);
+        assert_eq!(code, 1, "{out}");
+    }
+    // readable again is a change, and the retry reads it
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+    let (code, out, _) = rq_full(&db, &dir, &["Locked", "--json"], &prod, None);
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = rq_full(&db, &dir, &["Locked", "--json"], &prod, None);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn an_edit_in_a_repo_with_no_commits_is_noticed() {
+    // git tracks nothing yet, so it can't say what moved: the tree is compared
+    let (dir, db) = scratch("unborn-edit");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init(&dir);
+    rq(&db, &dir, &["--index"]);
+    let prod = [("RQ_WARM_DETACH", "wait")];
+    let (code, out, _) = rq_full(&db, &dir, &["Nosuch", "--json"], &prod, None);
+    assert_eq!(code, 1, "unchanged: {out}");
+
+    fs::write(dir.join("a.rb"), "class Widget\n  def added; end\nend\n").unwrap();
+    let (code, out, _) = rq_full(&db, &dir, &["added", "--json"], &prod, None);
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = rq_full(&db, &dir, &["added", "--json"], &prod, None);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
 fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     let (dir, db) = scratch("batch-flags");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

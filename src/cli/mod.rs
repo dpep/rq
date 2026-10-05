@@ -2581,41 +2581,56 @@ fn cached_branch_files(
     (files, None, Some(cost_ms))
 }
 
+/// What git says of the worktree since it was indexed.
+enum Worktree {
+    /// HEAD moved, or no HEAD was recorded to compare against: everything
+    /// counts as changed.
+    Moved,
+    /// The files `git status` calls dirty, to check against the index.
+    Dirty(Vec<String>),
+    /// Git can't say (no git, or nothing it tracks): compare the tree itself.
+    Untold,
+}
+
 /// Whether the worktree has moved since it was indexed — a different HEAD, or
 /// uncommitted edits. Split out from the store read so this half can run on its
 /// own thread: `dirty_files` forks `git status`, which on a large worktree costs
 /// more than the search it was gating (measured: 12.6ms of a 16.8ms query on a
 /// 6k-file repo, against 0.1ms on a 54-file one).
-///
-/// `None` means HEAD moved — or we never recorded one, so there's nothing to
-/// compare against — and everything counts as changed. Otherwise the dirty
-/// files, for [`changed_since_index`] to check against the index.
-fn worktree_edits(cwd: &std::path::Path, indexed_head: Option<&str>) -> Option<Vec<String>> {
-    let head = indexed_head?;
+fn worktree_edits(cwd: &std::path::Path, indexed_head: Option<&str>) -> Worktree {
+    let Some(head) = indexed_head else {
+        return if crate::index::is_git_repo(cwd) {
+            Worktree::Moved
+        } else {
+            Worktree::Untold
+        };
+    };
     let _span = crate::profile::span("git: worktree changed?");
-    (crate::index::head_state(cwd).as_deref() == Some(head)).then(|| crate::index::dirty_files(cwd))
+    if crate::index::head_state(cwd).as_deref() != Some(head) {
+        Worktree::Moved
+    } else if !crate::index::git_speaks_for(cwd, head) {
+        Worktree::Untold
+    } else {
+        Worktree::Dirty(crate::index::dirty_files(cwd))
+    }
 }
 
 /// Whether the worktree holds anything the index doesn't yet reflect, given
 /// what [`worktree_edits`] found.
-fn changed_since_index(
-    store: &Store,
-    root: Option<&std::path::Path>,
-    edits: Option<Vec<String>>,
-) -> bool {
+fn changed_since_index(store: &Store, root: Option<&std::path::Path>, edits: Worktree) -> bool {
     let Some(root) = root else {
         return true;
     };
-    let Some(dirty) = edits else {
-        // git couldn't say (a moved HEAD, or no git at all): outside git, the
-        // tree is compared with what the index recorded of it
-        return crate::index::is_git_repo(root)
-            || checkout_at(store, root)
-                .is_none_or(|c| crate::index::untracked_tree_moved(store, c.id, root));
-    };
-    match checkout_at(store, root) {
-        Some(c) => crate::index::has_unindexed_changes(store, c.id, root, &dirty),
-        None => !dirty.is_empty(),
+    let checkout = checkout_at(store, root);
+    match edits {
+        Worktree::Moved => true,
+        Worktree::Untold => {
+            checkout.is_none_or(|c| crate::index::untracked_tree_moved(store, c.id, root))
+        }
+        Worktree::Dirty(dirty) => match checkout {
+            Some(c) => crate::index::has_unindexed_changes(store, c.id, root, &dirty),
+            None => !dirty.is_empty(),
+        },
     }
 }
 
@@ -2863,7 +2878,7 @@ fn checkout_at(store: &Store, root: &std::path::Path) -> Option<Checkout> {
 
 /// The definition's source line (trimmed) at `line` of `path`. Best-effort.
 fn read_signature(path: &std::path::Path, line: i64) -> Option<String> {
-    let src = std::fs::read_to_string(path).ok()?;
+    let src = crate::index::read_source(path).ok()?;
     signature_in(&src.lines().collect::<Vec<_>>(), line)
 }
 
@@ -2887,7 +2902,7 @@ fn show_top_definition(
     }
     let end = top.end_line.unwrap_or(top.line);
     let body = top.root.as_deref().and_then(|root| {
-        let src = std::fs::read_to_string(std::path::Path::new(root).join(&top.file)).ok()?;
+        let src = crate::index::read_source(&std::path::Path::new(root).join(&top.file)).ok()?;
         span_in(&src, top.line, end)
     });
     hits[0].body = body;
@@ -3054,7 +3069,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     // Read the source once for signatures (every row is the same file), from
     // the checkout we're in — it's the one the outline was refreshed from.
     let signatures_span = crate::profile::span("symbols: signatures");
-    let content = std::fs::read_to_string(&path).ok();
+    let content = crate::index::read_source(&path).ok();
     let lines: Vec<&str> = content
         .as_deref()
         .map_or_else(Vec::new, |c| c.lines().collect());

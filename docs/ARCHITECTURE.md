@@ -400,7 +400,11 @@ search only reads.
   index also remembers which files it took in as edits (the dirty set at each
   check and at the end of a sweep, plus any file revalidated singly), and checks
   those too: a discarded edit (`git checkout -- f`) is clean, so status no
-  longer names it, yet the index still holds the edit until it's reindexed. A child
+  longer names it, yet the index still holds the edit until it's reindexed.
+  Where git can't speak for the tree — outside git, or before a first commit
+  with nothing staged — the question is answered by walking the tree and
+  comparing paths and mtimes with the index, leaving out a file no pass could
+  open (it would read as moved forever). A child
   that finds nothing moved records the verdict with a git-state stamp (HEAD
   commit + `.git/index` mtime), and for 10 s (`RQ_WARM_RECHECK_MS`) a hit whose
   stamp still matches skips the spawn too. Staging, commits, checkouts and pulls

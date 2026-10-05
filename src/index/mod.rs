@@ -1033,7 +1033,7 @@ fn parse_file(
         .unwrap_or(file)
         .to_string_lossy()
         .into_owned();
-    let source = std::fs::read_to_string(file).ok()?;
+    let source = read_source(file).ok()?;
     // pre-filter: skip the expensive parse on files that can't hold the match
     if let Some(n) = needle
         && !contains_ascii_ci(source.as_bytes(), n)
@@ -1062,6 +1062,20 @@ fn parse_file(
         generated: is_generated(&source),
         symbols,
     })
+}
+
+/// A source file's text. Bytes that aren't UTF-8 (a Latin-1 comment) become
+/// U+FFFD rather than dropping the file: its names are still ASCII.
+pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+}
+
+/// Whether an index pass could read `path`. One it can't is no change to
+/// take in: comparing it would read as "moved" on every query, forever.
+fn readable(path: &Path) -> bool {
+    std::fs::File::open(path).is_ok()
 }
 
 /// Lines of a file's header read for a generated-code marker: a license
@@ -1417,6 +1431,13 @@ pub(crate) fn head_state(root: &Path) -> Option<String> {
     git_head(root).or_else(|| is_git_repo(root).then(|| UNBORN_HEAD.to_string()))
 }
 
+/// Whether `git status` can speak for an index that reflects `head`. Not
+/// before a first commit with no source staged: the index walked the tree, and
+/// git sees every file in it as untracked.
+pub(crate) fn git_speaks_for(root: &Path, head: &str) -> bool {
+    head != UNBORN_HEAD || tracked_files(root).is_some()
+}
+
 /// Repo-relative *tracked* files with uncommitted changes (staged or unstaged),
 /// both sides of a rename. `--untracked-files=no` skips the work-tree-wide
 /// untracked-file scan — the expensive, cold-cache-sensitive part of `git
@@ -1467,12 +1488,14 @@ fn has_unindexed_edits(store: &Store, checkout: i64, root: &Path, dirty: &[Strin
         if !is_source(rel) {
             return false;
         }
-        let on_disk = file_mtime(&root.join(rel));
-        match store.file_mtime(checkout, rel) {
+        let path = root.join(rel);
+        let on_disk = file_mtime(&path);
+        let differs = match store.file_mtime(checkout, rel) {
             Ok(Some(indexed)) => indexed.is_none() || indexed != on_disk,
             Ok(None) => on_disk.is_some(),
-            Err(_) => true,
-        }
+            Err(_) => return true,
+        };
+        differs && (on_disk.is_none() || readable(&path))
     })
 }
 
@@ -1494,7 +1517,8 @@ pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) ->
         }
         match indexed.remove(rel) {
             Some(Some(mtime)) if Some(mtime) == file_mtime(&path) => {}
-            _ => return true,
+            _ if readable(&path) => return true,
+            _ => {}
         }
     }
     !indexed.is_empty()
@@ -1703,7 +1727,7 @@ pub(crate) fn refresh_file(
     if mtime.is_some() && store.file_mtime(checkout.id, rel)? == Some(mtime) {
         return Ok(Refresh::Unchanged);
     }
-    let source = match std::fs::read_to_string(&path) {
+    let source = match read_source(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && root.is_dir() => {
             return Ok(Refresh::Missing);
@@ -1771,7 +1795,7 @@ pub(crate) fn current_definitions(
     else {
         return Vec::new();
     };
-    let Ok(source) = std::fs::read_to_string(&path) else {
+    let Ok(source) = read_source(&path) else {
         return Vec::new();
     };
     let generated = is_generated(&source);
