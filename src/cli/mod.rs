@@ -9,7 +9,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 
-use crate::core::now_unix;
+use crate::core::{Kind, now_unix};
 use crate::store::{Checkout, Store};
 
 /// Search is the default action (`rq <query>`). Operations are flags rather
@@ -317,12 +317,11 @@ fn dispatch(cli: Cli) -> ExitCode {
         match canonical_kind(k) {
             Some(c) => kinds.extend(c.iter().map(|k| k.to_string())),
             None => {
+                let known: Vec<&str> = Kind::ALL.iter().map(|k| k.as_str()).collect();
                 return fail(
                     out,
                     Failure::Usage,
-                    format_args!(
-                        "rq: unknown --kind {k:?} (class, module, method, function, struct, enum, trait, constant, type, macro, variant, field)"
-                    ),
+                    format_args!("rq: unknown --kind {k:?} ({})", known.join(", ")),
                 );
             }
         }
@@ -3198,13 +3197,11 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
 /// count (never the single-letter `-k` shortcuts, which are far likelier to be a
 /// real query). Returns the canonical kind, so it filters exactly like `--kind`.
 fn keyword_kind(token: &str) -> Option<&'static [&'static str]> {
-    match token.to_ascii_lowercase().as_str() {
-        "class" | "module" | "method" | "function" | "fn" | "struct" | "type" | "enum"
-        | "trait" | "interface" | "constant" | "const" | "macro" | "variant" | "field" => {
-            canonical_kind(token)
-        }
-        _ => None,
-    }
+    let word = token.to_ascii_lowercase();
+    // a kind's own name, or the keyword a language declares it with
+    let keyword =
+        Kind::from_tag(&word).is_some() || matches!(word.as_str(), "fn" | "interface" | "const");
+    keyword.then(|| canonical_kind(&word)).flatten()
 }
 
 /// Peel a leading kind keyword off the query, so `rq class Foo` (or the quoted
@@ -4294,6 +4291,20 @@ mod tests {
         assert_eq!(canonical_kind("macro"), Some(&["macro"][..]));
         assert_eq!(canonical_kind("const"), Some(&["constant"][..]));
         assert_eq!(canonical_kind("banana"), None);
+    }
+
+    #[test]
+    fn every_kind_is_reachable_by_its_name() {
+        for kind in Kind::ALL {
+            let tag = kind.as_str();
+            assert_eq!(Kind::from_tag(tag), Some(kind));
+            for selects in [canonical_kind(tag), keyword_kind(tag)] {
+                assert!(
+                    selects.is_some_and(|s| s.contains(&tag)),
+                    "{tag}: {selects:?}"
+                );
+            }
+        }
         // …and work as the leading-keyword shorthand too
         let d = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert_eq!(

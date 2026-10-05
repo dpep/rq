@@ -10,7 +10,7 @@ mod score;
 
 pub(crate) use names::{Probe, SIG_BYTES, Signature};
 pub(crate) use score::{
-    Boosts, Feature, NAME_INDEX_FORMAT, PRIMARY_KINDS, confidence, is_literal, joiners_eq,
+    Boosts, Feature, NAME_INDEX_FORMAT, confidence, is_literal, is_primary, joiners_eq,
     match_positions, match_quality, path_stem,
 };
 
@@ -394,7 +394,7 @@ fn constructor_owner(hits: &mut Vec<Hit>) {
 /// every type is top-level, and a flat bonus ranked `Copy` over `copy`.
 /// Types only, since a function's parent is its owner, not a namespace.
 fn top_level(hits: &mut [Hit]) {
-    let is_type = |h: &Hit| score::PRIMARY_KINDS.contains(&h.kind.as_str());
+    let is_type = |h: &Hit| score::is_primary_kind(&h.kind);
     let nested: std::collections::HashSet<String> = hits
         .iter()
         .filter(|h| is_type(h) && h.parent.is_some())

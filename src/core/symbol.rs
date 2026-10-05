@@ -33,6 +33,27 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    /// Every kind, for whatever lists or parses the vocabulary.
+    pub(crate) const ALL: [Kind; 12] = [
+        Kind::Class,
+        Kind::Module,
+        Kind::Method,
+        Kind::Function,
+        Kind::Struct,
+        Kind::Enum,
+        Kind::Trait,
+        Kind::Constant,
+        Kind::Type,
+        Kind::Macro,
+        Kind::Variant,
+        Kind::Field,
+    ];
+
+    /// The kind a stored tag names; `None` for one this build doesn't know.
+    pub(crate) fn from_tag(tag: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|k| k.as_str() == tag)
+    }
+
     /// Stable lowercase tag used in storage and output.
     pub(crate) fn as_str(self) -> &'static str {
         match self {

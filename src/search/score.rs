@@ -4,6 +4,7 @@
 //! smaller additive features layered on (kind, current-repo). Every component
 //! is recorded so `--explain` can show why a result ranked where it did.
 
+use crate::core::Kind;
 use crate::store::SymbolRow;
 
 /// One named contribution to a score.
@@ -378,16 +379,7 @@ pub(crate) fn score(
         });
     }
 
-    // Kind weight — definitions you navigate to most sit slightly higher.
-    // Top-level types rank alongside classes; methods/functions stay neutral.
-    let kind = match cand.kind.as_str() {
-        "class" | "struct" | "trait" => 15.0,
-        "module" | "enum" | "type" => 12.0,
-        // a slot of a type, rarely meant when its name also names a
-        // definition: sized as `local`, so it ranks below any same-named one
-        "field" => -LOCAL_PENALTY,
-        _ => 0.0,
-    };
+    let kind = Kind::from_tag(&cand.kind).map_or(0.0, kind_weight);
     if kind != 0.0 {
         features.push(Feature {
             name: "kind",
@@ -1022,11 +1014,36 @@ fn contiguous_highlight(positions: Vec<usize>, name: &str) -> Vec<usize> {
     out
 }
 
-/// The kinds a path match alone can surface: a file's primary definitions.
-pub(crate) const PRIMARY_KINDS: [&str; 5] = ["class", "module", "struct", "enum", "trait"];
+/// Definitions you navigate to most sit slightly higher: top-level types
+/// alongside classes, methods and functions neutral.
+fn kind_weight(kind: Kind) -> f64 {
+    match kind {
+        Kind::Class | Kind::Struct | Kind::Trait => 15.0,
+        Kind::Module | Kind::Enum | Kind::Type => 12.0,
+        // a slot of a type, rarely meant when its name also names a
+        // definition: sized as `local`, so it ranks below any same-named one
+        Kind::Field => -LOCAL_PENALTY,
+        Kind::Method | Kind::Function | Kind::Constant | Kind::Macro | Kind::Variant => 0.0,
+    }
+}
 
-fn is_primary_kind(kind: &str) -> bool {
-    PRIMARY_KINDS.contains(&kind)
+/// The kinds a path match alone can surface: a file's primary definitions.
+pub(crate) fn is_primary(kind: Kind) -> bool {
+    match kind {
+        Kind::Class | Kind::Module | Kind::Struct | Kind::Enum | Kind::Trait => true,
+        Kind::Method
+        | Kind::Function
+        | Kind::Constant
+        | Kind::Macro
+        | Kind::Type
+        | Kind::Variant
+        | Kind::Field => false,
+    }
+}
+
+/// [`is_primary`] for a stored tag.
+pub(crate) fn is_primary_kind(tag: &str) -> bool {
+    Kind::from_tag(tag).is_some_and(is_primary)
 }
 
 /// A fuzzy match's value: the best alignment, less the same unmatched-tail

@@ -12,8 +12,9 @@ use super::{
     CANDIDATE_COLS, CANDIDATE_FROM, Checkout, Result, Store, SymbolRow, def_key, read_from,
     row_to_candidate,
 };
+use crate::core::Kind;
 use crate::search::{
-    NAME_INDEX_FORMAT, PRIMARY_KINDS, Probe, SIG_BYTES, Signature, joiners_eq, path_stem,
+    NAME_INDEX_FORMAT, Probe, SIG_BYTES, Signature, is_primary, joiners_eq, path_stem,
 };
 
 /// The fetches' checkout filter, bound as `?3` (see [`read_from`]): a name
@@ -539,7 +540,10 @@ impl Store {
             |sig| probe.screen_stem(sig),
             |path, _| probe.accepts_stem(path_stem(path)),
         )?;
-        let kinds = PRIMARY_KINDS.map(|k| format!("'{k}'")).join(", ");
+        let kinds = (Kind::ALL.into_iter().filter(|&k| is_primary(k)))
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
              WHERE fi.repository_id = ?1 AND fi.path = ?2 AND s.kind IN ({kinds}) {}",
