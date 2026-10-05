@@ -3170,7 +3170,13 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
     if syms.is_empty() {
         match out {
             Output::Json | Output::Ndjson => {
-                let obj = serde_json::json!({ "status": Verdict::Miss.status() });
+                #[derive(serde::Serialize)]
+                struct NoSymbols {
+                    status: &'static str,
+                }
+                let obj = NoSymbols {
+                    status: Verdict::Miss.status(),
+                };
                 let _ = emit_json(out, &obj); // exit code below carries the miss
             }
             Output::Text => eprintln!("no symbols"),
@@ -3467,22 +3473,27 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
             let totals = checkout_at(&store, &root).and_then(|c| store.checkout_totals(c.id).ok());
             match out {
                 Output::Json | Output::Ndjson => {
-                    let (files, symbols) = match totals {
-                        Some((f, s)) => (Some(f), Some(s)),
-                        None => (None, None),
+                    // keys sorted, as they always went out
+                    #[derive(serde::Serialize)]
+                    struct Indexed {
+                        files: Option<i64>,
+                        files_added: usize,
+                        repo: String,
+                        root: String,
+                        scope: &'static str,
+                        symbols: Option<i64>,
+                        symbols_added: usize,
+                    }
+                    let row = Indexed {
+                        files: totals.map(|(files, _)| files),
+                        files_added: stats.files_parsed,
+                        repo: identity,
+                        root: root_key(&root),
+                        scope: if subtree { "subtree" } else { "full" },
+                        symbols: totals.map(|(_, symbols)| symbols),
+                        symbols_added: stats.symbols,
                     };
-                    return exit_code(emit_json(
-                        out,
-                        &serde_json::json!({
-                            "repo": identity,
-                            "root": root_key(&root),
-                            "scope": if subtree { "subtree" } else { "full" },
-                            "files_added": stats.files_parsed,
-                            "symbols_added": stats.symbols,
-                            "files": files,
-                            "symbols": symbols,
-                        }),
-                    ));
+                    return exit_code(emit_json(out, &row));
                 }
                 Output::Text => {
                     let scope = if subtree { " (subtree seed)" } else { "" };
@@ -3985,11 +3996,18 @@ fn report(out: Output, kind: Failure, args: std::fmt::Arguments) -> Failure {
 /// The structured half of an error: `{"error", "kind", "code"}` on stdout,
 /// nothing for text. `code` is the exit code the process leaves with.
 fn emit_error(out: Output, kind: Failure, message: &str) {
-    let obj = serde_json::json!({
-        "error": message,
-        "kind": kind.as_str(),
-        "code": kind.exit_code(),
-    });
+    // keys sorted, as they always went out
+    #[derive(serde::Serialize)]
+    struct Error<'a> {
+        code: u8,
+        error: &'a str,
+        kind: &'static str,
+    }
+    let obj = Error {
+        code: kind.exit_code(),
+        error: message,
+        kind: kind.as_str(),
+    };
     // Printed directly: `emit_json` reports its own failures through here.
     let rendered = match out {
         Output::Text => return,
