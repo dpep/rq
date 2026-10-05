@@ -10,7 +10,7 @@ use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 
 use crate::core::{Kind, now_unix};
-use crate::store::{Checkout, Store};
+use crate::store::{Checkout, Coverage, Store};
 
 /// Search is the default action (`rq <query>`). Operations are flags rather
 /// than subcommands so no word is reserved — `rq index`, `rq status`, and
@@ -436,14 +436,14 @@ fn record_usage(
     store: &Store,
     args: &SearchArgs,
     status: &str,
-    coverage: Option<&str>,
+    coverage: Option<Coverage>,
     live: bool,
 ) {
     let _ = store.record_search(&crate::store::SearchRecord {
         source: &crate::origin::detect(),
         flags: &flag_summary(args),
         status,
-        coverage: coverage.unwrap_or("none"),
+        coverage,
         live,
     });
 }
@@ -549,7 +549,7 @@ struct Session {
     active_paths: Vec<String>,
     branch_refresh: Option<BranchRefresh>,
     identity: Option<String>,
-    coverage: Option<String>,
+    coverage: Option<Coverage>,
     /// Where the queries are asked from (`--anchor`), resolved once.
     anchor: Option<crate::search::Anchor>,
 }
@@ -606,7 +606,7 @@ impl Session {
             .as_deref()
             .and_then(|r| store.coverage_status(&root_key(r)).ok())
             .flatten();
-        identity_span.note(|| coverage.as_deref().unwrap_or("unknown").to_string());
+        identity_span.note(|| coverage.map_or("unknown", Coverage::as_str).to_string());
         drop(identity_span);
         Ok(Session {
             store,
@@ -741,7 +741,7 @@ fn cmd_batch(
     // Warm to completion before answering anything, so a cold repo doesn't
     // return a page of misses that only mean "not indexed yet".
     if !cli.no_wait
-        && session.coverage.as_deref() != Some("complete")
+        && session.coverage != Some(Coverage::Complete)
         && let Some(root) = session.root.clone()
     {
         {
@@ -854,6 +854,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         anchor,
     } = session;
     let cwd_is_git = *cwd_is_git;
+    let coverage = *coverage;
     // `-a` reads every checkout, so none may be one deleted from disk
     if all_repos {
         crate::index::prune_missing_checkouts(store);
@@ -873,7 +874,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             "query {query:?}: root={} identity={} coverage={} warming_ok={warming_ok} active={}",
             root.as_deref().map_or("?".into(), crate::trace::abbrev),
             identity.as_deref().unwrap_or("none"),
-            coverage.as_deref().unwrap_or("none"),
+            coverage.map_or("none", Coverage::as_str),
             active_paths.len(),
         );
     }
@@ -902,7 +903,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     } else {
         answer_warm_budget() + deferred_warm_budget()
     };
-    let was_warming = coverage.as_deref() != Some("complete");
+    let was_warming = coverage != Some(Coverage::Complete);
 
     // On a complete repo the only question left is whether the worktree moved
     // since it was indexed — and answering it forks `git status`, which on a
@@ -1226,8 +1227,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             && root
                 .as_deref()
                 .and_then(|r| store.coverage_status(&root_key(r)).ok().flatten())
-                .as_deref()
-                != Some("complete");
+                != Some(Coverage::Complete);
         // a "not yet" miss leaves work behind — reindex an edited worktree and
         // let a detached child keep warming, so the retry lands on a better
         // index. This is the path a just-added symbol takes, so it has to do
@@ -1297,7 +1297,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             store,
             args,
             if incomplete { "warming" } else { "miss" },
-            coverage.as_deref(),
+            coverage,
             false,
         );
         return code;
@@ -1339,7 +1339,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let counted_early = !provisional && (show || open || web);
     if counted_early {
         let _span = crate::profile::span("record usage");
-        record_usage(store, args, verdict, coverage.as_deref(), live);
+        record_usage(store, args, verdict, coverage, live);
     }
 
     // Confidence first, while the runner-up is still in hand, then cut to the
@@ -1432,7 +1432,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // otherwise queue behind.
     if !counted_early {
         let _span = crate::profile::span("after: record usage");
-        record_usage(store, args, verdict, coverage.as_deref(), live);
+        record_usage(store, args, verdict, coverage, live);
     }
 
     // Collect the refresh started back at setup. It ran alongside the search
@@ -1543,7 +1543,7 @@ fn is_complete(store: &Store, root: &std::path::Path) -> bool {
 }
 
 fn is_complete_key(store: &Store, key: &str) -> bool {
-    store.coverage_status(key).ok().flatten().as_deref() == Some("complete")
+    store.coverage_status(key).ok().flatten() == Some(Coverage::Complete)
 }
 
 /// A checkout other than `here`, not complete yet, that another process is
@@ -1599,7 +1599,7 @@ fn warming_state(
     here: bool,
     continuing: bool,
 ) -> Option<crate::search::Warming> {
-    if store.coverage_status(root).ok().flatten().as_deref() == Some("complete") {
+    if store.coverage_status(root).ok().flatten() == Some(Coverage::Complete) {
         return None;
     }
     // none yet: dropped, or never read, with no pass registered to fill it
@@ -1783,7 +1783,7 @@ fn maybe_detach_warm(
     // "complete" alone isn't done; it's done only if the worktree also hasn't
     // moved since we indexed it.
     let status = store.coverage_status(&root_key(root)).ok().flatten();
-    if !changed && status.as_deref() == Some("complete") {
+    if !changed && status == Some(Coverage::Complete) {
         return; // the in-process pass finished the job
     }
     spawn_detached_warm(root);
@@ -1898,7 +1898,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
 
     // A search on a complete repo hands us the staleness check rather than
     // wait on `git status` itself, so most runs end here: nothing moved.
-    if store.coverage_status(&key).ok().flatten().as_deref() == Some("complete") {
+    if store.coverage_status(&key).ok().flatten() == Some(Coverage::Complete) {
         let checkout = store.checkout(&key).ok().flatten();
         let head = checkout.and_then(|c| store.indexed_head(c.id).ok().flatten());
         // The window runs from before `git status`, so an edit made during it
@@ -1948,7 +1948,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
                 break;
             }
         };
-        if store.coverage_status(&key).ok().flatten().as_deref() == Some("complete")
+        if store.coverage_status(&key).ok().flatten() == Some(Coverage::Complete)
             || stats.files_indexed == 0
         {
             break;
@@ -3090,7 +3090,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
         // An outline depends on this one file, so on a complete index freshness
         // is just re-extracting it if it moved — no `git status` over the whole
         // worktree, and a new untracked file is picked up too.
-        Some(checkout) if coverage.as_deref() == Some("complete") => {
+        Some(checkout) if coverage == Some(Coverage::Complete) => {
             if indexable {
                 let _span = crate::profile::span("symbols: refresh");
                 let _ = crate::index::refresh_file(&mut store, checkout, &root, &rel);
@@ -3617,7 +3617,7 @@ fn cmd_status(out: Output) -> ExitCode {
     // the same `of` a hit from the checkout reports
     for row in rows
         .iter_mut()
-        .filter(|r| r.status != "complete" && r.of.is_none())
+        .filter(|r| r.status != Coverage::Complete && r.of.is_none())
     {
         if let Some(checkout) = store.checkout(&row.root).ok().flatten() {
             row.of = tree_span(&store, &row.root, checkout.id).map(|s| s.max(row.files));

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::index::index_path;
-use crate::store::Store;
+use crate::store::{Coverage, Store};
 
 /// A unique temp directory for this test process (no tempfile dependency).
 fn scratch_dir() -> PathBuf {
@@ -35,7 +35,7 @@ fn indexes_a_directory_of_ruby_end_to_end() {
     let overview = store.coverage_overview().unwrap();
     assert_eq!(overview.len(), 1);
     assert_eq!(overview[0].symbols, 3);
-    assert_eq!(overview[0].status, "complete");
+    assert_eq!(overview[0].status, Coverage::Complete);
 
     fs::remove_dir_all(&dir).ok();
 }

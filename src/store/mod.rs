@@ -163,9 +163,58 @@ pub(crate) struct Written {
     pub unmapped: Vec<String>,
 }
 
+/// How much of a checkout its index covers. Stored and printed as its
+/// lowercase name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Coverage {
+    /// Registered, nothing read: only `--status` reports it (a checkout an
+    /// upgrade registered, which only a search there indexes).
+    Unindexed,
+    /// A pass is filling it, or was cut short.
+    Warming,
+    /// A pass read the whole tree.
+    Complete,
+}
+
+impl Coverage {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Coverage::Unindexed => "unindexed",
+            Coverage::Warming => "warming",
+            Coverage::Complete => "complete",
+        }
+    }
+}
+
+impl std::fmt::Display for Coverage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl rusqlite::types::ToSql for Coverage {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        self.as_str().to_sql()
+    }
+}
+
+impl rusqlite::types::FromSql for Coverage {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "unindexed" => Ok(Coverage::Unindexed),
+            "warming" => Ok(Coverage::Warming),
+            "complete" => Ok(Coverage::Complete),
+            other => Err(rusqlite::types::FromSqlError::Other(
+                format!("unknown coverage status {other:?}").into(),
+            )),
+        }
+    }
+}
+
 /// A coverage row's `(status, last_indexed_at)` as a pass found it when it
 /// began, or `None` before any pass finished (see `set_coverage_since`).
-pub(crate) type CoverageMark = Option<(String, i64)>;
+pub(crate) type CoverageMark = Option<(Coverage, i64)>;
 
 /// One row of `rq status` output — the current indexed totals for a checkout
 /// (not any single run's incremental counts).
@@ -177,7 +226,7 @@ pub(crate) struct CoverageRow {
     pub identity: String,
     /// The checkout's root, named as a search hit names it.
     pub root: String,
-    pub status: String,
+    pub status: Coverage,
     pub files: i64,
     /// Files the tree spans, while it isn't complete and a pass has counted it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,8 +251,8 @@ pub(crate) struct SearchRecord<'a> {
     /// ready to say). rq separates the last two in its exit codes; conflating
     /// them in the counts would overstate how often it truly finds nothing.
     pub status: &'a str,
-    /// Index state when the query arrived: `complete`, `warming`, or `none`.
-    pub coverage: &'a str,
+    /// Index state when the query arrived; `None` before any pass finished.
+    pub coverage: Option<Coverage>,
     /// Answered from a live scan of an untracked directory, not the index.
     pub live: bool,
 }
@@ -855,7 +904,7 @@ impl Store {
         checkout: i64,
         files_seen: i64,
         files_indexed: i64,
-        status: &str,
+        status: Coverage,
     ) -> Result<()> {
         let mark = self.coverage_mark(checkout)?;
         self.set_coverage_since(checkout, files_seen, files_indexed, status, &mark)?;
@@ -885,12 +934,12 @@ impl Store {
         checkout: i64,
         files_seen: i64,
         files_indexed: i64,
-        status: &str,
+        status: Coverage,
         mark: &CoverageMark,
     ) -> Result<bool> {
         let now = now_unix();
         let (mark_status, mark_at) = match mark {
-            Some((s, at)) => (Some(s.as_str()), Some(*at)),
+            Some((s, at)) => (Some(*s), Some(*at)),
             None => (None, None),
         };
         let written = self.conn.execute(
@@ -976,10 +1025,12 @@ impl Store {
         Ok(rows
             .into_iter()
             .map(|mut row| {
-                if row.status != "complete" {
+                if row.status != Coverage::Complete {
                     let (pids, span) = self.passes(&row.root).unwrap_or_default();
-                    if row.status == "unindexed" && pids.iter().any(|&p| pid_alive(i64::from(p))) {
-                        row.status = "warming".to_string();
+                    if row.status == Coverage::Unindexed
+                        && pids.iter().any(|&p| pid_alive(i64::from(p)))
+                    {
+                        row.status = Coverage::Warming;
                     }
                     row.of = span.map(|s| s.max(row.files));
                     if let Some((phase, since)) = self.pass_phase(&row.root) {
@@ -1033,7 +1084,7 @@ impl Store {
 
     /// Coverage status for the checkout at `root` (`warming`/`complete`), or
     /// `None` if no index pass has finished for it.
-    pub(crate) fn coverage_status(&self, root: &str) -> Result<Option<String>> {
+    pub(crate) fn coverage_status(&self, root: &str) -> Result<Option<Coverage>> {
         self.conn
             .query_row(
                 "SELECT c.status FROM coverage c
@@ -1198,7 +1249,7 @@ impl Store {
     pub(crate) fn record_search(&self, rec: &SearchRecord) -> Result<()> {
         let miss = i64::from(rec.status == "miss");
         let warming = i64::from(rec.status == "warming");
-        let on_complete = i64::from(rec.coverage == "complete");
+        let on_complete = i64::from(rec.coverage == Some(Coverage::Complete));
         let live = i64::from(rec.live);
         // Local date, not UTC: an evening search on the US west coast would
         // otherwise be filed under tomorrow, which makes a per-day report
@@ -2446,8 +2497,8 @@ mod tests {
                 assert_eq!(stat(&store, p), (None, String::new()), "{p} from v{from}");
             }
             let status = |root: &str| store.coverage_status(root).unwrap().unwrap();
-            assert_eq!(status("/mixed"), "warming");
-            assert_eq!(status("/ruby"), "warming");
+            assert_eq!(status("/mixed"), Coverage::Warming);
+            assert_eq!(status("/ruby"), Coverage::Warming);
             drop(store);
             remove(&path);
         }
@@ -2464,8 +2515,8 @@ mod tests {
         assert_eq!(stat(&store, "a.py").1, "");
         assert_eq!(stat(&store, "b.rb").1, "h");
         let status = |root: &str| store.coverage_status(root).unwrap().unwrap();
-        assert_eq!(status("/mixed"), "warming");
-        assert_eq!(status("/ruby"), "complete");
+        assert_eq!(status("/mixed"), Coverage::Warming);
+        assert_eq!(status("/ruby"), Coverage::Complete);
         drop(store);
         remove(&path);
     }
@@ -2486,7 +2537,10 @@ mod tests {
         let store = open_at(&path, 23).unwrap();
         assert_eq!(stat(&store, "a.d.ts").1, "");
         assert_eq!(stat(&store, "b.rb").1, "h");
-        assert_eq!(store.coverage_status("/mixed").unwrap().unwrap(), "warming");
+        assert_eq!(
+            store.coverage_status("/mixed").unwrap().unwrap(),
+            Coverage::Warming
+        );
         let stub: bool = store
             .conn
             .query_row(
@@ -2518,7 +2572,10 @@ mod tests {
             assert_eq!(stat(&store, p).1, "", "{p}");
         }
         assert_eq!(stat(&store, "e.rb").1, "h");
-        assert_eq!(store.coverage_status("/mixed").unwrap().unwrap(), "warming");
+        assert_eq!(
+            store.coverage_status("/mixed").unwrap().unwrap(),
+            Coverage::Warming
+        );
         drop(store);
         remove(&path);
     }
@@ -2542,8 +2599,14 @@ mod tests {
             assert_eq!(stat(&store, p), (None, "stale:h".to_string()), "{p}");
         }
         assert_eq!(stat(&store, "b.go"), (Some(1), "h".to_string()));
-        assert_eq!(store.coverage_status("/mixed").unwrap().unwrap(), "warming");
-        assert_eq!(store.coverage_status("/ruby").unwrap().unwrap(), "warming");
+        assert_eq!(
+            store.coverage_status("/mixed").unwrap().unwrap(),
+            Coverage::Warming
+        );
+        assert_eq!(
+            store.coverage_status("/ruby").unwrap().unwrap(),
+            Coverage::Warming
+        );
         drop(store);
         remove(&path);
     }
@@ -2554,7 +2617,7 @@ mod tests {
         let store = Store::open(&path).unwrap();
         assert_eq!(
             store.coverage_status("/mixed").unwrap().unwrap(),
-            "complete"
+            Coverage::Complete
         );
         drop(store);
         remove(&path);
@@ -2593,8 +2656,8 @@ mod tests {
             .unwrap();
         assert_eq!(mapped, [(2, "w.rb".to_string(), 1, Some(5), Some(7))]);
         assert_eq!(
-            store.coverage_status("/new").unwrap().as_deref(),
-            Some("complete")
+            store.coverage_status("/new").unwrap(),
+            Some(Coverage::Complete)
         );
         assert_eq!(
             store.coverage_status("/old").unwrap(),
@@ -2856,7 +2919,7 @@ mod tests {
             "h2",
             Some(vec![sym("Gadget", Kind::Class, 1, None)]),
         );
-        store.set_coverage(a.id, 1, 1, "complete").unwrap();
+        store.set_coverage(a.id, 1, 1, Coverage::Complete).unwrap();
         store.set_indexed_head(a.id, "abc").unwrap();
         store.branch_files_set("/a", "s", 1, 1, &[]).unwrap();
         store.begin_pass("/a", 4_000_000, Some(3)).unwrap();
@@ -2999,13 +3062,15 @@ mod tests {
                 &symbols,
             )
             .unwrap();
-        store.set_coverage(checkout.id, 10, 1, "warming").unwrap();
+        store
+            .set_coverage(checkout.id, 10, 1, Coverage::Warming)
+            .unwrap();
 
         let overview = store.coverage_overview().unwrap();
         assert_eq!(overview.len(), 1);
         assert_eq!(overview[0].identity, "github.com/dpep/rq");
         assert_eq!(overview[0].root, "/tmp/rq");
-        assert_eq!(overview[0].status, "warming");
+        assert_eq!(overview[0].status, Coverage::Warming);
         assert_eq!(overview[0].symbols, 2);
     }
 
@@ -3013,34 +3078,36 @@ mod tests {
     fn a_cut_short_pass_keeps_a_complete_recorded_during_it() {
         let store = Store::open_in_memory().unwrap();
         let checkout = store.test_checkout(&RepoIdentity::local("/tmp/rq")).id;
-        let status = |store: &Store| store.coverage_overview().unwrap()[0].status.clone();
+        let status = |store: &Store| store.coverage_overview().unwrap()[0].status;
 
         // first pass ever: nothing to protect
         let mark = store.coverage_mark(checkout).unwrap();
         assert!(
             store
-                .set_coverage_since(checkout, 5, 2, "warming", &mark)
+                .set_coverage_since(checkout, 5, 2, Coverage::Warming, &mark)
                 .unwrap()
         );
 
         // a warm begins; a concurrent full index completes; the warm runs out of time
         let mark = store.coverage_mark(checkout).unwrap();
-        store.set_coverage(checkout, 5, 5, "complete").unwrap();
+        store
+            .set_coverage(checkout, 5, 5, Coverage::Complete)
+            .unwrap();
         assert!(
             !store
-                .set_coverage_since(checkout, 5, 1, "warming", &mark)
+                .set_coverage_since(checkout, 5, 1, Coverage::Warming, &mark)
                 .unwrap()
         );
-        assert_eq!(status(&store), "complete");
+        assert_eq!(status(&store), Coverage::Complete);
 
         // a pass that began on that `complete` still records its own outcome
         let mark = store.coverage_mark(checkout).unwrap();
         assert!(
             store
-                .set_coverage_since(checkout, 5, 1, "warming", &mark)
+                .set_coverage_since(checkout, 5, 1, Coverage::Warming, &mark)
                 .unwrap()
         );
-        assert_eq!(status(&store), "warming");
+        assert_eq!(status(&store), Coverage::Warming);
     }
 
     #[test]
@@ -3069,7 +3136,9 @@ mod tests {
             )
             .unwrap();
 
-        store.set_coverage(checkout.id, 1, 1, "complete").unwrap();
+        store
+            .set_coverage(checkout.id, 1, 1, Coverage::Complete)
+            .unwrap();
         let overview = store.coverage_overview().unwrap();
         // old symbol gone, new one present → still exactly one symbol
         assert_eq!(overview[0].symbols, 1);

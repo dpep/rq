@@ -13,7 +13,7 @@ use ignore::WalkBuilder;
 
 use crate::core::RepoIdentity;
 use crate::lang;
-use crate::store::{Checkout, Store};
+use crate::store::{Checkout, Coverage, Store};
 
 /// Path → the content hashes of the versions a repo holds there
 /// ([`Store::versions`]): a file hashing to one of them needs no parse.
@@ -555,20 +555,20 @@ fn sweep_outcome(
     seen_empty: bool,
     had_stored: bool,
     budgeted: bool,
-) -> (bool, &'static str) {
+) -> (bool, Coverage) {
     if !whole_repo {
         // a subtree index is a *seed* — it never reconciles (it didn't see the
         // whole tree) and leaves coverage `warming` so normal warming carries
         // on over the rest of the repo
-        return (false, "warming");
+        return (false, Coverage::Warming);
     }
     if budgeted && completed && seen_empty && had_stored {
-        return (false, "warming"); // suspicious empty warm — don't wipe the index
+        return (false, Coverage::Warming); // suspicious empty warm — don't wipe the index
     }
     if completed {
-        (true, "complete")
+        (true, Coverage::Complete)
     } else {
-        (false, "warming")
+        (false, Coverage::Warming)
     }
 }
 
@@ -642,7 +642,9 @@ fn run_index(
     // the tree it read and whether anyone is still reading (D52), and what the
     // pass is doing from its start, as a warm child's next pass sets up (D54).
     let root_key = root_display.to_string_lossy().into_owned();
-    let marked = coverage_mark.as_ref().is_none_or(|(s, _)| s != "complete");
+    let marked = coverage_mark
+        .as_ref()
+        .is_none_or(|&(s, _)| s != Coverage::Complete);
     if marked {
         let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::READING);
     }
@@ -940,9 +942,10 @@ fn run_index(
     // the repo at zero. Keep it "warming" so the next query keeps polling for
     // files to index. Asks about the repo's *total* indexed files, not this
     // run's — a warm of an already-indexed repo re-parses nothing yet isn't empty.
-    let status = if status == "complete" && !store.checkout_has_files(checkout.id).unwrap_or(false)
+    let status = if status == Coverage::Complete
+        && !store.checkout_has_files(checkout.id).unwrap_or(false)
     {
-        "warming"
+        Coverage::Warming
     } else {
         status
     };
@@ -961,7 +964,7 @@ fn run_index(
     }
     if marked {
         // recount: this pass may have read files git doesn't track
-        let span = (status != "complete" && recorded)
+        let span = (status != Coverage::Complete && recorded)
             .then_some(tracked)
             .flatten()
             .map(|t| {
@@ -1911,34 +1914,34 @@ mod tests {
         // normal warm: completed whole-repo sweep finalizes and completes
         assert_eq!(
             sweep_outcome(true, true, false, true, true),
-            (true, "complete")
+            (true, Coverage::Complete)
         );
         // a genuinely empty repo (nothing stored before) still completes
         assert_eq!(
             sweep_outcome(true, true, true, false, true),
-            (true, "complete")
+            (true, Coverage::Complete)
         );
         // THE GUARD (warm only): completed but saw zero files while the index
         // held some → don't finalize (don't wipe), stay warming to retry
         assert_eq!(
             sweep_outcome(true, true, true, true, true),
-            (false, "warming")
+            (false, Coverage::Warming)
         );
         // an explicit `--index` (unbounded) is trusted: an empty tree reconciles
         assert_eq!(
             sweep_outcome(true, true, true, true, false),
-            (true, "complete")
+            (true, Coverage::Complete)
         );
         // a budget-cut sweep stays warming and doesn't reconcile
         assert_eq!(
             sweep_outcome(false, true, false, true, true),
-            (false, "warming")
+            (false, Coverage::Warming)
         );
         // a subtree index is a seed: never reconciles, and leaves coverage
         // warming so later queries keep indexing the rest of the repo
         assert_eq!(
             sweep_outcome(true, false, false, true, true),
-            (false, "warming")
+            (false, Coverage::Warming)
         );
     }
 

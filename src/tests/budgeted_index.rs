@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::index;
 use crate::search::{self, Context};
-use crate::store::Store;
+use crate::store::{Coverage, Store};
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rq-budget-{tag}-{}", std::process::id()));
@@ -44,7 +44,10 @@ fn a_zero_budget_still_indexes_the_active_files() {
 
     assert!(finds(&store, "Widget"), "active file is indexed regardless");
     assert!(!finds(&store, "Gadget"), "the walk hasn't run yet");
-    assert_eq!(store.coverage_overview().unwrap()[0].status, "warming");
+    assert_eq!(
+        store.coverage_overview().unwrap()[0].status,
+        Coverage::Warming
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -61,7 +64,10 @@ fn a_full_sweep_completes_and_tracks_added_and_deleted_files() {
 
     assert!(finds(&store, "Widget"));
     assert!(finds(&store, "Gadget"));
-    assert_eq!(store.coverage_overview().unwrap()[0].status, "complete");
+    assert_eq!(
+        store.coverage_overview().unwrap()[0].status,
+        Coverage::Complete
+    );
 
     // a new file appears — a later sweep picks it up
     fs::write(dir.join("c.rb"), "class Sprocket\nend\n").unwrap();
@@ -126,7 +132,10 @@ fn an_empty_source_tree_never_reports_complete() {
     let mut store = Store::open_in_memory().unwrap();
     index::index_budgeted(&mut store, &dir, &[], Duration::from_secs(5), None).unwrap();
 
-    assert_eq!(store.coverage_overview().unwrap()[0].status, "warming");
+    assert_eq!(
+        store.coverage_overview().unwrap()[0].status,
+        Coverage::Warming
+    );
     assert!(!finds(&store, "anything"));
 
     fs::remove_dir_all(&dir).ok();
@@ -168,7 +177,7 @@ fn a_cancelled_pass_stops_early_and_stays_warming() {
     );
     assert_eq!(
         store.coverage_overview().unwrap()[0].status,
-        "warming",
+        Coverage::Warming,
         "an aborted sweep is never finalized as complete"
     );
     assert!(
