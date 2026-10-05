@@ -72,6 +72,9 @@ meanwhile, without the field.
   --resolve` saw. A batch now asks once, before its first query: it reads the
   edit in before answering, or with `--no-wait` answers a miss `warming`
   (exit 2) and leaves the reading to the background.
+- **A file deleted without `git rm` no longer keeps misses `warming`.** Until
+  the delete was staged or committed, the index held on to the file, and
+  every miss in the repo answered `warming` (exit 2).
 - **`--usage` with nothing recorded says so on stderr**, as an empty search
   and an empty `--symbols` do, so stdout carries only data.
 - **Two modes at once are a usage error (exit 64).** `--usage --drop`,

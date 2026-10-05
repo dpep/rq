@@ -943,6 +943,25 @@ fn a_discarded_edit_is_reindexed() {
 }
 
 #[test]
+fn a_tracked_file_deleted_without_git_rm_is_forgotten() {
+    let (dir, db) = scratch("unstaged-delete");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("doomed.rb"), "class Doomed\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    fs::remove_file(dir.join("doomed.rb")).unwrap();
+
+    let prod = [("RQ_WARM_DETACH", "wait")];
+    let (code, out, _) = rq_full(&db, &dir, &["Nosuch", "--json"], &prod, None);
+    assert_eq!(code, 2, "the delete is pending work: {out}");
+    // the child forgot it: a miss is a miss again, and the file no hit
+    for query in ["Nosuch", "Doomed"] {
+        let (code, out, _) = rq_full(&db, &dir, &[query, "--json"], &prod, None);
+        assert_eq!(code, 1, "{query}: {out}");
+    }
+}
+
+#[test]
 fn a_file_a_branch_switch_deleted_is_not_a_hit() {
     let (dir, db) = scratch("switched-away");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

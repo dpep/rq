@@ -475,6 +475,12 @@ fn stream_walk(
                 if !keep(&rel, &path) {
                     continue; // caller skipped it (unchanged / already indexed)
                 }
+                // git still lists a tracked file deleted without `git rm`;
+                // unseen, reconcile forgets it
+                if !path.exists() {
+                    seen.remove(&rel);
+                    continue;
+                }
                 if path_tx.send(path).is_err() {
                     finished = false; // workers gone (deadline) — walk didn't complete
                     break;
