@@ -1,5 +1,6 @@
 //! Fixture for the extraction guard only: the forms widget.rs leaves out —
-//! constants, a macro, a type alias, crate visibility, items in a macro body.
+//! constants, a macro, a type alias, crate visibility, items in a macro body,
+//! typed `self` receivers.
 
 pub const LIMIT: u32 = 10;
 static COUNTER: u32 = 0;
@@ -25,3 +26,10 @@ cfg_gadget! {
 }
 
 pub(crate) fn shared() {}
+
+pub struct Sleep;
+
+impl Sleep {
+    pub fn poll(self: std::pin::Pin<&mut Self>) {}
+    pub fn boxed(mut self: Box<Self>) {}
+}

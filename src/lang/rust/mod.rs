@@ -266,14 +266,18 @@ fn visibility(ctx: &Ctx, node: Node) -> &'static str {
     "private"
 }
 
-/// Whether an fn declares a `self` receiver (an instance method).
+/// Whether an fn declares a `self` receiver (an instance method). A typed one,
+/// `self: Pin<&mut Self>`, parses as a plain parameter whose pattern is `self`.
 fn has_self(node: Node) -> bool {
     node.child_by_field_name("parameters")
         .is_some_and(|params| {
             let mut cursor = params.walk();
-            params
-                .children(&mut cursor)
-                .any(|p| p.kind() == "self_parameter")
+            params.children(&mut cursor).any(|p| {
+                p.kind() == "self_parameter"
+                    || (p.kind() == "parameter"
+                        && p.child_by_field_name("pattern")
+                            .is_some_and(|pat| pat.kind() == "self"))
+            })
         })
 }
 
@@ -538,5 +542,19 @@ pub enum Shape { Rect { width: u32 } }
             .collect();
         // a const is the type's by being a const, not by a flag
         assert_eq!(singleton, ["make", "new"]);
+    }
+
+    #[test]
+    fn a_typed_self_receiver_is_a_method() {
+        let src = "impl Sleep {\n    fn poll(self: Pin<&mut Self>) {}\n    fn boxed(self: Box<Self>) {}\n    fn shared(mut self: Rc<Self>) {}\n    fn other(this: Rc<Self>) {}\n}\n";
+        let syms = extract(src);
+        for name in ["poll", "boxed", "shared"] {
+            let s = find(&syms, name);
+            assert_eq!((s.kind, s.singleton), (Kind::Method, false), "{name}");
+        }
+        assert!(
+            find(&syms, "other").singleton,
+            "a param named otherwise isn't a receiver"
+        );
     }
 }
