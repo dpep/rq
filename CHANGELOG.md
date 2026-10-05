@@ -39,6 +39,9 @@ meanwhile, without the field.
 - **A background warm run by another user is left alone.** A second warmer
   read another user's live warm as dead and took over its lock, so two warmed
   the same checkout at once.
+- **A damaged name index no longer crashes a search.** A truncated row in the
+  index fuzzy recall reads made the search panic; the repo is now read from
+  its symbols for that search and its name index rebuilt on the next.
 
 ## 0.60.3 — 2026-10-01
 

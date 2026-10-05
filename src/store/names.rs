@@ -109,14 +109,20 @@ fn keys_blob(keys: &[&str]) -> Vec<u8> {
     out
 }
 
-/// The `i`th of a chunk's `n` keys.
-fn key(keys: &[u8], n: usize, i: usize) -> &str {
-    let end = |j: usize| u32::from_le_bytes(keys[4 * j..4 * j + 4].try_into().unwrap()) as usize;
-    let start = if i == 0 { 0 } else { end(i - 1) };
-    std::str::from_utf8(&keys[4 * n + start..4 * n + end(i)]).unwrap_or("")
+/// The `i`th of a chunk's `n` keys; `None` for a blob that doesn't hold it,
+/// which is a corrupt row, not a bug.
+fn key(keys: &[u8], n: usize, i: usize) -> Option<&str> {
+    if i >= n {
+        return None;
+    }
+    let end = |j: usize| Some(u32::from_le_bytes(*keys.get(4 * j..)?.first_chunk()?) as usize);
+    let start = if i == 0 { 0 } else { end(i - 1)? };
+    let base = n.checked_mul(4)?;
+    let bytes = keys.get(base.checked_add(start)?..base.checked_add(end(i)?)?)?;
+    std::str::from_utf8(bytes).ok()
 }
 
-fn decode(keys: &[u8], n: usize) -> Vec<&str> {
+fn decode(keys: &[u8], n: usize) -> Option<Vec<&str>> {
     (0..n).map(|i| key(keys, n, i)).collect()
 }
 
@@ -190,12 +196,16 @@ pub(super) fn append(
         })
         .optional()?;
     // the last chunk's keys keep the signatures they have
-    let (mut chunk, mut sigs, mut held) = match &last {
-        Some((chunk, n, sigs, keys)) if (*n as usize) < CHUNK => {
-            (*chunk, sigs.clone(), decode(keys, *n as usize))
-        }
-        Some((chunk, ..)) => (chunk + 1, Vec::new(), Vec::new()),
-        None => (0, Vec::new(), Vec::new()),
+    let partial = last.as_ref().and_then(|(chunk, n, sigs, keys)| {
+        let n = usize::try_from(*n).ok().filter(|&n| n < CHUNK)?;
+        // a corrupt chunk is left for recall to find; the keys go in a new one
+        let held = decode(keys, n).filter(|_| sigs.len() == n * SIG_BYTES)?;
+        Some((*chunk, sigs.clone(), held))
+    });
+    let (mut chunk, mut sigs, mut held) = match (partial, &last) {
+        (Some(partial), _) => partial,
+        (None, Some((chunk, ..))) => (chunk + 1, Vec::new(), Vec::new()),
+        (None, None) => (0, Vec::new(), Vec::new()),
     };
     let mut insert = tx.prepare_cached(
         "INSERT OR REPLACE INTO name_sigs (repository_id, kind, chunk, n, sigs, keys) \
@@ -356,9 +366,19 @@ impl Store {
         };
         let mut out = Vec::new();
         let mut survivors = Vec::new();
+        // repos with a chunk that doesn't parse: read like a suspended one
+        let mut corrupt = Vec::new();
         while let Some(row) = rows.next()? {
             survivors.clear();
+            let (repository_id, n): (i64, i64) = (row.get(0)?, row.get(1)?);
             let sigs = row.get_ref(2)?.as_blob()?;
+            let n = usize::try_from(n)
+                .ok()
+                .filter(|&n| sigs.len() == n * SIG_BYTES);
+            let Some(n) = n.filter(|_| !corrupt.contains(&repository_id)) else {
+                corrupt.push(repository_id);
+                continue;
+            };
             for (i, sig) in sigs.as_chunks::<SIG_BYTES>().0.iter().enumerate() {
                 let sig = Signature::from_bytes(sig);
                 if screen(&sig) {
@@ -368,16 +388,29 @@ impl Store {
             if survivors.is_empty() {
                 continue; // the keys are never read
             }
-            let (repository_id, n): (i64, i64) = (row.get(0)?, row.get(1)?);
             let keys = row.get_ref(3)?.as_blob()?;
             for (i, sig) in &survivors {
-                let key = key(keys, n as usize, *i);
+                let Some(key) = key(keys, n, *i) else {
+                    corrupt.push(repository_id);
+                    break;
+                };
                 if accepts(key, sig) {
                     out.push((repository_id, key.to_string()));
                 }
             }
         }
-        for &id in suspended {
+        drop(rows);
+        corrupt.dedup();
+        if !corrupt.is_empty() {
+            out.retain(|(id, _)| !corrupt.contains(id));
+        }
+        for &id in &corrupt {
+            // stale, like another format's: the next recall rebuilds it
+            let _ = self
+                .conn
+                .execute("DELETE FROM name_index WHERE repository_id = ?1", [id]);
+        }
+        for &id in suspended.iter().chain(&corrupt) {
             let mut stmt = self.conn.prepare_cached(kind.source())?;
             let mut rows = stmt.query(params![id])?;
             while let Some(row) = rows.next()? {
@@ -539,7 +572,23 @@ mod tests {
     #[test]
     fn a_chunk_round_trips_its_keys() {
         let keys = ["Widget", "", "naïve_café", "parse_file"];
-        assert_eq!(decode(&keys_blob(&keys), keys.len()), keys);
+        assert_eq!(decode(&keys_blob(&keys), keys.len()), Some(keys.to_vec()));
+    }
+
+    #[test]
+    fn a_blob_that_does_not_hold_its_keys_decodes_to_none() {
+        let blob = keys_blob(&["Widget", "Gadget"]);
+        let cases: [(&[u8], usize); 5] = [
+            (&blob[..blob.len() - 1], 2), // truncated bytes
+            (&blob[..6], 2),              // truncated offsets
+            (&blob, 3),                   // more keys claimed than held
+            (&[0xff, 0xff, 0xff, 0xff], 1),
+            (&[], 1),
+        ];
+        for (keys, n) in cases {
+            assert_eq!(decode(keys, n), None, "{keys:?} as {n}");
+        }
+        assert_eq!(key(&blob, 2, 2), None, "past the last key");
     }
 
     fn sym(name: &str, kind: Kind) -> Symbol {
@@ -655,6 +704,22 @@ mod tests {
         assert!(held(&store, r, Keys::Names).contains(&"WidgetFactory".to_string()));
         store.rebuild_name_index(r.repo).unwrap();
         assert_eq!(held(&store, r, Keys::Names), ["GadgetFactory"]);
+    }
+
+    #[test]
+    fn a_corrupt_chunk_reads_from_rows_and_leaves_the_index_stale() {
+        let mut store = Store::open_in_memory().unwrap();
+        let r = repo(&store, "/tmp/a");
+        write(&mut store, r, "a.rs", &["WidgetFactory", "GadgetFactory"]);
+        store
+            .conn
+            .execute("UPDATE name_sigs SET keys = substr(keys, 1, 5)", [])
+            .unwrap();
+        assert_eq!(recalled(&store, Some(r), "wdgfac"), ["WidgetFactory"]);
+        assert!(!current(&store.conn, r.repo).unwrap());
+        assert!(store.ensure_name_index(Some(r.repo)).unwrap().is_empty());
+        assert!(current(&store.conn, r.repo).unwrap(), "rebuilt");
+        assert_eq!(recalled(&store, Some(r), "gdgfac"), ["GadgetFactory"]);
     }
 
     #[test]
