@@ -2784,7 +2784,7 @@ simpler shape.
 
 ## D52 — An answer from a half-built index says so, and a guess waits
 
-**Adopted**, 2026-09-30. `settled`, `disclose_warming` and the poll in `src/cli/mod.rs`;
+**Adopted**, 2026-09-30. `settled`, `disclose_warming` and the poll in `src/cli/query.rs`;
 `begin_pass`/`passes` in `src/store/mod.rs`; e2e tests `a_prefix_match_from_a_partial_index_*`,
 `an_exact_match_from_a_partial_index_*`, `a_search_waits_on_another_process_*`.
 
@@ -3099,7 +3099,7 @@ per pass.
 
 **Adopted**, 2026-10-01. `set_pass_phase`/`pass_phase` in `src/store/mod.rs`, the
 two phase writes in `run_index` (`src/index/mod.rs`), `warming_state` and
-`finishing_note` in `src/cli/mod.rs`; e2e test `a_pass_past_its_reads_says_it_is_finishing`.
+`finishing_note` in `src/cli/query.rs`; e2e test `a_pass_past_its_reads_says_it_is_finishing`.
 
 *The problem.* A user polling `--no-wait` once a second through a rebuild of a
 ~109k-file monorepo saw `warming.read` sit at 50,000 for about 10 s, then jump. A
@@ -3161,7 +3161,7 @@ stall bound needs the phase, and that exception gets weighed on its numbers.
 
 **Adopted**, 2026-10-03. `Symbol::singleton` in `src/core/symbol.rs`, set by the
 Ruby, Python, TypeScript/JavaScript and Rust plugins; `symbols.singleton` (v24);
-`kind_label` in `src/cli/mod.rs`; the fold key in `collapse_declarations`
+`kind_label` in `src/cli/render.rs`; the fold key in `collapse_declarations`
 (`src/search/mod.rs`). Tests `ruby_class_methods_are_singletons` and the other
 plugins' fixture tests, e2e
 `a_class_method_says_it_is_one_everywhere_a_result_is_printed`.
