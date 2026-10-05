@@ -1860,6 +1860,107 @@ fn prefix_upper_bound(prefix: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::{Kind, RepoIdentity};
+    use std::collections::BTreeMap;
+
+    /// Each table's columns in docs/ARCHITECTURE.md's schema block.
+    fn documented_schema() -> BTreeMap<String, Vec<String>> {
+        let doc = include_str!("../../docs/ARCHITECTURE.md");
+        let block = doc
+            .split("```sql\n")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("ARCHITECTURE.md has a ```sql schema block");
+        let mut tables = BTreeMap::new();
+        let mut current: Option<(String, String)> = None;
+        for line in block.lines() {
+            let line = line.split("--").next().unwrap().trim();
+            if let Some((name, body)) = &mut current {
+                body.push_str(line);
+                body.push(' ');
+                if line.starts_with(')') {
+                    tables.insert(std::mem::take(name), columns(body));
+                    current = None;
+                }
+            } else if let Some((name, rest)) = line.split_once(" (")
+                && !name.contains(' ')
+            {
+                match rest.strip_suffix(");") {
+                    Some(body) => {
+                        tables.insert(name.to_string(), columns(body));
+                    }
+                    None => current = Some((name.to_string(), rest.to_string())),
+                }
+            }
+        }
+        tables
+    }
+
+    /// The column names in a table body: the first word of each top-level
+    /// comma-separated entry that isn't a table constraint.
+    fn columns(body: &str) -> Vec<String> {
+        let mut depth = 0;
+        let mut entries = vec![String::new()];
+        for c in body.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    entries.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            if depth >= 0 {
+                entries.last_mut().unwrap().push(c);
+            }
+        }
+        entries
+            .iter()
+            .filter_map(|e| {
+                e.split(|c: char| c.is_whitespace() || c == '(')
+                    .find(|w| !w.is_empty())
+            })
+            .filter(|w| !matches!(*w, "PRIMARY" | "UNIQUE" | "FOREIGN" | "CHECK"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_documented_schema_is_the_schema() {
+        let store = Store::open_in_memory().unwrap();
+        let mut stmt = store
+            .conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let actual: BTreeMap<String, Vec<String>> = names
+            .into_iter()
+            .map(|table| {
+                let mut info = store
+                    .conn
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .unwrap();
+                let cols = info
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                (table, cols)
+            })
+            .collect();
+        assert_eq!(
+            documented_schema(),
+            actual,
+            "docs/ARCHITECTURE.md's schema block has drifted from the schema"
+        );
+    }
 
     #[test]
     fn branch_files_round_trip() {
