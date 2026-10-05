@@ -4518,4 +4518,26 @@ mod tests {
         assert!(here.checkout.is_some());
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn every_mode_is_run_with_json() {
+        // The modes `every_mode_answers_json` and `json_shapes` run with
+        // --json. `--warm` is the detached child (no output); `--completions`
+        // prints a shell script. A new mode fails here until it's added there.
+        const RUN_WITH_JSON: [&str; 5] = ["drop", "index", "status", "symbols", "usage"];
+        const NO_OUTPUT: [&str; 2] = ["completions", "warm"];
+        let cmd = Cli::command();
+        let group = cmd
+            .get_groups()
+            .find(|g| g.get_id() == "mode")
+            .expect("the exclusive mode group");
+        let mut modes: Vec<&str> = group.get_args().map(|a| a.as_str()).collect();
+        modes.sort_unstable();
+        let mut covered: Vec<&str> = RUN_WITH_JSON.into_iter().chain(NO_OUTPUT).collect();
+        covered.sort_unstable();
+        assert_eq!(
+            covered, modes,
+            "a mode without a --json run in the e2e tests"
+        );
+    }
 }
