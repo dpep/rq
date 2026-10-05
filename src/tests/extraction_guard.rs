@@ -20,27 +20,35 @@ const REGENERATE: &str = "UPDATE_GOLDEN=1 cargo test extraction_guard";
 
 /// One stored row as a line: the fields `replace_file_symbols` writes, a
 /// default one left out so a new field moves only the languages that set it.
+/// Destructured without `..`, so a new field can't compile until it's here.
 fn row(file: &str, s: &Symbol) -> String {
-    let mut line = format!(
-        "{file} {} {} {}-{}",
-        s.name,
-        s.kind.as_str(),
-        s.line,
-        s.end_line
-    );
-    if let Some(parent) = &s.parent {
-        line += &format!(" parent={parent}");
+    let Symbol {
+        name,
+        kind,
+        line,
+        end_line,
+        parent,
+        visibility,
+        stub,
+        singleton,
+        // the plugin and the path the fixture sits at, not what it extracted
+        language: _,
+        file: _,
+    } = s;
+    let mut out = format!("{file} {name} {kind} {line}-{end_line}");
+    if let Some(parent) = parent {
+        out += &format!(" parent={parent}");
     }
-    if let Some(vis) = s.visibility {
-        line += &format!(" vis={vis}");
+    if let Some(vis) = visibility {
+        out += &format!(" vis={vis}");
     }
-    if s.stub {
-        line += " stub";
+    if *stub {
+        out += " stub";
     }
-    if s.singleton {
-        line += " singleton";
+    if *singleton {
+        out += " singleton";
     }
-    line
+    out
 }
 
 /// FNV-1a: stable across Rust releases, which `DefaultHasher` is not.
