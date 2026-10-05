@@ -184,3 +184,36 @@ fn a_linked_worktree_reads_its_git_state_from_disk_too() {
     assert!(index::git_state_stamp(&wt, &expected).is_some());
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn branch_files_are_named_as_the_index_keys_them() {
+    // git quotes a non-ASCII name unless asked for `-z`
+    let dir = scratch("branch-names");
+    let commit = |dir: &Path| {
+        git(dir, &["add", "-A"]);
+        git(
+            dir,
+            &[
+                "-c",
+                "user.email=t@e.st",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "c",
+            ],
+        );
+    };
+    fs::write(dir.join("a.rb"), "class A\nend\n").unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    commit(&dir);
+    git(&dir, &["checkout", "-qb", "feature"]);
+    fs::write(dir.join("café.rb"), "class Cafe\nend\n").unwrap();
+    commit(&dir);
+    fs::write(dir.join("a.rb"), "class A\n  def b; end\nend\n").unwrap();
+
+    let mut files = index::branch_changed_files(&dir);
+    files.sort();
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(files, ["a.rb", "café.rb"]);
+}

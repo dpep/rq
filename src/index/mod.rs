@@ -1731,23 +1731,13 @@ pub(crate) fn branch_changed_files(root: &Path) -> Vec<String> {
         let root = root.to_path_buf();
         let spec = format!("{trunk}...HEAD");
         // committed branch changes since divergence from the trunk (three-dot)
-        std::thread::spawn(move || git_output(&root, &["diff", "--name-only", &spec]))
+        std::thread::spawn(move || git_paths(&root, &["diff", "--name-only", "-z", &spec]))
     };
     // uncommitted edits to tracked files
-    let working = git_output(root, &["diff", "--name-only", "HEAD"]);
-
-    let mut files: HashMap<String, ()> = HashMap::new();
-    for out in [committed.join().ok().flatten(), working]
-        .into_iter()
-        .flatten()
-    {
-        files.extend(
-            out.lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| (l.to_string(), ())),
-        );
-    }
-    files.into_keys().collect()
+    let working = git_paths(root, &["diff", "--name-only", "-z", "HEAD"]);
+    let committed = committed.join().unwrap_or_default();
+    let files: HashSet<String> = committed.into_iter().chain(working).collect();
+    files.into_iter().collect()
 }
 
 /// A cheap fingerprint of the git state that decides which files a branch has
@@ -2001,6 +1991,24 @@ fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     }
     let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
     if s.is_empty() { None } else { Some(s) }
+}
+
+/// The paths a `-z` git command prints, as the index keys them: unquoted,
+/// and only the UTF-8 ones (see [`rel_key`]). Empty when git fails.
+fn git_paths(root: &Path, args: &[&str]) -> Vec<String> {
+    let Some(out) = git(root)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    else {
+        return Vec::new();
+    };
+    out.stdout
+        .split(|&b| b == 0)
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| std::str::from_utf8(p).ok().map(str::to_owned))
+        .collect()
 }
 
 fn content_hash(source: &str) -> String {

@@ -25,6 +25,8 @@ and aren't listed; see `git log` for those.
   target, when it's in the tree, is still found. Likewise a file whose name
   isn't valid UTF-8 (Linux only; macOS refuses such names) is skipped
   everywhere: a lossy key couldn't lead back to the file.
+- **A branch file with a non-ASCII name gets the branch boost.** git quoted
+  `café.rb` as `"caf\303\251.rb"`, which matched no indexed file.
 
 ## 0.60.4 — 2026-10-05
 
