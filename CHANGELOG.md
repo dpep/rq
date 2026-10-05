@@ -7,6 +7,15 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- **A FIFO or device at a source path no longer hangs rq.** A FIFO where a
+  tracked `.rb` used to be blocked a search, `--index` and the background warm
+  it left behind, until something wrote to the FIFO. rq now reads regular files
+  only (a symlink to one is fine), and treats a file over 64 MiB as it does a
+  binary one: held, not parsed.
+
 ## 0.60.4 — 2026-10-05
 
 Results and `--symbols` rows may carry a new field, `singleton`. The first run

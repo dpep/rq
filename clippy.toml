@@ -1,0 +1,8 @@
+# A checkout's file may be a FIFO, /dev/zero, binary or huge, so source goes
+# through index::read_source (regular files only, bounded, binary sniff) and
+# git's own small files through index::read_git_file. `File::open` +
+# `read_to_end` is not covered: read_source is built on it.
+disallowed-methods = [
+  { path = "std::fs::read", reason = "a checkout's file may be a FIFO or /dev/zero: use index::read_source" },
+  { path = "std::fs::read_to_string", reason = "a checkout's file may be a FIFO or /dev/zero: use index::read_source, or index::read_git_file for git metadata" },
+]

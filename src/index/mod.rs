@@ -1075,14 +1075,23 @@ fn parse_file(
 /// Bytes of a file's head searched for a NUL: git's and ripgrep's binary test.
 const BINARY_SNIFF: u64 = 8 * 1024;
 
+/// A file past this size reads as empty, as a binary one does: no source
+/// file is this big, and a generated one this big isn't worth the parse.
+const MAX_SOURCE: u64 = 64 * 1024 * 1024;
+
 /// A source file's text. Bytes that aren't UTF-8 (a Latin-1 comment) become
 /// U+FFFD rather than dropping the file: its names are still ASCII. A binary
-/// file (an MPEG-TS video named `.ts`) reads as empty, unread past its head:
-/// parsed, it costs seconds and yields junk names. Empty, not an error, so an
-/// index still holds it and a tree walk doesn't read it as unindexed.
+/// or oversized file (an MPEG-TS video named `.ts`) reads as empty, unread
+/// past its head: parsed, it costs seconds and yields junk names. Empty, not
+/// an error, so an index still holds it and a tree walk doesn't read it as
+/// unindexed. Anything but a regular file — a FIFO, `/dev/zero` behind a
+/// symlink — is an error, never read.
 pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
+    let mut file = open_regular(path)?;
+    if file.metadata()?.len() > MAX_SOURCE {
+        return Ok(String::new());
+    }
     let mut bytes = Vec::new();
     (&mut file).take(BINARY_SNIFF).read_to_end(&mut bytes)?;
     if bytes.contains(&0) {
@@ -1096,7 +1105,25 @@ pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
 /// Whether an index pass could read `path`. One it can't is no change to
 /// take in: comparing it would read as "moved" on every query, forever.
 fn readable(path: &Path) -> bool {
-    std::fs::File::open(path).is_ok()
+    open_regular(path).is_ok()
+}
+
+/// Open `path` for reading if it's a regular file (following symlinks).
+/// Non-blocking, then checked: a plain open of a FIFO waits for a writer, and
+/// a stat first would leave a window for the path to become one.
+fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 /// Lines of a file's header read for a generated-code marker: a license
@@ -1404,11 +1431,22 @@ fn git_dirs(root: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     if dot.is_dir() {
         return Some((dot.clone(), dot));
     }
-    let pointer = std::fs::read_to_string(&dot).ok()?;
+    let pointer = read_git_file(&dot)?;
     let dir = root.join(pointer.trim().strip_prefix("gitdir:")?.trim());
-    let common = std::fs::read_to_string(dir.join("commondir"))
-        .map_or_else(|_| dir.clone(), |c| dir.join(c.trim()));
+    let common =
+        read_git_file(&dir.join("commondir")).map_or_else(|| dir.clone(), |c| dir.join(c.trim()));
     Some((dir, common))
+}
+
+/// One of git's own small files (`HEAD`, a ref, `packed-refs`, a `.git`
+/// pointer), or `None` when it can't be read. Not for checkout files: those
+/// go through [`read_source`]. Regular files only, like those: `.git` sits
+/// in the checkout, where anything can be.
+fn read_git_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    open_regular(path).ok()?.read_to_string(&mut text).ok()?;
+    Some(text)
 }
 
 /// The current HEAD commit sha, or `None` outside a git work tree.
@@ -1419,13 +1457,13 @@ pub(crate) fn git_head(root: &Path) -> Option<String> {
     let Some((git_dir, common)) = git_dirs(root) else {
         return git_output(root, &["rev-parse", "HEAD"]);
     };
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = read_git_file(&git_dir.join("HEAD"))?;
     let head = head.trim();
     let Some(git_ref) = head.strip_prefix("ref: ") else {
         // detached HEAD holds the commit itself
         return (!head.is_empty()).then(|| head.to_string());
     };
-    if let Ok(sha) = std::fs::read_to_string(common.join(git_ref)) {
+    if let Some(sha) = read_git_file(&common.join(git_ref)) {
         let sha = sha.trim();
         if !sha.is_empty() {
             return Some(sha.to_string());
@@ -1433,7 +1471,7 @@ pub(crate) fn git_head(root: &Path) -> Option<String> {
     }
     // Not a loose ref, so it's packed: `<sha> refs/heads/<branch>`. Matching on
     // the leading space keeps `refs/heads/main` from matching `…/mainline`.
-    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    let packed = read_git_file(&common.join("packed-refs"))?;
     packed
         .lines()
         .find_map(|l| l.strip_suffix(&format!(" {git_ref}")))
@@ -1720,7 +1758,7 @@ fn head_branch(root: &Path) -> Option<String> {
             .then(|| git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]))
             .flatten();
     };
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = read_git_file(&git_dir.join("HEAD"))?;
     let branch = head.trim().strip_prefix("ref: refs/heads/")?;
     (!branch.is_empty()).then(|| branch.to_string())
 }
@@ -1741,7 +1779,7 @@ fn trunk_ref(root: &Path) -> Option<String> {
     };
     // A branch is a loose ref file or a line in packed-refs; both are cheaper
     // to look at than a `git rev-parse` fork.
-    let packed = std::fs::read_to_string(git_dir.join("packed-refs")).unwrap_or_default();
+    let packed = read_git_file(&git_dir.join("packed-refs")).unwrap_or_default();
     ["main", "master"].into_iter().find_map(|name| {
         let loose = git_dir.join("refs/heads").join(name).exists();
         let is_packed = packed
@@ -1962,6 +2000,20 @@ mod tests {
         let rows = store.symbols_in_file(checkout.id, "w.rb").unwrap();
         assert_eq!(rows[0].name, "Widget");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_oversized_file_reads_as_empty() {
+        let dir = std::env::temp_dir().join(format!("rq-oversized-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("huge.rb");
+        // text past the binary sniff, then a sparse tail: no disk to fill
+        std::fs::write(&path, "class A\nend\n".repeat(1024)).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(MAX_SOURCE + 1).unwrap();
+        let read = read_source(&path);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(read.unwrap(), "");
     }
 
     #[test]

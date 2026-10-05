@@ -394,6 +394,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods, reason = "a database file the test wrote")]
     fn a_file_that_is_not_a_database_is_set_aside_and_rebuilt() {
         let dir = Dir::new("garbage");
         std::fs::write(dir.db(), "not a database ".repeat(1000)).unwrap();

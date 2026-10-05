@@ -73,7 +73,7 @@ fn hashes() -> BTreeMap<&'static str, u64> {
             else {
                 continue;
             };
-            let source = std::fs::read_to_string(&path).unwrap();
+            let source = crate::index::read_source(&path).unwrap();
             let out = rows.entry(plugin.language()).or_default();
             out.extend(plugin.extract(&name, &source).iter().map(|s| row(&name, s)));
         }
@@ -150,6 +150,10 @@ fn verdict(
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the golden file is the repo's own"
+)]
 fn extraction_guard() {
     let now = hashes();
     for language in lang::languages() {

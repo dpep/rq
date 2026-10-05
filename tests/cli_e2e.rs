@@ -2920,6 +2920,27 @@ fn a_binary_file_with_a_source_extension_is_held_but_not_parsed() {
     }
 }
 
+#[test]
+fn a_fifo_or_device_at_a_tracked_path_is_not_read() {
+    // opening a FIFO for reading blocks until a writer comes; /dev/zero never ends
+    let (dir, db) = scratch("fifo");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    std::os::unix::fs::symlink("/dev/zero", dir.join("zero.rb")).unwrap();
+    git_init_commit(&dir);
+    fs::remove_file(dir.join("a.rb")).unwrap();
+    let _fifo = common::Fifo::new(dir.join("a.rb"));
+
+    let limit = std::time::Duration::from_secs(30);
+    let run = |args: &[&str]| common::rq_bounded(&db, &dir, args, &[], None, limit);
+    let (code, out) = run(&["Gadget", "--json"]).expect("a search finishes");
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["--index"]).expect("--index finishes");
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["Nosuch", "--json"]).expect("a miss finishes");
+    assert_eq!(code, 1, "{out}");
+}
+
 #[cfg(target_os = "linux")] // APFS refuses a non-UTF-8 name
 #[test]
 fn a_non_utf8_file_name_does_not_keep_a_tree_warming() {

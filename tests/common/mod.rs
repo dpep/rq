@@ -72,6 +72,87 @@ pub(crate) fn rq_both(db: &Path, cwd: &Path, args: &[&str]) -> (i32, String, Str
     )
 }
 
+/// Run rq with extra env and optional piped stdin, killing it after `limit`:
+/// its exit code and stdout, or `None` when it hung.
+pub(crate) fn rq_bounded(
+    db: &Path,
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&str>,
+    limit: std::time::Duration,
+) -> Option<(i32, String)> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = rq_cmd(db, cwd)
+        .args(args)
+        .envs(env.iter().copied())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run rq");
+    if let Some(input) = stdin {
+        // dropped at the end of the statement: the batch sees EOF
+        let _ = child
+            .stdin
+            .take()
+            .expect("stdin piped")
+            .write_all(input.as_bytes());
+    }
+    let deadline = std::time::Instant::now() + limit;
+    let hung = loop {
+        if child.try_wait().expect("poll rq").is_some() {
+            break false;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            break true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let out = child.wait_with_output().expect("rq exits");
+    (!hung).then(|| {
+        (
+            code(&out),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    })
+}
+
+/// A FIFO at `path`. On drop it releases any reader still blocked opening it,
+/// so a hang the test caught doesn't outlive the test.
+pub(crate) struct Fifo(PathBuf);
+
+impl Fifo {
+    pub(crate) fn new(path: PathBuf) -> Fifo {
+        let ok = Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("run mkfifo");
+        assert!(ok.success(), "mkfifo {}", path.display());
+        Fifo(path)
+    }
+}
+
+impl Drop for Fifo {
+    fn drop(&mut self) {
+        use std::os::unix::fs::OpenOptionsExt;
+        // non-blocking: succeeds only while a reader waits, which it releases
+        for _ in 0..25 {
+            let _ = fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&self.0);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
 /// A fresh temp directory, removed on drop with the database beside it — so
 /// a failing assert leaks nothing.
 pub(crate) struct Scratch {

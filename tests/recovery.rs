@@ -118,6 +118,7 @@ fn an_upgrade_that_fails_is_rebuilt() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods, reason = "a database file the test wrote")]
 fn a_newer_rqs_database_is_left_alone_and_both_keep_working() {
     let s = Scratch::new("newer");
     indexed(&s);
