@@ -3256,26 +3256,20 @@ fn canonical_kind(s: &str) -> Option<&'static [&'static str]> {
 
 /// Expand a `--lang` value to the language tag(s) it selects: a **prefix** of any
 /// known language name (so `r` → ruby+rust, `p`/`py` → python, `g` → go,
-/// `t` → typescript, `j` → javascript), plus a few non-prefix aliases
-/// (`rb`→ruby, `rs`→rust, `golang`→go, `ts`/`tsx`→typescript,
-/// `js`/`jsx`→javascript). An unknown value selects none, which is a usage
-/// error.
+/// `t` → typescript, `j` → javascript), or one of a plugin's extensions
+/// (`rb`, `tsx`) or aliases (`golang`). An unknown value selects none, which
+/// is a usage error.
 fn canonical_langs(s: &str) -> Vec<String> {
     let t = s.to_ascii_lowercase();
-    let alias = match t.as_str() {
-        "rb" => Some("ruby"),
-        "rs" => Some("rust"),
-        "golang" => Some("go"),
-        "ts" | "tsx" => Some("typescript"),
-        "js" | "jsx" => Some("javascript"),
-        _ => None,
-    };
-    let matched: Vec<String> = crate::lang::languages()
-        .into_iter()
-        .filter(|lang| alias == Some(*lang) || lang.starts_with(&t))
-        .map(str::to_string)
-        .collect();
-    matched
+    crate::lang::registry()
+        .iter()
+        .filter(|p| {
+            p.language().starts_with(&t)
+                || p.extensions().contains(&t.as_str())
+                || p.aliases().contains(&t.as_str())
+        })
+        .map(|p| p.language().to_string())
+        .collect()
 }
 
 /// The ANSI SGR code for highlighting matches, or `None` to disable color.
@@ -4273,9 +4267,35 @@ mod tests {
         assert_eq!(canonical_langs("ts"), ["typescript"]);
         assert_eq!(canonical_langs("jsx"), ["javascript"]);
         assert_eq!(canonical_langs("rb"), ["ruby"]);
+        assert_eq!(canonical_langs("mjs"), ["javascript"]);
+        assert_eq!(canonical_langs("golang"), ["go"]);
         // an unknown value matches nothing, so the caller can reject it rather
         // than silently filtering every result away
         assert!(canonical_langs("COBOL").is_empty());
+    }
+
+    #[test]
+    fn every_language_is_named_wherever_the_languages_are_listed() {
+        let words = |text: &str| -> HashSet<String> {
+            text.split(|c: char| !c.is_alphanumeric())
+                .map(str::to_lowercase)
+                .collect()
+        };
+        let help = Cli::command().get_long_about().unwrap().to_string();
+        let places = [
+            ("--help", help.as_str()),
+            ("README.md", include_str!("../../README.md")),
+            (
+                "claude/rq-skill.md",
+                include_str!("../../claude/rq-skill.md"),
+            ),
+        ];
+        for (place, text) in places {
+            let words = words(text);
+            for language in crate::lang::languages() {
+                assert!(words.contains(language), "{place} doesn't name {language}");
+            }
+        }
     }
 
     #[test]

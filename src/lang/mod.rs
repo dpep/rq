@@ -178,7 +178,14 @@ pub(crate) trait LanguagePlugin {
     fn language(&self) -> &'static str;
 
     /// File extensions this plugin handles, without the dot (e.g. `["rb"]`).
+    /// Each also names the language to `--lang`.
     fn extensions(&self) -> &[&str];
+
+    /// Other names `--lang` accepts for the language, beyond a prefix of its
+    /// tag and its extensions.
+    fn aliases(&self) -> &[&str] {
+        &[]
+    }
 
     /// Extract definitions from `source`. `file` is the repo-relative path,
     /// recorded on each emitted [`Symbol`].

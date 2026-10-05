@@ -23,6 +23,8 @@ meanwhile, without the field.
   `static` method, accessor or field; and a Rust associated fn without `self`.
   Omitted when false, on search results, `--show`, batch rows and `--symbols`
   alike; text prints `singleton method` (DECISIONS D55).
+- **`--lang` takes any extension a language reads.** `-x mjs`, `cjs`, `mts`
+  and `cts` now select JavaScript and TypeScript, as `js` and `ts` did.
 
 ### Fixed
 - **A class method and an instance method of the same name are two results.**

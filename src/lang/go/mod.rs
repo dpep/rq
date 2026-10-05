@@ -27,6 +27,10 @@ impl LanguagePlugin for Go {
         &["go"]
     }
 
+    fn aliases(&self) -> &[&str] {
+        &["golang"]
+    }
+
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
         extract_with(
             LANGUAGE,
