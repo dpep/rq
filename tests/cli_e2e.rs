@@ -2851,6 +2851,25 @@ fn symbols_outlines_a_file_in_a_dir_rq_does_not_track() {
 }
 
 #[test]
+fn symbols_on_an_ignored_file_outside_git_reads_it_without_indexing_it() {
+    let (dir, db) = scratch("nongit-symbols-ignored");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join(".ignore"), "skip.rb\n").unwrap();
+    fs::write(dir.join("skip.rb"), "class Skipped\nend\n").unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (code, out) = rq(&db, &dir, &["--symbols", "skip.rb", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"Skipped\""), "{out}");
+    // stored, the walk that skips it would read the tree as moved
+    let prod = [("RQ_WARM_DETACH", "wait")];
+    for query in ["Nosuch", "Skipped"] {
+        let (code, out, _) = rq_full(&db, &dir, &[query, "--json"], &prod, None);
+        assert_eq!(code, 1, "{query}: {out}");
+    }
+}
+
+#[test]
 fn a_file_rq_cannot_decode_or_open_does_not_keep_a_tree_warming() {
     use std::os::unix::fs::PermissionsExt;
     let (dir, db) = scratch("nongit-unreadable");

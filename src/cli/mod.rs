@@ -3058,8 +3058,15 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
     let rel = repo_relative(&root, &cwd, file_arg);
 
     let coverage = store.coverage_status(&root_key(&root)).ok().flatten();
-    let warming_ok = crate::index::is_git_repo(&root) || coverage.is_some();
+    let is_git = crate::index::is_git_repo(&root);
+    let warming_ok = is_git || coverage.is_some();
     let current = checkout_at(&store, &root);
+    // Outside git, a file the index doesn't hold may be one its walk skips
+    // (`.ignore`d): stored, it would read as a tree change on every miss. So
+    // it's read live, and a new one is left to the walk.
+    let stored = |store: &Store, checkout: Checkout| {
+        is_git || matches!(store.file_mtime(checkout.id, &rel), Ok(Some(_)))
+    };
     let path = root.join(&rel);
     if !path.is_file() {
         return fail(
@@ -3077,7 +3084,7 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
         // is just re-extracting it if it moved — no `git status` over the whole
         // worktree, and a new untracked file is picked up too.
         Some(checkout) if coverage == Some(Coverage::Complete) => {
-            if indexable {
+            if indexable && stored(&store, checkout) {
                 let _span = crate::profile::span("symbols: refresh");
                 let _ = crate::index::refresh_file(&mut store, checkout, &root, &rel);
             }
@@ -3096,9 +3103,10 @@ fn cmd_symbols(file_arg: &str, kinds: &[String], langs: &[String], out: Output) 
 
     let mut query_span = crate::profile::span("symbols: query");
     let rows = match checkout_at(&store, &root) {
-        Some(checkout) => store.symbols_in_file(checkout.id, &rel),
-        // a dir rq doesn't warm: read the file live, as an anchor is
-        None => {
+        Some(checkout) if stored(&store, checkout) => store.symbols_in_file(checkout.id, &rel),
+        // a dir rq doesn't warm, or a file it doesn't hold: read the file
+        // live, as an anchor is
+        _ => {
             let identity = resolve_identity(&store, &root);
             let mut defs = crate::index::current_definitions(&store, None, &identity, &root, &rel);
             defs.sort_by(|a, b| (a.line, &a.name).cmp(&(b.line, &b.name)));
