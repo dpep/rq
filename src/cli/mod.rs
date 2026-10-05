@@ -3240,9 +3240,12 @@ fn canonical_kind(s: &str) -> Option<&'static [&'static str]> {
 /// known language name (so `r` → ruby+rust, `p`/`py` → python, `g` → go,
 /// `t` → typescript, `j` → javascript), or one of a plugin's extensions
 /// (`rb`, `tsx`) or aliases (`golang`). An unknown value selects none, which
-/// is a usage error.
+/// is a usage error — the empty one too (`-x ruby,`), though it prefixes all.
 fn canonical_langs(s: &str) -> Vec<String> {
     let t = s.to_ascii_lowercase();
+    if t.is_empty() {
+        return Vec::new();
+    }
     crate::lang::registry()
         .iter()
         .filter(|p| {
@@ -4268,6 +4271,7 @@ mod tests {
         // an unknown value matches nothing, so the caller can reject it rather
         // than silently filtering every result away
         assert!(canonical_langs("COBOL").is_empty());
+        assert!(canonical_langs("").is_empty(), "not a prefix of everything");
     }
 
     #[test]

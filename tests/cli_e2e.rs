@@ -1901,6 +1901,11 @@ fn an_unknown_kind_or_lang_is_an_error_not_a_miss() {
         !out.contains("no_match"),
         "reported as an error, not a miss: {out}"
     );
+    // an empty one is a prefix of every language, and selects none of them
+    for lang in ["", "ruby,"] {
+        let (code, _) = rq(&db, &dir, &["Widget", "-x", lang]);
+        assert_eq!(code, 64, "-x {lang:?}");
+    }
     // a real one still works
     let (code, out) = rq(&db, &dir, &["Widget", "-k", "class"]);
     assert_eq!(code, 0, "known kind still searches: {out}");
