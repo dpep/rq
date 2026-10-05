@@ -4181,3 +4181,44 @@ fn an_index_blocked_by_another_writer_says_so_and_gives_up_after_one_wait() {
     // one wait, not one per write
     assert!(waited < std::time::Duration::from_secs(4), "{waited:?}");
 }
+
+#[test]
+fn every_mode_answers_json() {
+    // Each mode in clap's exclusive `mode` group, run with --json: a mode
+    // added without structured output fails here, not in a caller's parser.
+    // `--warm` is the detached child (no output); `--completions` prints a
+    // shell script.
+    const NO_OUTPUT: [&str; 2] = ["warm", "completions"];
+    let runs: [(&str, &[&str]); 5] = [
+        ("index", &["--index"]),
+        ("symbols", &["--symbols", "a.rb"]),
+        ("status", &["--status"]),
+        ("usage", &["--usage"]),
+        ("drop", &["--drop"]),
+    ];
+    let source = include_str!("../src/cli/mod.rs");
+    let group = source
+        .split("ArgGroup::new(\"mode\")")
+        .nth(1)
+        .and_then(|rest| rest.split(".args([").nth(1))
+        .and_then(|rest| rest.split("])").next())
+        .expect("the mode ArgGroup's .args([...])");
+    let mut modes: Vec<&str> = group
+        .split(',')
+        .map(|m| m.trim().trim_matches('"'))
+        .filter(|m| !m.is_empty())
+        .collect();
+    modes.sort_unstable();
+    let mut covered: Vec<&str> = runs.iter().map(|(m, _)| *m).chain(NO_OUTPUT).collect();
+    covered.sort_unstable();
+    assert_eq!(covered, modes, "a mode without a --json run here");
+
+    let (dir, db) = scratch("mode-json");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    for (mode, args) in runs {
+        let (_, out, err) = rq_both(&db, &dir, &[args, &["--json"]].concat());
+        serde_json::from_str::<serde_json::Value>(&out)
+            .unwrap_or_else(|e| panic!("--{mode} --json: {e}: {out:?} {err}"));
+    }
+}
