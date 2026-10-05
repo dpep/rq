@@ -167,6 +167,13 @@ make dogfood REPO=~/code/lib/ruby/rails Q=Middleware
 update to the schema block in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — keep
 them in sync in the same PR.
 
+A change to what a plugin extracts reaches existing indexes only through a
+schema step that requeues that language's files (v24 is the pattern).
+`src/tests/extraction_guard.rs` hashes each language's extraction of its
+fixtures and fails when one moves under an unchanged schema version; an
+extraction fix adds its input to `src/tests/fixtures/<lang>/` so the guard
+sees it.
+
 ## Landing changes
 
 No pull requests for this repo — commit or merge directly to `main` and push.
