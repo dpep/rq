@@ -22,9 +22,11 @@ rejections carry the numbers that settled them.
   e.g. Rust added `struct`/`enum`/`trait` to `core::Kind` — but that's
   generalizing the vocabulary all languages share, not a one-off. Prefer
   generalizing over a special case; change `core/` when it genuinely earns it.
-- **Results stream.** The API is incremental from the start — sub-50 ms first
-  answer, then progressive improvement. Don't add synchronous "collect
-  everything" paths.
+- **Fast first answer, better every call.** Answer from whatever is indexed —
+  sub-50 ms on a warm index — and never block on finishing it: warming
+  continues behind the answer, and the next call sees more. A guess the
+  half-built index can't yet stand behind is held back until it settles
+  (D52), not printed and corrected. Don't add "index everything first" paths.
 - **Ranking is explainable.** Scoring is an additive sum of named features;
   `--explain` must always be able to show why a result ranked where it did.
 - **Partial is normal.** Never assume a complete index. Code must work at 0%,
@@ -36,7 +38,8 @@ rejections carry the numbers that settled them.
   and consistent across commands (a repo identity is always `repo`). Route
   single-object commands through the `emit_json` helper. Exit codes stay
   meaningful (0 = something happened/matched, non-zero = nothing). When you add a
-  command, add its structured output and an e2e assertion in the same change.
+  command, add its structured output and an e2e assertion in the same change;
+  `every_mode_answers_json` fails until a new mode has a `--json` run.
 
 ## Navigate with rq
 
@@ -72,10 +75,10 @@ rq/
   src/
     main.rs      ← CLI entry
     cli/         ← `rq <query>` default command, arg parsing, output
-    core/        ← symbol model, repo identity, scoring — NO language specifics
+    core/        ← symbol model, repo identity — NO language specifics
     store/       ← SQLite schema, migrations, queries (WAL)
     index/       ← walker, incremental indexer, coverage
-    search/      ← staged pipeline, scorer, --explain
+    search/      ← staged pipeline, scoring (score.rs), --explain
     lang/        ← Tree-sitter plugins (ruby, rust, go, python, typescript)
       ruby/      ← first plugin
       rust/      ← rq dogfoods on its own source
@@ -123,8 +126,8 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
   need a manual run (e.g. git-log parsing) is factored into a pure function with
   its own unit test.
 - **Ranking changes also run `make recall BASE=main`** — recall over
-  6,879 queries on pinned Ruby (rails, discourse) and Rust (tokio, ripgrep, rq,
-  trekr) corpora, per language, listing every source that lost #1 or the top
+  thousands of queries on pinned Ruby (rails, discourse) and Rust (tokio,
+  ripgrep, rq, trekr) corpora, per language, listing every source that lost #1 or the top
   10 ([docs/RECALL.md](docs/RECALL.md)). It is outside `cargo test`
   and CI (network, minutes), so run it by hand and cite its numbers in the
   decision.
@@ -141,10 +144,11 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
 `index/` and `search/` should not need to change — if they do, a language
 specific leaked and the design doc needs revisiting. The exception is the shared
 `core::Kind` vocabulary: a language may add a kind it genuinely needs (Rust
-added `struct`/`enum`/`trait`), which also touches the kind-keyed spots in
-`search/score.rs` (weight + the path-only "primary definition" gate) and the
-`--kind` canonicalizer in `cli/`. That's generalizing the model, not a leak —
-prefer it over a one-off, and keep the new kind language-neutral.
+added `struct`/`enum`/`trait`): add it to `Kind::ALL`, and the compiler points
+at the kind-keyed matches in `search/score.rs` (weight + the path-only "primary
+definition" gate); give it `--kind` spellings in `canonical_kind` in `cli/`.
+That's generalizing the model, not a leak — prefer it over a one-off, and keep
+the new kind language-neutral.
 
 **Dogfooding.** `make dogfood Q=<query>` fully indexes a repo into a throwaway
 DB and runs a query from inside it, so you can feel the ranking on real code.
@@ -152,9 +156,9 @@ Use it to catch quality regressions a unit test wouldn't.
 
 `REPO=` picks the target; it defaults to this repo, which makes Rust the
 default dogfood language. Reach for someone else's code whenever the question
-is about *ranking* rather than extraction: rq's own source is ~600 symbols, too
-few for same-name collisions and ambiguity to appear at all, and it can only
-ever exercise the Rust plugin. `~/code/lib/ruby/rails` is a good large Ruby
+is about *ranking* rather than extraction: rq's own source is too small for
+same-name collisions and ambiguity to appear at all, and it can only ever
+exercise the Rust plugin. `~/code/lib/ruby/rails` is a good large Ruby
 corpus (~3k files, indexes in seconds):
 
 ```sh
@@ -165,7 +169,8 @@ make dogfood REPO=~/code/lib/ruby/rails Q=Middleware
 
 `store/` owns the schema and migrations. A schema change is a migration plus an
 update to the schema block in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — keep
-them in sync in the same PR.
+them in sync in the same commit; `the_documented_schema_is_the_schema` fails
+when they drift.
 
 A change to what a plugin extracts reaches existing indexes only through a
 schema step that requeues that language's files (v24 is the pattern).

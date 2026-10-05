@@ -15,9 +15,11 @@ ranked priorities resolve every design tension:
 3. speed over exhaustiveness
 
 The latency target is **< 50 ms perceived** for index-backed results, then
-*progressive improvement* — slower layers stream in behind the fast first
-answer. This forces one early commitment: **results are a stream, not a
-synchronous list.** Everything below assumes that.
+*progressive improvement across calls*: a search answers from what is indexed
+and never waits to finish the index; warming carries on behind the answer, and
+the next search sees more. One limit on "answer now": a guess a half-built
+index can't yet stand behind is held back until it settles (D52) rather than
+printed and corrected. Everything below assumes the index may be partial.
 
 ## Implementation language
 
@@ -412,7 +414,7 @@ the *next* query rather than blocking the current one.
 
 ## Search / ranking pipeline
 
-Staged, streaming, early-exit on confidence:
+Staged, early-exit on confidence:
 
 | Layer | What | Notes |
 | ----- | ---- | ----- |
@@ -420,12 +422,13 @@ Staged, streaming, early-exit on confidence:
 | 1 | exact / prefix symbol | indexed `name_lower`; fastest, highest confidence |
 | 2 | fuzzy symbol | the name index's exact candidate set (D23) → abbreviation-aware scorer; an fst over names was slower (D21), and the trigram FTS nets it replaced are gone (D26) |
 | 3 | path / filename | |
-| 4 | live scan | async, streamed when coverage is low |
+| 4 | live scan | bounded, when coverage is low |
 | 5 | opportunistic extraction | parse newly-seen files, persist for next time |
 
 **Confidence gate:** a strong exact match in the current repo returns
-immediately and stops the pipeline. Otherwise return the top-N from layers 1–3
-now and stream refinements from 4–5.
+immediately and stops the pipeline. Otherwise layers 1–3 answer, a bounded live
+scan fills in when coverage is low, and layer 5's extraction improves the next
+query.
 
 ### Scoring — simple, additive, explainable
 
