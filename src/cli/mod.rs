@@ -367,7 +367,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                 Err(code) => return code,
             };
             session.anchor = cli.anchor.as_ref().map(|a| session.anchor_at(a));
-            cmd_search(
+            ExitCode::from(cmd_search(
                 &mut session,
                 &SearchArgs {
                     query: &query,
@@ -386,7 +386,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                     batch: false,
                     anchored: cli.anchor.is_some(),
                 },
-            )
+            ))
         }
         // No query, but a pipe on stdin: each line is one, all sharing this
         // run's store, repo resolution and warm.
@@ -816,7 +816,10 @@ fn cmd_batch(
         session.moved = Some(false);
     }
 
-    let codes: Vec<ExitCode> = queries
+    // The batch ran, and each line's `status` carries its query's outcome, so
+    // only a wholly fruitless batch reports failure — with the outcome the
+    // caller can act on most (see `Outcome`'s order).
+    let outcome = queries
         .iter()
         .map(|query| {
             cmd_search(
@@ -843,30 +846,12 @@ fn cmd_batch(
                 },
             )
         })
-        .collect();
-    batch_exit(&codes)
+        .max()
+        .expect("a batch has a query");
+    ExitCode::from(outcome)
 }
 
-/// A batch's exit code. The batch ran, and per-line `status` carries each
-/// query's outcome, so only a wholly fruitless batch reports failure,
-/// mirroring one query's contract — then with the code the caller can act on
-/// most: an error, then "retry" (2), and a miss (1) only when a retry would
-/// change nothing.
-fn batch_exit(codes: &[ExitCode]) -> ExitCode {
-    let [hit, miss, retry] =
-        [Verdict::Hit, Verdict::Miss, Verdict::Warming].map(Verdict::exit_code);
-    if codes.contains(&hit) {
-        hit
-    } else if let Some(&error) = codes.iter().find(|&&c| c != retry && c != miss) {
-        error
-    } else if codes.contains(&retry) {
-        retry
-    } else {
-        miss
-    }
-}
-
-fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
+fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let &SearchArgs {
         query,
         out,
@@ -1152,7 +1137,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
                 if let Some(h) = indexer {
                     let _ = h.join();
                 }
-                return fail(out, Failure::Database, format_args!("rq: {e}"));
+                return report(out, Failure::Database, format_args!("rq: {e}")).into();
             }
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -1390,14 +1375,14 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     // through to the normal ranked list (rq won't dump a body it isn't sure of).
     if counted_early
         && show
-        && let Some(code) = show_top_definition(&mut hits, query, out, ranked)
+        && let Some(shown) = show_top_definition(&mut hits, query, out, ranked)
     {
         if out == Output::Text
             && let Some(note) = hits.first().and_then(|h| warming_note(h, here.as_deref()))
         {
             eprintln!("{note}");
         }
-        return code;
+        return shown.map_or_else(Outcome::from, |()| Outcome::Hit);
     }
 
     // --open/--web: pick the best match (prompting on a TTY with several) and
@@ -1410,7 +1395,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
         {
             eprintln!("{note}");
         }
-        return finish_open(&hits, root, web);
+        return finish_open(&hits, root, web).map_or_else(Outcome::from, |()| Outcome::Hit);
     }
 
     if let Some(by) = held_back.as_deref() {
@@ -1420,11 +1405,11 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
             Some(by) == here.as_deref(),
             Some(by) == continuing,
         );
-        if let Some(code) = emit_provisional(args, &hits, warming.as_ref(), by, here.as_deref()) {
-            return code;
+        if let Err(failed) = emit_provisional(args, &hits, warming.as_ref(), by, here.as_deref()) {
+            return failed.into();
         }
-    } else if let Some(code) = render_hits(args, &hits, show) {
-        return code;
+    } else if let Err(failed) = render_hits(args, &hits, show) {
+        return failed.into();
     } else if out == Output::Text
         && let Some(note) = hits.first().and_then(|h| warming_note(h, here.as_deref()))
     {
@@ -1466,7 +1451,7 @@ fn cmd_search(session: &mut Session, args: &SearchArgs) -> ExitCode {
     let _ = settle_warm(store, staleness, moved, true, was_warming, warming_ok, root);
 
     // "no answer yet" (2), whether nothing matched or nothing settled
-    verdict.exit_code()
+    verdict.into()
 }
 
 /// The hits as the caller would see them: gated and filtered, uncut. What the
@@ -1716,7 +1701,7 @@ fn emit_provisional(
     warming: Option<&crate::search::Warming>,
     by: &str,
     here: Option<&str>,
-) -> Option<ExitCode> {
+) -> Result<(), Failure> {
     // A miss's status object, keys in its order, around hits in a result's.
     #[derive(serde::Serialize)]
     struct Provisional<'a> {
@@ -1734,13 +1719,10 @@ fn emit_provisional(
                 status: "warming",
                 warming,
             };
-            let code = emit_json(args.out, &obj);
-            (code != ExitCode::SUCCESS).then_some(code)
+            emit_json(args.out, &obj)
         }
         Output::Text => {
-            if let Some(code) = render_hits(args, hits, false) {
-                return Some(code);
-            }
+            render_hits(args, hits, false)?;
             let state = if warming.is_some_and(|w| w.interrupted) {
                 "indexing stopped part-way"
             } else {
@@ -1752,7 +1734,7 @@ fn emit_provisional(
                 args.query,
                 index_command(by, Some(by) == here)
             );
-            None
+            Ok(())
         }
     }
 }
@@ -1880,7 +1862,7 @@ fn cmd_warm(path: Option<&str>) -> ExitCode {
     }
     let mut store = match open_store() {
         Ok(s) => s,
-        Err(_) => return ExitCode::from(Failure::Database.exit_code()),
+        Err(_) => return Failure::Database.into(),
     };
     let _ = store.wait_out_writers(writer_wait(), None);
     let start = path
@@ -2105,7 +2087,7 @@ fn no_match_code(
     elsewhere: Option<&str>,
     // checkouts `-a` read that aren't fully indexed, so the miss isn't theirs
     incomplete_roots: &[String],
-) -> ExitCode {
+) -> Outcome {
     let incomplete = verdict == Verdict::Warming;
     let status = if interrupted {
         "interrupted"
@@ -2167,7 +2149,7 @@ fn no_match_code(
         ),
         Output::Text => eprintln!("no matches for {query:?}"),
     }
-    verdict.exit_code()
+    verdict.into()
 }
 
 /// Normalized confidence per hit: match quality scaled by dominance over the
@@ -2194,9 +2176,12 @@ fn attach_confidence(hits: &mut [crate::search::Hit]) {
 }
 
 /// Print the ranked results (JSON array, NDJSON lines, or highlighted text).
-/// `Some(exit)` on a serialization failure, `None` on success. `unshown`: a
-/// `--show` found no single confident match to print instead.
-fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit], unshown: bool) -> Option<ExitCode> {
+/// `unshown`: a `--show` found no single confident match to print instead.
+fn render_hits(
+    args: &SearchArgs,
+    hits: &[crate::search::Hit],
+    unshown: bool,
+) -> Result<(), Failure> {
     // Time to the first printed result, not to the last: rq streams, and the
     // sub-50 ms budget is about the first answer. A change that speeds the
     // total while delaying this one is a regression.
@@ -2217,14 +2202,12 @@ fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit], unshown: bool) ->
                 hit,
             })
             .collect();
-        if let Some(code) = emit_rows(args.out, &rows) {
-            return Some(code);
-        }
-    } else if let Some(code) = emit_rows(args.out, hits) {
-        return Some(code);
+        emit_rows(args.out, &rows)?;
+    } else {
+        emit_rows(args.out, hits)?;
     }
     if args.out != Output::Text {
-        return None;
+        return Ok(());
     }
     drop(render_span);
     let color = match_color();
@@ -2270,7 +2253,7 @@ fn render_hits(args: &SearchArgs, hits: &[crate::search::Hit], unshown: bool) ->
             );
         }
     }
-    None
+    Ok(())
 }
 
 /// Pick a hit for `--open`: the top match, unless we're on an interactive
@@ -2316,9 +2299,13 @@ fn parse_choice(input: &str, n: usize) -> Option<usize> {
 
 /// `--open`/`--web`: choose a hit, then hand off to the editor or browser. The launcher `exec`s (replacing this
 /// process), so the shell waits on it — not on rq's background warm.
-fn finish_open(hits: &[crate::search::Hit], root: Option<&std::path::Path>, web: bool) -> ExitCode {
+fn finish_open(
+    hits: &[crate::search::Hit],
+    root: Option<&std::path::Path>,
+    web: bool,
+) -> Result<(), Failure> {
     let Some(hit) = choose_hit(hits) else {
-        return ExitCode::SUCCESS; // aborted at the prompt
+        return Ok(()); // aborted at the prompt
     };
 
     if web {
@@ -2380,7 +2367,7 @@ impl Scope {
 /// Launch the editor on `file:line`, resolving the command in order: `RQ_OPEN`
 /// template → VS Code (`code`) → `$VISUAL`/`$EDITOR` → print the location. The
 /// chosen command replaces this process via `exec`.
-fn launch_editor(file: &std::path::Path, line: i64) -> ExitCode {
+fn launch_editor(file: &std::path::Path, line: i64) -> Result<(), Failure> {
     use std::os::unix::process::CommandExt;
     let loc = format!("{}:{}", file.display(), line);
     match open_command(file, line, &loc) {
@@ -2389,15 +2376,15 @@ fn launch_editor(file: &std::path::Path, line: i64) -> ExitCode {
             crate::profile::emit(false);
             // exec returns only on failure
             let err = std::process::Command::new(&prog).args(&args).exec();
-            fail(
+            Err(report(
                 Output::Text,
                 Failure::Launch,
                 format_args!("rq --open: cannot run {prog}: {err}"),
-            )
+            ))
         }
         None => {
             println!("{loc}");
-            ExitCode::SUCCESS
+            Ok(())
         }
     }
 }
@@ -2451,9 +2438,9 @@ fn open_command(file: &std::path::Path, line: i64, loc: &str) -> Option<(String,
 /// history when the hit is in the repo we're standing in — an unpushed sha would
 /// 404. Another repo's checkout state is unknown, so its link follows the host's
 /// default branch instead.
-fn open_web(hit: &crate::search::Hit, root: Option<&std::path::Path>) -> ExitCode {
+fn open_web(hit: &crate::search::Hit, root: Option<&std::path::Path>) -> Result<(), Failure> {
     if hit.repo_identity.starts_with("local:") {
-        return fail(
+        return Err(report(
             Output::Text,
             Failure::NoRemote,
             format_args!(
@@ -2461,7 +2448,7 @@ fn open_web(hit: &crate::search::Hit, root: Option<&std::path::Path>) -> ExitCod
                  locally with -o, or add one with `git remote add origin <url>`",
                 hit.file, hit.line, hit.repo_identity
             ),
-        );
+        ));
     }
     let here = root.is_some_and(|r| hit.root.as_deref() == Some(root_key(r).as_str()));
     let rev = root
@@ -2486,15 +2473,15 @@ fn open_web(hit: &crate::search::Hit, root: Option<&std::path::Path>) -> ExitCod
             crate::profile::emit(false);
             // exec returns only on failure
             let err = std::process::Command::new(&prog).arg(&url).exec();
-            fail(
+            Err(report(
                 Output::Text,
                 Failure::Launch,
                 format_args!("rq --web: cannot run {prog}: {err}"),
-            )
+            ))
         }
         None => {
             println!("{url}");
-            ExitCode::SUCCESS
+            Ok(())
         }
     }
 }
@@ -2960,7 +2947,7 @@ fn show_top_definition(
     query: &str,
     out: Output,
     ranked: f64,
-) -> Option<ExitCode> {
+) -> Option<Result<(), Failure>> {
     let top = hits.first()?;
     if ranked < SHOW_CONFIDENCE {
         return None; // ambiguous / weak — let the caller list candidates
@@ -2998,7 +2985,7 @@ fn show_top_definition(
                 (None, Some(sig)) => println!("{sig}"),
                 (None, None) => {}
             }
-            ExitCode::SUCCESS
+            Ok(())
         }
     };
 
@@ -3188,10 +3175,10 @@ fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
             }
             Output::Text => eprintln!("no symbols"),
         }
-        return Verdict::Miss.exit_code();
+        return Outcome::Miss.into();
     }
-    if let Some(code) = emit_rows(out, syms) {
-        return code;
+    if let Err(failed) = emit_rows(out, syms) {
+        return failed.into();
     }
     match out {
         Output::Json | Output::Ndjson => {}
@@ -3484,7 +3471,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
                         Some((f, s)) => (Some(f), Some(s)),
                         None => (None, None),
                     };
-                    return emit_json(
+                    return exit_code(emit_json(
                         out,
                         &serde_json::json!({
                             "repo": identity,
@@ -3495,7 +3482,7 @@ fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode
                             "files": files,
                             "symbols": symbols,
                         }),
-                    );
+                    ));
                 }
                 Output::Text => {
                     let scope = if subtree { " (subtree seed)" } else { "" };
@@ -3537,10 +3524,10 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
             println!("dropped {what} ({files} file(s), {symbols} symbol(s))");
             ExitCode::SUCCESS
         }
-        _ => emit_json(
+        _ => exit_code(emit_json(
             out,
             &serde_json::json!({"repo": identity, "root": root, "files": files, "symbols": symbols, "dropped": true}),
-        ),
+        )),
     };
 
     if let Some(checkout) = here.checkout {
@@ -3573,10 +3560,10 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
                 println!("not indexed: {}", at.as_deref().unwrap_or(&identity));
                 ExitCode::SUCCESS
             }
-            _ => emit_json(
+            _ => exit_code(emit_json(
                 out,
                 &serde_json::json!({"repo": identity, "root": at, "files": 0, "symbols": 0, "dropped": false}),
-            ),
+            )),
         };
     };
     let totals = store.repo_totals(repo_id).unwrap_or((0, 0));
@@ -3589,7 +3576,7 @@ fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
 /// Print a single value as JSON: `--json` pretty, `--ndjson` compact one-liner.
 /// Used by the single-object operations (`--index`, `--drop`) and the
 /// no-match status objects; [`emit_rows`] is the multi-row twin.
-fn emit_json<T: serde::Serialize>(out: Output, value: &T) -> ExitCode {
+fn emit_json<T: serde::Serialize>(out: Output, value: &T) -> Result<(), Failure> {
     let rendered = if out == Output::Json {
         serde_json::to_string_pretty(value)
     } else {
@@ -3598,32 +3585,31 @@ fn emit_json<T: serde::Serialize>(out: Output, value: &T) -> ExitCode {
     match rendered {
         Ok(s) => {
             println!("{s}");
-            ExitCode::SUCCESS
+            Ok(())
         }
-        Err(e) => fail(out, Failure::Internal, format_args!("rq: {e}")),
+        Err(e) => Err(report(out, Failure::Internal, format_args!("rq: {e}"))),
     }
 }
 
+/// A command's exit once its output is out: success, or the failure it reported.
+fn exit_code(emitted: Result<(), Failure>) -> ExitCode {
+    emitted.map_or_else(ExitCode::from, |()| ExitCode::SUCCESS)
+}
+
 /// Print a row set as structured output: `--json` one pretty array, `--ndjson`
-/// one compact object per line. Returns `Some(exit)` on a serialization
-/// failure, `None` on success (Text output is the caller's business).
-fn emit_rows<T: serde::Serialize>(out: Output, rows: &[T]) -> Option<ExitCode> {
+/// one compact object per line (Text output is the caller's business).
+fn emit_rows<T: serde::Serialize>(out: Output, rows: &[T]) -> Result<(), Failure> {
+    let failed = |e: serde_json::Error| report(out, Failure::Internal, format_args!("rq: {e}"));
     match out {
-        Output::Json => match serde_json::to_string_pretty(rows) {
-            Ok(s) => println!("{s}"),
-            Err(e) => return Some(fail(out, Failure::Internal, format_args!("rq: {e}"))),
-        },
+        Output::Json => println!("{}", serde_json::to_string_pretty(rows).map_err(failed)?),
         Output::Ndjson => {
             for r in rows {
-                match serde_json::to_string(r) {
-                    Ok(line) => println!("{line}"),
-                    Err(e) => return Some(fail(out, Failure::Internal, format_args!("rq: {e}"))),
-                }
+                println!("{}", serde_json::to_string(r).map_err(failed)?);
             }
         }
         Output::Text => {}
     }
-    None
+    Ok(())
 }
 
 fn cmd_status(out: Output) -> ExitCode {
@@ -3645,8 +3631,8 @@ fn cmd_status(out: Output) -> ExitCode {
             row.of = tree_span(&store, &row.root, checkout.id).map(|s| s.max(row.files));
         }
     }
-    if let Some(code) = emit_rows(out, &rows) {
-        return code;
+    if let Err(failed) = emit_rows(out, &rows) {
+        return failed.into();
     }
     match out {
         Output::Json | Output::Ndjson => {}
@@ -3741,8 +3727,8 @@ fn cmd_usage(out: Output) -> ExitCode {
         Ok(rows) => rows,
         Err(e) => return fail(out, Failure::Database, format_args!("rq --usage: {e}")),
     };
-    if let Some(code) = emit_rows(out, &rows) {
-        return code;
+    if let Err(failed) = emit_rows(out, &rows) {
+        return failed.into();
     }
     match out {
         Output::Json | Output::Ndjson => {}
@@ -3790,7 +3776,7 @@ fn cmd_usage(out: Output) -> ExitCode {
     // Nothing recorded exits 1, like a search that finds nothing. (An empty
     // --status exits 0: it ran, and "no repos" is its answer.)
     if rows.is_empty() {
-        return Verdict::Miss.exit_code();
+        return Outcome::Miss.into();
     }
     ExitCode::SUCCESS
 }
@@ -3882,12 +3868,43 @@ impl Verdict {
             Verdict::Warming => "warming",
         }
     }
+}
 
-    fn exit_code(self) -> ExitCode {
-        match self {
-            Verdict::Hit => ExitCode::SUCCESS,
-            Verdict::Miss => ExitCode::FAILURE,
-            Verdict::Warming => ExitCode::from(2),
+/// How a search ended. Ordered by what a batch reports when its lines
+/// disagree: any hit; else an error (the higher code, if several); else
+/// "retry"; and a miss only when a retry would change nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Outcome {
+    Miss,
+    Warming,
+    /// Reported already; its exit code.
+    Failed(u8),
+    Hit,
+}
+
+impl From<Verdict> for Outcome {
+    fn from(verdict: Verdict) -> Outcome {
+        match verdict {
+            Verdict::Hit => Outcome::Hit,
+            Verdict::Miss => Outcome::Miss,
+            Verdict::Warming => Outcome::Warming,
+        }
+    }
+}
+
+impl From<Failure> for Outcome {
+    fn from(kind: Failure) -> Outcome {
+        Outcome::Failed(kind.exit_code())
+    }
+}
+
+impl From<Outcome> for ExitCode {
+    fn from(outcome: Outcome) -> ExitCode {
+        match outcome {
+            Outcome::Hit => ExitCode::SUCCESS,
+            Outcome::Miss => ExitCode::FAILURE,
+            Outcome::Warming => ExitCode::from(2),
+            Outcome::Failed(code) => ExitCode::from(code),
         }
     }
 }
@@ -3938,13 +3955,24 @@ impl Failure {
     }
 }
 
+impl From<Failure> for ExitCode {
+    fn from(kind: Failure) -> ExitCode {
+        ExitCode::from(kind.exit_code())
+    }
+}
+
 /// Report an error and return its exit code. The message always goes to
 /// stderr; a structured caller also gets it as one JSON object on stdout.
 fn fail(out: Output, kind: Failure, args: std::fmt::Arguments) -> ExitCode {
+    report(out, kind, args).into()
+}
+
+/// [`fail`] for a caller that carries the failure on rather than exiting.
+fn report(out: Output, kind: Failure, args: std::fmt::Arguments) -> Failure {
     let message = args.to_string();
     eprintln!("{message}");
     emit_error(out, kind, &message);
-    ExitCode::from(kind.exit_code())
+    kind
 }
 
 /// The structured half of an error: `{"error", "kind", "code"}` on stdout,
@@ -4276,9 +4304,8 @@ mod tests {
 
     #[test]
     fn a_fruitless_batch_exits_with_what_the_caller_can_act_on() {
-        let [hit, miss, retry] =
-            [Verdict::Hit, Verdict::Miss, Verdict::Warming].map(Verdict::exit_code);
-        let error = ExitCode::from(Failure::Database.exit_code());
+        let (hit, miss, retry) = (Outcome::Hit, Outcome::Miss, Outcome::Warming);
+        let error = Outcome::from(Failure::Database);
         let cases = [
             (vec![miss, hit, retry], hit),
             (vec![retry, miss], retry),
@@ -4286,8 +4313,8 @@ mod tests {
             (vec![miss, miss], miss),
             (vec![retry, error, miss], error),
         ];
-        for (codes, want) in cases {
-            assert_eq!(batch_exit(&codes), want, "{codes:?}");
+        for (outcomes, want) in cases {
+            assert_eq!(outcomes.iter().max(), Some(&want), "{outcomes:?}");
         }
     }
 
