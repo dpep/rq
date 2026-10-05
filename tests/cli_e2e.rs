@@ -776,11 +776,12 @@ fn a_hit_leaves_the_worktree_check_to_the_warm_child() {
 }
 
 /// Run a `-v` hit with detach on (and optional extra env), and report whether
-/// it spawned the detached warm child.
+/// it spawned the detached warm child — waiting for the child, so its git
+/// calls are done before the test touches the repo again.
 fn spawned_warm(db: &Path, cwd: &Path, env: &[(&str, &str)]) -> bool {
     let out = rq_cmd(db, cwd)
         .args(["-v", "Widget"])
-        .env("RQ_WARM_DETACH", "1")
+        .env("RQ_WARM_DETACH", "wait")
         .envs(env.iter().copied())
         .output()
         .expect("run rq");

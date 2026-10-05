@@ -1805,11 +1805,16 @@ fn spawn_detached_warm(root: &std::path::Path) {
         .stderr(std::process::Stdio::null())
         .process_group(0);
     match cmd.spawn() {
-        Ok(child) => crate::trace!(
-            "background warm (detached): pid {} for {}",
-            child.id(),
-            crate::trace::abbrev(root)
-        ),
+        Ok(mut child) => {
+            crate::trace!(
+                "background warm (detached): pid {} for {}",
+                child.id(),
+                crate::trace::abbrev(root)
+            );
+            if warm_detach_waits() {
+                let _ = child.wait();
+            }
+        }
         Err(e) => crate::trace!("detached warm failed to spawn: {e}"),
     }
 }
@@ -2795,6 +2800,13 @@ fn warm_sweep_cap() -> Duration {
 /// test harness for hermetic runs, and handy for debugging).
 fn warm_detach_enabled() -> bool {
     std::env::var("RQ_WARM_DETACH").map_or(true, |v| v != "0")
+}
+
+/// `RQ_WARM_DETACH=wait`: the detached child is spawned as in production,
+/// and the search waits for it, so a test sees what the child did without
+/// racing it.
+fn warm_detach_waits() -> bool {
+    std::env::var("RQ_WARM_DETACH").is_ok_and(|v| v == "wait")
 }
 
 /// How long a query may block indexing a cold repo before giving up with an
