@@ -10,8 +10,10 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The built binary, run from `cwd` against the database at `db`. Warming
-/// stays in-process so no detached child races a test's asserts or cleanup;
-/// a test of the production default removes `RQ_WARM_DETACH`.
+/// runs as in production, detached child and all, except that rq waits for
+/// the child (`RQ_WARM_DETACH=wait`), so it never races a test's asserts or
+/// cleanup. A test staging an index nobody is filling sets `=0` (no child);
+/// one of a truly detached child removes the variable.
 ///
 /// The wall-clock budgets are generous: a verdict must not depend on how
 /// loaded the machine is. A test that probes a budget sets it again.
@@ -20,7 +22,7 @@ pub(crate) fn rq_cmd(db: &Path, cwd: &Path) -> Command {
     scrub_git(&mut cmd);
     cmd.current_dir(cwd)
         .env("RQ_DB", db)
-        .env("RQ_WARM_DETACH", "0")
+        .env("RQ_WARM_DETACH", "wait")
         .env("RQ_FALLBACK_BUDGET_MS", GENEROUS_MS)
         .env("RQ_ANSWER_BUDGET_MS", GENEROUS_MS)
         .env("RQ_DEFERRED_BUDGET_MS", GENEROUS_MS);

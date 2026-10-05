@@ -22,15 +22,16 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// Run a `-v` search and report whether it decided to warm (traced to stderr).
-/// Detach is off so the decision runs in-process: with it on, a hit hands the
-/// same check to a child (`rq --warm`), which would race the assert.
-fn warmed(db: &Path, cwd: &Path, query: &str) -> bool {
+/// Whether a search finds work for the warm child: a `-v` miss, which runs
+/// the worktree check itself and spawns the child only when something moved
+/// (a hit hands the check to the child unasked). The harness waits for the
+/// child, so its reindex has landed when this returns.
+fn warmed(db: &Path, cwd: &Path) -> bool {
     let run = rq_cmd(db, cwd)
-        .args(["-v", query])
+        .args(["-v", "NoSuchSymbolAnywhere"])
         .output()
         .expect("run rq");
-    String::from_utf8_lossy(&run.stderr).contains("background warm")
+    String::from_utf8_lossy(&run.stderr).contains("background warm (detached)")
 }
 
 /// Run git in `dir`, failing the test if it fails: a missing or broken git
@@ -596,7 +597,7 @@ fn a_repo_with_no_commits_is_a_repo_like_any_other() {
     let root = dir_a.canonicalize().unwrap();
     assert!(out.contains(&*root.to_string_lossy()), "{out}");
     assert!(
-        !warmed(&db, &dir_a, "gadget"),
+        !warmed(&db, &dir_a),
         "an indexed, unchanged unborn repo does not re-warm"
     );
 }
@@ -677,10 +678,7 @@ fn a_clean_complete_repo_does_not_re_warm_on_search() {
     git_init_commit(&dir);
     rq(&db, &dir, &["--index"]);
 
-    assert!(
-        !warmed(&db, &dir, "widget"),
-        "clean complete repo should not re-warm"
-    );
+    assert!(!warmed(&db, &dir), "clean complete repo should not re-warm");
 }
 
 #[test]
@@ -688,8 +686,6 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
     // the dirty check skips the untracked-file scan for speed: a tracked edit
     // still triggers a warm (so the change is picked up), but a brand-new
     // untracked file is the accepted tradeoff — not seen until committed/indexed
-    // The edit is to a file the search doesn't hit: a top hit is revalidated
-    // before the check runs, so its own edit is already indexed by then.
     let (dir, db) = scratch("dirty-check");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
     fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
@@ -697,16 +693,16 @@ fn a_tracked_edit_warms_but_a_new_untracked_file_does_not() {
     rq(&db, &dir, &["--index"]);
 
     fs::write(dir.join("c.rb"), "class Gizmo\n  def go; end\nend\n").unwrap();
-    assert!(warmed(&db, &dir, "widget"), "tracked edit triggers a warm");
+    assert!(warmed(&db, &dir), "tracked edit triggers a warm");
 
     // restore the tracked file to its committed content (tree clean again) —
     // itself a change the index has to take in — then add an untracked file,
     // which the cheaper check intentionally ignores
     fs::write(dir.join("c.rb"), "class Gizmo\nend\n").unwrap();
-    assert!(warmed(&db, &dir, "widget"), "the restore is reindexed");
+    assert!(warmed(&db, &dir), "the restore is reindexed");
     fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
     assert!(
-        !warmed(&db, &dir, "widget"),
+        !warmed(&db, &dir),
         "a new untracked file does not trigger a warm (accepted tradeoff)"
     );
 }
@@ -865,7 +861,7 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
     rq(&db, &dir, &["--index"]);
 
     assert!(
-        !warmed(&db, &dir, "widget"),
+        !warmed(&db, &dir),
         "an indexed edit (and a non-source one) must not re-warm"
     );
     let miss = rq_cmd(&db, &dir)
@@ -881,7 +877,7 @@ fn a_dirty_tree_whose_edits_are_indexed_reads_as_unchanged() {
 
     // a further edit is still seen
     fs::write(dir.join("c.rb"), "class Gizmo\n  def stop; end\nend\n").unwrap();
-    assert!(warmed(&db, &dir, "widget"), "a new edit still warms");
+    assert!(warmed(&db, &dir), "a new edit still warms");
 }
 
 fn git_checkout_file(dir: &Path, file: &str) {
@@ -909,17 +905,16 @@ fn a_discarded_edit_is_reindexed() {
     let clean = indexed_symbols(&db, &dir);
 
     fs::write(dir.join("c.rb"), "class Gizmo\n  def spin; end\nend\n").unwrap();
-    // the query that notices the edit reindexes it, and answers from it
+    // the query that notices the edit says "retry" and leaves the reindex to
+    // the warm child; the retry answers from it
     let (code, out) = rq(&db, &dir, &["spin", "--ndjson"]);
-    assert_eq!(code, 0, "the edit is found at once: {out}");
+    assert_eq!(code, 2, "the edit is pending: {out}");
+    let (code, out) = rq(&db, &dir, &["spin", "--ndjson"]);
+    assert_eq!(code, 0, "and found on the retry: {out}");
     assert_eq!(indexed_symbols(&db, &dir), clean + 1);
 
     git_checkout_file(&dir, "c.rb");
-    // a search elsewhere — its hit's file is revalidated, not c.rb's
-    assert!(
-        warmed(&db, &dir, "widget"),
-        "the discard is seen as a change"
-    );
+    assert!(warmed(&db, &dir), "the discard is seen as a change");
     assert_eq!(
         indexed_symbols(&db, &dir),
         clean,
@@ -2437,6 +2432,7 @@ fn no_wait_returns_without_blocking_on_a_rebuild() {
         args.extend_from_slice(flags);
         let run = rq_cmd(&db, &dir)
             .args(&args)
+            .envs(NO_CHILD) // the index stays incomplete across both runs
             .env("RQ_WAIT_BUDGET_MS", "600000") // a block, if it happened, would hang the test
             .output()
             .expect("run rq");
@@ -2782,6 +2778,10 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     let (code, _) = rq_stdin(&db, &dir, &["-J", "--show"], "widget\n");
     assert_ne!(code, 0, "--show is refused for a batch");
 }
+
+/// A half-built index nobody is filling: no warm child finishes it between
+/// one assert and the next. For tests that stage a partial index.
+const NO_CHILD: [(&str, &str); 1] = [("RQ_WARM_DETACH", "0")];
 
 /// Run the binary with extra env and optional piped stdin; hand back the exit
 /// code, stdout and stderr.
@@ -3134,19 +3134,19 @@ fn no_wait_on_an_unindexed_repo_answers_from_a_live_scan() {
             row["confidence"].as_f64(),
         )
     };
-    let (code, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
+    let (code, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 0, "{out}");
     assert_eq!(source(&out), "live", "cold: {out}");
     assert_eq!(unread(&out), (Some(0), Some(1), Some(0.0)), "cold: {out}");
-    let (code, _, _) = rq_full(&db, &dir, &["Gizmo", "-J", "--no-wait"], &[], None);
+    let (code, _, _) = rq_full(&db, &dir, &["Gizmo", "-J", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 2, "a cold miss is warming, not absent");
 
     rq(&db, &dir, &["--index"]);
-    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
+    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &NO_CHILD, None);
     assert_eq!(source(&out), "index", "indexed: {out}");
 
     rq(&db, &dir, &["--drop"]);
-    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &[], None);
+    let (_, out, _) = rq_full(&db, &dir, &["Widget", "-J", "--no-wait"], &NO_CHILD, None);
     assert_eq!(source(&out), "live", "dropped: {out}");
     assert_eq!(
         unread(&out),
@@ -3421,7 +3421,7 @@ fn a_prefix_match_from_a_partial_index_is_provisional_not_an_answer() {
     let (dir, db) = prefix_and_exact("partial-prefix");
     rq(&db, &dir, &["--index", "app"]);
 
-    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 2, "not an answer yet: {out}");
     let v = json(&out);
     assert_eq!(v["status"], "warming", "{out}");
@@ -3430,14 +3430,14 @@ fn a_prefix_match_from_a_partial_index_is_provisional_not_an_answer() {
     assert_eq!(v["warming"]["of"], 2, "{out}");
 
     // text lists what it has, and says it may change
-    let (code, out, err) = rq_full(&db, &dir, &["User", "--no-wait"], &[], None);
+    let (code, out, err) = rq_full(&db, &dir, &["User", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 2);
     assert!(out.contains("UserFieldsController"), "{out}");
     assert!(err.contains("1 of 2 files read"), "{err}");
     assert!(err.contains("indexing stopped part-way"), "{err}");
 
     // --show has nothing settled to show, and says only that
-    let (code, _, err) = rq_full(&db, &dir, &["User", "--show", "--no-wait"], &[], None);
+    let (code, _, err) = rq_full(&db, &dir, &["User", "--show", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 2);
     assert!(err.contains("no settled match"), "{err}");
     assert!(!err.contains("narrow the query"), "{err}");
@@ -3448,7 +3448,7 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
     let (dir, db) = prefix_and_exact("partial-exact");
     rq(&db, &dir, &["--index", "models"]);
 
-    let (code, out, err) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    let (code, out, err) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 0, "{out}");
     let top = &json(&out)[0];
     assert_eq!(top["name"], "User", "{out}");
@@ -3464,13 +3464,13 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
     );
 
     // nothing continues it here (no detached warm): text says what JSON does
-    let (_, _, err) = rq_full(&db, &dir, &["User", "--no-wait"], &[], None);
+    let (_, _, err) = rq_full(&db, &dir, &["User", "--no-wait"], &NO_CHILD, None);
     assert!(err.contains("indexing stopped part-way"), "{err}");
     assert!(!err.contains("still indexing"), "{err}");
 
     // --show judges which definition was meant, as --open does; the share
     // read is disclosed, not a reason to withhold the body
-    let (code, out, err) = rq_full(&db, &dir, &["User", "--show", "--no-wait"], &[], None);
+    let (code, out, err) = rq_full(&db, &dir, &["User", "--show", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("class User"), "{out}");
     assert!(err.contains("1 of 2 files read"), "{err}");
@@ -3497,7 +3497,7 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
         )
         .unwrap();
     assert_eq!(spans, 0, "a complete checkout keeps no span");
-    let (code, out, _) = rq_full(&db, &dir, &["User", "--json"], &[], None);
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json"], &NO_CHILD, None);
     assert_eq!(code, 0);
     let top = &json(&out)[0];
     assert!(top.get("warming").is_none(), "{out}");
@@ -3555,6 +3555,9 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
     let mut child = rq_cmd(&db, &dir)
         .args(["User", "--wait", "1s"])
         .env("RQ_ASSUME_INTERACTIVE", "1")
+        // a warm child would wait out the held writer too; a detached one
+        // does that after the search has exited, which is what's timed here
+        .envs(NO_CHILD)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -3698,7 +3701,7 @@ fn a_tree_never_counted_is_counted_when_asked_and_never_null() {
     conn.execute("DELETE FROM meta WHERE key LIKE 'span:%'", [])
         .unwrap();
 
-    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 0, "{out}");
     let w = &json(&out)[0]["warming"];
     assert_eq!((&w["read"], &w["of"]), (&1.into(), &2.into()), "{out}");
@@ -3764,7 +3767,13 @@ fn a_warming_miss_says_how_far_the_index_got() {
     let (dir, db) = prefix_and_exact("miss-progress");
     rq(&db, &dir, &["--index", "app"]);
 
-    let (code, out, _) = rq_full(&db, &dir, &["Gadget", "--json", "--no-wait"], &[], None);
+    let (code, out, _) = rq_full(
+        &db,
+        &dir,
+        &["Gadget", "--json", "--no-wait"],
+        &NO_CHILD,
+        None,
+    );
     assert_eq!(code, 2, "{out}");
     let v = json(&out);
     assert_eq!(v["status"], "warming", "{out}");
@@ -3774,11 +3783,17 @@ fn a_warming_miss_says_how_far_the_index_got() {
         "{out}"
     );
 
-    let (_, _, err) = rq_full(&db, &dir, &["Gadget", "--no-wait"], &[], None);
+    let (_, _, err) = rq_full(&db, &dir, &["Gadget", "--no-wait"], &NO_CHILD, None);
     assert!(err.contains("1 of 2 files read"), "{err}");
 
     // keys in the order a result's `warming` lists them, as one -J stream mixes both
-    let (_, out, _) = rq_full(&db, &dir, &["Gadget", "--ndjson", "--no-wait"], &[], None);
+    let (_, out, _) = rq_full(
+        &db,
+        &dir,
+        &["Gadget", "--ndjson", "--no-wait"],
+        &NO_CHILD,
+        None,
+    );
     assert!(
         out.contains("\"warming\":{\"read\":1,\"of\":2,\"interrupted\":"),
         "{out}"
@@ -3807,7 +3822,7 @@ fn a_live_candidate_is_scaled_as_an_indexed_one_is() {
             &db,
             &dir,
             &[query, "--json", "--no-wait", "-l", "5"],
-            &[],
+            &NO_CHILD,
             None,
         );
         let v = json(&out);
@@ -3844,7 +3859,13 @@ fn a_pass_past_its_reads_says_it_is_finishing() {
     .unwrap();
 
     // a pass that records no phase (an older rq's) has none to report
-    let (_, out, _) = rq_full(&db, &dir, &["Gadget", "--json", "--no-wait"], &[], None);
+    let (_, out, _) = rq_full(
+        &db,
+        &dir,
+        &["Gadget", "--json", "--no-wait"],
+        &NO_CHILD,
+        None,
+    );
     assert!(!out.contains("phase"), "{out}");
 
     conn.execute(
@@ -3857,10 +3878,16 @@ fn a_pass_past_its_reads_says_it_is_finishing() {
         let secs = w["phase_secs"].as_i64().unwrap_or(-1);
         assert!((7..60).contains(&secs), "{what}: {w}");
     };
-    let (code, out, _) = rq_full(&db, &dir, &["Gadget", "--json", "--no-wait"], &[], None);
+    let (code, out, _) = rq_full(
+        &db,
+        &dir,
+        &["Gadget", "--json", "--no-wait"],
+        &NO_CHILD,
+        None,
+    );
     assert_eq!(code, 2, "{out}");
     finishing(&json(&out)["warming"], "a miss");
-    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &[], None);
+    let (code, out, _) = rq_full(&db, &dir, &["User", "--json", "--no-wait"], &NO_CHILD, None);
     assert_eq!(code, 2, "{out}");
     let v = json(&out);
     finishing(&v["warming"], "provisional");
@@ -3869,18 +3896,18 @@ fn a_pass_past_its_reads_says_it_is_finishing() {
         &db,
         &dir,
         &["UserFieldsController", "--json", "--no-wait"],
-        &[],
+        &NO_CHILD,
         None,
     );
     assert_eq!(code, 0, "{out}");
     finishing(&json(&out)[0]["warming"], "a hit");
-    let (_, out, _) = rq_full(&db, &dir, &["--status", "--json"], &[], None);
+    let (_, out, _) = rq_full(&db, &dir, &["--status", "--json"], &NO_CHILD, None);
     finishing(&json(&out)[0], "--status");
 
     // text says what JSON says
-    let (_, _, err) = rq_full(&db, &dir, &["Gadget", "--no-wait"], &[], None);
+    let (_, _, err) = rq_full(&db, &dir, &["Gadget", "--no-wait"], &NO_CHILD, None);
     assert!(err.contains("1 of 2 files read, finishing"), "{err}");
-    let (_, out, _) = rq_full(&db, &dir, &["--status"], &[], None);
+    let (_, out, _) = rq_full(&db, &dir, &["--status"], &NO_CHILD, None);
     assert!(out.contains("1 of 2 files, finishing"), "{out}");
 }
 

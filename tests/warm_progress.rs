@@ -43,10 +43,11 @@ fn scratch() -> (Scratch, PathBuf) {
 }
 
 /// One capped warm pass: a search that misses drives the sweep and returns.
-/// Detached warming is off so no child races the next assertion.
+/// No warm child, which would sweep the rest and leave one pass to measure.
 fn warm_pass(db: &Path, dir: &Path) {
     let out = rq_cmd(db, dir)
         .args(["Nonexistent"])
+        .env("RQ_WARM_DETACH", "0")
         .env("RQ_COLLECT_CAP", CAP.to_string())
         .output()
         .expect("run rq");
