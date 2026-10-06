@@ -278,7 +278,8 @@ Decisions worth calling out:
   re-reads Go, Python and TS/JS for their types, variants and nested defs, and v21
   re-reads TS/JS for ambient declarations and overload signatures and Python
   for its local classes, v22 re-reads every language but Ruby for fields,
-  and v24 every language but Go for `singleton`: users
+  v24 every language but Go for `singleton`, and v25 TS/JS for `export
+  let`: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to

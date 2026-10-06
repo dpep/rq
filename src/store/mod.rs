@@ -2627,6 +2627,45 @@ mod tests {
     }
 
     #[test]
+    fn v25_queues_only_typescript_and_javascript() {
+        let path = legacy(
+            "migrate-v25",
+            22,
+            &two_repos(&[
+                ("a.rs", "rust"),
+                ("d.ts", "typescript"),
+                ("e.js", "javascript"),
+            ]),
+        );
+        // at v24, with every file read since
+        drop(open_at(&path, 24).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "UPDATE files SET content_hash = 'h'; UPDATE checkout_files SET mtime = 1; \
+                 UPDATE coverage SET status = 'complete';",
+            )
+            .unwrap();
+        let store = Store::open(&path).unwrap();
+        for p in ["d.ts", "e.js"] {
+            assert_eq!(stat(&store, p), (None, "stale:h".to_string()), "{p}");
+        }
+        for p in ["a.rs", "z.rb"] {
+            assert_eq!(stat(&store, p), (Some(1), "h".to_string()), "{p}");
+        }
+        assert_eq!(
+            store.coverage_status("/mixed").unwrap().unwrap(),
+            Coverage::Warming
+        );
+        assert_eq!(
+            store.coverage_status("/ruby").unwrap().unwrap(),
+            Coverage::Complete
+        );
+        drop(store);
+        remove(&path);
+    }
+
+    #[test]
     fn v23_maps_each_repo_to_its_newest_checkout_when_none_is_on_disk() {
         // one repo, two checkouts (the older one stale), one repo with none
         let path = legacy(

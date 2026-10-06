@@ -1,7 +1,7 @@
 // Fixture: a small, domain-neutral TypeScript file exercising the kinds the
 // plugin extracts (class, interface→trait, type, enum and its members, method,
 // function, an arrow assigned to a const, constants, and the properties of
-// classes, interfaces and object types, static or not).
+// classes, interfaces and object types, static or not), and an exported `let`.
 
 export const MAX_RETRIES = 3;
 
@@ -15,6 +15,8 @@ export interface WidgetOptions {
 }
 
 export const WIDGET_DEFAULTS = { label: "widget" };
+
+export let activeWidget: Widget | undefined;
 
 export type WidgetSize = {
   width: number;

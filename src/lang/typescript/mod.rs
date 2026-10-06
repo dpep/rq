@@ -13,7 +13,9 @@
 //! handed to a wrapping call. Any other module- or namespace-level `const` → constant: the
 //! keyword is the declaration of intent, whatever the casing, and a camelCase
 //! `const router = createRouter()` is as much a jump target as `MAX_RETRIES`. A
-//! `require(…)` binding is an import, not a definition; `let`/`var` are mutable.
+//! `require(…)` binding is an import, not a definition; a module's own
+//! `let`/`var` is mutable state, but an `export let` is API like an `export
+//! const`, and is a constant too.
 //! A class's `static readonly` field → constant of the class; any other
 //! `static` member (method, accessor, field) is the class's own (`singleton`).
 //! `parent` is `.`-joined, so a method renders as `deposit · Account`.
@@ -448,9 +450,11 @@ fn declares_members(body: Node) -> bool {
 /// Emit the definitions a `const`/`let`/`var` statement makes: each
 /// function-valued declarator as a function, and — for a module-level `const`
 /// only — every other simply-named, non-`require` one as a constant. A
-/// declared (ambient) binding is a global's definition, whatever its keyword.
+/// declared (ambient) or exported binding is the module's API whatever its
+/// keyword: `export let` is mutable, but importers read it like a constant.
 fn declarations(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
-    let binding = scope.ambient || node.child(0).is_some_and(|k| k.kind() == "const");
+    let binding =
+        scope.ambient || scope.exported || node.child(0).is_some_and(|k| k.kind() == "const");
     let constants = binding && at_module_level(ctx, node);
     let mut cursor = node.walk();
     for d in node.children(&mut cursor) {
@@ -742,6 +746,8 @@ const Gadget = require("./gadget").Gadget;
 const { width, height } = defaults;
 let counter = 0;
 var legacy = 1;
+export let startTime: number = -0;
+export var legacyExport = 1, { inner } = defaults;
 
 namespace Limits {
   export const CEILING = 9;
@@ -771,6 +777,12 @@ describe("widget", () => {
         assert_eq!(router.kind, Kind::Constant);
         assert_eq!(router.visibility, Some("private"));
 
+        // an exported `let`/`var` is API, read like a constant
+        for name in ["startTime", "legacyExport"] {
+            let s = find(&syms, name);
+            assert_eq!((s.kind, s.visibility), (Kind::Constant, Some("public")));
+        }
+
         let ceiling = find(&syms, "CEILING");
         assert_eq!(ceiling.kind, Kind::Constant);
         assert_eq!(ceiling.parent.as_deref(), Some("Limits"));
@@ -787,6 +799,7 @@ describe("widget", () => {
             "Widget",
             "Gadget",
             "width",
+            "inner",
             "counter",
             "legacy",
             "localLimit",

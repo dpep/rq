@@ -230,6 +230,12 @@ fn typescript_definitions_rank_and_classify() {
         (max.name.as_str(), max.kind.as_str()),
         ("MAX_RETRIES", "constant")
     );
+    // an exported `let` is the module's API, like an exported `const`
+    let active = top(&store, "activeWidget");
+    assert_eq!(
+        (active.kind.as_str(), active.visibility.as_deref()),
+        ("constant", Some("public"))
+    );
     let width = top(&store, "DEFAULT_WIDTH");
     assert_eq!(width.kind, "constant");
     assert_eq!(width.parent.as_deref(), Some("Widget"));

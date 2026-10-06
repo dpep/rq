@@ -9,6 +9,10 @@ and aren't listed; see `git log` for those.
 
 ## 0.60.5 — 2026-10-05
 
+The first run after upgrading re-reads every TypeScript and JavaScript file
+once, in the background, for the definitions below; results answer from the
+old rows meanwhile. Nothing to run by hand.
+
 ### Changed
 - **`--drop --json` omits `root` rather than sending `null`** when it dropped a
   whole repo by identity or found nothing at a path that doesn't exist, as the
@@ -19,6 +23,9 @@ and aren't listed; see `git log` for those.
   highest**, where it took the first.
 
 ### Fixed
+- **`export let` and `export var` are indexed**, as constants, like `export
+  const`: react's `rq renderStartTime` found nothing (#31). A module's own
+  unexported `let`/`var` stays out (DECISIONS D56).
 - **A FIFO or device at a source path no longer hangs rq.** A FIFO where a
   tracked `.rb` used to be blocked a search, and the background warm it left
   behind, until something wrote to the FIFO. rq now reads regular files only,

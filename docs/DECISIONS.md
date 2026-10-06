@@ -3295,3 +3295,44 @@ sources moved up and 3 down, none lost #1 or the top 10.
 *Storage.* Visibility is already a column; this changes what extraction writes,
 not the schema. v24 is unreleased and requeues every Ruby file on upgrade, so
 no further version bump: the first run re-reads them anyway.
+
+## D56 — `export let` is a constant, like `export const`
+
+**Adopted**, 2026-10-05. `declarations` in `src/lang/typescript/mod.rs`; schema v25
+requeues TS/JS. Tests `module_level_consts_are_constants`, the fixture test
+`typescript_definitions_rank_and_classify`, `v25_queues_only_typescript_and_javascript`.
+
+*The weakness* (#31). The plugin indexed a module-level `const` and left `let`/`var`
+out as mutable state. An exported binding is API whatever its keyword: react exports
+its profiler clocks as `export let renderStartTime: number = -0`, beside `export
+const`s that were found, and 8 of 12 `no_match`es in a 300-query react sample were
+these. `rq renderStartTime` found nothing.
+
+*The rule.* An `export let`/`export var` at module or namespace level is a
+`constant`, public, as `export const` is and as a declared (`declare let`) binding
+already was (D38). Kind follows what the binding is to a reader, a named value of
+the module, not whether it can be reassigned; a function-valued one was already a
+`function`. A module's own unexported `let`/`var` stays out: that is the mutable
+state the old rule was about, and nothing outside the file reads it by name.
+
+| corpus | symbols before | after | new |
+|---|---|---|---|
+| express, lodash | 55, 70 | 55, 70 | 0 |
+| jest | 7,653 | 7,654 | 1 (a test fixture's `export let counter`) |
+| next.js | 78,833 | 78,983 | 150, 140 of them under `tests/` (transform fixtures) |
+| react | 36,493 | 36,566 | 73 |
+| zod | 6,356 | 6,358 | 2 (bench sinks) |
+
+All 226 new rows are an `export let` or `export var` line in the source (checked by
+script against each row's line).
+`rq renderStartTime` in react answers `ReactProfilerTimer.js:57` first.
+
+*Rejected:* **a `variable` kind.** It would split one jump target, a module's named
+value, by a keyword the searcher doesn't type, and `-k const` would stop finding
+them; kind carries no ranking weight between the two.
+
+*Left open:* react's `export let currentResumableState` (`ReactFizzHooks.js:942`),
+also named in #31, still answers `no_match`: a Flow construct earlier in that file
+parses as an error, which swallows everything after line 860, `export const
+HooksDispatcher` included. That is the grammar, not this rule.
+

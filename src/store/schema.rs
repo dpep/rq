@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 24;
+pub(crate) const VERSION: i64 = 25;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -630,6 +630,22 @@ UPDATE files SET content_hash = 'stale:' || content_hash
     AND content_hash NOT LIKE 'stale:%';
 "#;
 
+/// Migration v24 -> v25: the TypeScript/JavaScript plugin emits `export let`
+/// and `export var` bindings. Its files are queued for re-extraction as v24
+/// queued them.
+pub(crate) const MIGRATION_V25: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND checkout_id IN (
+      SELECT cf.checkout_id FROM checkout_files cf JOIN files f ON f.id = cf.file_id
+      WHERE f.language IN ('typescript', 'javascript'));
+UPDATE checkout_files SET mtime = NULL
+  WHERE file_id IN (SELECT id FROM files WHERE language IN ('typescript', 'javascript'));
+UPDATE files SET content_hash = 'stale:' || content_hash
+  WHERE language IN ('typescript', 'javascript')
+    AND content_hash NOT LIKE 'stale:%';
+"#;
+
 /// One rung of the migration ladder.
 #[derive(Clone, Copy)]
 pub(crate) enum Step {
@@ -664,7 +680,7 @@ pub(crate) const LADDER: Ladder = Ladder {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 27] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 28] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -692,4 +708,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 27] = [
     (23, Step::Sql(MIGRATION_V23)),
     (24, MIGRATION_V24),
     (24, Step::Sql(MIGRATION_V24_REQUEUE)),
+    (25, Step::Sql(MIGRATION_V25)),
 ];
