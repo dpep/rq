@@ -2921,6 +2921,22 @@ fn a_binary_file_with_a_source_extension_is_held_but_not_parsed() {
 }
 
 #[test]
+fn an_outline_of_a_file_over_the_size_cap_says_so() {
+    // it's held unparsed, so "no symbols" would be a confident wrong answer
+    let (dir, db) = scratch("oversized");
+    let huge = dir.join("huge.rb");
+    fs::write(&huge, "class Huge\nend\n").unwrap();
+    // sparse: no disk to fill
+    let file = fs::OpenOptions::new().write(true).open(&huge).unwrap();
+    file.set_len(65 * 1024 * 1024).unwrap();
+    let (code, out, err) = rq_full(&db, &dir, &["--symbols", "huge.rb", "--json"], &[], None);
+    assert_eq!(code, 64, "{out}");
+    let obj: serde_json::Value = serde_json::from_str(out.trim()).expect("error json");
+    assert_eq!(obj["kind"], "usage");
+    assert!(err.contains("size cap"), "{err}");
+}
+
+#[test]
 fn a_file_rq_cannot_stat_is_not_forgotten() {
     // EACCES on its dir isn't a delete: a pass must keep what it can't see
     use std::os::unix::fs::PermissionsExt;

@@ -20,7 +20,10 @@ and aren't listed; see `git log` for those.
 - **A FIFO or device at a source path no longer hangs rq.** A FIFO where a
   tracked `.rb` used to be blocked a search, and the background warm it left
   behind, until something wrote to the FIFO. rq now reads regular files only,
-  and treats a file over 64 MiB as it does a binary one: held, not parsed.
+  and treats a file over 64 MiB as it does a binary one: held, not parsed, so
+  its definitions are skipped and a search won't find them. `--symbols` on
+  such a file says it's over the size cap (exit 64, `kind: "usage"`) rather
+  than "no symbols".
 - **A file or checkout rq can't stat is no longer forgotten.** A permission
   error on the way to a file (or to a whole checkout's root) read as "deleted",
   so an index pass — a background warm or `rq --index` alike — dropped the

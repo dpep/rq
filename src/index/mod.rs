@@ -1112,6 +1112,12 @@ const BINARY_SNIFF: u64 = 8 * 1024;
 /// file is this big, and a generated one this big isn't worth the parse.
 const MAX_SOURCE: u64 = 64 * 1024 * 1024;
 
+/// Whether `path` is past the size a source file is read to: held, never
+/// parsed, so it has no definitions to show whatever it holds.
+pub(crate) fn oversized(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_SOURCE)
+}
+
 /// A source file's text. Bytes that aren't UTF-8 (a Latin-1 comment) become
 /// U+FFFD rather than dropping the file: its names are still ASCII. A binary
 /// or oversized file (an MPEG-TS video named `.ts`) reads as empty, unread

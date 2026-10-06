@@ -71,6 +71,16 @@ pub(super) fn cmd_symbols(
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| crate::lang::plugin_for_extension(e).is_some());
+    if indexable && crate::index::oversized(&path) {
+        // "no symbols" would claim it was read
+        return fail(
+            out,
+            Failure::Usage,
+            format_args!(
+                "rq --symbols: {file_arg} is over the 64 MiB size cap; rq doesn't parse it"
+            ),
+        );
+    }
     match current {
         // An outline depends on this one file, so on a complete index freshness
         // is just re-extracting it if it moved — no `git status` over the whole
