@@ -166,14 +166,21 @@ def isolated_env(db):
     return dict(os.environ, RQ_DB=db, RQ_WARM_DETACH="0", RQ_JOBS="1")
 
 
+def index(binary, env, corpus, rows):
+    """Index the corpora `rows` ask about, in corpus order."""
+    repos = {r["repo"] for r in rows}
+    for repo, path in corpus.items():
+        if repo in repos:
+            run([str(binary), "--index", str(path)], env=env, stdout=subprocess.DEVNULL)
+
+
 def measure(label, binary, corpus, queries, regress, jobs):
-    """Index the corpus into a throwaway DB and run every query and regress case
+    """Index the corpora into a throwaway DB and run every query and regress case
     through `binary`."""
     with tempfile.TemporaryDirectory(prefix="rq-recall-db-") as tmp:
         env = isolated_env(os.path.join(tmp, "rq.db"))
         t = time.monotonic()
-        for path in corpus.values():
-            run([str(binary), "--index", str(path)], env=env, stdout=subprocess.DEVNULL)
+        index(binary, env, corpus, [*queries, *regress])
         index_s = time.monotonic() - t
 
         def one(q):
@@ -210,10 +217,16 @@ def measure(label, binary, corpus, queries, regress, jobs):
 # ----- anchored -----
 
 
+ANCHORED = ["anchored.tsv", "anchored_imports.tsv"]
+
+
 def load_anchored():
-    with open(DATA / "anchored.tsv") as f:
-        header = f.readline().rstrip("\n").split("\t")
-        return [dict(zip(header, line.rstrip("\n").split("\t"))) for line in f]
+    rows = []
+    for name in ANCHORED:
+        with open(DATA / name) as f:
+            header = f.readline().rstrip("\n").split("\t")
+            rows += [dict(zip(header, line.rstrip("\n").split("\t"))) for line in f]
+    return rows
 
 
 def measure_anchored(binary, corpus, rows, jobs):
@@ -223,8 +236,7 @@ def measure_anchored(binary, corpus, rows, jobs):
     at that result's rank."""
     with tempfile.TemporaryDirectory(prefix="rq-recall-anchor-") as tmp:
         env = isolated_env(os.path.join(tmp, "rq.db"))
-        for path in corpus.values():
-            run([str(binary), "--index", str(path)], env=env, stdout=subprocess.DEVNULL)
+        index(binary, env, corpus, rows)
 
         def rank(row, anchored):
             args = [str(binary), row["query"], "--json", "--no-wait", "--limit", "0"]
@@ -255,6 +267,8 @@ def summarize_anchored(rows, plain, anchored):
            "truth_elsewhere": cut(lambda r: not same_file(r))}
     for recv in sorted({r["recv"] for r in rows}):
         out[f"recv={recv}"] = cut(lambda r, recv=recv: r["recv"] == recv)
+    for repo in dict.fromkeys(r["repo"] for r in rows):
+        out[repo] = cut(lambda r, repo=repo: r["repo"] == repo)
     moves = Counter()
     far = float("inf")
     lost = []
@@ -264,6 +278,23 @@ def summarize_anchored(rows, plain, anchored):
         if ra == 1 and rb != 1:
             lost.append({**r, "plain_rank": a, "anchored_rank": b})
     return {"cuts": out, "up": moves["up"], "down": moves["down"], "same": moves["same"], "lost_first": lost}
+
+
+def diff_anchored(rows, base, new):
+    """What the binary under test changed against the baseline, both anchored."""
+    far = float("inf")
+    moves = Counter()
+    lost_first, lost_top10 = [], []
+    for r, a, b in zip(rows, base, new):
+        ra, rb = a or far, b or far
+        moves["up" if rb < ra else "down" if rb > ra else "same"] += 1
+        row = {**r, "base_rank": a, "new_rank": b}
+        if ra == 1 and rb != 1:
+            lost_first.append(row)
+        if ra <= 10 < rb:
+            lost_top10.append(row)
+    return {"up": moves["up"], "down": moves["down"], "same": moves["same"],
+            "lost_first": lost_first, "lost_top10": lost_top10}
 
 
 def print_anchored(a):
@@ -394,6 +425,22 @@ def print_report(report):
 
     if report.get("anchored"):
         print_anchored(report["anchored"])
+    d = report.get("anchored_diff")
+    if d:
+        base, new = d["base"], report["anchored"]["cuts"]
+        print(f"\nanchored, against {d['label']}: {d['up']} up, {d['down']} down, {d['same']} unchanged")
+        print(f"{'':<22} {'n':>4}  {'#1 base':>14}  {'#1 new':>14}  {'top10 base':>14}  {'top10 new':>14}")
+        for name, c in base.items():
+            p, q = c["anchored"], new[name]["anchored"]
+            cell = lambda t, k: f"{t[k]:>4} {t[k + '_pct']:5.1f}%"  # noqa: E731
+            print(f"{name:<22} {p['n']:>4}  {cell(p, 'first'):>14}  {cell(q, 'first'):>14}"
+                  f"  {cell(p, 'top10'):>14}  {cell(q, 'top10'):>14}")
+        rank = lambda x: "-" if x is None else f"#{x}"  # noqa: E731
+        for key, title in (("lost_first", "lost #1"), ("lost_top10", "lost the top 10")):
+            print(f"\nanchored, {title}: {len(d[key])}")
+            for x in d[key]:
+                print(f"  {x['repo']:<9} {x['query']:<24} {x['anchor']:<60} "
+                      f"{rank(x['base_rank']):>4} -> {rank(x['new_rank'])}")
 
     b = report.get("bench")
     if b:
@@ -458,8 +505,8 @@ def main():
     ap.add_argument("--bench", type=int, metavar="REPS", default=0,
                     help="also time the hand-picked queries, interleaved, REPS times each")
     ap.add_argument("--anchored", action="store_true",
-                    help="also rank script/recall/anchored.tsv's call sites with and without --anchor "
-                         "(the binary under test only)")
+                    help="also rank the anchored sets (script/recall/anchored*.tsv) with and without "
+                         "--anchor, and with a baseline, diff the two binaries' anchored ranks")
     ap.add_argument("--queries", metavar="TSV", default=str(DATA / "queries.tsv"),
                     help="the query set (default script/recall/queries.tsv); only its repos are indexed")
     ap.add_argument("--no-regress", action="store_true",
@@ -482,6 +529,8 @@ def main():
     queries = load_queries(args.queries)
     regress = [] if args.no_regress else load_regress()
     wanted = {q["repo"] for q in queries} | {c["repo"] for c in regress}
+    anchored_rows = load_anchored() if args.anchored else []
+    wanted |= {r["repo"] for r in anchored_rows}
     pins = {repo: p for repo, p in pins.items() if repo in wanted}
     corpus = {repo: checkout(cache, repo, p["url"], p["sha"]) for repo, p in pins.items()}
 
@@ -510,9 +559,17 @@ def main():
              "first_at": f"{r['top'][0][1]}:{r['top'][0][2]}" if r["top"] else None}
             for q, r in zip(queries, raw[-1]["results"]) if q["source"] and r["rank"] != 1]
     if args.anchored:
-        note(f"new: {len(load_anchored())} anchored call sites, plain and with --anchor")
-        rows = load_anchored()
-        report["anchored"] = summarize_anchored(rows, *measure_anchored(new_bin, corpus, rows, args.jobs))
+        rows = anchored_rows
+        note(f"new: {len(rows)} anchored queries, plain and with --anchor")
+        plain, anchored = measure_anchored(new_bin, corpus, rows, args.jobs)
+        report["anchored"] = summarize_anchored(rows, plain, anchored)
+        if len(bins) == 2:
+            label, path = bins[0]
+            note(f"{label}: {len(rows)} anchored queries, plain and with --anchor")
+            base_plain, base_anchored = measure_anchored(path, corpus, rows, args.jobs)
+            report["anchored_diff"] = {
+                "label": label, **diff_anchored(rows, base_anchored, anchored),
+                "base": summarize_anchored(rows, base_plain, base_anchored)["cuts"]}
     if args.bench:
         report["bench"] = bench(report["runs"], corpus, queries, args.bench)
 

@@ -113,8 +113,13 @@ with `lost_first`/`lost_top10`, `bench`); its field names are stable.
 
 ## Anchored call sites
 
-`--anchored` adds a second measurement, of `--anchor` (D18), on the binary
-under test only. [`script/recall/anchored.tsv`](../script/recall/anchored.tsv)
+`--anchored` adds a second measurement, of `--anchor` (D18): each row plain
+and anchored on the binary under test, and with a baseline, both binaries'
+anchored ranks side by side with every row that lost #1 or the top 10. Each
+binary indexes only the corpora the rows ask about. Two sets, reported overall,
+by receiver kind and by repo.
+
+[`script/recall/anchored.tsv`](../script/recall/anchored.tsv)
 holds 446 Ruby call sites (190 rails, 256 discourse): the query is the called
 name, the anchor is the call site, and the truth is the one definition
 `trekr --def` resolves it to at confidence 0.9 or more. Only names defined at
@@ -123,6 +128,18 @@ location, not name. Each query runs plain and anchored, reported overall, by
 receiver kind, and by whether the truth sits in the anchor's own file.
 [`derive_anchored.py`](../script/recall/derive_anchored.py) regenerates the set
 (needs `trekr`); moving a corpus pin means rerunning it.
+
+[`script/recall/anchored_imports.tsv`](../script/recall/anchored_imports.tsv)
+holds 908 JS/TS import sites (300 next.js, 222 jest, 86 zod, 300 react; up to
+three per name, `recv` = `import`): the query is a name in
+`import { a } from './x'`, the anchor is that name, and the truth is the
+top-level definition of it in the file the relative specifier resolves to, by
+TypeScript's probing (extensions, `/index`, and `./x.js` naming `./x.ts`). A
+re-export, a package import, or a name defined only once is skipped.
+[`derive_imports.py`](../script/recall/derive_imports.py) regenerates it. next.js
+is the mixed-language case (TS beside turbopack's Rust); react, jest and zod
+check that the others hold. The four are pinned in `corpus.json` and fetched only
+for `--anchored`.
 
 ## Reproducibility
 

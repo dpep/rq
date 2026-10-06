@@ -48,5 +48,25 @@
     "url": "https://github.com/excalidraw/excalidraw.git",
     "sha": "438d89861f53d8a90ad566113ecac1b83761098f",
     "language": "typescript"
+  },
+  "next.js": {
+    "url": "https://github.com/vercel/next.js.git",
+    "sha": "1119ce6becb37e9272ef7ef7ff9308b038bdcd55",
+    "language": "typescript"
+  },
+  "jest": {
+    "url": "https://github.com/jestjs/jest.git",
+    "sha": "61050e9323e742539dc2360236671110e37329e6",
+    "language": "typescript"
+  },
+  "zod": {
+    "url": "https://github.com/colinhacks/zod.git",
+    "sha": "0b216ef674e297ebe41d8bf902262e56f8755822",
+    "language": "typescript"
+  },
+  "react": {
+    "url": "https://github.com/facebook/react.git",
+    "sha": "278794d7dee9cd2a3a2aaf9f0b2a4b8b747d74ee",
+    "language": "javascript"
   }
 }
