@@ -93,6 +93,7 @@ A `LanguagePlugin` trait is the only seam languages plug into:
 trait LanguagePlugin {
     fn extensions(&self) -> &[&str];
     fn extract(&self, source: &str) -> Vec<Symbol>;
+    fn family(&self) -> &'static str; // languages that can refer to each other
 }
 ```
 
@@ -541,11 +542,14 @@ why a result ranked where it did:
   halving per directory step and dropped below 5; anchor's checkout only. Built
   only from stored spans and parents (or a live parse of the anchor file when
   the index doesn't hold its current version), so it is language-blind. No
-  inheritance, so an inherited method earns no `enclosing` (D18).
+  inheritance, so an inherited method earns no `enclosing` (D18). A third,
+  `reachable` (400): the candidate's language is one the anchor file's can refer
+  to, its plugin's `family` (TypeScript and JavaScript share one). Any checkout;
+  no feature when no plugin reads the anchor file (D59).
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`recency`, `branch`, `enclosing`,
-`proximity`) are computed by the search layer — which owns the clock, the
+`proximity`, `reachable`) are computed by the search layer — which owns the clock, the
 branch state and the anchor — and passed in via a `Boosts` struct, so a new git signal (recent commit, branch, ownership) is a new
 field, not a new parameter. Prefer understandable scoring over sophisticated
 algorithms; tuning a weight must never require re-indexing.

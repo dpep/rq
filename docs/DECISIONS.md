@@ -3456,3 +3456,67 @@ as one file, with no factory inside). The patch is a function or two in
 `src/lang/typescript/mod.rs`: `wrapped`, `is_wrapper_body`, `is_minified`, and
 `is_top_level` accepting a wrapper body.
 
+## D59 — `--anchor` prefers definitions the anchor's language can reach
+
+**Adopted**, 2026-10-05. Anchored recall (D18) plus a new set of JS/TS import sites;
+full recall against v0.60.4. Issue #32.
+
+*The weakness.* The anchor's language counted for nothing. In next.js (TS beside
+turbopack's Rust), `rq range --anchor examples/with-vercel-blob/app/page.tsx:1` gave
+seven Rust definitions before any TypeScript one, though a `.tsx` file can only refer to
+JS or TS.
+
+*The rule.* A third anchor boost, `reachable`, 400 for a candidate whose language the
+anchor file's can refer to. Each `LanguagePlugin` names its `family`, by default its own
+tag; TypeScript and JavaScript share one (`.ts`/`.tsx`/`.d.ts`/`.mts`/`.cts` and
+`.js`/`.jsx`/`.mjs`/`.cjs`, Flow included, since it parses as JS). The anchor's family
+comes from its file's extension, so search reads a list of language tags and holds no
+language knowledge. Any checkout. An anchor file no plugin reads gets no boost, and
+without `--anchor` nothing changes.
+
+*The set.* `script/recall/anchored_imports.tsv`: 908 named imports in four pinned JS/TS
+repos (`import { a } from './x'`), the truth being the top-level definition in the file
+the relative specifier resolves to, for names defined at least twice (RECALL.md). Ranked
+by location, from the import site.
+
+| anchored #1 / top 10 | v0.60.4 | `reachable` 400 |
+|---|---|---|
+| next.js (300) | 190 (63.3%) / 257 | 206 (68.7%) / 267 |
+| react (300) | 261 (87.0%) / 297 | 269 (89.7%) / 297 |
+| jest (222) | 187 (84.2%) / 218 | 187 / 218 |
+| zod (86) | 72 (83.7%) / 86 | 72 / 86 |
+| rails + discourse (446) | 351 / 439 | 351 / 439 |
+
+90 rows moved up, none down, none lost #1 or the top 10. jest and zod hold only JS and TS,
+so there is nothing to reorder; react holds Rust beside its JS. One discourse call
+site rose (#108 → #64) past discourse's JS. Unanchored recall is untouched: 0 of 6,879
+top 10s changed (75.6% / 90.1% / 96.5%), regress 54 of 57 both.
+
+*Weight.*
+
+| `reachable` | 100 | 200 | 300 | 400 | 600 | 1000 |
+|---|---|---|---|---|---|---|
+| next.js #1 / top 10 | 201 / 263 | 201 / 264 | 201 / 267 | 206 / 267 | 206 / 267 | 206 / 267 |
+| react #1 | 269 | 269 | 269 | 269 | 269 | 269 |
+
+No weight lost a row; the gain stops at 400. That is the secondary-path penalty
+(`test_path`, `example_path`), so an unreachable library definition can no longer outrank
+a reachable one in a test or example tree on that penalty alone. It sits above the
+exact-to-prefix gap (300), which is deliberate: a TS prefix match is a better answer from
+a TS file than a Rust exact one it cannot call.
+
+*What it doesn't fix.* The `range` case from the issue goes from outside the top 10 to
+#4, not the top 3. Every result above it is now TS too (`IssueSource.range`, a field;
+`RANGES`, a prefix), and the true definition is held back by D29's `example_path` (−400)
+though the anchor sits in the same example app: D31 waives the penalty in the anchor's own
+file only. Most of next.js's remaining misses are JS against JS (turbopack's test
+fixtures define `A`, `value`, `dep` hundreds of times), which only resolving the import
+would settle.
+
+*Rejected: a filter.* Navigation, not search: FFI, napi and wasm bindings do reach across
+languages (next.js calls turbopack's Rust through napi), so the other definitions stay
+listed, below.
+
+*Reverses if:* a language family turns out to need more than one tag (a plugin that reaches
+two families), or anchored use from binding code shows the cross-language definition
+wanted and held back.

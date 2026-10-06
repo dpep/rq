@@ -192,6 +192,14 @@ pub(crate) trait LanguagePlugin {
         &[]
     }
 
+    /// The family of languages that can refer to one another's definitions, as
+    /// a tag every member returns: code in one can reach a definition in any.
+    /// TypeScript and JavaScript import each other, so they share one. A
+    /// language that reaches only itself keeps the default, its own tag.
+    fn family(&self) -> &'static str {
+        self.language()
+    }
+
     /// Extract definitions from `source`. `file` is the repo-relative path,
     /// recorded on each emitted [`Symbol`].
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol>;
@@ -232,6 +240,23 @@ pub(crate) fn plugin_for_extension(ext: &str) -> Option<&'static (dyn LanguagePl
         .find(|p| p.extensions().contains(&ext))
 }
 
+/// The language tags whose definitions code in `file` can refer to: its
+/// plugin's family. Empty when no plugin handles the file.
+pub(crate) fn reachable_from(file: &str) -> Vec<&'static str> {
+    let Some(from) = std::path::Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(plugin_for_extension)
+    else {
+        return Vec::new();
+    };
+    REGISTRY
+        .iter()
+        .filter(|p| p.family() == from.family())
+        .map(|p| p.language())
+        .collect()
+}
+
 /// Is `name` the constructor a `Foo.new` query means, in `language`?
 pub(crate) fn is_constructor(language: &str, name: &str) -> bool {
     REGISTRY
@@ -269,5 +294,23 @@ mod tests {
             assert!(plugin_for_extension(ext).is_some(), "{ext} should resolve");
         }
         assert!(plugin_for_extension("java").is_none());
+    }
+
+    #[test]
+    fn a_file_reaches_its_language_family() {
+        let ecma = reachable_from("app/page.tsx");
+        assert_eq!(ecma, ["typescript", "javascript"]);
+        assert_eq!(
+            reachable_from("lib/util.cjs"),
+            ecma,
+            "the family is symmetric"
+        );
+        assert_eq!(reachable_from("index.d.ts"), ecma);
+        assert_eq!(reachable_from("app/models/user.rb"), ["ruby"]);
+        assert!(
+            reachable_from("README.md").is_empty(),
+            "no plugin, no family"
+        );
+        assert!(reachable_from("Makefile").is_empty());
     }
 }

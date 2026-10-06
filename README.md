@@ -100,7 +100,9 @@ For an interactive fzf picker, `script/rq-open` is a small wrapper around `rq`.
 
 `--anchor FILE:LINE[:COL]` tells rq where the question comes from — an editor's
 cursor, or the file an agent is reading. Definitions in the classes and modules
-enclosing that line rank first, then the same file and nearby directories.
+enclosing that line rank first, then the same file and nearby directories. In a
+mixed-language repo, definitions the file's language can refer to (TS and JS
+reach each other) rank above the rest.
 
 ```sh
 $ rq 'valid?' -l 2
@@ -328,7 +330,8 @@ src/cli/mod.rs:1873  method store · BranchRefresh
 - **branch** — on a feature branch, files you're changing vs the trunk (and
   their directory neighbors) — where you're most likely working
 - **anchor** — with `--anchor`, definitions enclosing that line (`enclosing`),
-  then those in the same file and nearby directories (`proximity`)
+  then those in the same file and nearby directories (`proximity`), and those in
+  a language that file can refer to (`reachable`: TS and JS reach each other)
 
 Fewer, better, ranked results are the goal — not completeness.
 

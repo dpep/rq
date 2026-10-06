@@ -105,6 +105,8 @@ pub(crate) struct Boosts {
     pub enclosing: f64,
     /// Anchor signal: the candidate's file is the anchor's, or near it.
     pub proximity: f64,
+    /// Anchor signal: the anchor's language can refer to the candidate's.
+    pub reachable: f64,
     /// The candidate is in the anchor's own file.
     pub anchor_file: bool,
 }
@@ -469,6 +471,12 @@ pub(crate) fn score(
         features.push(Feature {
             name: "proximity",
             value: boosts.proximity,
+        });
+    }
+    if boosts.reachable > 0.0 {
+        features.push(Feature {
+            name: "reachable",
+            value: boosts.reachable,
         });
     }
 

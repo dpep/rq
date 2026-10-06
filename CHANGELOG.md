@@ -21,6 +21,13 @@ old rows meanwhile. Nothing to run by hand.
   function. In express `rq json` found nothing and `rq listen` an example
   app; they now answer `res.json` and `app.listen` (#30, DECISIONS D57).
 
+### Changed
+- **`--anchor` prefers definitions the anchor file's language can refer to.**
+  Asked from a `.tsx` file in a repo that also holds Rust, a TypeScript or
+  JavaScript definition now ranks ahead of a Rust one of the same name; asked from
+  Ruby, a Ruby one does. A new `reachable` feature in `--explain`; nothing is
+  filtered out, and queries without `--anchor` are unchanged.
+
 ### Fixed
 - **`export let` and `export var` are indexed**, as constants, like `export
   const`: react's `rq renderStartTime` found nothing (#31). A module's own

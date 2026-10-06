@@ -51,6 +51,9 @@ use crate::lang::{Ctx, LanguagePlugin, extract_with_key, qualify};
 
 const TYPESCRIPT: &str = "typescript";
 const JAVASCRIPT: &str = "javascript";
+/// JS and TS import each other, `.d.ts` declares what `.js` defines, and Flow
+/// is JavaScript to the grammar: one family.
+const FAMILY: &str = "ecmascript";
 
 /// A grammar paired with the parser-cache key naming it. The key identifies the
 /// *grammar*, not the language tag, so the two are never named apart.
@@ -62,6 +65,10 @@ pub(crate) struct JavaScript;
 impl LanguagePlugin for TypeScript {
     fn language(&self) -> &'static str {
         TYPESCRIPT
+    }
+
+    fn family(&self) -> &'static str {
+        FAMILY
     }
 
     fn extensions(&self) -> &[&str] {
@@ -83,6 +90,10 @@ impl LanguagePlugin for TypeScript {
 impl LanguagePlugin for JavaScript {
     fn language(&self) -> &'static str {
         JAVASCRIPT
+    }
+
+    fn family(&self) -> &'static str {
+        FAMILY
     }
 
     fn extensions(&self) -> &[&str] {

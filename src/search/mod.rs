@@ -94,6 +94,10 @@ const SAME_FILE_BOOST: f64 = 90.0;
 /// [`MIN_PROXIMITY`].
 const SAME_DIR_BOOST: f64 = 60.0;
 const MIN_PROXIMITY: f64 = 5.0;
+/// Boost for a candidate in a language the anchor's file can refer to. As
+/// large as the secondary-path penalty, so an unreachable definition can't
+/// outrank a reachable one on that alone; larger measured the same (D59).
+const REACHABLE_BOOST: f64 = 400.0;
 
 /// Where a query was asked from (`--anchor FILE:LINE`): an editor's cursor, or
 /// the file an agent is reading. Ranking context only — it never filters.
@@ -107,6 +111,9 @@ pub(crate) struct Anchor {
     /// anchor's line (`Foo::Widget#save` → `[foo, widget, save]`); empty when
     /// the line sits outside every definition.
     scope: Vec<String>,
+    /// The language tags the anchor's file can refer to definitions in, as its
+    /// plugin declares them; empty when no plugin handles the file.
+    reach: Vec<&'static str>,
 }
 
 impl Anchor {
@@ -122,7 +129,24 @@ impl Anchor {
             scope.push(d.name.to_ascii_lowercase());
             scope
         });
-        Anchor { root, file, scope }
+        let reach = crate::lang::reachable_from(&file);
+        Anchor {
+            root,
+            file,
+            scope,
+            reach,
+        }
+    }
+
+    /// Code at the anchor can refer to a definition in `language`: the same
+    /// language, or one its plugin names as reachable (TS from JS). Any
+    /// checkout, since the language decides it, not the repo.
+    fn reachable(&self, language: &str) -> f64 {
+        if self.reach.contains(&language) {
+            REACHABLE_BOOST
+        } else {
+            0.0
+        }
     }
 
     /// The candidate is defined inside a scope enclosing the anchor — its parent
@@ -169,11 +193,12 @@ pub(crate) struct Context {
 impl Context {
     /// The context-dependent boosts for one candidate.
     fn boosts(&self, c: &SymbolRow, recency: f64) -> Boosts {
-        let (enclosing, proximity, anchor_file) =
-            self.anchor.as_ref().map_or((0.0, 0.0, false), |a| {
+        let (enclosing, proximity, reachable, anchor_file) =
+            self.anchor.as_ref().map_or((0.0, 0.0, 0.0, false), |a| {
                 (
                     a.enclosing(c.parent.as_deref()),
                     a.proximity(&c.root, &c.file),
+                    a.reachable(&c.language),
                     a.root == c.root && a.file == c.file,
                 )
             });
@@ -186,6 +211,7 @@ impl Context {
             },
             enclosing,
             proximity,
+            reachable,
             anchor_file,
         }
     }
@@ -1545,6 +1571,64 @@ mod tests {
         };
         let anchored = search(&store, "Account", None, None, &ctx, 10).unwrap();
         assert_eq!(anchored[0].parent.as_deref(), Some("Billing::Providers"));
+    }
+
+    #[test]
+    fn an_anchor_prefers_definitions_its_language_can_reach() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
+        for (file, language) in [
+            ("a/range.rs", "rust"),
+            ("b/range.rb", "ruby"),
+            ("c/range.ts", "typescript"),
+        ] {
+            store
+                .replace_file_symbols(
+                    repo,
+                    file,
+                    language,
+                    None,
+                    "h",
+                    &[Symbol {
+                        language: language.into(),
+                        ..sym("range", Kind::Function)
+                    }],
+                )
+                .unwrap();
+        }
+        let plain = search(&store, "range", None, None, &Context::default(), 10).unwrap();
+        assert_eq!(plain[0].file, "a/range.rs", "unanchored: by path");
+        assert!(
+            plain
+                .iter()
+                .all(|h| h.features.iter().all(|f| f.name != "reachable"))
+        );
+
+        // JS reaches TS, and nothing else
+        let ctx = |file: &str| Context {
+            anchor: Some(Anchor::new(
+                "local:/tmp/elsewhere".into(),
+                file.into(),
+                1,
+                &[],
+            )),
+            ..Context::default()
+        };
+        let hits = search(&store, "range", None, None, &ctx("web/page.jsx"), 10).unwrap();
+        assert_eq!(hits[0].file, "c/range.ts");
+        let reached: Vec<_> = hits
+            .iter()
+            .filter(|h| h.features.iter().any(|f| f.name == "reachable"))
+            .map(|h| h.file.as_str())
+            .collect();
+        assert_eq!(reached, ["c/range.ts"]);
+
+        let hits = search(&store, "range", None, None, &ctx("lib/task.rb"), 10).unwrap();
+        assert_eq!(hits[0].file, "b/range.rb");
+
+        // an anchor no plugin reads leaves the order alone
+        let hits = search(&store, "range", None, None, &ctx("docs/notes.md"), 10).unwrap();
+        assert_eq!(hits[0].file, "a/range.rs");
     }
 
     #[test]

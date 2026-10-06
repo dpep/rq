@@ -1063,6 +1063,42 @@ fn top_file(ndjson: &str) -> String {
 }
 
 #[test]
+fn an_anchor_ranks_definitions_its_language_can_reach_first() {
+    let (dir, db) = scratch("anchor-lang");
+    for (file, src) in [
+        ("crates/core/src/range.rs", "pub fn range() {}\n"),
+        ("web/lib/util/range.js", "export function range() {}\n"),
+        (
+            "web/app/page.tsx",
+            "import { range } from '../lib/util/range'\n",
+        ),
+    ] {
+        fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+        fs::write(dir.join(file), src).unwrap();
+    }
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let (_, plain) = rq(&db, &dir, &["range", "--ndjson"]);
+    assert_eq!(top_file(&plain), "crates/core/src/range.rs", "{plain}");
+    assert!(!plain.contains("reachable"), "{plain}");
+
+    // a TSX file reaches JavaScript; the Rust one stays in the list
+    let (code, out) = rq(
+        &db,
+        &dir,
+        &["range", "--anchor", "web/app/page.tsx:1", "--explain"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        first_line(&out).starts_with("web/lib/util/range.js"),
+        "{out}"
+    );
+    assert!(out.contains("reachable 400"), "{out}");
+    assert!(out.contains("crates/core/src/range.rs"), "{out}");
+}
+
+#[test]
 fn an_anchor_ranks_the_enclosing_class_first() {
     let (dir, db) = three_saves("anchor");
     let (_, plain) = rq(&db, &dir, &["save", "-k", "method", "--ndjson"]);
