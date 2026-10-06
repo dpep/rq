@@ -29,11 +29,20 @@
 //! overload signature is a stub of the same name, and folds into the
 //! implementation after it at search time.
 //!
+//! CommonJS defines by assignment, and a top-level statement assigning a
+//! function or class to a member is a definition named by the member:
+//! `exports.x =` / `module.exports.x =` → function, `X.prototype.y =` → method
+//! of `X`, `obj.y =` → method of `obj`, and each function-valued key of
+//! `module.exports = { … }` → function. Only the module's own statements: in a
+//! function, an assignment runs per call and patches rather than defines.
+//!
 //! Visibility: a class member takes its `private`/`protected` modifier (or `#`
 //! prefix); anything module-level reads public when `export`ed and private when
-//! not. That last convention is ESM's — a CommonJS file (`module.exports = …`)
-//! exports nothing the grammar can see, so its definitions all read private.
-//! Visibility is only ever a small ranking nudge, so the mislabel costs little.
+//! not. That last convention is ESM's — a CommonJS file exports its
+//! declarations (`function x` … `module.exports = x`) by a statement the
+//! grammar can't connect to them, so they read private; what it defines by
+//! assigning to a member reads public. Visibility is only ever a small ranking
+//! nudge, so the mislabel costs little.
 
 use tree_sitter::{Language, Node};
 
@@ -310,6 +319,15 @@ fn walk(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
                 walk(ctx, child, scope, out);
             }
 
+            // CommonJS defines its API by assignment: `exports.x = function`,
+            // `X.prototype.y = …`, `module.exports = { … }`. Only a statement
+            // of the module itself: one in a function runs per call.
+            "expression_statement" if is_top_level(node) => {
+                if !assignment(ctx, child, scope, out) {
+                    walk(ctx, child, scope, out);
+                }
+            }
+
             // never descend into a function body reached some other way (a
             // callback argument, an IIFE) — its locals aren't definitions
             "arrow_function" | "function_expression" | "function" => {}
@@ -321,6 +339,111 @@ fn walk(ctx: &Ctx, node: Node, scope: Scope, out: &mut Vec<Symbol>) {
             }
 
             _ => walk(ctx, child, scope, out),
+        }
+    }
+}
+
+/// Whether `node`'s statements are the module's own, run once as it loads.
+fn is_top_level(node: Node) -> bool {
+    node.kind() == "program"
+}
+
+/// Emit what a top-level CommonJS assignment defines, and say whether it
+/// defined anything. A function or class assigned to a member is named by the
+/// member: `exports.x` and `module.exports.x` define `x` with no parent, as an
+/// ESM export would; `X.prototype.y` defines method `y` of `X`, and `obj.y`
+/// method `y` of `obj`. `module.exports = { … }` defines each function-valued
+/// key. All read public: assigned to a reachable object, they are its API.
+/// Any other value (`exports.Foo = Foo`, `obj.n = 1`) names something defined
+/// elsewhere, or data, and the caller walks it as any other expression.
+fn assignment(ctx: &Ctx, stmt: Node, scope: Scope, out: &mut Vec<Symbol>) -> bool {
+    let Some((target, value)) = stmt
+        .named_child(0)
+        .filter(|a| a.kind() == "assignment_expression")
+        .and_then(|a| {
+            Some((
+                a.child_by_field_name("left")?,
+                a.child_by_field_name("right")?,
+            ))
+        })
+    else {
+        return false;
+    };
+    let Some(target) = member_path(ctx, target) else {
+        return false;
+    };
+    let target: Vec<&str> = target.iter().map(String::as_str).collect();
+    let Some((name, owner)) = target.split_last().filter(|(_, owner)| !owner.is_empty()) else {
+        return false; // `x = …` reassigns a binding
+    };
+    if let ["module"] = owner
+        && *name == "exports"
+    {
+        if value.kind() == "object" {
+            exported_object(ctx, value, scope, out);
+            return true;
+        }
+        return false;
+    }
+    let (kind, parent) = match owner {
+        ["exports"] | ["module", "exports"] => (Kind::Function, None),
+        // an instance method, of the constructor the prototype belongs to
+        [ty @ .., "prototype"] if !ty.is_empty() => (Kind::Method, Some(ty.join("."))),
+        _ => (Kind::Method, Some(owner.join("."))),
+    };
+    let parent = parent.as_deref();
+    if value.kind() == "class" {
+        push(ctx, out, name, Kind::Class, stmt, parent, "public", false);
+        let qualified = qualify(parent, name, ".");
+        walk(ctx, value, scope.within(Some(&qualified)), out);
+    } else if is_function(Some(value)) {
+        push(ctx, out, name, kind, stmt, parent, "public", false);
+    } else {
+        return false;
+    }
+    true
+}
+
+/// A member chain of plain names (`a.b.c`) as its segments, last the member
+/// assigned; `None` for anything computed (`a[k]`, `f().x`, `this.x`).
+fn member_path(ctx: &Ctx, node: Node) -> Option<Vec<String>> {
+    match node.kind() {
+        "identifier" => Some(vec![ctx.node_text(node)?]),
+        "member_expression" => {
+            let property = node
+                .child_by_field_name("property")
+                .filter(|p| p.kind() == "property_identifier")?;
+            let mut path = member_path(ctx, node.child_by_field_name("object")?)?;
+            path.push(ctx.node_text(property)?);
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
+/// Each function-valued key of `module.exports = { … }`, as a function:
+/// `a() {}`, `b: function () {}`, `c: () => …`. Other entries are walked as
+/// any object literal is. A shorthand `{ d }` names a definition made
+/// elsewhere.
+fn exported_object(ctx: &Ctx, object: Node, scope: Scope, out: &mut Vec<Symbol>) {
+    let mut cursor = object.walk();
+    for entry in object.named_children(&mut cursor) {
+        let key = match entry.kind() {
+            "method_definition" => entry.child_by_field_name("name"),
+            "pair" if is_function(entry.child_by_field_name("value")) => {
+                entry.child_by_field_name("key")
+            }
+            _ => None,
+        };
+        let name = key
+            .filter(|k| matches!(k.kind(), "property_identifier" | "string"))
+            .and_then(|k| ctx.node_text(k));
+        match name {
+            Some(name) => {
+                let name = name.trim_matches(|c| c == '"' || c == '\'');
+                push(ctx, out, name, Kind::Function, entry, None, "public", false);
+            }
+            None => walk(ctx, entry, scope, out),
         }
     }
 }
@@ -1012,6 +1135,102 @@ class Codec {
             );
         }
         assert_eq!(find(&syms, "parse").visibility, Some("public"));
+    }
+
+    #[test]
+    fn commonjs_assignments_define_by_member_name() {
+        let src = r#"
+exports.compile = function (val) {};
+module.exports.render = (view) => view;
+exports.Router = class Router {
+  route() {}
+};
+View.prototype.render = function render(options) {};
+res.json = function json(obj) {};
+app.router.handle = function handle() {};
+exports.VERSION = "1.0";
+exports.helper = helper;
+module.exports = class Store {
+  load() {}
+};
+window.app = { get router() {} };
+legacy = function () {};
+res[key] = function () {};
+this.local = function () {};
+if (ready) {
+  exports.conditional = function () {};
+}
+function setup() {
+  res.inner = () => 1;
+}
+"#;
+        let syms = JavaScript.extract("lib/response.js", src);
+        let at = |name: &str| {
+            let s = find(&syms, name);
+            (s.kind, s.parent.as_deref(), s.visibility)
+        };
+        assert_eq!(at("compile"), (Kind::Function, None, Some("public")));
+        let renders: Vec<_> = syms.iter().filter(|s| s.name == "render").collect();
+        assert_eq!(renders.len(), 2, "{renders:?}");
+        assert!(
+            renders
+                .iter()
+                .any(|s| s.kind == Kind::Function && s.parent.is_none())
+        );
+        assert_eq!(at("Router"), (Kind::Class, None, Some("public")));
+        assert_eq!(at("route"), (Kind::Method, Some("Router"), Some("public")));
+        // the prototype is how a constructor declares instance methods
+        assert!(renders.iter().any(|s| s.parent.as_deref() == Some("View")));
+        assert_eq!(at("json"), (Kind::Method, Some("res"), Some("public")));
+        assert_eq!(find(&syms, "json").line, 8);
+        assert_eq!(
+            at("handle"),
+            (Kind::Method, Some("app.router"), Some("public"))
+        );
+        // data, a definition made elsewhere, a computed or `this` target, and
+        // anything below the module's own statements
+        // a value that isn't a function or class is walked as before: a class
+        // expression's methods and an object's accessors are still found
+        for kept in ["load", "router"] {
+            assert_eq!(at(kept).0, Kind::Method, "{kept}");
+        }
+        for absent in [
+            "VERSION",
+            "helper",
+            "key",
+            "local",
+            "conditional",
+            "inner",
+            "legacy",
+        ] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
+    }
+
+    #[test]
+    fn module_exports_object_defines_each_function_key() {
+        let src = r#"
+module.exports = {
+  open() {},
+  close: function () {},
+  "reset-all": () => {},
+  shared,
+  LIMIT: 3,
+  nested: { flush() {} },
+};
+"#;
+        let syms = JavaScript.extract("index.js", src);
+        for name in ["open", "close", "reset-all"] {
+            let s = find(&syms, name);
+            assert_eq!(
+                (s.kind, s.parent.as_deref()),
+                (Kind::Function, None),
+                "{name}"
+            );
+        }
+        // an object nested in it is walked as any object literal is
+        assert_eq!(find(&syms, "flush").kind, Kind::Method);
+        assert_eq!(syms.len(), 4, "{syms:?}");
     }
 
     #[test]

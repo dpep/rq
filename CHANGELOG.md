@@ -13,6 +13,14 @@ The first run after upgrading re-reads every TypeScript and JavaScript file
 once, in the background, for the definitions below; results answer from the
 old rows meanwhile. Nothing to run by hand.
 
+### Added
+- **CommonJS definitions are indexed.** A top-level `exports.x = function`,
+  `module.exports.x = …`, `X.prototype.y = function`, `obj.y = () => …` or
+  `obj.Y = class …` defines `x` (a function) or `y` (a method of `X` or
+  `obj`), and each function-valued key of `module.exports = { … }` is a
+  function. In express `rq json` found nothing and `rq listen` an example
+  app; they now answer `res.json` and `app.listen` (#30, DECISIONS D57).
+
 ### Changed
 - **`--drop --json` omits `root` rather than sending `null`** when it dropped a
   whole repo by identity or found nothing at a path that doesn't exist, as the

@@ -3336,3 +3336,75 @@ also named in #31, still answers `no_match`: a Flow construct earlier in that fi
 parses as an error, which swallows everything after line 860, `export const
 HooksDispatcher` included. That is the grammar, not this rule.
 
+## D57 — CommonJS defines by assignment, and a top-level one is indexed
+
+**Adopted**, 2026-10-05. `assignment`, `member_path` and `exported_object` in
+`src/lang/typescript/mod.rs`; schema v25 (with D56). Tests
+`commonjs_assignments_define_by_member_name`,
+`module_exports_object_defines_each_function_key`, the fixture test
+`commonjs_assignments_rank_above_test_doubles`.
+
+*The weakness* (#30). CommonJS defines most of its API by assigning a function to a
+member, and the plugin indexed none of it. express's `lib/` holds about 77 such
+definitions and `rq --symbols lib/response.js` listed one: `rq json` and `rq
+compileETag` answered `no_match`, `rq listen` an example app's `list`, `rq send`
+the fuzzy `sendfile`.
+
+*The rules.* An expression statement of the module itself (a direct child of the
+program) that assigns a function literal (or a call wrapping one, as D37 reads a
+binding) or a class expression to a member of a plain name chain is a definition
+named by the member:
+- `exports.x =` and `module.exports.x =` → `function x`, no parent, as an ESM
+  export would be.
+- `X.prototype.y =` → `method y`, parent `X`: the prototype is how a constructor
+  declares instance methods, so `rq View#render` scopes as it does for a class.
+- `obj.y =` → `method y`, parent `obj` (`a.b.y =` → parent `a.b`).
+- `… = class …` → a `class` of that name and parent, its body's members under it.
+- `module.exports = { a() {}, b: function () {} }` → each function-valued key a
+  `function`, no parent; other entries are walked as any object literal (an
+  accessor or a nested object's methods, which were already methods).
+
+They read public: assigned to an object others reach, they are its API. A value
+that is no function or class (`exports.Foo = Foo`, `obj.n = 1`, `module.exports =
+class …`) defines nothing new by the member name, and the statement is walked as
+before, so a class expression's methods and an object's accessors are still found.
+A computed member (`a[k]`), a `this` or call target, and a bare `x = …` define
+nothing.
+
+*Top level only.* An assignment in a function body runs per call and patches an
+object rather than defining it (a test's `res.inner = () => …`); bodies were never
+walked and still aren't. A statement inside a top-level `if` or block is left out
+too: the rule is "the module's own statements", and a conditional definition
+(`if (typeof window !== 'undefined') window.x = …`) is usually environment glue.
+
+| corpus | symbols before (D56) | after | new | relabelled |
+|---|---|---|---|---|
+| express | 55 | 132 | 77 | 0 |
+| jest | 7,654 | 7,742 | 88 | 22 |
+| lodash | 70 | 70 | 0 | 0 |
+| next.js | 78,983 | 79,226 | 243 | 124 |
+| react | 36,566 | 36,626 | 60 | 23 |
+| zod | 6,358 | 6,359 | 1 | 0 |
+
+No row was lost: each of the 169 relabelled rows is re-emitted at the same line
+and name, a `module.exports = { … }` method now a `function`, or a class member
+assigned as `X.Y = class` now under `X.Y`. Of the 469 new rows, 229 sit under a
+test, e2e or example directory. A hand-check of 31 against the source found every
+one a definition as written; the noise is in kind, not shape: test setup patching
+a builtin (`Date.now = () => 0` in jest's `e2e/`, `globalThis.fetch = …` in
+next.js `evals/`), which ranks second for `rq now` and `rq fetch`, below the real
+definitions. express: `rq json` → `lib/response.js:236` (parent `res`), `rq
+View#render` → `lib/view.js:133`, `rq compileETag`, `rq redirect`, `rq send` and
+`rq listen` → their `lib/` definitions first.
+
+*Rejected:*
+- **A list of globals to skip** (`window`, `global`, `globalThis`, `self`). A
+  per-environment list to maintain, for rows that already rank below real
+  definitions; `window.app = …` is also how a browser script defines its API.
+- **`singleton` on `obj.y`.** D55's flag says "the type's own, not its
+  instances'"; syntax can't tell a constructor (`View.compile`) from a plain
+  object (`res.json`, express's prototype for every response), and printing
+  `singleton method · res` would claim the wrong thing for the common case.
+- **Kind `function` for `obj.y`.** A member called through its object is what
+  `method` means everywhere else, and `-k method` should find `res.json`.
+

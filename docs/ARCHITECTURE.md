@@ -279,7 +279,7 @@ Decisions worth calling out:
   re-reads TS/JS for ambient declarations and overload signatures and Python
   for its local classes, v22 re-reads every language but Ruby for fields,
   v24 every language but Go for `singleton`, and v25 TS/JS for `export
-  let`: users
+  let` and CommonJS member assignments: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to
@@ -489,7 +489,8 @@ why a result ranked where it did:
   filter — and unknown visibility carries no signal). Sourced per language:
   Rust `pub`, Ruby access sections and retroactive access calls (D55
   addendum), Python underscore convention, Go
-  capitalization, TypeScript member modifiers and ESM `export`. A `local`
+  capitalization, TypeScript member modifiers, ESM `export` and CommonJS
+  member assignment. A `local`
   definition (Python's nested `def`) takes a larger one, `local`, which ranks
   it below every same-named definition outside a function body (D36)
 - **stub** — a declaration whose body is elsewhere (TypeScript's ambient

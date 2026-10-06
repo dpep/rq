@@ -13,6 +13,7 @@ const ACCOUNT_PY: &str = include_str!("fixtures/python/account.py");
 const WIDGET_TS: &str = include_str!("fixtures/typescript/widget.ts");
 const WIDGET_KIT_TS: &str = include_str!("fixtures/typescript/widget-kit.d.ts");
 const ACCOUNT_JSX: &str = include_str!("fixtures/javascript/account.jsx");
+const WIDGET_STORE_JS: &str = include_str!("fixtures/javascript/widget-store.js");
 
 /// Every hit for `query`, as (parent, singleton, visibility).
 fn members(
@@ -348,6 +349,37 @@ fn javascript_definitions_rank_and_classify() {
         (default.name.as_str(), default.kind.as_str()),
         ("defaultAccount", "constant")
     );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn commonjs_assignments_rank_above_test_doubles() {
+    // a test double assigned the same way is test code, and ranks below
+    let (store, dir) = indexed_files(
+        "cjs",
+        &[
+            ("widget-store.js", WIDGET_STORE_JS),
+            (
+                "widget-store.test.js",
+                "proto.listen = function listen() {};\nexports.createWidgetStore = () => {};\n",
+            ),
+        ],
+    );
+
+    let render = top(&store, "WidgetStore#render");
+    assert_eq!(
+        (render.kind.as_str(), render.parent.as_deref()),
+        ("method", Some("WidgetStore"))
+    );
+    for (query, parent) in [("listen", Some("proto")), ("createWidgetStore", None)] {
+        let hit = top(&store, query);
+        assert_eq!(hit.file, "widget-store.js", "{query}");
+        assert_eq!(hit.parent.as_deref(), parent, "{query}");
+    }
+    // a constructor's own name, re-exported, is still its declaration
+    let ctor = top(&store, "WidgetStore");
+    assert_eq!((ctor.kind.as_str(), ctor.line), ("function", 9));
 
     fs::remove_dir_all(&dir).ok();
 }

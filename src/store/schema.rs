@@ -631,8 +631,8 @@ UPDATE files SET content_hash = 'stale:' || content_hash
 "#;
 
 /// Migration v24 -> v25: the TypeScript/JavaScript plugin emits `export let`
-/// and `export var` bindings. Its files are queued for re-extraction as v24
-/// queued them.
+/// and `export var` bindings, and CommonJS definitions made by assigning to a
+/// member. Its files are queued for re-extraction as v24 queued them.
 pub(crate) const MIGRATION_V25: &str = r#"
 UPDATE coverage SET status = 'warming'
   WHERE scope = 'full' AND status = 'complete'
