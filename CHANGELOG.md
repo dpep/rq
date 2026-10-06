@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## 0.60.5 — 2026-10-05
+## Unreleased
 
 The first run after upgrading re-reads every TypeScript and JavaScript file
 once, in the background, for the definitions below; results answer from the
@@ -21,6 +21,13 @@ old rows meanwhile. Nothing to run by hand.
   function. In express `rq json` found nothing and `rq listen` an example
   app; they now answer `res.json` and `app.listen` (#30, DECISIONS D57).
 
+### Fixed
+- **`export let` and `export var` are indexed**, as constants, like `export
+  const`: react's `rq renderStartTime` found nothing (#31). A module's own
+  unexported `let`/`var` stays out (DECISIONS D56).
+
+## 0.60.5 — 2026-10-05
+
 ### Changed
 - **`--drop --json` omits `root` rather than sending `null`** when it dropped a
   whole repo by identity or found nothing at a path that doesn't exist, as the
@@ -31,9 +38,6 @@ old rows meanwhile. Nothing to run by hand.
   highest**, where it took the first.
 
 ### Fixed
-- **`export let` and `export var` are indexed**, as constants, like `export
-  const`: react's `rq renderStartTime` found nothing (#31). A module's own
-  unexported `let`/`var` stays out (DECISIONS D56).
 - **A FIFO or device at a source path no longer hangs rq.** A FIFO where a
   tracked `.rb` used to be blocked a search, and the background warm it left
   behind, until something wrote to the FIFO. rq now reads regular files only,
