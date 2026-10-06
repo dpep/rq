@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.5 — 2026-10-05
 
 ### Changed
 - **`--drop --json` omits `root` rather than sending `null`** when it dropped a
