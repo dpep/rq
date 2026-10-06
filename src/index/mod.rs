@@ -392,17 +392,75 @@ pub(crate) fn count_span(store: &Store, root: &Path, checkout: i64) -> Option<us
 /// dir). Honors `.gitignore`/hidden rules via the `ignore` crate. Stops
 /// descending at `deadline`: a caller can only check it between files, and a
 /// long run of directories without one (`/`, a temp dir) would outlast it.
+///
+/// A walk error is collected into `unwalked`, not dropped: what lies under a
+/// directory the walk couldn't read wasn't seen, which is not the same as gone.
 fn fs_walk_candidates(
     roots: Vec<std::path::PathBuf>,
     deadline: Option<Instant>,
+    unwalked: Unwalked,
 ) -> impl Iterator<Item = std::path::PathBuf> {
     roots.into_iter().flat_map(move |root| {
+        let unwalked = unwalked.clone();
         WalkBuilder::new(&root)
             .filter_entry(move |_| !past(deadline))
             .build()
-            .filter_map(Result::ok)
+            .filter_map(move |entry| {
+                entry
+                    .map_err(|e| {
+                        let at = unwalked_at(&e, &root);
+                        unwalked.lock().expect("unwalked lock").extend(at);
+                    })
+                    .ok()
+            })
             .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
             .map(ignore::DirEntry::into_path)
+    })
+}
+
+/// Paths a filesystem walk failed to read (see [`fs_walk_candidates`]).
+type Unwalked = std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>;
+
+/// Where a walk error leaves the tree unseen; `None` when the walk learned
+/// the path is gone.
+fn unwalked_at(e: &ignore::Error, root: &Path) -> Option<std::path::PathBuf> {
+    let gone = e
+        .io_error()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+    // no path to pin it on: the whole walk is suspect
+    (!gone).then(|| walk_error_path(e).unwrap_or(root).to_path_buf())
+}
+
+/// `unwalked` as index-key prefixes for [`under_any`]. One outside `root`
+/// can't be narrowed, so it stands for the root.
+fn unwalked_keys(unwalked: &[std::path::PathBuf], root: &Path) -> Vec<String> {
+    unwalked
+        .iter()
+        .map(|p| {
+            p.strip_prefix(root)
+                .map_or_else(|_| String::new(), |r| r.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+fn walk_error_path(e: &ignore::Error) -> Option<&Path> {
+    match e {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        ignore::Error::WithDepth { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
+            walk_error_path(err)
+        }
+        _ => None,
+    }
+}
+
+/// Whether index key `key` lies at or under one of `dirs` (root-relative; an
+/// empty one is the root itself).
+fn under_any(dirs: &[String], key: &str) -> bool {
+    dirs.iter().any(|d| {
+        d.is_empty()
+            || key
+                .strip_prefix(d.as_str())
+                .is_some_and(|r| r.is_empty() || r.starts_with('/'))
     })
 }
 
@@ -736,6 +794,7 @@ fn run_index(
         _ => true, // new file, or one stored without an mtime
     };
     let skipped = std::sync::atomic::AtomicU64::new(0);
+    let unwalked = Unwalked::default();
     let stream_start = Instant::now();
     let mut fused_span = crate::profile::span("index: walk+parse+write");
     let (seen, completed, walked, write_time, batches) = {
@@ -774,7 +833,7 @@ fn run_index(
         }
         let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
             Some(paths) => Box::new(paths.into_iter()),
-            None => Box::new(fs_walk_candidates(walk_roots, deadline)),
+            None => Box::new(fs_walk_candidates(walk_roots, deadline, unwalked.clone())),
         };
         let demanded = &demanded;
         let skipped = &skipped;
@@ -880,18 +939,27 @@ fn run_index(
     // not finalized — so a transient empty walk can't wipe a populated index.
     if finalize {
         let mut reconcile_span = crate::profile::span("index: reconcile");
-        let mut forgotten = 0;
-        for path in stored.keys() {
-            if !seen.contains(path) {
-                store.forget_file(checkout.id, path)?;
-                forgotten += 1;
+        let unwalked = unwalked_keys(&unwalked.lock().expect("unwalked lock"), root);
+        let (mut forgotten, mut kept) = (0, 0);
+        for path in stored.keys().filter(|p| !seen.contains(*p)) {
+            if under_any(&unwalked, path) {
+                kept += 1;
+                continue;
             }
+            store.forget_file(checkout.id, path)?;
+            forgotten += 1;
         }
         reconcile_span.note(|| format!("{forgotten} file(s) forgotten"));
         drop(reconcile_span);
         if forgotten > 0 {
             crate::trace!(
                 "reconcile {}: forgot {forgotten} file(s) not seen on disk",
+                crate::trace::abbrev(&root_display)
+            );
+        }
+        if kept > 0 {
+            crate::trace!(
+                "reconcile {}: kept {kept} file(s) under a dir the walk couldn't read",
                 crate::trace::abbrev(&root_display)
             );
         }
@@ -1322,7 +1390,12 @@ pub(crate) fn scan(
     // else a filesystem walk (the live scan of a non-git dir)
     let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send + '_> = match &tree.tracked {
         Some(paths) => Box::new(paths.iter().cloned()),
-        None => Box::new(fs_walk_candidates(vec![root.to_path_buf()], deadline)),
+        // nothing here reconciles, so what the walk couldn't read needs no note
+        None => Box::new(fs_walk_candidates(
+            vec![root.to_path_buf()],
+            deadline,
+            Unwalked::default(),
+        )),
     };
     let mut out: Vec<crate::store::FileSymbols> = Vec::new();
     let keep = |rel: &str, _| !skip.contains(rel); // skip already-indexed
@@ -1540,18 +1613,24 @@ pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) ->
         return true;
     };
     let (moved, held) = (AtomicBool::new(false), AtomicUsize::new(0));
+    let unwalked = std::sync::Mutex::new(Vec::new());
     // parallel: on a large tree the stats are the whole cost of a miss
     WalkBuilder::new(root)
         .threads(parse_jobs())
         .build_parallel()
         .run(|| {
-            let (indexed, moved, held) = (&indexed, &moved, &held);
+            let (indexed, moved, held, unwalked) = (&indexed, &moved, &held, &unwalked);
             Box::new(move |entry| {
                 if moved.load(Relaxed) {
                     return WalkState::Quit;
                 }
-                let Ok(entry) = entry else {
-                    return WalkState::Continue;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        let at = unwalked_at(&e, root);
+                        unwalked.lock().expect("unwalked lock").extend(at);
+                        return WalkState::Continue;
+                    }
                 };
                 let path = entry.path();
                 let Some(rel) = index_key(root, path) else {
@@ -1580,8 +1659,14 @@ pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) ->
                 WalkState::Continue
             })
         });
-    // a held file the walk never reached was removed
-    moved.into_inner() || held.into_inner() != indexed.len()
+    if moved.into_inner() {
+        return true;
+    }
+    // a held file the walk never reached was removed — unless it lies where
+    // the walk couldn't look, which a pass keeps too
+    let unwalked = unwalked_keys(&unwalked.into_inner().expect("unwalked lock"), root);
+    let unseen = indexed.keys().filter(|k| under_any(&unwalked, k)).count();
+    held.into_inner() + unseen != indexed.len()
 }
 
 /// Whether the worktree holds anything the index doesn't reflect, given the
@@ -2109,10 +2194,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rq-walk-deadline-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("a/b")).unwrap();
         std::fs::write(dir.join("a/b/x.rb"), "class X\nend\n").unwrap();
-        let files = |deadline| fs_walk_candidates(vec![dir.clone()], deadline).count();
+        let files =
+            |deadline| fs_walk_candidates(vec![dir.clone()], deadline, Unwalked::default()).count();
         assert_eq!(files(None), 1);
         assert_eq!(files(Some(Instant::now())), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unwalked_dir_holds_only_what_lies_under_it() {
+        let dirs = ["app/sub".to_string()];
+        assert!(under_any(&dirs, "app/sub/a.rb"));
+        assert!(under_any(&dirs, "app/sub"));
+        assert!(!under_any(&dirs, "app/subway/a.rb"));
+        assert!(!under_any(&dirs, "app/a.rb"));
+        assert!(
+            under_any(&[String::new()], "any/a.rb"),
+            "the root holds all"
+        );
+        assert!(!under_any(&[], "app/a.rb"));
     }
 
     #[test]

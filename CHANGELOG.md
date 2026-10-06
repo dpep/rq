@@ -23,8 +23,10 @@ and aren't listed; see `git log` for those.
   and treats a file over 64 MiB as it does a binary one: held, not parsed.
 - **A file or checkout rq can't stat is no longer forgotten.** A permission
   error on the way to a file (or to a whole checkout's root) read as "deleted",
-  so an index pass dropped the file and `--status`, `-a` or any pass dropped
-  the checkout. Only a path known to be absent is forgotten now.
+  so an index pass — a background warm or `rq --index` alike — dropped the
+  file, or every file under a directory it couldn't list, and `--status`, `-a`
+  or any pass dropped the checkout. Only a path known to be absent is
+  forgotten now.
 - **A symlinked source file is indexed by no pass, rather than by some.** A
   background warm read a tracked symlink while `rq --index` and the live walk
   skipped it, so its definitions came and went with whichever ran last. Its

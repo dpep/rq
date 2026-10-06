@@ -2945,6 +2945,36 @@ fn a_file_rq_cannot_stat_is_not_forgotten() {
 }
 
 #[test]
+fn an_explicit_index_keeps_what_it_cannot_walk_into() {
+    // the filesystem walk `--index` takes (and a non-git root's) hits EACCES
+    // on the dir: that's not a delete either
+    use std::os::unix::fs::PermissionsExt;
+    for git in [true, false] {
+        let (dir, db) = scratch(&format!("unwalkable-{git}"));
+        fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/b.rb"), "class Gadget\nend\n").unwrap();
+        if git {
+            git_init_commit(&dir);
+        }
+        rq(&db, &dir, &["--index"]);
+        let held = indexed_symbols(&db, &dir);
+
+        fs::set_permissions(dir.join("sub"), fs::Permissions::from_mode(0o000)).unwrap();
+        let (code, out) = rq(&db, &dir, &["--index"]);
+        fs::set_permissions(dir.join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(code, 0, "git={git}: {out}");
+        assert_eq!(
+            indexed_symbols(&db, &dir),
+            held,
+            "git={git}: nothing forgotten"
+        );
+        let (code, out) = rq(&db, &dir, &["Gadget", "--json"]);
+        assert_eq!(code, 0, "git={git}: {out}");
+    }
+}
+
+#[test]
 fn a_symlinked_source_file_is_held_by_no_pass() {
     // the walk an explicit index takes doesn't follow it, so a warm mustn't
     // either, or its definitions come and go with whichever ran last
