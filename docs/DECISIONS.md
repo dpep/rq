@@ -3408,3 +3408,51 @@ View#render` → `lib/view.js:133`, `rq compileETag`, `rq redirect`, `rq send` a
 - **Kind `function` for `obj.y`.** A member called through its object is what
   `method` means everywhere else, and `-k method` should find `res.json`.
 
+## D58 — A wrapper function's body as the top level: measured, not adopted
+
+**Rejected**, 2026-10-05. The second half of #30: lodash's `lodash.js` puts every
+definition inside `;(function () { … }.call(this))` and yields no symbols, so `rq
+debounce` answers `no_match`.
+
+*What was tried.* A top-level statement that calls a function literal at once (an
+IIFE in any spelling: `(function(){…})()`, `(function(){…}())`, `.call(this)`, `!`,
+an arrow), and a function literal handed to it (UMD's factory), had its body walked
+as the module's own statements: declarations, CommonJS assignments (D57) and
+`const`s. A call of anything else (`describe(…, function () {…})`) wrapped nothing.
+A minified body (lines averaging over 200 bytes; formatted code averages 25–45,
+lodash's `dist/*.min.js` and underscore's 447–2,741) was skipped, which cut 188 rows
+of `function a`, `function c` from lodash's builds. A total-size cap, as #30
+suggested, would not have: `lodash.js` (540 KB) is larger than every minified file
+in the six corpora.
+
+*Why not.* It misses its own acceptance and moves other answers the wrong way.
+- **`lodash.js:10403` is two levels down.** `debounce` sits in `var runInContext =
+  (function runInContext(context) { … })`, a factory bound inside the IIFE and
+  called later, not a wrapper. The IIFE's own body holds 53 private helpers
+  (`arrayPush`, `baseIsNaN`). Reaching `debounce` needs a rule that walks a
+  function bound to a name, which is every function in every file.
+- **Copies answer first.** With `lodash.js` still unreachable, `rq debounce` and
+  `rq isObject` answered vendored underscore (`vendor/underscore/underscore.js`),
+  and `rq arrayPush` the `dist/` build before the source.
+- **Generated scripts flood common names.** react's
+  `scripts/bench/benchmarks/pe-*/benchmark.js` are IIFE scripts of generated
+  components: `rq render` went from a real class to three benchmark classes
+  (`ReactImage0`, `AbstractLink1`, `AbstractButton3`).
+
+| corpus | new rows | where |
+|---|---|---|
+| lodash | 393 | 53 `lodash.js`; 168 `dist/`, 128 `vendor/`, 37 `test/`, 7 `perf/` |
+| next.js | 950 | 905 under `tests/` (885 turbopack snapshot bundles); 45 scripts and runtimes |
+| react | 831 | 744 benchmarks, 57 UMD `npm/` builds, 12 `fixtures/`, 18 scripts |
+| jest | 1 | a test |
+
+Of 2,175 rows, 116 sit outside test, benchmark, vendored and build directories,
+`lodash.js`'s 53 among them.
+
+*Reverses if:* the bench and build copies are dealt with on their own terms (a path
+penalty for `bench/`, `dist/`, `vendor/`, measured like D29), and a corpus whose
+wrapped source is the one people navigate to turns up (a UMD library maintained
+as one file, with no factory inside). The patch is a function or two in
+`src/lang/typescript/mod.rs`: `wrapped`, `is_wrapper_body`, `is_minified`, and
+`is_top_level` accepting a wrapper body.
+
