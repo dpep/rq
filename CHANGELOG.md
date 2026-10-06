@@ -15,6 +15,8 @@ and aren't listed; see `git log` for those.
   README has always said fields that don't apply are. `--index --json` likewise
   omits `files`/`symbols` in the rare case the checkout can't be counted. A
   reader that took `null` as "no root" should treat a missing key the same.
+- **A batch whose lines fail with different error codes exits with the
+  highest**, where it took the first.
 
 ### Fixed
 - **A FIFO or device at a source path no longer hangs rq.** A FIFO where a
@@ -33,7 +35,8 @@ and aren't listed; see `git log` for those.
 - **A symlinked source file is indexed by no pass, rather than by some.** A
   background warm read a tracked symlink while `rq --index` and the live walk
   skipped it, so its definitions came and went with whichever ran last. Its
-  target, when it's in the tree, is still found. Likewise a file whose name
+  target, when it's in the tree, is still found. Run `rq --index` once to drop
+  symlinked files an earlier version indexed. Likewise a file whose name
   isn't valid UTF-8 (Linux only; macOS refuses such names) is skipped
   everywhere: a lossy key couldn't lead back to the file.
 - **A branch file with a non-ASCII name gets the branch boost.** git quoted
