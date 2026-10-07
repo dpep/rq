@@ -138,7 +138,8 @@ fn run(language: &'static str, (key, grammar): Grammar, file: &str, source: &str
 /// declared elsewhere, by local name: those declarations read public, as if
 /// marked `export` where they stand. A list with a `from` re-exports another
 /// module's and names nothing here; one inside a namespace exports from the
-/// namespace, so only the module's own statements count.
+/// namespace, so only the module's own statements count. An enum's variants,
+/// which took its visibility where they stand, go public with it.
 fn export_lists(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
     let mut names = Vec::new();
     let mut cursor = root.walk();
@@ -167,8 +168,19 @@ fn export_lists(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
             );
         }
     }
+    let mut enums = Vec::new();
     for s in out.iter_mut().filter(|s| {
         s.parent.is_none() && s.visibility == Some("private") && names.contains(&s.name)
+    }) {
+        s.visibility = Some("public");
+        if s.kind == Kind::Enum {
+            enums.push(s.name.clone());
+        }
+    }
+    for s in out.iter_mut().filter(|s| {
+        s.kind == Kind::Variant
+            && s.visibility == Some("private")
+            && s.parent.as_ref().is_some_and(|p| enums.contains(p))
     }) {
         s.visibility = Some("public");
     }
@@ -977,7 +989,9 @@ function helper() {}
 class Store {}
 const LIMIT = 3;
 function hidden() {}
-export { Main, helper as assist, Store };
+enum Mode { Fast }
+enum Quiet { Still }
+export { Main, helper as assist, Store, Mode };
 export type { Store as StoreType };
 export default LIMIT;
 export { relayed } from "./elsewhere";
@@ -991,6 +1005,9 @@ namespace Inner {
             assert_eq!(find(&syms, name).visibility, Some("public"), "{name}");
         }
         assert_eq!(find(&syms, "hidden").visibility, Some("private"));
+        // an enum's variants go public with it, as under `export enum`
+        assert_eq!(find(&syms, "Fast").visibility, Some("public"));
+        assert_eq!(find(&syms, "Still").visibility, Some("private"));
         // an alias or a re-export names nothing declared here
         for absent in ["assist", "StoreType", "relayed"] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}");
