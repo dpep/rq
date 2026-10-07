@@ -117,7 +117,10 @@ def build_ref(ref):
     note(f"building {ref} ({sha[:12]})")
     with tempfile.TemporaryDirectory(prefix="rq-recall-src-") as src:
         archive = subprocess.Popen(["git", "-C", str(ROOT), "archive", sha], stdout=subprocess.PIPE)
-        run(["tar", "-x", "-C", src], stdin=archive.stdout)
+        # -m: stamp files now. Archived mtimes are the commit's, and cargo hashes
+        # the crate by its workspace-relative path, so in the shared target dir an
+        # older commit than the last build reads as fresh and its binary is reused.
+        run(["tar", "-x", "-m", "-C", src], stdin=archive.stdout)
         if archive.wait() != 0:
             die(f"git archive {sha} failed")
         # Homebrew's keg-only rustup may leave cargo off PATH (see CLAUDE.md)
