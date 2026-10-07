@@ -22,8 +22,9 @@ old rows meanwhile. Nothing to run by hand.
   sequence counts, and `X.prototype = { m() {} }` gives `X` its methods. In
   express `rq json` found nothing and `rq listen` an example app; they now
   answer `res.json` and `app.listen` (#30, DECISIONS D57). Patches to host
-  globals (`window.onload =`, `globalThis.fetch =`) and an anonymous
-  `exports.default` aren't definitions.
+  globals (`window.onload =`, `globalThis.fetch =`, `self.onmessage =`), an
+  anonymous `exports.default`, and a call's result (`exports.methods =
+  METHODS.map(fn)`) aren't definitions.
 
 ### Changed
 - **`--anchor` prefers definitions the anchor file's language can refer to.**

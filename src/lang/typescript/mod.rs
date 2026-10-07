@@ -36,7 +36,9 @@
 //! `module.exports = { … }` → function (of `X.prototype = { … }`, a method of
 //! `X`). Each target of a chain or a sequence counts. Only the module's own
 //! statements: in a function, an assignment runs per call and patches rather
-//! than defines; so does one to a host global (`window.onload =`).
+//! than defines; so does one to a host global (`window.onload =`). The value
+//! must be a function or class literal: a call's result is data, whatever
+//! callback it was built with.
 //!
 //! Visibility: a class member takes its `private`/`protected` modifier (or `#`
 //! prefix); anything module-level reads public when `export`ed (where it is
@@ -463,7 +465,7 @@ fn assignment(ctx: &Ctx, stmt: Node, scope: Scope, out: &mut Vec<Symbol>) -> boo
 /// something defined elsewhere, or data; an anonymous `exports.default` has no
 /// name to find it by (a named one goes by its own, as `export default
 /// function f` does); and patching the host's globals (`window.onload`,
-/// `console.log`) defines nothing of this code's own.
+/// `self.onmessage`, `console.log`) defines nothing of this code's own.
 fn assigned(
     ctx: &Ctx,
     node: Node,
@@ -481,7 +483,7 @@ fn assigned(
     };
     if matches!(
         owner[0],
-        "global" | "globalThis" | "window" | "console" | "process"
+        "global" | "globalThis" | "window" | "self" | "console" | "process"
     ) {
         return false;
     }
@@ -525,7 +527,7 @@ fn assigned(
         push(ctx, out, &name, Kind::Class, node, parent, "public", false);
         let qualified = qualify(parent, &name, ".");
         walk(ctx, value, scope.within(Some(&qualified)), out);
-    } else if is_function(Some(value)) {
+    } else if is_function_literal(value) {
         push(ctx, out, &name, kind, node, parent, "public", false);
     } else {
         return false;
@@ -570,7 +572,11 @@ fn exported_object(
     for entry in object.named_children(&mut cursor) {
         let key = match entry.kind() {
             "method_definition" => entry.child_by_field_name("name"),
-            "pair" if is_function(entry.child_by_field_name("value")) => {
+            "pair"
+                if entry
+                    .child_by_field_name("value")
+                    .is_some_and(is_function_literal) =>
+            {
                 entry.child_by_field_name("key")
             }
             _ => None,
@@ -808,13 +814,23 @@ fn has_token(node: Node, kw: &str) -> bool {
 /// `memo((props) => …)` and `forwardRef(…)` do. The wrapper's name isn't read.
 fn is_function(value: Option<Node>) -> bool {
     match value.map(|v| (v, v.kind())) {
-        Some((_, "arrow_function" | "function_expression" | "function")) => true,
+        Some((v, _)) if is_function_literal(v) => true,
         Some((call, "call_expression")) => is_function(
             call.child_by_field_name("arguments")
                 .and_then(|args| args.named_child(0)),
         ),
         _ => false,
     }
+}
+
+/// Whether `node` is a function literal. CommonJS assignment reads only this:
+/// a call's result (`exports.methods = METHODS.map(fn)`) is data, and
+/// `memo(fn)`-style wrappers are an ESM component idiom.
+fn is_function_literal(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "arrow_function" | "function_expression" | "function"
+    )
 }
 
 /// Emit a symbol, and return it for what only some callers set.
@@ -1444,11 +1460,14 @@ Widget.prototype = {
 exports.default = function () {};
 module.exports.default = function main() {};
 Widget.prototype.events.click = function () {};
+Widget.prototype = { sizes: SIZES.map((s) => s * 2) };
 global.fetch = function () {};
 globalThis.queueTask = () => {};
 window.onload = function () {};
 console.log = () => {};
 process.exit = function () {};
+self.onmessage = function () {};
+exports.methods = METHODS.map((m) => m.toLowerCase());
 "#;
         let syms = JavaScript.extract("lib/setup.js", src);
         // an anonymous default export has no name to find it by; a named one
@@ -1461,7 +1480,18 @@ process.exit = function () {};
             Some("Widget.events")
         );
         // patching the host's globals defines nothing of this code's own
-        for absent in ["default", "fetch", "queueTask", "onload", "log", "exit"] {
+        // nor does data a call happens to build with a callback
+        for absent in [
+            "default",
+            "fetch",
+            "queueTask",
+            "onload",
+            "log",
+            "exit",
+            "onmessage",
+            "methods",
+            "sizes",
+        ] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
         }
         assert_eq!(syms.len(), 2, "{syms:?}");

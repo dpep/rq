@@ -3430,6 +3430,15 @@ test setup. A `prototype` segment deeper in a chain is dropped from the parent:
 
 lodash and zod are unchanged.
 
+*Literal values only* (same day). The ESM rule that reads `memo(() => …)` as a function
+reached the CommonJS path, so `exports.methods = METHODS.map((m) => …)` (express
+`lib/utils.js`) was a function, and so were jest's `__mocks__` patches (`fs.readFileSync =
+jest.fn(…)`, `os.cpus = jest.fn(…)`). An assignment, or a key of `module.exports = { … }`
+or `X.prototype = { … }`, now defines only when its value is a function or class
+literal. Among the recall corpora's top-level assignments that drops 3 jest mocks and one
+next.js example (`exports.nextjsFunc = https.onRequest(…)`, a Firebase handler: the one
+wrapper that is an API, accepted). `self.` (a worker's global) joins the host globals.
+
 ## D58 — A wrapper function's body as the top level: measured, not adopted
 
 **Rejected**, 2026-10-05. The second half of #30: lodash's `lodash.js` puts every
