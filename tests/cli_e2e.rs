@@ -1228,6 +1228,43 @@ fn an_anchor_in_a_test_file_waives_that_files_test_penalty() {
 }
 
 #[test]
+fn an_anchor_reaches_an_unexported_sibling_in_its_own_example_package() {
+    // Go's unexported names are package-wide, and a package is a directory
+    let (dir, db) = scratch("anchor-go-pkg");
+    fs::create_dir_all(dir.join("examples/cli")).unwrap();
+    fs::create_dir_all(dir.join("pkg")).unwrap();
+    fs::write(
+        dir.join("examples/cli/main.go"),
+        "package main\n\nfunc main() {\n\tparseArgs()\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("examples/cli/args.go"),
+        "package main\n\nfunc parseArgs() {\n\tprintln(1)\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("pkg/args.go"),
+        "package pkg\n\nfunc parseArgs() {\n}\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (code, out) = rq(
+        &db,
+        &dir,
+        &[
+            "parseArgs",
+            "--anchor",
+            "examples/cli/main.go:4",
+            "--ndjson",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(top_file(&out), "examples/cli/args.go", "{out}");
+}
+
+#[test]
 fn an_anchor_file_the_index_has_not_seen_is_read_live() {
     // A file created after indexing, reopening Widget: nothing about it is in
     // the index, so only a live read knows line 3 sits inside Widget.

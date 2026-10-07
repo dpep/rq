@@ -145,12 +145,14 @@ impl Anchor {
 
     /// The candidate is in the anchor's own file, or under the anchor's test or
     /// example tree and callable from it: what is secondary elsewhere is the
-    /// context there (D31, D60). A private definition in another file is
-    /// nothing the anchor can call, so it stays secondary.
+    /// context there (D31, D60). A private definition stays secondary unless it
+    /// sits beside the anchor: privacy is file-wide in some languages but
+    /// directory-wide in others (a Go package), so only farther off is it
+    /// surely out of the anchor's reach.
     fn in_tree(&self, root: &str, file: &str, visibility: Option<&str>) -> bool {
         root == self.root
             && (file == self.file
-                || (visibility != Some("private")
+                || ((visibility != Some("private") || parent_dir(file) == parent_dir(&self.file))
                     && self.tree.as_deref().is_some_and(|t| file.starts_with(t))))
     }
 
@@ -1751,12 +1753,13 @@ mod tests {
         for (file, visibility) in [
             ("examples/blog/utils/range.rb", Some("public")),
             ("examples/blog/utils/helpers.rb", Some("private")),
+            ("examples/blog/app/helpers.rb", Some("private")),
             ("examples/shop/range.rb", Some("public")),
         ] {
-            let name = if file.ends_with("helpers.rb") {
-                "range_helper"
-            } else {
-                "range"
+            let name = match file {
+                "examples/blog/utils/helpers.rb" => "range_helper",
+                "examples/blog/app/helpers.rb" => "range_sibling",
+                _ => "range",
             };
             store
                 .replace_file_symbols(
@@ -1796,6 +1799,8 @@ mod tests {
         assert!(penalized("range", "examples/shop/range.rb"));
         // a private helper in another file is nothing the anchor can call
         assert!(penalized("range_helper", "examples/blog/utils/helpers.rb"));
+        // ...but beside the anchor it may be: Go's unexported names are package-wide
+        assert!(!penalized("range_sibling", "examples/blog/app/helpers.rb"));
     }
 
     #[test]

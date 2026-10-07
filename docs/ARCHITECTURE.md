@@ -484,9 +484,10 @@ why a result ranked where it did:
   (`examples/`, `example/`, `_examples/`, `demo/`, `demos/`, `docs/`,
   `dev-docs/`; not `doc/`, often a library's own package) — `example_path` (D29).
   None of the three applies in the `--anchor`'s own file: asked from inside a
-  test, that file's definitions are the context (D31). Nor to a non-private
-  definition in the anchor's own tree: the innermost test or example directory
-  holding it and one level below (`examples/blog/`, `test/e2e/`) (D60)
+  test, that file's definitions are the context (D31). Nor to a definition in
+  the anchor's own tree, the innermost test or example directory holding it and
+  one level below (`examples/blog/`, `test/e2e/`), unless it is private and
+  outside the anchor's directory (D60)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:

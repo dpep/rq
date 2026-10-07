@@ -3661,3 +3661,27 @@ The five package rows still below 0.60.5 are inherent to waiving the anchor's tr
   `Volume#equals`, the sibling-fake limit `sharded?` already shows.
 - `Inter` from a next-custom-transforms fixture: D56's same-file `export var inter`, not
   this decision.
+
+*Private beside the anchor* (same day). "A private definition in another file isn't waived"
+assumed privacy is file-scoped. It is in ESM and Rust, but a Go unexported name is
+package-wide, and a package is a directory: `rq parseArgs --anchor
+examples/cli/main.go:4` ranked another package's `parseArgs` over the one in
+`examples/cli/args.go` beside it, the only one the anchor can call. Ruby's private
+methods (callable by an includer) and Python's `_x` (a convention) aren't file-scoped
+either. The core can't know which a language means without a plugin saying so, so the
+rule now waives a private definition in the anchor's own directory too, and keeps the
+penalty only for one farther off, where no language's privacy reaches.
+
+| anchored #1 / top 10 | v0.60.5 | main (af77594) | private beside the anchor |
+|---|---|---|---|
+| calls (446) | 351 / 439 | 349 / 441 | 349 / 441 |
+| imports (908) | 710 / 858 | 806 / 905 | 807 / 905 |
+| packages (231) | 135 / 226 | 148 / 228 | 147 / 228 |
+
+Against main: 1 up, 4 down, no row leaves the top 10. The one lost #1 is next.js
+`detectContentType` from `test/unit/image-optimizer/fetch-external-image.test.ts`, whose
+sibling `detect-content-type.test.ts` wraps the library function in a module-private
+`const detectContentType`: in ESM the anchor can't call it, but by directory it is a
+sibling, the fake-beside-the-test limit of `sharded?` and `equals`. Unanchored recall is
+unchanged against main (0 of 6,879 top 10s). A plugin-declared privacy scope (file or
+directory) would keep that row; it isn't worth a new plugin hook for one fake.

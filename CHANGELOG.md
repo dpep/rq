@@ -37,7 +37,9 @@ old rows meanwhile. Nothing to run by hand.
   definitions as the context**, not secondary: the test/example penalty is
   lifted for what the anchor can call in its own app or suite (the innermost
   test or example directory and one level below, `examples/blog/`), as it
-  already was in the anchor's own file.
+  already was in the anchor's own file. A private definition there is lifted
+  only in the anchor's own directory, where a Go package's unexported names
+  live.
 
 ### Fixed
 - **A declaration exported by a later `export { … }` list or `export default

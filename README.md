@@ -102,7 +102,9 @@ For an interactive fzf picker, `script/rq-open` is a small wrapper around `rq`.
 cursor, or the file an agent is reading. Definitions in the classes and modules
 enclosing that line rank first, then the same file and nearby directories. In a
 mixed-language repo, definitions the file's language can refer to (TS and JS
-reach each other) rank above the rest.
+reach each other) rank above the rest. Asked from inside a test or example
+app (`examples/blog/`), that app's own definitions aren't held back as test or
+example code, though a private one is only beside the anchor.
 
 ```sh
 $ rq 'valid?' -l 2

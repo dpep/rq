@@ -142,7 +142,8 @@ struct Cli {
     /// nearby directories, and ones in a language that file can refer to (TS
     /// and JS reach each other) rank above ones it can't. Asked from inside a
     /// test or example tree, that tree's own definitions aren't held back as
-    /// test or example code. It's context, not a filter. FILE is relative to
+    /// test or example code (a private one only in the anchor's directory).
+    /// It's context, not a filter. FILE is relative to
     /// the current directory; COL is accepted and ignored.
     #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with = "mode")]
     anchor: Option<AnchorSpec>,
