@@ -49,6 +49,8 @@
 //! assigning to a member reads public. Visibility is only ever a small ranking
 //! nudge, so the mislabel costs little.
 
+use std::collections::HashSet;
+
 use tree_sitter::{Language, Node};
 
 use crate::core::{Kind, Symbol};
@@ -143,7 +145,7 @@ fn run(language: &'static str, (key, grammar): Grammar, file: &str, source: &str
 /// namespace, so only the module's own statements count. An enum's variants,
 /// which took its visibility where they stand, go public with it.
 fn export_lists(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
-    let mut names = Vec::new();
+    let mut names = HashSet::new();
     let mut cursor = root.walk();
     for stmt in root
         .children(&mut cursor)
@@ -170,13 +172,13 @@ fn export_lists(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
             );
         }
     }
-    let mut enums = Vec::new();
+    let mut enums = HashSet::new();
     for s in out.iter_mut().filter(|s| {
         s.parent.is_none() && s.visibility == Some("private") && names.contains(&s.name)
     }) {
         s.visibility = Some("public");
         if s.kind == Kind::Enum {
-            enums.push(s.name.clone());
+            enums.insert(s.name.clone());
         }
     }
     for s in out.iter_mut().filter(|s| {
