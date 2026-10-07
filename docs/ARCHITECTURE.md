@@ -547,7 +547,8 @@ why a result ranked where it did:
   inheritance, so an inherited method earns no `enclosing` (D18). A third,
   `reachable` (400): the candidate's language is one the anchor file's can refer
   to, its plugin's `family` (TypeScript and JavaScript share one). Any checkout;
-  no feature when no plugin reads the anchor file (D59).
+  no feature when no plugin reads the anchor file, or when every candidate is
+  reachable, where it would lift all alike and only dilute confidence (D59).
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`recency`, `branch`, `enclosing`,

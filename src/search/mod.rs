@@ -204,14 +204,24 @@ pub(crate) struct Context {
 }
 
 impl Context {
-    /// The context-dependent boosts for one candidate.
-    fn boosts(&self, c: &SymbolRow, recency: f64) -> Boosts {
+    /// Whether reach separates anything in this candidate set: some candidate
+    /// is out of the anchor's reach. When none is, the boost would lift every
+    /// one alike, changing no order and only diluting confidence.
+    fn reach_splits(&self, rows: &[SymbolRow]) -> bool {
+        self.anchor
+            .as_ref()
+            .is_some_and(|a| rows.iter().any(|r| a.reachable(&r.language) == 0.0))
+    }
+
+    /// The context-dependent boosts for one candidate, of a set for which
+    /// [`Context::reach_splits`] said `reach`.
+    fn boosts(&self, c: &SymbolRow, recency: f64, reach: bool) -> Boosts {
         let (enclosing, proximity, reachable, anchor_tree) =
             self.anchor.as_ref().map_or((0.0, 0.0, 0.0, false), |a| {
                 (
                     a.enclosing(c.parent.as_deref()),
                     a.proximity(&c.root, &c.file),
-                    a.reachable(&c.language),
+                    if reach { a.reachable(&c.language) } else { 0.0 },
                     a.in_tree(&c.root, &c.file),
                 )
             });
@@ -534,6 +544,7 @@ fn search_query(
     let t_recall = t.elapsed();
     let t = std::time::Instant::now();
     let now = now_unix();
+    let reach = ctx.reach_splits(&candidates);
 
     // Borrows rather than consumes, so the retry below can re-rank the same
     // candidates instead of asking the store for them again.
@@ -545,7 +556,7 @@ fn search_query(
                 // (mtime, stored in nanoseconds — convert to seconds) or a
                 // recent commit (git_ts, seconds)
                 let recency = recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now);
-                let boosts = ctx.boosts(c, recency);
+                let boosts = ctx.boosts(c, recency, reach);
                 rank_one(query, c, current, boosts, near_miss)
             })
             .collect()
@@ -697,6 +708,7 @@ pub(crate) fn live_search(
         })
         .map(|(s, generated)| SymbolRow::live(s, identity, &root_str, generated))
         .collect();
+    let reach = ctx.reach_splits(&rows);
     let rank = |q: &str| -> Vec<Hit> {
         rows.iter()
             .filter_map(|row| {
@@ -704,7 +716,7 @@ pub(crate) fn live_search(
                     q,
                     row,
                     Some(crate::store::LIVE),
-                    ctx.boosts(row, 0.0),
+                    ctx.boosts(row, 0.0, reach),
                     false,
                 )
             })
@@ -1642,6 +1654,53 @@ mod tests {
         // an anchor no plugin reads leaves the order alone
         let hits = search(&store, "range", None, None, &ctx("docs/notes.md"), 10).unwrap();
         assert_eq!(hits[0].file, "a/range.rs");
+    }
+
+    #[test]
+    fn reach_adds_nothing_when_every_candidate_is_reachable() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
+        for (file, kind) in [("a/parse.ts", Kind::Function), ("b/parse.js", Kind::Method)] {
+            let language = if file.ends_with(".ts") {
+                "typescript"
+            } else {
+                "javascript"
+            };
+            store
+                .replace_file_symbols(
+                    repo,
+                    file,
+                    language,
+                    None,
+                    "h",
+                    &[Symbol {
+                        language: language.into(),
+                        ..sym("parse", kind)
+                    }],
+                )
+                .unwrap();
+        }
+        let ctx = Context {
+            anchor: Some(Anchor::new(
+                "local:/tmp/elsewhere".into(),
+                "web/page.tsx".into(),
+                1,
+                &[],
+            )),
+            ..Context::default()
+        };
+        let plain = search(&store, "parse", None, None, &Context::default(), 10).unwrap();
+        let anchored = search(&store, "parse", None, None, &ctx, 10).unwrap();
+        // the same order and the same scores, so the same confidence
+        let scores = |hits: &[Hit]| -> Vec<(String, f64)> {
+            hits.iter().map(|h| (h.file.clone(), h.score)).collect()
+        };
+        assert_eq!(scores(&anchored), scores(&plain));
+        assert!(
+            anchored
+                .iter()
+                .all(|h| h.features.iter().all(|f| f.name != "reachable"))
+        );
     }
 
     #[test]

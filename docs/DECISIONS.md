@@ -3520,6 +3520,11 @@ would settle.
 languages (next.js calls turbopack's Rust through napi), so the other definitions stay
 listed, below.
 
+*Only where it separates.* Added to every candidate, as in a repo of one language, the
+boost changes no order but dilutes confidence, which reads the leader's margin against its
+score (zod's `parse` went 0.54 to 0.53). So it applies only to a candidate set holding a
+definition out of the anchor's reach; elsewhere `--anchor` scores as without it.
+
 *Reverses if:* a language family turns out to need more than one tag (a plugin that reaches
 two families), or anchored use from binding code shows the cross-language definition
 wanted and held back.

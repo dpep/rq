@@ -25,7 +25,9 @@ old rows meanwhile. Nothing to run by hand.
 - **`--anchor` prefers definitions the anchor file's language can refer to.**
   Asked from a `.tsx` file in a repo that also holds Rust, a TypeScript or
   JavaScript definition now ranks ahead of a Rust one of the same name; asked from
-  Ruby, a Ruby one does. A new `reachable` feature in `--explain`; nothing is
+  Ruby, a Ruby one does. A new `reachable` feature in `--explain`, present only
+  when some match is in a language the anchor can't refer to, so scores and
+  confidence in a one-language repo are as without `--anchor`; nothing is
   filtered out, and queries without `--anchor` are unchanged.
 - **Asked from inside a test or example tree, `--anchor` treats that tree's
   definitions as the context**, not secondary: the test/example penalty is
