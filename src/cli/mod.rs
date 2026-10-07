@@ -135,12 +135,15 @@ struct Cli {
     )]
     lang: Vec<String>,
 
-    /// Prefer definitions near this line: its scopes, then its file.
+    /// Prefer definitions near this line: its scopes, its file, code it can reach.
     ///
     /// Pass an editor's cursor, or the file an agent is reading. Definitions in
     /// the scopes around that line come first, then ones in the same file and
-    /// nearby directories. It's context, not a filter. FILE is relative to the
-    /// current directory; COL is accepted and ignored.
+    /// nearby directories, and ones in a language that file can refer to (TS
+    /// and JS reach each other) rank above ones it can't. Asked from inside a
+    /// test or example tree, that tree's own definitions aren't held back as
+    /// test or example code. It's context, not a filter. FILE is relative to
+    /// the current directory; COL is accepted and ignored.
     #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with = "mode")]
     anchor: Option<AnchorSpec>,
 

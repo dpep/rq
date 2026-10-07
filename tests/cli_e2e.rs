@@ -3298,6 +3298,9 @@ fn help_and_version_are_not_usage_errors() {
     let (_, help, _) = rq_full(&db, &dir, &["--help"], &[], None);
     assert!(help.contains("EXIT CODES"), "--help lists them: {help}");
     assert!(help.contains("--drop"), "and the commands' own: {help}");
+    // --anchor says what it weighs beyond nearness
+    assert!(help.contains("can reach"), "{help}");
+    assert!(help.contains("test or example tree"), "{help}");
 }
 
 #[test]
