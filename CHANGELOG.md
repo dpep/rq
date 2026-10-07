@@ -18,8 +18,12 @@ old rows meanwhile. Nothing to run by hand.
   `module.exports.x = …`, `X.prototype.y = function`, `obj.y = () => …` or
   `obj.Y = class …` defines `x` (a function) or `y` (a method of `X` or
   `obj`), and each function-valued key of `module.exports = { … }` is a
-  function. In express `rq json` found nothing and `rq listen` an example
-  app; they now answer `res.json` and `app.listen` (#30, DECISIONS D57).
+  function. Each target of a chain (`res.set = res.header = function`) or a
+  sequence counts, and `X.prototype = { m() {} }` gives `X` its methods. In
+  express `rq json` found nothing and `rq listen` an example app; they now
+  answer `res.json` and `app.listen` (#30, DECISIONS D57). Patches to host
+  globals (`window.onload =`, `globalThis.fetch =`) and an anonymous
+  `exports.default` aren't definitions.
 
 ### Changed
 - **`--anchor` prefers definitions the anchor file's language can refer to.**

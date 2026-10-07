@@ -3410,6 +3410,26 @@ View#render` → `lib/view.js:133`, `rq compileETag`, `rq redirect`, `rq send` a
 - **Kind `function` for `obj.y`.** A member called through its object is what
   `method` means everywhere else, and `-k method` should find `res.json`.
 
+*Chains, sequences, prototype objects, and what isn't a definition* (2026-10-07, before
+release, schema still v25). Each target of a chain (`req.get = req.header = function`,
+`exports.a = exports.b = fn`) and each assignment of a sequence (`exports.x = f,
+exports.y = g`, parenthesized or not) is read as above; `X.prototype = { m() {}, n:
+function () {} }` makes each function-valued key a method of `X`. Left out: an anonymous
+`exports.default = …` (no name to find it by; a named function or class goes by its own,
+as `export default function f` does), and an assignment to a host global (`global.`,
+`globalThis.`, `window.`, `console.`, `process.`), which patches the environment, mostly in
+test setup. A `prototype` segment deeper in a chain is dropped from the parent:
+`X.prototype.a.y` is `y` of `X.a`.
+
+| corpus | added | removed (`default` / host global) |
+|---|---|---|
+| express | 6 (`res.type`, `res.set`, `req.get` …) | 0 |
+| jest | 3 | 4 (2 / 2) |
+| react | 7 (`ReactDOMRoot#render`, `#unmount` …) | 25 (0 / 25) |
+| next.js | 7 | 17 (2 / 15) |
+
+lodash and zod are unchanged.
+
 ## D58 — A wrapper function's body as the top level: measured, not adopted
 
 **Rejected**, 2026-10-05. The second half of #30: lodash's `lodash.js` puts every

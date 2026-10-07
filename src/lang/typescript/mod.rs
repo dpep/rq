@@ -33,8 +33,10 @@
 //! function or class to a member is a definition named by the member:
 //! `exports.x =` / `module.exports.x =` → function, `X.prototype.y =` → method
 //! of `X`, `obj.y =` → method of `obj`, and each function-valued key of
-//! `module.exports = { … }` → function. Only the module's own statements: in a
-//! function, an assignment runs per call and patches rather than defines.
+//! `module.exports = { … }` → function (of `X.prototype = { … }`, a method of
+//! `X`). Each target of a chain or a sequence counts. Only the module's own
+//! statements: in a function, an assignment runs per call and patches rather
+//! than defines; so does one to a host global (`window.onload =`).
 //!
 //! Visibility: a class member takes its `private`/`protected` modifier (or `#`
 //! prefix); anything module-level reads public when `export`ed and private when
@@ -359,56 +361,118 @@ fn is_top_level(node: Node) -> bool {
     node.kind() == "program"
 }
 
-/// Emit what a top-level CommonJS assignment defines, and say whether it
-/// defined anything. A function or class assigned to a member is named by the
+/// Emit what a top-level CommonJS statement defines by assignment, and say
+/// whether it defined anything. A sequence (`a.x = f, a.y = g`, each perhaps
+/// parenthesized) is each of its assignments, and a chain (`a.x = a.y = f`)
+/// assigns its value to each target.
+/// Anything that defines nothing is walked by the caller as any other
+/// expression.
+fn assignment(ctx: &Ctx, stmt: Node, scope: Scope, out: &mut Vec<Symbol>) -> bool {
+    let mut defined = false;
+    let mut pending = vec![stmt];
+    while let Some(node) = pending.pop() {
+        match node.kind() {
+            "expression_statement" | "sequence_expression" | "parenthesized_expression" => {
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.named_children(&mut cursor).collect();
+                pending.extend(children.into_iter().rev());
+            }
+            "assignment_expression" => {
+                let mut targets = Vec::new();
+                let mut value = Some(node);
+                while let Some(a) = value.filter(|v| v.kind() == "assignment_expression") {
+                    targets.extend(a.child_by_field_name("left"));
+                    value = a.child_by_field_name("right");
+                }
+                if let Some(value) = value {
+                    for target in targets {
+                        defined |= assigned(ctx, node, target, value, scope, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    defined
+}
+
+/// Emit what assigning `value` to `target` defines, `node` being the
+/// assignment. A function or class assigned to a member is named by the
 /// member: `exports.x` and `module.exports.x` define `x` with no parent, as an
 /// ESM export would; `X.prototype.y` defines method `y` of `X`, and `obj.y`
-/// method `y` of `obj`. `module.exports = { … }` defines each function-valued
-/// key. All read public: assigned to a reachable object, they are its API.
-/// Any other value (`exports.Foo = Foo`, `obj.n = 1`) names something defined
-/// elsewhere, or data, and the caller walks it as any other expression.
-fn assignment(ctx: &Ctx, stmt: Node, scope: Scope, out: &mut Vec<Symbol>) -> bool {
-    let Some((target, value)) = stmt
-        .named_child(0)
-        .filter(|a| a.kind() == "assignment_expression")
-        .and_then(|a| {
-            Some((
-                a.child_by_field_name("left")?,
-                a.child_by_field_name("right")?,
-            ))
-        })
-    else {
-        return false;
-    };
+/// method `y` of `obj` (a `prototype` segment deeper in is dropped:
+/// `X.prototype.a.y` is `y` of `X.a`). `module.exports = { … }` defines each
+/// function-valued key, and `X.prototype = { … }` each as a method of `X`. All
+/// read public: assigned to a reachable object, they are its API.
+///
+/// Not definitions: any other value (`exports.Foo = Foo`, `obj.n = 1`) names
+/// something defined elsewhere, or data; an anonymous `exports.default` has no
+/// name to find it by (a named one goes by its own, as `export default
+/// function f` does); and patching the host's globals (`window.onload`,
+/// `console.log`) defines nothing of this code's own.
+fn assigned(
+    ctx: &Ctx,
+    node: Node,
+    target: Node,
+    value: Node,
+    scope: Scope,
+    out: &mut Vec<Symbol>,
+) -> bool {
     let Some(target) = member_path(ctx, target) else {
         return false;
     };
     let target: Vec<&str> = target.iter().map(String::as_str).collect();
-    let Some((name, owner)) = target.split_last().filter(|(_, owner)| !owner.is_empty()) else {
+    let Some((&name, owner)) = target.split_last().filter(|(_, owner)| !owner.is_empty()) else {
         return false; // `x = …` reassigns a binding
     };
-    if let ["module"] = owner
-        && *name == "exports"
-    {
-        if value.kind() == "object" {
-            exported_object(ctx, value, scope, out);
-            return true;
-        }
+    if matches!(
+        owner[0],
+        "global" | "globalThis" | "window" | "console" | "process"
+    ) {
         return false;
     }
-    let (kind, parent) = match owner {
-        ["exports"] | ["module", "exports"] => (Kind::Function, None),
+    let exports = matches!(owner, ["exports"] | ["module", "exports"]);
+    if (owner == ["module"] && name == "exports") || name == "prototype" {
+        if value.kind() != "object" {
+            return false;
+        }
+        // `X.prototype = { … }` declares X's instance methods
+        let parent = (name == "prototype").then(|| owner.join("."));
+        exported_object(ctx, value, parent.as_deref(), scope, out);
+        return true;
+    }
+    let name = if exports && name == "default" {
+        match value
+            .child_by_field_name("name")
+            .and_then(|n| ctx.node_text(n))
+        {
+            Some(own) => own,
+            None => return false,
+        }
+    } else {
+        name.to_string()
+    };
+    let (kind, parent) = if exports {
+        (Kind::Function, None)
+    } else {
+        let path: Vec<&str> = owner
+            .iter()
+            .copied()
+            .filter(|s| *s != "prototype")
+            .collect();
+        if path.is_empty() {
+            return false;
+        }
         // an instance method, of the constructor the prototype belongs to
-        [ty @ .., "prototype"] if !ty.is_empty() => (Kind::Method, Some(ty.join("."))),
-        _ => (Kind::Method, Some(owner.join("."))),
+        (Kind::Method, Some(path.join(".")))
     };
     let parent = parent.as_deref();
     if value.kind() == "class" {
-        push(ctx, out, name, Kind::Class, stmt, parent, "public", false);
-        let qualified = qualify(parent, name, ".");
+        push(ctx, out, &name, Kind::Class, node, parent, "public", false);
+        let qualified = qualify(parent, &name, ".");
         walk(ctx, value, scope.within(Some(&qualified)), out);
     } else if is_function(Some(value)) {
-        push(ctx, out, name, kind, stmt, parent, "public", false);
+        push(ctx, out, &name, kind, node, parent, "public", false);
     } else {
         return false;
     }
@@ -432,11 +496,22 @@ fn member_path(ctx: &Ctx, node: Node) -> Option<Vec<String>> {
     }
 }
 
-/// Each function-valued key of `module.exports = { … }`, as a function:
-/// `a() {}`, `b: function () {}`, `c: () => …`. Other entries are walked as
-/// any object literal is. A shorthand `{ d }` names a definition made
-/// elsewhere.
-fn exported_object(ctx: &Ctx, object: Node, scope: Scope, out: &mut Vec<Symbol>) {
+/// Each function-valued key of `module.exports = { … }`, as a function, or of
+/// `X.prototype = { … }`, as a method of `parent`: `a() {}`, `b: function ()
+/// {}`, `c: () => …`. Other entries are walked as any object literal is. A
+/// shorthand `{ d }` names a definition made elsewhere.
+fn exported_object(
+    ctx: &Ctx,
+    object: Node,
+    parent: Option<&str>,
+    scope: Scope,
+    out: &mut Vec<Symbol>,
+) {
+    let kind = if parent.is_some() {
+        Kind::Method
+    } else {
+        Kind::Function
+    };
     let mut cursor = object.walk();
     for entry in object.named_children(&mut cursor) {
         let key = match entry.kind() {
@@ -452,7 +527,7 @@ fn exported_object(ctx: &Ctx, object: Node, scope: Scope, out: &mut Vec<Symbol>)
         match name {
             Some(name) => {
                 let name = name.trim_matches(|c| c == '"' || c == '\'');
-                push(ctx, out, name, Kind::Function, entry, None, "public", false);
+                push(ctx, out, name, kind, entry, parent, "public", false);
             }
             None => walk(ctx, entry, scope, out),
         }
@@ -1242,6 +1317,65 @@ module.exports = {
         // an object nested in it is walked as any object literal is
         assert_eq!(find(&syms, "flush").kind, Kind::Method);
         assert_eq!(syms.len(), 4, "{syms:?}");
+    }
+
+    #[test]
+    fn chained_and_sequenced_assignments_define_each_target() {
+        let src = r#"
+exports.parse = exports.parseAll = function (s) {};
+Widget.open = Widget.show = () => 1;
+exports.start = start, exports.stop = function () {};
+Widget.prototype = {
+  render() {},
+  update: function () {},
+  size: 3,
+};
+"#;
+        let syms = JavaScript.extract("lib/widget.js", src);
+        let at = |name: &str| {
+            let s = find(&syms, name);
+            (s.kind, s.parent.as_deref(), s.line)
+        };
+        assert_eq!(at("parse"), (Kind::Function, None, 2));
+        assert_eq!(at("parseAll"), (Kind::Function, None, 2));
+        assert_eq!(at("open"), (Kind::Method, Some("Widget"), 3));
+        assert_eq!(at("show"), (Kind::Method, Some("Widget"), 3));
+        // `start` names a function defined elsewhere
+        assert_eq!(at("stop"), (Kind::Function, None, 4));
+        assert_eq!(at("render"), (Kind::Method, Some("Widget"), 6));
+        assert_eq!(at("update"), (Kind::Method, Some("Widget"), 7));
+        for absent in ["start", "size", "prototype"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
+    }
+
+    #[test]
+    fn commonjs_assignments_that_name_no_definition() {
+        let src = r#"
+exports.default = function () {};
+module.exports.default = function main() {};
+Widget.prototype.events.click = function () {};
+global.fetch = function () {};
+globalThis.queueTask = () => {};
+window.onload = function () {};
+console.log = () => {};
+process.exit = function () {};
+"#;
+        let syms = JavaScript.extract("lib/setup.js", src);
+        // an anonymous default export has no name to find it by; a named one
+        // is found by its own, as `export default function main` is
+        let main = find(&syms, "main");
+        assert_eq!((main.kind, main.parent.as_deref()), (Kind::Function, None));
+        // the instance's `events` object, not a `prototype` path
+        assert_eq!(
+            find(&syms, "click").parent.as_deref(),
+            Some("Widget.events")
+        );
+        // patching the host's globals defines nothing of this code's own
+        for absent in ["default", "fetch", "queueTask", "onload", "log", "exit"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
+        }
+        assert_eq!(syms.len(), 2, "{syms:?}");
     }
 
     #[test]

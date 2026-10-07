@@ -372,7 +372,13 @@ fn commonjs_assignments_rank_above_test_doubles() {
         (render.kind.as_str(), render.parent.as_deref()),
         ("method", Some("WidgetStore"))
     );
-    for (query, parent) in [("listen", Some("proto")), ("createWidgetStore", None)] {
+    for (query, parent) in [
+        ("listen", Some("proto")),
+        ("createWidgetStore", None),
+        ("show", None),
+        ("flush", None),
+        ("clear", Some("WidgetCache")),
+    ] {
         let hit = top(&store, query);
         assert_eq!(hit.file, "widget-store.js", "{query}");
         assert_eq!(hit.parent.as_deref(), parent, "{query}");

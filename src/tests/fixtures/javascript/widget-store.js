@@ -27,3 +27,23 @@ exports.WidgetStore = WidgetStore;
 function setup() {
   proto.reset = () => {};
 }
+
+// chained and sequenced assignments define each target
+exports.open = exports.show = function (name) {
+  return name;
+};
+(exports.close = function () {}), (exports.flush = function () {});
+
+function WidgetCache() {}
+
+// an object assigned to the prototype declares the instance methods
+WidgetCache.prototype = {
+  get(key) {
+    return key;
+  },
+  clear: function () {},
+};
+
+// none of these defines anything of the module's own
+exports.default = function () {};
+window.onload = function () {};
