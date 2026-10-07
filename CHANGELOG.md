@@ -35,8 +35,9 @@ old rows meanwhile. Nothing to run by hand.
   filtered out, and queries without `--anchor` are unchanged.
 - **Asked from inside a test or example tree, `--anchor` treats that tree's
   definitions as the context**, not secondary: the test/example penalty is
-  lifted under the innermost test or example directory holding the anchor
-  (`examples/`, `test/`), as it already was in the anchor's own file.
+  lifted for what the anchor can call in its own app or suite (the innermost
+  test or example directory and one level below, `examples/blog/`), as it
+  already was in the anchor's own file.
 
 ### Fixed
 - **`export let` and `export var` are indexed**, as constants, like `export

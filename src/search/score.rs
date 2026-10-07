@@ -107,8 +107,8 @@ pub(crate) struct Boosts {
     pub proximity: f64,
     /// Anchor signal: the anchor's language can refer to the candidate's.
     pub reachable: f64,
-    /// The candidate is in the anchor's own file, or under the test or example
-    /// directory the anchor itself sits in.
+    /// The candidate is in the anchor's own file, or callable from it under
+    /// the anchor's own test or example tree.
     pub anchor_tree: bool,
 }
 
@@ -333,8 +333,8 @@ pub(crate) fn score(
         None
     };
     // Asked from inside a test (or generated, or example) file, that file's
-    // own definitions are the context, not secondary to it; so are those in
-    // the test or example directory the anchor sits in.
+    // own definitions are the context, not secondary to it; so are those it
+    // can call in its own test or example tree.
     if let Some(name) = secondary.filter(|_| !boosts.anchor_tree) {
         let value = if features.iter().any(|f| matches!(f.name, "fuzzy" | "typo")) {
             (TEST_PATH_SHARE * name_evidence(&features).max(0.0)).min(TEST_PATH_PENALTY)
@@ -1456,20 +1456,24 @@ fn is_test_dir(seg: &str) -> bool {
     )
 }
 
-/// The innermost directory of `file` that makes its contents a test or example
-/// path, with a trailing `/` (`examples/blog/app/page.tsx` → `examples/`).
-/// `None` when no directory does: a `foo.test.ts` is secondary by its own name.
+/// The test or example tree `file` belongs to, with a trailing `/`: the
+/// innermost directory that makes it a test or example path, and one level
+/// below it when there is one (`examples/blog/app/page.tsx` → `examples/blog/`).
+/// One level, because `examples/` or `test/` often holds hundreds of unrelated
+/// apps, and only the anchor's own is its context (D60). `None` when no
+/// directory does: a `foo.test.ts` is secondary by its own name.
 pub(crate) fn secondary_tree(file: &str) -> Option<&str> {
     let dirs = file.rsplit_once('/')?.0;
-    let mut end = None;
+    let mut segs = dirs.split('/');
     let mut at = 0;
-    for seg in dirs.split('/') {
+    let mut tree = None;
+    while let Some(seg) = segs.next() {
         at += seg.len() + 1;
         if is_test_dir(seg) || is_example_dir(seg) {
-            end = Some(at);
+            tree = Some(at + segs.clone().next().map_or(0, |below| below.len() + 1));
         }
     }
-    end.map(|e| &file[..e])
+    tree.map(|e| &file[..e])
 }
 
 /// Does this repo-relative path look like test/spec code?
@@ -1543,14 +1547,17 @@ mod tests {
     }
 
     #[test]
-    fn a_secondary_tree_is_the_innermost_test_or_example_dir() {
+    fn a_secondary_tree_is_the_innermost_test_or_example_dir_and_one_level_below() {
         let cases = [
-            ("examples/blog/app/page.tsx", Some("examples/")),
+            // one app among many under `examples/`, not all of them
+            ("examples/blog/app/page.tsx", Some("examples/blog/")),
             (
                 "pkg/tests/e2e/fixtures/a/b.js",
-                Some("pkg/tests/e2e/fixtures/"),
+                Some("pkg/tests/e2e/fixtures/a/"),
             ),
-            ("spec/models/widget_spec.rb", Some("spec/")),
+            ("spec/models/widget_spec.rb", Some("spec/models/")),
+            // directly in the dir, there is no level below to take
+            ("test/widget.test.ts", Some("test/")),
             ("src/widget.test.ts", None),
             ("src/search/score.rs", None),
             ("top.rb", None),

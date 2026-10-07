@@ -114,8 +114,8 @@ pub(crate) struct Anchor {
     /// The language tags the anchor's file can refer to definitions in, as its
     /// plugin declares them; empty when no plugin handles the file.
     reach: Vec<&'static str>,
-    /// The innermost test or example directory holding the anchor's file
-    /// (`examples/`), whose definitions take no secondary penalty.
+    /// The test or example tree holding the anchor's file (`examples/blog/`),
+    /// whose definitions take no secondary penalty.
     tree: Option<String>,
 }
 
@@ -143,12 +143,15 @@ impl Anchor {
         }
     }
 
-    /// The candidate is the anchor's own file, or under the innermost test or
-    /// example directory holding the anchor: what is secondary elsewhere is
-    /// the context there (D31, D60).
-    fn in_tree(&self, root: &str, file: &str) -> bool {
+    /// The candidate is in the anchor's own file, or under the anchor's test or
+    /// example tree and callable from it: what is secondary elsewhere is the
+    /// context there (D31, D60). A private definition in another file is
+    /// nothing the anchor can call, so it stays secondary.
+    fn in_tree(&self, root: &str, file: &str, visibility: Option<&str>) -> bool {
         root == self.root
-            && (file == self.file || self.tree.as_deref().is_some_and(|t| file.starts_with(t)))
+            && (file == self.file
+                || (visibility != Some("private")
+                    && self.tree.as_deref().is_some_and(|t| file.starts_with(t))))
     }
 
     /// Code at the anchor can refer to a definition in `language`: the same
@@ -222,7 +225,7 @@ impl Context {
                     a.enclosing(c.parent.as_deref()),
                     a.proximity(&c.root, &c.file),
                     if reach { a.reachable(&c.language) } else { 0.0 },
-                    a.in_tree(&c.root, &c.file),
+                    a.in_tree(&c.root, &c.file, c.visibility.as_deref()),
                 )
             });
         Boosts {
@@ -1739,6 +1742,60 @@ mod tests {
             .find(|h| h.file.starts_with("examples/"))
             .unwrap();
         assert!(example.features.iter().any(|f| f.name == "example_path"));
+    }
+
+    #[test]
+    fn the_anchor_tree_is_its_own_app_and_waives_nothing_private_elsewhere() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
+        for (file, visibility) in [
+            ("examples/blog/utils/range.rb", Some("public")),
+            ("examples/blog/utils/helpers.rb", Some("private")),
+            ("examples/shop/range.rb", Some("public")),
+        ] {
+            let name = if file.ends_with("helpers.rb") {
+                "range_helper"
+            } else {
+                "range"
+            };
+            store
+                .replace_file_symbols(
+                    repo,
+                    file,
+                    "ruby",
+                    None,
+                    "h",
+                    &[Symbol {
+                        visibility,
+                        ..sym(name, Kind::Method)
+                    }],
+                )
+                .unwrap();
+        }
+        let ctx = Context {
+            anchor: Some(Anchor::new(
+                "local:/tmp/x".into(),
+                "examples/blog/app/page.rb".into(),
+                1,
+                &[],
+            )),
+            ..Context::default()
+        };
+        let penalized = |query: &str, file: &str| {
+            search(&store, query, None, None, &ctx, 10)
+                .unwrap()
+                .iter()
+                .find(|h| h.file == file)
+                .unwrap()
+                .features
+                .iter()
+                .any(|f| f.name == "example_path")
+        };
+        assert!(!penalized("range", "examples/blog/utils/range.rb"));
+        // another app under the same `examples/` is no context for this one
+        assert!(penalized("range", "examples/shop/range.rb"));
+        // a private helper in another file is nothing the anchor can call
+        assert!(penalized("range_helper", "examples/blog/utils/helpers.rb"));
     }
 
     #[test]

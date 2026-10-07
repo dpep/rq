@@ -3596,3 +3596,49 @@ app differently where D29 and D31 treat them alike, and gives up most of the gai
 *Reverses if:* anchored use from tests shows library calls losing to sibling fakes more
 often than sibling helpers winning (then fall back to example directories only), or a
 repo keeps unrelated suites under one shallow `test/` tree where the waiver is too wide.
+
+*Narrowed* (2026-10-07, before release). That second condition held: next.js keeps ~400
+unrelated apps under `examples/` and thousands under `test/`, so every app's definitions
+lost their penalty from inside any one of them. `rq Main --anchor
+examples/with-mongodb/pages/_document.tsx:1` (`import { Main } from "next/document"`)
+ranked another example's `Main` component first. The relative-import set couldn't see
+it: its truths sit beside the anchor. A third set does, `anchored_packages.tsv` (231
+imports of the repo's own packages from its test and example trees, the truth being
+library code; RECALL.md).
+
+The tree is now the innermost test or example directory *and one level below it*
+(`examples/with-mongodb/`, `test/e2e/`, `activerecord/test/cases/`), and a private
+definition in another file isn't waived: the anchor can't call it.
+
+| anchored #1 (vs main 19b96da) | calls (446) | imports (908) | packages (231) | package losses vs 0.60.5 |
+|---|---|---|---|---|
+| v0.60.5 | 351 | 710 | 135 | — |
+| main: innermost dir | 349 | 807 | 145 | 8 |
+| no wider than the anchor's grandparent | 349 | 802 | 147 | 6 |
+| grandparent, at least one level below the dir | 349 | 802 | 147 | 6 |
+| the dir + one level | 349 | 810 | 147 | 6 |
+| **the dir + one level, private elsewhere not waived** | **349** | **807** | **148** | **5** |
+| grandparent, private elsewhere not waived | 349 | 799 | 148 | 5 |
+| no D60 at all | 351 | 733 | 152 | 1 |
+
+Top 10 is 441 / 905 / 228 for main and the first three rules, 441 / 903 / 228 for both
+private-rule rows, and 439 / 868 / 228 without D60. The adopted row moves 17 up and 4 down
+against main, and loses no row's #1 or top 10 on the package set. The private rule costs 3
+relative imports that "dir + one level" alone kept at #1: two `Main`s in
+`examples/with-styled-components/` declared `const` and exported by a later `export { … }`
+list, and a CommonJS `const … , keep = …`, which the plugin reads as private (the
+visibility mislabel its module docs accept). The two `Main`s fall out of the top 10
+(#3 and #2 on main, #45 and #42 now): the cost of that mislabel, accepted for
+`detectContentType` and three react `useState` rows gained. Reading an `export { … }` list
+as exporting what it names would recover them. `range` stays #1. Dropping D60
+is the only zero-loss rule and gives back 74 import #1s.
+
+The five package rows still below 0.60.5 are inherent to waiving the anchor's tree:
+- `Main` from `examples/with-chakra-ui/src/pages/_document.tsx`: the app's own
+  `src/components/Main.tsx` (a different, same-named component) wins.
+- `Main` from `test/e2e/next-script/index.test.ts`: the innermost test directory is
+  `test/`, so the tree is `test/e2e/`, every e2e app, and another one's `Main` wins.
+- `equals` ×2 from jest's `packages/expect/src/__tests__/`: a sibling test file's
+  `Volume#equals`, the sibling-fake limit `sharded?` already shows.
+- `Inter` from a next-custom-transforms fixture: D56's same-file `export var inter`, not
+  this decision.
