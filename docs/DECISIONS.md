@@ -3629,8 +3629,27 @@ relative imports that "dir + one level" alone kept at #1: two `Main`s in
 list, and a CommonJS `const … , keep = …`, which the plugin reads as private (the
 visibility mislabel its module docs accept). The two `Main`s fall out of the top 10
 (#3 and #2 on main, #45 and #42 now): the cost of that mislabel, accepted for
-`detectContentType` and three react `useState` rows gained. Reading an `export { … }` list
-as exporting what it names would recover them. `range` stays #1. Dropping D60
+`detectContentType` and three react `useState` rows gained. `range` stays #1.
+
+*Export lists* (same day). The mislabel was an extraction bug, so it was fixed rather than
+accepted: a module's own `export { a, b as c }` (no `from`) and `export default a` now make
+those top-level declarations public, as `export` where they stand would. Visibility only;
+no row is added or removed. Relabelled private → public: zod 82, jest 86, react 408,
+next.js 1,859; express and lodash none.
+
+| anchored #1 / top 10 | before | after |
+|---|---|---|
+| calls (446) | 349 / 441 | 349 / 441 |
+| imports (908) | 807 / 903 | 806 / 905 |
+| packages (231) | 148 / 228 | 148 / 228 |
+
+Both styled-components `Main`s return to #1 (from #45 and #42). Three react rows lose #1
+to a correct label: `SyntheticEvent` asked from react-dom's event plugins, whose truth is
+react-dom's `export const SyntheticEvent`, now ties within 10 of react-native's legacy
+`function SyntheticEvent` (`export default SyntheticEvent`), which no longer takes the
+private penalty and wins on extent. Unanchored: 5 of 6,879 top 10s change and one source
+leaves the top 10 (rails `cnct` → `Concat`, #10 → #11), pushed by actioncable's JS
+`Connection` classes, exported by `export default`. Dropping D60
 is the only zero-loss rule and gives back 74 import #1s.
 
 The five package rows still below 0.60.5 are inherent to waiving the anchor's tree:

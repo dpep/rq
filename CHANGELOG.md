@@ -40,6 +40,9 @@ old rows meanwhile. Nothing to run by hand.
   already was in the anchor's own file.
 
 ### Fixed
+- **A declaration exported by a later `export { … }` list or `export default
+  name` reads public**, not private: `const Main = styled.main…` followed by
+  `export { Main }` no longer takes the private-visibility penalty.
 - **`export let` and `export var` are indexed**, as constants, like `export
   const`: react's `rq renderStartTime` found nothing (#31). A module's own
   unexported `let`/`var` stays out (DECISIONS D56).

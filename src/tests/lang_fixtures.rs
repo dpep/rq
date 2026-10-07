@@ -237,6 +237,15 @@ fn typescript_definitions_rank_and_classify() {
         (active.kind.as_str(), active.visibility.as_deref()),
         ("constant", Some("public"))
     );
+    // an `export { … }` list or `export default name` exports a declaration
+    // made earlier, by its local name
+    for name in ["WIDGET_THEME", "formatWidget", "trimWidgetName"] {
+        assert_eq!(
+            top(&store, name).visibility.as_deref(),
+            Some("public"),
+            "{name}"
+        );
+    }
     let width = top(&store, "DEFAULT_WIDTH");
     assert_eq!(width.kind, "constant");
     assert_eq!(width.parent.as_deref(), Some("Widget"));

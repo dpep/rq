@@ -39,8 +39,9 @@
 //! than defines; so does one to a host global (`window.onload =`).
 //!
 //! Visibility: a class member takes its `private`/`protected` modifier (or `#`
-//! prefix); anything module-level reads public when `export`ed and private when
-//! not. That last convention is ESM's — a CommonJS file exports its
+//! prefix); anything module-level reads public when `export`ed (where it is
+//! declared, or by a later `export { … }` list or `export default name`) and
+//! private when not. That last convention is ESM's — a CommonJS file exports its
 //! declarations (`function x` … `module.exports = x`) by a statement the
 //! grammar can't connect to them, so they read private; what it defines by
 //! assigning to a member reads public. Visibility is only ever a small ranking
@@ -128,8 +129,49 @@ fn run(language: &'static str, (key, grammar): Grammar, file: &str, source: &str
         ambient: is_declaration_file(file),
     };
     extract_with_key(key, language, grammar, file, source, |ctx, root, out| {
-        walk(ctx, root, scope, out)
+        walk(ctx, root, scope, out);
+        export_lists(ctx, root, out);
     })
+}
+
+/// A module's `export { a, b as c }` and `export default a` export what it
+/// declared elsewhere, by local name: those declarations read public, as if
+/// marked `export` where they stand. A list with a `from` re-exports another
+/// module's and names nothing here; one inside a namespace exports from the
+/// namespace, so only the module's own statements count.
+fn export_lists(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
+    let mut names = Vec::new();
+    let mut cursor = root.walk();
+    for stmt in root
+        .children(&mut cursor)
+        .filter(|n| n.kind() == "export_statement" && n.child_by_field_name("source").is_none())
+    {
+        if let Some(value) = stmt
+            .child_by_field_name("value")
+            .filter(|v| v.kind() == "identifier")
+        {
+            names.extend(ctx.node_text(value));
+        }
+        let mut c = stmt.walk();
+        for clause in stmt
+            .named_children(&mut c)
+            .filter(|n| n.kind() == "export_clause")
+        {
+            let mut cc = clause.walk();
+            names.extend(
+                clause
+                    .named_children(&mut cc)
+                    .filter(|n| n.kind() == "export_specifier")
+                    .filter_map(|spec| spec.child_by_field_name("name"))
+                    .filter_map(|name| ctx.node_text(name)),
+            );
+        }
+    }
+    for s in out.iter_mut().filter(|s| {
+        s.parent.is_none() && s.visibility == Some("private") && names.contains(&s.name)
+    }) {
+        s.visibility = Some("public");
+    }
 }
 
 /// Whether `file` is a declaration file (`.d.ts`, `.d.mts`, `.d.cts`), where
@@ -925,6 +967,36 @@ export class Account {
         assert_eq!(find(&syms, "hook").visibility, Some("protected"));
         // an ES private name is private, and navigable without the `#`
         assert_eq!(find(&syms, "secret").visibility, Some("private"));
+    }
+
+    #[test]
+    fn an_export_list_makes_its_local_declarations_public() {
+        let src = r#"
+const Main = styled.main`padding: 0;`;
+function helper() {}
+class Store {}
+const LIMIT = 3;
+function hidden() {}
+export { Main, helper as assist, Store };
+export type { Store as StoreType };
+export default LIMIT;
+export { relayed } from "./elsewhere";
+namespace Inner {
+  function nested() {}
+  export { nested };
+}
+"#;
+        let syms = extract(src);
+        for name in ["Main", "helper", "Store", "LIMIT"] {
+            assert_eq!(find(&syms, name).visibility, Some("public"), "{name}");
+        }
+        assert_eq!(find(&syms, "hidden").visibility, Some("private"));
+        // an alias or a re-export names nothing declared here
+        for absent in ["assist", "StoreType", "relayed"] {
+            assert!(!syms.iter().any(|s| s.name == absent), "{absent}");
+        }
+        // a namespace's own list exports from the namespace, not the module
+        assert_eq!(find(&syms, "nested").visibility, Some("private"));
     }
 
     #[test]

@@ -71,3 +71,14 @@ export const defaultWidget = () => buildWidget();
 export function maxRetriesFor(widget: Widget): number {
   return MAX_RETRIES;
 }
+
+// declared first and exported by a list: public, as if marked `export`
+const WIDGET_THEME = { dark: false };
+function formatWidget(widget: Widget): string {
+  return widget.render();
+}
+function trimWidgetName(name: string): string {
+  return name.trim();
+}
+export { WIDGET_THEME, formatWidget as describeWidget };
+export default trimWidgetName;
