@@ -116,8 +116,9 @@ with `lost_first`/`lost_top10`, `bench`); its field names are stable.
 `--anchored` adds a second measurement, of `--anchor` (D18): each row plain
 and anchored on the binary under test, and with a baseline, both binaries'
 anchored ranks side by side with every row that lost #1 or the top 10. Each
-binary indexes only the corpora the rows ask about. Two sets, reported overall,
-by receiver kind and by repo.
+binary indexes only the corpora the rows ask about. Three sets, reported overall,
+per set, by receiver kind and by repo; `--json` adds each row's rank (`ranks`,
+and the baseline's `base_ranks`) in set order, for cuts the report doesn't make.
 
 [`script/recall/anchored.tsv`](../script/recall/anchored.tsv)
 holds 446 Ruby call sites (190 rails, 256 discourse): the query is the called
@@ -140,6 +141,18 @@ re-export, a package import, or a name defined only once is skipped.
 is the mixed-language case (TS beside turbopack's Rust); react, jest and zod
 check that the others hold. The four are pinned in `corpus.json` and fetched only
 for `--anchored`.
+
+[`script/recall/anchored_packages.tsv`](../script/recall/anchored_packages.tsv)
+is the other direction (`recv` = `package`): JS/TS imports of the repo's own
+workspace packages (`import { Main } from 'next/document'`, `from '@jest/globals'`)
+made from a test or example tree outside that package, the truth being the
+package's one exported top-level definition of the name outside its own tests and
+examples. The relative set's truths sit beside the anchor, usually in the same
+test app, so a change that favours the anchor's surroundings can only gain
+there; here the answer is library code outside the anchor's tree, and the same
+change can lose. A name the package exports more than once, or not at all (a
+virtual module like `next/root-params`), is skipped. `derive_imports.py
+--packages` regenerates it.
 
 ## Reproducibility
 

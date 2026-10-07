@@ -220,7 +220,7 @@ def measure(label, binary, corpus, queries, regress, jobs):
 # ----- anchored -----
 
 
-ANCHORED = ["anchored.tsv", "anchored_imports.tsv"]
+ANCHORED = ["anchored.tsv", "anchored_imports.tsv", "anchored_packages.tsv"]
 
 
 def load_anchored():
@@ -228,7 +228,8 @@ def load_anchored():
     for name in ANCHORED:
         with open(DATA / name) as f:
             header = f.readline().rstrip("\n").split("\t")
-            rows += [dict(zip(header, line.rstrip("\n").split("\t"))) for line in f]
+            rows += [{**dict(zip(header, line.rstrip("\n").split("\t"))), "set": name.removesuffix(".tsv")}
+                     for line in f]
     return rows
 
 
@@ -265,9 +266,11 @@ def summarize_anchored(rows, plain, anchored):
                 "anchored": tally([{"rank": anchored[i]} for i in idx])}
 
     same_file = lambda r: r["anchor"].split(":")[0] == r["truth"].split(":")[0]  # noqa: E731
-    out = {"all": cut(lambda r: True),
-           "truth_in_anchor_file": cut(same_file),
-           "truth_elsewhere": cut(lambda r: not same_file(r))}
+    out = {"all": cut(lambda r: True)}
+    for name in dict.fromkeys(r["set"] for r in rows):
+        out[name] = cut(lambda r, name=name: r["set"] == name)
+    out["truth_in_anchor_file"] = cut(same_file)
+    out["truth_elsewhere"] = cut(lambda r: not same_file(r))
     for recv in sorted({r["recv"] for r in rows}):
         out[f"recv={recv}"] = cut(lambda r, recv=recv: r["recv"] == recv)
     for repo in dict.fromkeys(r["repo"] for r in rows):
@@ -280,7 +283,8 @@ def summarize_anchored(rows, plain, anchored):
         moves["up" if rb < ra else "down" if rb > ra else "same"] += 1
         if ra == 1 and rb != 1:
             lost.append({**r, "plain_rank": a, "anchored_rank": b})
-    return {"cuts": out, "up": moves["up"], "down": moves["down"], "same": moves["same"], "lost_first": lost}
+    return {"cuts": out, "up": moves["up"], "down": moves["down"], "same": moves["same"], "lost_first": lost,
+            "ranks": [{"plain": a, "anchored": b} for a, b in zip(plain, anchored)]}
 
 
 def diff_anchored(rows, base, new):
@@ -572,7 +576,8 @@ def main():
             base_plain, base_anchored = measure_anchored(path, corpus, rows, args.jobs)
             report["anchored_diff"] = {
                 "label": label, **diff_anchored(rows, base_anchored, anchored),
-                "base": summarize_anchored(rows, base_plain, base_anchored)["cuts"]}
+                "base": summarize_anchored(rows, base_plain, base_anchored)["cuts"],
+                "base_ranks": base_anchored}
     if args.bench:
         report["bench"] = bench(report["runs"], corpus, queries, args.bench)
 
