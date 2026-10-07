@@ -1662,6 +1662,8 @@ class sits.
 *Reverses if:* anchored use from tests shows the in-file fakes winning over library calls
 more often than the in-file helpers they were meant to find.
 
+D60 widens the waiver from the anchor's file to its test or example tree.
+
 ## D32 — A literal match no longer hides the other case convention
 
 **Adopted**, 2026-09-27. Recall's fast path skips the name index once an exact or
@@ -3489,7 +3491,8 @@ by location, from the import site.
 
 90 rows moved up, none down, none lost #1 or the top 10. jest and zod hold only JS and TS,
 so there is nothing to reorder; react holds Rust beside its JS. One discourse call
-site rose (#108 → #64) past discourse's JS. Unanchored recall is untouched: 0 of 6,879
+site rose (#108 → #64) past discourse's JS. Re-run on main after D56–D58 (`a11fad4`), the
+baseline is unchanged and next.js reaches 205 (68.3%), one row fewer. Unanchored recall is untouched: 0 of 6,879
 top 10s changed (75.6% / 90.1% / 96.5%), regress 54 of 57 both.
 
 *Weight.*
@@ -3509,7 +3512,7 @@ a TS file than a Rust exact one it cannot call.
 #4, not the top 3. Every result above it is now TS too (`IssueSource.range`, a field;
 `RANGES`, a prefix), and the true definition is held back by D29's `example_path` (−400)
 though the anchor sits in the same example app: D31 waives the penalty in the anchor's own
-file only. Most of next.js's remaining misses are JS against JS (turbopack's test
+file only. D60 widens that waiver, and `range` is #1. Most of next.js's remaining misses are JS against JS (turbopack's test
 fixtures define `A`, `value`, `dep` hundreds of times), which only resolving the import
 would settle.
 
@@ -3520,3 +3523,51 @@ listed, below.
 *Reverses if:* a language family turns out to need more than one tag (a plugin that reaches
 two families), or anchored use from binding code shows the cross-language definition
 wanted and held back.
+
+## D60 — The anchor's own test or example tree isn't secondary to it
+
+**Adopted**, 2026-10-06. Anchored recall (D18, D59's import sites) and the recall harness,
+against D59. Issue #32.
+
+*The weakness.* After D59, `rq range --anchor examples/with-vercel-blob/app/page.tsx:1`
+ranked `examples/with-vercel-blob/utils/range.ts:1` #4: it took `example_path` (−400)
+though the question came from the same example app. D31 waives the secondary penalty in
+the anchor's own file only, and next.js's test apps and turbopack fixtures import their
+neighbours the same way.
+
+*The rule.* The anchor's tree is its path up to and including the innermost directory
+that makes it a test or example path (`examples/with-vercel-blob/app/page.tsx` →
+`examples/`; `pkg/tests/e2e/fixtures/a/b.js` → `pkg/tests/e2e/fixtures/`). A candidate
+in the anchor's checkout under that tree takes no secondary penalty, as D31's own file
+already doesn't. An anchor that is a test by its filename only (`foo.test.ts`) has no
+tree, and D31 alone applies. One rule for tests and examples: the same directory names
+that charge the penalty decide where it's lifted.
+
+| anchored #1 / top 10 | D59 | D60 |
+|---|---|---|
+| next.js (300) | 205 (68.3%) / 267 | 269 (89.7%) / 300 |
+| react (300) | 269 (89.7%) / 297 | 272 (90.7%) / 300 |
+| jest (222) | 187 (84.2%) / 218 | 194 (87.4%) / 219 |
+| zod (86) | 72 / 86 | 72 / 86 |
+| discourse (256) | 215 / 250 | 215 / 252 |
+| rails (190) | 136 / 189 | 134 / 189 |
+| all (1,354) | 1,084 (80.1%) / 1,307 | 1,156 (85.4%) / 1,346 |
+
+86 up, 12 down; no row left the top 10. `range` is #1. Measured on main with D56–D59
+(`94d5518` against this change). Unanchored recall is untouched: 0
+of 6,879 top 10s changed, regress 54 of 57 both.
+
+*The two losses* are rails `sharded?`, asked from `activerecord/test/cases/shard_keys_test.rb`
+(lines 77 and 78) about `ActiveRecord::ConnectionHandling#sharded?`. A test fake,
+`DatabaseConfigurationsTest::CustomHashConfig#sharded?` in a sibling test file, now
+outranks it (1671 against 1611, the gap being `proximity`). This is D31's known limit,
+a fake that shares the library's name, widened from the anchor's file to its test tree.
+Accepted: across the six repos it costs 2 #1s for 74 gained.
+
+*Rejected: examples only.* Waiving under example directories alone lost nothing (11 up,
+next.js 213 / 272) and still put `range` at #1, but it treats a test tree and an example
+app differently where D29 and D31 treat them alike, and gives up most of the gain (measured before D56–D58: 11 up against 85).
+
+*Reverses if:* anchored use from tests shows library calls losing to sibling fakes more
+often than sibling helpers winning (then fall back to example directories only), or a
+repo keeps unrelated suites under one shallow `test/` tree where the waiver is too wide.

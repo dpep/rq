@@ -114,6 +114,9 @@ pub(crate) struct Anchor {
     /// The language tags the anchor's file can refer to definitions in, as its
     /// plugin declares them; empty when no plugin handles the file.
     reach: Vec<&'static str>,
+    /// The innermost test or example directory holding the anchor's file
+    /// (`examples/`), whose definitions take no secondary penalty.
+    tree: Option<String>,
 }
 
 impl Anchor {
@@ -130,12 +133,22 @@ impl Anchor {
             scope
         });
         let reach = crate::lang::reachable_from(&file);
+        let tree = score::secondary_tree(&file).map(str::to_string);
         Anchor {
             root,
             file,
             scope,
             reach,
+            tree,
         }
+    }
+
+    /// The candidate is the anchor's own file, or under the innermost test or
+    /// example directory holding the anchor: what is secondary elsewhere is
+    /// the context there (D31, D60).
+    fn in_tree(&self, root: &str, file: &str) -> bool {
+        root == self.root
+            && (file == self.file || self.tree.as_deref().is_some_and(|t| file.starts_with(t)))
     }
 
     /// Code at the anchor can refer to a definition in `language`: the same
@@ -193,13 +206,13 @@ pub(crate) struct Context {
 impl Context {
     /// The context-dependent boosts for one candidate.
     fn boosts(&self, c: &SymbolRow, recency: f64) -> Boosts {
-        let (enclosing, proximity, reachable, anchor_file) =
+        let (enclosing, proximity, reachable, anchor_tree) =
             self.anchor.as_ref().map_or((0.0, 0.0, 0.0, false), |a| {
                 (
                     a.enclosing(c.parent.as_deref()),
                     a.proximity(&c.root, &c.file),
                     a.reachable(&c.language),
-                    a.root == c.root && a.file == c.file,
+                    a.in_tree(&c.root, &c.file),
                 )
             });
         Boosts {
@@ -212,7 +225,7 @@ impl Context {
             enclosing,
             proximity,
             reachable,
-            anchor_file,
+            anchor_tree,
         }
     }
 }
@@ -1629,6 +1642,44 @@ mod tests {
         // an anchor no plugin reads leaves the order alone
         let hits = search(&store, "range", None, None, &ctx("docs/notes.md"), 10).unwrap();
         assert_eq!(hits[0].file, "a/range.rs");
+    }
+
+    #[test]
+    fn an_anchor_in_an_example_app_waives_the_penalty_there() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
+        for file in ["examples/blog/utils/range.rb", "lib/core/range.rb"] {
+            store
+                .replace_file_symbols(repo, file, "ruby", None, "h", &[sym("range", Kind::Method)])
+                .unwrap();
+        }
+        let plain = search(&store, "range", None, None, &Context::default(), 10).unwrap();
+        assert_eq!(plain[0].file, "lib/core/range.rb");
+
+        let ctx = |file: &str| Context {
+            anchor: Some(Anchor::new("local:/tmp/x".into(), file.into(), 1, &[])),
+            ..Context::default()
+        };
+        let inside = search(
+            &store,
+            "range",
+            None,
+            None,
+            &ctx("examples/blog/app/page.rb"),
+            10,
+        )
+        .unwrap();
+        assert_eq!(inside[0].file, "examples/blog/utils/range.rb");
+        assert!(inside[0].features.iter().all(|f| f.name != "example_path"));
+
+        // from library code the example keeps its penalty
+        let outside = search(&store, "range", None, None, &ctx("lib/app/page.rb"), 10).unwrap();
+        assert_eq!(outside[0].file, "lib/core/range.rb");
+        let example = outside
+            .iter()
+            .find(|h| h.file.starts_with("examples/"))
+            .unwrap();
+        assert!(example.features.iter().any(|f| f.name == "example_path"));
     }
 
     #[test]

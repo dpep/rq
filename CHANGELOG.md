@@ -27,6 +27,10 @@ old rows meanwhile. Nothing to run by hand.
   JavaScript definition now ranks ahead of a Rust one of the same name; asked from
   Ruby, a Ruby one does. A new `reachable` feature in `--explain`; nothing is
   filtered out, and queries without `--anchor` are unchanged.
+- **Asked from inside a test or example tree, `--anchor` treats that tree's
+  definitions as the context**, not secondary: the test/example penalty is
+  lifted under the innermost test or example directory holding the anchor
+  (`examples/`, `test/`), as it already was in the anchor's own file.
 
 ### Fixed
 - **`export let` and `export var` are indexed**, as constants, like `export

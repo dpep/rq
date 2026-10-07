@@ -107,8 +107,9 @@ pub(crate) struct Boosts {
     pub proximity: f64,
     /// Anchor signal: the anchor's language can refer to the candidate's.
     pub reachable: f64,
-    /// The candidate is in the anchor's own file.
-    pub anchor_file: bool,
+    /// The candidate is in the anchor's own file, or under the test or example
+    /// directory the anchor itself sits in.
+    pub anchor_tree: bool,
 }
 
 /// Score `cand` for `query`. Returns `None` when the candidate doesn't match at
@@ -332,8 +333,9 @@ pub(crate) fn score(
         None
     };
     // Asked from inside a test (or generated, or example) file, that file's
-    // own definitions are the context, not secondary to it.
-    if let Some(name) = secondary.filter(|_| !boosts.anchor_file) {
+    // own definitions are the context, not secondary to it; so are those in
+    // the test or example directory the anchor sits in.
+    if let Some(name) = secondary.filter(|_| !boosts.anchor_tree) {
         let value = if features.iter().any(|f| matches!(f.name, "fuzzy" | "typo")) {
             (TEST_PATH_SHARE * name_evidence(&features).max(0.0)).min(TEST_PATH_PENALTY)
         } else {
@@ -1437,12 +1439,37 @@ pub(crate) fn joiners_eq(a: &str, b: &str) -> bool {
 /// (ripgrep's `flags/doc/`, tokio's `src/doc/`).
 fn in_example_path(file: &str) -> bool {
     let dirs = file.rsplit_once('/').map_or("", |(d, _)| d);
-    dirs.split('/').any(|seg| {
-        matches!(
-            seg,
-            "example" | "examples" | "_examples" | "demo" | "demos" | "docs" | "dev-docs"
-        )
-    })
+    dirs.split('/').any(is_example_dir)
+}
+
+fn is_example_dir(seg: &str) -> bool {
+    matches!(
+        seg,
+        "example" | "examples" | "_examples" | "demo" | "demos" | "docs" | "dev-docs"
+    )
+}
+
+fn is_test_dir(seg: &str) -> bool {
+    matches!(
+        seg,
+        "test" | "tests" | "spec" | "specs" | "__tests__" | "__mocks__" | "testdata" | "fixtures"
+    )
+}
+
+/// The innermost directory of `file` that makes its contents a test or example
+/// path, with a trailing `/` (`examples/blog/app/page.tsx` → `examples/`).
+/// `None` when no directory does: a `foo.test.ts` is secondary by its own name.
+pub(crate) fn secondary_tree(file: &str) -> Option<&str> {
+    let dirs = file.rsplit_once('/')?.0;
+    let mut end = None;
+    let mut at = 0;
+    for seg in dirs.split('/') {
+        at += seg.len() + 1;
+        if is_test_dir(seg) || is_example_dir(seg) {
+            end = Some(at);
+        }
+    }
+    end.map(|e| &file[..e])
 }
 
 /// Does this repo-relative path look like test/spec code?
@@ -1460,19 +1487,7 @@ fn in_test_path(file: &str) -> bool {
     };
     // whole segments only, so a library *about* testing (`.../testing/`) stays
     // unpenalized
-    if dirs.split('/').any(|seg| {
-        matches!(
-            seg,
-            "test"
-                | "tests"
-                | "spec"
-                | "specs"
-                | "__tests__"
-                | "__mocks__"
-                | "testdata"
-                | "fixtures"
-        )
-    }) {
+    if dirs.split('/').any(is_test_dir) {
         return true;
     }
     if name == "conftest.py" {
@@ -1524,6 +1539,24 @@ mod tests {
             "lib/latest.rb",
         ] {
             assert!(!in_test_path(p), "should not be a test path: {p}");
+        }
+    }
+
+    #[test]
+    fn a_secondary_tree_is_the_innermost_test_or_example_dir() {
+        let cases = [
+            ("examples/blog/app/page.tsx", Some("examples/")),
+            (
+                "pkg/tests/e2e/fixtures/a/b.js",
+                Some("pkg/tests/e2e/fixtures/"),
+            ),
+            ("spec/models/widget_spec.rb", Some("spec/")),
+            ("src/widget.test.ts", None),
+            ("src/search/score.rs", None),
+            ("top.rb", None),
+        ];
+        for (file, want) in cases {
+            assert_eq!(secondary_tree(file), want, "{file}");
         }
     }
 
