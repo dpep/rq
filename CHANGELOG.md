@@ -30,9 +30,11 @@ old rows meanwhile. Nothing to run by hand.
   Asked from a `.tsx` file in a repo that also holds Rust, a TypeScript or
   JavaScript definition now ranks ahead of a Rust one of the same name; asked from
   Ruby, a Ruby one does. A new `reachable` feature in `--explain`, present only
-  when some match is in a language the anchor can't refer to, so scores and
-  confidence in a one-language repo are as without `--anchor`; nothing is
-  filtered out, and queries without `--anchor` are unchanged.
+  when some candidate the search considered is in a language the anchor can't
+  refer to (counted before `--lang` or the relevance gate narrow what's
+  shown), so scores and confidence in a one-language repo are as without
+  `--anchor`; nothing is filtered out, and queries without `--anchor` are
+  unchanged.
 - **Asked from inside a test or example tree, `--anchor` treats that tree's
   definitions as the context**, not secondary: the test/example penalty is
   lifted for what the anchor can call in its own app or suite (the innermost

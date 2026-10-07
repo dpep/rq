@@ -576,7 +576,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     {
         let tree = crate::index::LiveTree::new(root, identity.clone());
         let (tail, cost) = live_fallback(&tree, query, rank_limit, &ctx);
-        hits = crate::search::merge(hits, tail, rank_limit);
+        hits = crate::search::merge(hits, tail, rank_limit, &ctx);
         total = total.max(hits.len());
         live_scan = Some(cost);
     }

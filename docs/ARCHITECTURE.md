@@ -550,6 +550,8 @@ why a result ranked where it did:
   to, its plugin's `family` (TypeScript and JavaScript share one). Any checkout;
   no feature when no plugin reads the anchor file, or when every candidate is
   reachable, where it would lift all alike and only dilute confidence (D59).
+  Candidates are every one recalled, before `--lang` or the relevance gate
+  narrow them; index and live-scan results are decided as one set when merged.
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`recency`, `branch`, `enclosing`,

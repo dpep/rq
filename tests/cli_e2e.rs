@@ -2902,6 +2902,38 @@ fn a_miss_in_an_indexed_tree_outside_git_is_definitive() {
 }
 
 #[test]
+fn reach_is_decided_once_over_indexed_and_live_scanned_matches() {
+    // An indexed repo holding Ruby and TS, and an untracked dir scanned live:
+    // the anchor's reach must lift the TS beside it as much as the indexed TS.
+    let (dir, db) = scratch("reach-live");
+    let (mix, loose) = (dir.join("mix"), dir.join("loose"));
+    fs::create_dir_all(&mix).unwrap();
+    fs::create_dir_all(&loose).unwrap();
+    fs::write(
+        mix.join("a.rb"),
+        "class Gizmo\n  def widget_parsing\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(mix.join("b.ts"), "export function widgetParsing() {}\n").unwrap();
+    git_init_commit(&mix);
+    rq(&db, &mix, &["--index"]);
+    fs::write(loose.join("c.ts"), "export function widgetParsingg() {}\n").unwrap();
+    fs::write(
+        loose.join("d.ts"),
+        "import x from \"y\";\nwidgetParsin();\n",
+    )
+    .unwrap();
+
+    let (code, out) = rq(
+        &db,
+        &loose,
+        &["wdgtParsing", "--anchor", "d.ts:2", "--ndjson"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(top_file(&out), "c.ts", "{out}");
+}
+
+#[test]
 fn no_wait_outside_git_and_unindexed_is_a_plain_miss() {
     // nothing indexes a dir rq doesn't track: the live scan is the answer
     let (dir, db) = scratch("nongit-unindexed-nowait");

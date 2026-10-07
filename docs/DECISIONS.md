@@ -3544,6 +3544,10 @@ listed, below.
 boost changes no order but dilutes confidence, which reads the leader's margin against its
 score (zod's `parse` went 0.54 to 0.53). So it applies only to a candidate set holding a
 definition out of the anchor's reach; elsewhere `--anchor` scores as without it.
+An untracked directory's live scan is ranked apart from the index's results and merged
+after, so the merge settles reach over both: when either set held an unreachable
+definition, the other set's reachable ones take the boost too. Decided per set, a TS
+definition in another indexed repo outranked the one beside the anchor.
 
 *Reverses if:* a language family turns out to need more than one tag (a plugin that reaches
 two families), or anchored use from binding code shows the cross-language definition
