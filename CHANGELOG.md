@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.6 — 2026-10-07
 
 The first run after upgrading re-reads every TypeScript and JavaScript file
 once, in the background, for the definitions below; results answer from the
