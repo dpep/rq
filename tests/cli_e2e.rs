@@ -95,6 +95,31 @@ fn index_search_and_status_through_the_cli() {
     assert!(out.contains("local:"), "status output: {out}");
 }
 
+/// A reader that stops early (`rq --status | head -1`) ends rq quietly, not
+/// with a panic over the broken pipe.
+#[test]
+fn a_closed_stdout_ends_rq_quietly() {
+    let (dir, db) = scratch("epipe");
+    fs::write(dir.join("alpha.rb"), "class HandlerA\nend\n").unwrap();
+    assert_eq!(rq(&db, &dir, &["--index"]).0, 0);
+    for args in [&["--status"][..], &["--status", "--json"], &["handler"]] {
+        let mut child = rq_cmd(&db, &dir)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run rq");
+        drop(child.stdout.take()); // gone before rq writes
+        let out = child.wait_with_output().expect("wait for rq");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.code() != Some(101) && !err.contains("panicked"),
+            "{args:?}: {:?} {err}",
+            out.status
+        );
+    }
+}
+
 #[test]
 fn a_strong_match_suppresses_the_scattered_tail() {
     // when the query lands an exact/prefix name match, fuzzy near-matches are

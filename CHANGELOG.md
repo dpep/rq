@@ -38,6 +38,9 @@ old rows meanwhile. Nothing to run by hand.
   NFC — is read under the disk's name, as `rq --index` reads it, rather than
   dropped with everything under it. A search no longer re-reads an edited top
   hit that an ignore rule now excludes (DECISIONS D62).
+- **`rq --status | head -1` no longer panics** (exit 101, "failed printing to
+  stdout: Broken pipe"). A reader that stops early ends rq the way it ends
+  `cat`, whatever the command.
 - **A declaration a CommonJS module exports reads public**, not private:
   `function View() {}` with `module.exports = View`, `const keep = …` with
   `exports.keep = keep`, and each shorthand or name-valued key of

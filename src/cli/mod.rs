@@ -279,6 +279,13 @@ struct Cli {
 
 /// Parse arguments and dispatch. Returns the process exit code.
 pub fn run() -> ExitCode {
+    // A reader that stops early (`rq --status | head -1`) ends rq the way it
+    // ends `cat`, rather than `println!` panicking over the broken pipe. Rust
+    // starts every program ignoring SIGPIPE, so a write would fail instead.
+    // SAFETY: called first, before any thread exists; SIG_DFL is a plain value.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => return clap_failure(err),
