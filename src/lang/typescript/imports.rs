@@ -824,11 +824,15 @@ fn discover(root: &Path) -> HashMap<String, String> {
     if let Some(name) = manifest.get("name").and_then(Value::as_str) {
         out.insert(name.to_string(), String::new());
     }
-    let mut dirs = Vec::new();
-    for p in patterns.iter().filter(|p| !p.starts_with('!')) {
-        expand(root, p.trim_end_matches('/'), &mut dirs);
+    let (mut dirs, mut excluded) = (Vec::new(), Vec::new());
+    for p in &patterns {
+        match p.strip_prefix('!') {
+            Some(negated) => expand(root, negated.trim_end_matches('/'), &mut excluded),
+            None => expand(root, p.trim_end_matches('/'), &mut dirs),
+        }
     }
-    for dir in dirs {
+    let excluded: HashSet<String> = excluded.into_iter().collect();
+    for dir in dirs.into_iter().filter(|d| !excluded.contains(d)) {
         let name = read(&root.join(join(&dir, "package.json")))
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
             .and_then(|m| m.get("name")?.as_str().map(str::to_string));
@@ -839,17 +843,28 @@ fn discover(root: &Path) -> HashMap<String, String> {
     out
 }
 
-/// The `packages:` list of a `pnpm-workspace.yaml`, read line by line.
+/// The `packages:` list of a `pnpm-workspace.yaml`, read line by line: a
+/// block list or a one-line `[…]`, `#` comments dropped.
 fn pnpm(yaml: &str) -> Vec<String> {
+    let item = |s: &str| s.trim().trim_matches(['\'', '"']).to_string();
     let mut out = Vec::new();
     let mut inside = false;
     for line in yaml.lines() {
-        if !line.starts_with([' ', '\t', '-']) {
-            inside = line.trim_end() == "packages:";
+        // a comment starts a line or follows a space
+        let line = line.split(" #").next().unwrap_or(line).trim_end();
+        if line.trim_start().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
-        if inside && let Some(item) = line.trim().strip_prefix('-') {
-            out.push(item.trim().trim_matches(['\'', '"']).to_string());
+        if !line.starts_with([' ', '\t', '-']) {
+            let value = line.strip_prefix("packages:").map(str::trim);
+            inside = value == Some("");
+            if let Some(list) = value.and_then(|v| v.strip_prefix('[')?.strip_suffix(']')) {
+                out.extend(list.split(',').map(item).filter(|s| !s.is_empty()));
+            }
+            continue;
+        }
+        if inside && let Some(rest) = line.trim().strip_prefix('-') {
+            out.push(item(rest));
         }
     }
     out
@@ -1316,9 +1331,40 @@ mod tests {
 
     #[test]
     fn pnpm_workspace_lists_its_packages() {
-        assert_eq!(
-            pnpm("packages:\n  - 'apps/*'\n  - \"crates/*/js\"\nallowBuilds:\n  - x\n"),
-            ["apps/*", "crates/*/js"]
+        let cases: [(&str, &[&str]); 3] = [
+            (
+                "packages:\n  - 'apps/*'\n  - \"crates/*/js\"\nallowBuilds:\n  - x\n",
+                &["apps/*", "crates/*/js"],
+            ),
+            (
+                "# workspace\npackages: # ours\n  - apps/* # the apps\n\n  # more\n  - libs/*\n",
+                &["apps/*", "libs/*"],
+            ),
+            (
+                "packages: ['tools/*', \"apps/*\"] # inline\n",
+                &["tools/*", "apps/*"],
+            ),
+        ];
+        for (yaml, want) in cases {
+            assert_eq!(pnpm(yaml), want, "{yaml}");
+        }
+    }
+
+    #[test]
+    fn a_negated_workspace_pattern_drops_its_packages() {
+        let root = checkout(
+            "negated",
+            &[
+                (
+                    "package.json",
+                    r#"{"workspaces": ["packages/*", "!packages/internal"]}"#,
+                ),
+                ("packages/ui/package.json", r#"{"name": "ui"}"#),
+                ("packages/internal/package.json", r#"{"name": "internal"}"#),
+            ],
         );
+        let found = discover(&root);
+        assert_eq!(found.get("ui").map(String::as_str), Some("packages/ui"));
+        assert_eq!(found.get("internal"), None);
     }
 }
