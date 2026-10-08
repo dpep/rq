@@ -30,8 +30,10 @@ use crate::core::ImportTarget;
 /// Re-export hops followed past the imported file: a package's entry to its
 /// barrel to the defining file is two.
 const MAX_HOPS: usize = 3;
-/// Files a resolution may name, bounding an `export *` fan-out.
+/// Files a resolution may name.
 const MAX_TARGETS: usize = 32;
+/// Files a resolution may read, bounding an `export *` fan-out.
+const MAX_FILES: usize = 64;
 /// Larger files are bundles, not modules anyone imports by hand.
 const MAX_BYTES: u64 = 1 << 20;
 /// Larger sources parse only their module header and later module statements
@@ -52,7 +54,9 @@ const CONDITIONS: [&str; 7] = [
 ];
 
 /// The definitions `name`, as `file` (relative to `root`) uses it at `line`,
-/// resolves to: the imported file first, then each it re-exports from.
+/// resolves to: the imported file first, then each it re-exports from. A file
+/// reached is a target unless its text can't hold the name, so a barrel's
+/// `export *` of unrelated modules spends the file budget, not the target one.
 pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<ImportTarget> {
     let mut r = Resolver {
         root,
@@ -62,12 +66,24 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
     let mut seen = HashSet::new();
     let mut queue = VecDeque::from([(file.to_string(), name.to_string(), 0)]);
     while let Some((from, wanted, depth)) = queue.pop_front() {
-        let Some(source) = read(&root.join(&from)) else {
+        let source = read(&root.join(&from));
+        // unreadable (too big) can't be ruled out
+        if depth > 0 && source.as_ref().is_none_or(|s| s.contains(wanted.as_str())) {
+            out.push(ImportTarget {
+                file: from.clone(),
+                name: wanted.clone(),
+            });
+            if out.len() >= MAX_TARGETS {
+                break;
+            }
+        }
+        let Some(source) = source else {
             continue;
         };
         // a cheap test before a parse: what can't name it can't pass it on
-        if !source.contains(wanted.as_str())
-            && (depth == 0 || !(source.contains('*') || source.contains("module.exports")))
+        if depth > MAX_HOPS
+            || (!source.contains(wanted.as_str())
+                && (depth == 0 || !(source.contains('*') || source.contains("module.exports"))))
         {
             continue;
         }
@@ -78,17 +94,10 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
         let bindings = bindings(&from, &module_statements(&source));
         for (spec, target) in edges(&bindings, &wanted, used) {
             for found in r.locate(&from, &spec) {
-                if found == from || !seen.insert((found.clone(), target.clone())) {
-                    continue;
-                }
-                out.push(ImportTarget {
-                    file: found.clone(),
-                    name: target.clone(),
-                });
-                if out.len() >= MAX_TARGETS {
-                    return out;
-                }
-                if depth < MAX_HOPS {
+                if seen.len() < MAX_FILES
+                    && found != from
+                    && seen.insert((found.clone(), target.clone()))
+                {
                     queue.push_back((found, target.clone(), depth + 1));
                 }
             }
@@ -1046,13 +1055,41 @@ mod tests {
                 ("barrel/other.ts", "export const Baz = 1\n"),
             ],
         );
-        let foo = targets(&root, "a.ts", 1, "Foo");
-        assert_eq!(foo.len(), 3, "{foo:?}");
-        assert_eq!(foo[2], ("barrel/deep/foo.ts".into(), "Foo".into()));
-        let bar = targets(&root, "a.ts", 1, "Bar");
-        assert!(
-            bar.contains(&("barrel/star.ts".into(), "Bar".into())),
-            "{bar:?}"
+        assert_eq!(
+            targets(&root, "a.ts", 1, "Foo"),
+            vec![
+                ("barrel/index.ts".into(), "Foo".into()),
+                ("barrel/deep/foo.ts".into(), "Foo".into())
+            ],
+            "followed through a star that can't hold the name, not named"
+        );
+        assert_eq!(
+            targets(&root, "a.ts", 1, "Bar"),
+            one("barrel/star.ts", "Bar")
+        );
+
+        // stars past the target budget still reach the one defining the name
+        let mut files: Vec<(String, String)> = (0..40)
+            .map(|i| (format!("big/m{i}.ts"), format!("export const v{i} = {i}\n")))
+            .collect();
+        let stars: String = (0..40)
+            .map(|i| format!("export * from './m{i}'\n"))
+            .chain(["export * from './last'\n".to_string()])
+            .collect();
+        files.extend([
+            ("big/index.ts".to_string(), stars),
+            ("big/last.ts".into(), "export * from './deep'\n".into()),
+            ("big/deep.ts".into(), "export class Deep {}\n".into()),
+            ("a.ts".into(), "import { Deep } from './big'\n".into()),
+        ]);
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(f, s)| (f.as_str(), s.as_str()))
+            .collect();
+        let root = checkout("stars", &files);
+        assert_eq!(
+            targets(&root, "a.ts", 1, "Deep"),
+            one("big/deep.ts", "Deep")
         );
 
         // a cycle of re-exports ends
@@ -1064,7 +1101,7 @@ mod tests {
                 ("c.ts", "export * from './b'\n"),
             ],
         );
-        assert_eq!(targets(&root, "a.ts", 1, "X").len(), 2);
+        assert!(targets(&root, "a.ts", 1, "X").is_empty());
     }
 
     #[test]
@@ -1104,10 +1141,7 @@ mod tests {
         assert_eq!(targets(&root, "main.js", 3, "run"), one("run.js", "start"));
         assert_eq!(
             targets(&root, "main.js", 5, "format"),
-            vec![
-                ("helpers.js".into(), "format".into()),
-                ("impl.js".into(), "format".into())
-            ],
+            one("impl.js", "format"),
             "through the namespace, then the CommonJS re-export"
         );
         assert_eq!(targets(&root, "main.js", 5, "load"), one("ns.ts", "load"));
@@ -1196,10 +1230,7 @@ mod tests {
         );
         assert_eq!(
             targets(&root, page, 1, "Main"),
-            vec![
-                ("packages/web/document.js".into(), "Main".into()),
-                ("packages/web/src/pages/doc.tsx".into(), "Main".into())
-            ]
+            one("packages/web/src/pages/doc.tsx", "Main")
         );
         assert_eq!(
             targets(&root, page, 1, "run"),
