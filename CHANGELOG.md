@@ -18,6 +18,15 @@ The first run after upgrading re-reads every TypeScript and JavaScript file
 once, in the background, for the visibility below; results answer from the
 old rows meanwhile. Nothing to run by hand.
 
+### Added
+- **`--anchor` follows the anchor file's import of the name** (TypeScript and
+  JavaScript). `import { Widget } from './widget'`, a CommonJS `require`, or an
+  import of one of the checkout's own workspace packages (`from '@acme/ui'`)
+  now ranks the definition it resolves to first, through re-exports and
+  barrels, as the `imported` feature in `--explain`. A boost, not a filter;
+  third-party packages and `tsconfig` path aliases aren't resolved
+  (DECISIONS D63).
+
 ### Changed
 - **Asked from inside a test or example tree, `--anchor` holds back a private
   TypeScript or JavaScript definition in a sibling file**, which the anchor

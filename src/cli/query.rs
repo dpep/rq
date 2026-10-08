@@ -308,7 +308,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let scope = |current| Scope::new(all_repos, warming_ok, current);
     let ctx = crate::search::Context {
         active: crate::search::ActiveFiles::new(active_paths.clone()),
-        anchor: anchor.clone(),
+        anchor: anchor.as_ref().map(|a| a.for_query(query)),
     };
 
     drop(repo_span);

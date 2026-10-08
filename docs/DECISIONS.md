@@ -3903,3 +3903,111 @@ the scratch filesystem folds case).
 *Reverses if:* the walk's cost before a pass shows in a monorepo's first answer (the
 97k-file corpus wasn't measured here), in which case a cheaper exact test — the ignore
 files git tracks, matched without a walk — is the thing to build, not giving up the rule.
+
+## D63 — `--anchor` follows the anchor file's import of the name
+
+**Adopted**, 2026-10-08. Anchored recall (all three sets) and the recall harness,
+against main (`a55bf1f`).
+
+*The weakness.* D59–D61 rank by where the anchor is, never by what it says. A file that
+writes `import { Widget } from '@acme/ui'` has named the definition it means, and rq
+still weighed it against every other `Widget` by path and proximity. Most of the
+remaining JS/TS misses were exactly that: turbopack fixtures defining `A`, `value` and
+`dep` hundreds of times, and an example app's own `Main` beside the library's.
+
+*The rule.* A fifth anchor feature, `imported` (450): the anchor file imports the query's
+name, and a top-level definition of that name sits in a file the import resolves to, in
+the anchor's checkout. A boost, never a filter: a wrong resolution costs a reordering.
+
+The seam is `LanguagePlugin::resolve_import(root, file, line, name) -> Vec<ImportTarget>`,
+defaulted empty; `ImportTarget` is `core`'s neutral (file, name) pair. The plugin parses
+its own import syntax and does its own module resolution from disk, so the core holds no
+language knowledge, and an unindexed or partial checkout resolves the same. Resolved
+once per query, so only when `--anchor` is given.
+
+The TypeScript/JavaScript plugin resolves, from the module's top-level statements:
+- `import { a, b as c }`, `import a`, `import * as ns` (only where the anchor's line
+  spells `ns.name`), `import a = require(…)`, `export { a } from`, and CommonJS's
+  `const { a, b: c } = require(…)`, `const ns = require(…)`, `const a = require(…).b`;
+- relative specifiers by TypeScript's probing (`./x.js` naming `./x.ts`, the extensions,
+  `/index`), never leaving the checkout;
+- bare specifiers naming one of the checkout's own workspace packages (`package.json`
+  `workspaces`, `pnpm-workspace.yaml`; `packages/*` when neither declares any), by
+  `exports` (subpaths and `*` patterns, preferring `types`/`source`/`import`/`default`),
+  then `types`/`module`/`main`. A built path the checkout doesn't hold (`dist/x.js`,
+  `build/index.d.ts`) is read as its source (`src/x.ts`): next.js's `next/document`
+  stub and jest's `build/` entries resolve this way. Discovery is cached per process.
+- then re-exports, up to three hops past the imported file and 32 files: `export { a }
+  from`, `export * from` (only when no explicit re-export names it), `module.exports =
+  require(…)`, and an import the file passes on. A default import looks up its local name.
+
+Not resolved: third-party packages (no `node_modules` walk), `tsconfig` `paths`
+aliases, dynamic `import()`, and `ns.name` asked as a qualified query (the qualifier
+filters on `parent`, which a module namespace isn't).
+
+| anchored #1 / top 10 | main | `imported` 450 |
+|---|---|---|
+| calls (446) | 349 / 441 | 349 / 441 |
+| imports (908) | 807 (88.9%) / 905 | 898 (98.9%) / 908 |
+| packages (231) | 147 (63.6%) / 228 | 218 (94.4%) / 231 |
+| next.js (422) | 368 / 422 | 417 / 422 |
+| react (351) | 295 / 351 | 349 / 351 |
+| jest (280) | 219 / 274 | 271 / 280 |
+| zod (86) | 72 / 86 | 79 / 86 |
+| rails + discourse (446) | 349 / 441 | 349 / 441 |
+
+168 up, 0 down; no row lost #1 or the top 10.
+
+*Weight.*
+
+| `imported` | 150 | 300 | 450 | 600 | 1000 |
+|---|---|---|---|---|---|
+| imports #1 | 894 | 895 | 898 | 898 | 898 |
+| packages #1 / top 10 | 201 / 228 | 218 / 231 | 218 / 231 | 218 / 231 | 218 / 231 |
+
+None lost a row against main. The gain stops at 450, which clears the secondary-path
+penalty (400): jest's `runTest`, imported by three `__tests__/` files from
+`../__mocks__/testUtils`, lies outside the anchor's tree (D60) and takes `test_path`;
+at 300 it sat #3 behind library `runTest`s it isn't. A resolved import is evidence the
+anchor calls that definition, test helper or not.
+
+*What it doesn't fix* (the 10 + 13 rows still below #1, unchanged from 450 to 1000):
+- **A name declared twice in the resolved file** — TypeScript's declaration merging,
+  `interface $ZodType` beside `const $ZodType`, `declare const jest` beside `declare
+  namespace jest`, `type INVALID` beside `const INVALID`. Both take the boost; the set's
+  truth is the first line. A type-only import could pick the type; not attempted.
+- **An "import" the set read from a string**: jest's `Config` rows sit in a template
+  literal (`import type {Config} from 'jest'` written to a fixture file). Not an import;
+  correctly unresolved.
+- `Main` from `test/e2e/next-script/index.test.ts` (#4) and a few same-tie rows.
+
+*Unanchored ranking is unchanged:* resolution runs only under `--anchor`. 0 of 6,879
+top 10s changed (#1 5,159, 75.6%, both), regress 54 of 57 both.
+
+*Latency.* Wall time of `rq <name> --anchor … --json -l 10` over 40 sampled import and
+package rows per repo, median of 5 runs each, interleaved with main, release, load ~10:
+
+| p50 / p90 | main | parse whole files | module statements only |
+|---|---|---|---|
+| next.js | 10.2 / 15.7 ms | +2.0 / +7.6 ms (separate run) | 12.2 / 17.9 ms |
+| react | 11.2 / 15.9 ms | +6.6 / +20.1 ms (separate run) | 13.2 / 17.1 ms |
+
+Parsing a whole anchor or hop file is the cost: react's `ReactFiberConfigDOM.js` (240 KB)
+took ~90 ms to resolve one import. A source over 16 KB is now parsed for its module
+statements only: the header up to the first line of code at column 0 (a function, class,
+type or exported declaration; a `const` may be a `require` and doesn't end it), plus any
+later top-level `import`, `export … from` or `module.exports = require(…)`. The anchored
+sets measure the same with and without it. The median resolution is ~3 ms
+(`setup: imports` under `--profile`).
+
+*Rejected:*
+- **A filter to the resolved file.** Navigation, not search; a resolver this partial
+  (no `node_modules`, no path aliases) must degrade to the old order, not to nothing.
+- **Resolving in the core.** Specifier probing and `package.json` are a language's
+  module system; the core sees (file, name) pairs.
+- **Waiving the secondary penalty for an imported definition** instead of out-weighing
+  it. Same rows; a second rule touching `anchor_tree` where one weight suffices.
+
+*Reverses if:* anchored use shows a resolution confidently wrong (a workspace package
+shadowing the third-party one a file actually loads), in which case drop bare specifiers
+first; or a second language's plugin needs more than (file, name), such as a member path.

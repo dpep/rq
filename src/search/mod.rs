@@ -98,6 +98,10 @@ const MIN_PROXIMITY: f64 = 5.0;
 /// large as the secondary-path penalty, so an unreachable definition can't
 /// outrank a reachable one on that alone; larger measured the same (D59).
 const REACHABLE_BOOST: f64 = 400.0;
+/// Boost for the definition the anchor file's imports resolve the query's name
+/// to. Above the secondary-path penalty: an import resolved into a test helper
+/// outside the anchor's own tree is still the one it calls (D63).
+const IMPORTED_BOOST: f64 = 450.0;
 
 /// Where a query was asked from (`--anchor FILE:LINE`): an editor's cursor, or
 /// the file an agent is reading. Ranking context only — it never filters.
@@ -117,6 +121,14 @@ pub(crate) struct Anchor {
     /// The test or example tree holding the anchor's file (`examples/blog/`),
     /// whose definitions take no secondary penalty.
     tree: Option<String>,
+    /// The checkout on disk, when known: where the anchor file's imports are
+    /// resolved.
+    dir: Option<std::path::PathBuf>,
+    /// The anchor's line, 1-based.
+    line: i64,
+    /// Where the query's name is defined through the anchor file's imports,
+    /// as its plugin resolves them; filled per query by [`Anchor::for_query`].
+    imports: Vec<crate::core::ImportTarget>,
 }
 
 impl Anchor {
@@ -140,7 +152,50 @@ impl Anchor {
             scope,
             reach,
             tree,
+            dir: None,
+            line,
+            imports: Vec::new(),
         }
+    }
+
+    /// The anchor with its checkout's place on disk, so its imports resolve.
+    #[must_use]
+    pub(crate) fn on_disk(self, dir: std::path::PathBuf) -> Self {
+        Anchor {
+            dir: Some(dir),
+            ..self
+        }
+    }
+
+    /// The anchor for one query: where the anchor file's imports say the
+    /// query's name is defined. A glob names nothing an import binds.
+    #[must_use]
+    pub(crate) fn for_query(&self, query: &str) -> Self {
+        let _span = crate::profile::span("setup: imports");
+        let (leaf, _) = score::parse_qualified(query);
+        let imports = match &self.dir {
+            Some(dir) if !score::has_wildcard(leaf) => {
+                let line = usize::try_from(self.line).unwrap_or(1);
+                crate::lang::resolve_import(dir, &self.file, line, leaf)
+            }
+            _ => Vec::new(),
+        };
+        Anchor {
+            imports,
+            ..self.clone()
+        }
+    }
+
+    /// The candidate is a top-level definition the anchor file's imports
+    /// resolve the query to.
+    fn imported(&self, c: &SymbolRow) -> f64 {
+        let hit = c.root == self.root
+            && c.parent.is_none()
+            && self
+                .imports
+                .iter()
+                .any(|t| t.file == c.file && t.name == c.name);
+        if hit { IMPORTED_BOOST } else { 0.0 }
     }
 
     /// The candidate is in the anchor's own file, or under the anchor's test or
@@ -248,15 +303,18 @@ impl Context {
     /// The context-dependent boosts for one candidate, of a set for which
     /// [`Context::reach_splits`] said `reach`.
     fn boosts(&self, c: &SymbolRow, recency: f64, reach: bool) -> Boosts {
-        let (enclosing, proximity, reachable, anchor_tree) =
-            self.anchor.as_ref().map_or((0.0, 0.0, 0.0, false), |a| {
-                (
-                    a.enclosing(c.parent.as_deref()),
-                    a.proximity(&c.root, &c.file),
-                    if reach { a.reachable(&c.language) } else { 0.0 },
-                    a.in_tree(c),
-                )
-            });
+        let (enclosing, proximity, reachable, imported, anchor_tree) =
+            self.anchor
+                .as_ref()
+                .map_or((0.0, 0.0, 0.0, 0.0, false), |a| {
+                    (
+                        a.enclosing(c.parent.as_deref()),
+                        a.proximity(&c.root, &c.file),
+                        if reach { a.reachable(&c.language) } else { 0.0 },
+                        a.imported(c),
+                        a.in_tree(c),
+                    )
+                });
         Boosts {
             recency,
             branch: if self.active.is_empty() {
@@ -267,6 +325,7 @@ impl Context {
             enclosing,
             proximity,
             reachable,
+            imported,
             anchor_tree,
         }
     }

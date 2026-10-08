@@ -6,7 +6,7 @@
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::core::{Kind, PrivateScope, Symbol};
+use crate::core::{ImportTarget, Kind, PrivateScope, Symbol};
 
 pub(crate) mod go;
 pub(crate) mod python;
@@ -217,6 +217,22 @@ pub(crate) trait LanguagePlugin {
     fn constructor(&self) -> Option<&'static str> {
         None
     }
+
+    /// Where `name`, as `file` (relative to the checkout at `root`) uses it at
+    /// `line`, is defined by way of the file's imports, as the language
+    /// resolves its modules within the checkout: the imported file first, then
+    /// each it re-exports from. Empty when the file doesn't import the name,
+    /// and by default: a language that resolves no imports earns no
+    /// `imported` boost.
+    fn resolve_import(
+        &self,
+        _root: &std::path::Path,
+        _file: &str,
+        _line: usize,
+        _name: &str,
+    ) -> Vec<ImportTarget> {
+        Vec::new()
+    }
 }
 
 /// The registered language plugins. Adding a language is one line here.
@@ -272,6 +288,21 @@ pub(crate) fn private_scope(language: &str) -> PrivateScope {
         .iter()
         .find(|p| p.language() == language)
         .map_or(PrivateScope::Directory, |p| p.private_scope())
+}
+
+/// Where `name`, used at `line` of `file`, is defined through that file's
+/// imports, by its plugin; empty when no plugin handles the file.
+pub(crate) fn resolve_import(
+    root: &std::path::Path,
+    file: &str,
+    line: usize,
+    name: &str,
+) -> Vec<ImportTarget> {
+    std::path::Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(plugin_for_extension)
+        .map_or_else(Vec::new, |p| p.resolve_import(root, file, line, name))
 }
 
 /// Is `name` the constructor a `Foo.new` query means, in `language`?

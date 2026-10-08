@@ -102,7 +102,10 @@ For an interactive fzf picker, `script/rq-open` is a small wrapper around `rq`.
 cursor, or the file an agent is reading. Definitions in the classes and modules
 enclosing that line rank first, then the same file and nearby directories. In a
 mixed-language repo, definitions the file's language can refer to (TS and JS
-reach each other) rank above the rest. Asked from inside a test or example
+reach each other) rank above the rest. When the file imports the name
+(`import { Widget } from './widget'`, or from one of the checkout's own
+workspace packages), the definition that import resolves to ranks first,
+through re-exports and barrels; TypeScript and JavaScript only for now. Asked from inside a test or example
 app (`examples/blog/`), that app's own definitions aren't held back as test or
 example code, though a private one only where its language lets the anchor call
 it (its own file in TS/JS and Rust, its package in Go).
@@ -334,7 +337,8 @@ src/cli/mod.rs:1873  method store · BranchRefresh
   their directory neighbors) — where you're most likely working
 - **anchor** — with `--anchor`, definitions enclosing that line (`enclosing`),
   then those in the same file and nearby directories (`proximity`), and those in
-  a language that file can refer to (`reachable`: TS and JS reach each other)
+  a language that file can refer to (`reachable`: TS and JS reach each other),
+  and the one that file's import of the name resolves to (`imported`: TS/JS)
 
 Fewer, better, ranked results are the goal — not completeness.
 

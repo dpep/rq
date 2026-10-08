@@ -94,6 +94,9 @@ trait LanguagePlugin {
     fn extensions(&self) -> &[&str];
     fn extract(&self, source: &str) -> Vec<Symbol>;
     fn family(&self) -> &'static str; // languages that can refer to each other
+    // where a name the file imports is defined: (file, name) per hop
+    fn resolve_import(&self, root: &Path, file: &str, line: usize, name: &str)
+        -> Vec<ImportTarget>;
 }
 ```
 
@@ -561,10 +564,18 @@ why a result ranked where it did:
   reachable, where it would lift all alike and only dilute confidence (D59).
   Candidates are every one recalled, before `--lang` or the relevance gate
   narrow them; index and live-scan results are decided as one set when merged.
+  A fourth, `imported` (450): the anchor file imports the query's name, and its
+  plugin's `resolve_import` names the file the import resolves to and each it
+  re-exports from; a top-level definition of that name in one of those files,
+  in the anchor's checkout, takes it. The plugin reads its own import syntax
+  and module resolution from disk, per query; the core sees only (file, name)
+  pairs. Only TypeScript/JavaScript resolves imports: relative specifiers by
+  TypeScript's probing, and bare ones naming the checkout's own workspace
+  packages; never `node_modules` (D63).
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`recency`, `branch`, `enclosing`,
-`proximity`, `reachable`) are computed by the search layer — which owns the clock, the
+`proximity`, `reachable`, `imported`) are computed by the search layer — which owns the clock, the
 branch state and the anchor — and passed in via a `Boosts` struct, so a new git signal (recent commit, branch, ownership) is a new
 field, not a new parameter. Prefer understandable scoring over sophisticated
 algorithms; tuning a weight must never require re-indexing.

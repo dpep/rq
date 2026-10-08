@@ -90,6 +90,14 @@ pub(crate) enum PrivateScope {
     Directory,
 }
 
+/// A definition an import names, as the importing file's language resolves
+/// it: the file (relative to the checkout root) and the name it has there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImportTarget {
+    pub file: String,
+    pub name: String,
+}
+
 /// A definition extracted from source.
 ///
 /// Every language plugin emits this same shape; the core never sees a

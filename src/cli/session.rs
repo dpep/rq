@@ -154,7 +154,7 @@ impl Session {
             .unwrap_or_else(|| spec.file.to_string_lossy().into_owned());
         let checkout = checkout_at(&self.store, &root);
         let defs = crate::index::current_definitions(&self.store, checkout, &identity, &root, &rel);
-        crate::search::Anchor::new(root_key(&root), rel, spec.line, &defs)
+        crate::search::Anchor::new(root_key(&root), rel, spec.line, &defs).on_disk(root)
     }
 }
 

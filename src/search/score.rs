@@ -107,6 +107,9 @@ pub(crate) struct Boosts {
     pub proximity: f64,
     /// Anchor signal: the anchor's language can refer to the candidate's.
     pub reachable: f64,
+    /// Anchor signal: the anchor file's imports resolve the query to the
+    /// candidate.
+    pub imported: f64,
     /// The candidate is in the anchor's own file, or callable from it under
     /// the anchor's own test or example tree.
     pub anchor_tree: bool,
@@ -479,6 +482,12 @@ pub(crate) fn score(
         features.push(Feature {
             name: "reachable",
             value: boosts.reachable,
+        });
+    }
+    if boosts.imported > 0.0 {
+        features.push(Feature {
+            name: "imported",
+            value: boosts.imported,
         });
     }
 

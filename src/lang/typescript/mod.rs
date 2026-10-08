@@ -53,8 +53,10 @@ use std::collections::HashSet;
 
 use tree_sitter::{Language, Node};
 
-use crate::core::{Kind, PrivateScope, Symbol};
+use crate::core::{ImportTarget, Kind, PrivateScope, Symbol};
 use crate::lang::{Ctx, LanguagePlugin, extract_with_key, qualify};
+
+mod imports;
 
 const TYPESCRIPT: &str = "typescript";
 const JAVASCRIPT: &str = "javascript";
@@ -91,6 +93,16 @@ impl LanguagePlugin for TypeScript {
         Some("constructor")
     }
 
+    fn resolve_import(
+        &self,
+        root: &std::path::Path,
+        file: &str,
+        line: usize,
+        name: &str,
+    ) -> Vec<ImportTarget> {
+        imports::resolve(root, file, line, name)
+    }
+
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
         // The two grammars disagree on `<T>`: TSX reads it as a JSX tag, TS as a
         // type parameter. Give each file the one it means.
@@ -119,6 +131,16 @@ impl LanguagePlugin for JavaScript {
 
     fn constructor(&self) -> Option<&'static str> {
         Some("constructor")
+    }
+
+    fn resolve_import(
+        &self,
+        root: &std::path::Path,
+        file: &str,
+        line: usize,
+        name: &str,
+    ) -> Vec<ImportTarget> {
+        imports::resolve(root, file, line, name)
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {

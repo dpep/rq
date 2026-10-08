@@ -1124,6 +1124,57 @@ fn an_anchor_ranks_definitions_its_language_can_reach_first() {
 }
 
 #[test]
+fn an_anchor_ranks_the_definition_its_file_imports_first() {
+    let (dir, db) = scratch("anchor-import");
+    for (file, src) in [
+        ("package.json", r#"{"workspaces": ["packages/*"]}"#),
+        (
+            "packages/ui/package.json",
+            r#"{"name": "@acme/ui", "main": "dist/index.js"}"#,
+        ),
+        (
+            "packages/ui/src/index.ts",
+            "export { Widget } from './widget'\n",
+        ),
+        ("packages/ui/src/widget.ts", "export function Widget() {}\n"),
+        ("app/widget.ts", "export function Widget() {}\n"),
+        ("app/page.tsx", "import { Widget } from '@acme/ui'\n"),
+        ("app/other.tsx", "export const other = 1\n"),
+    ] {
+        fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+        fs::write(dir.join(file), src).unwrap();
+    }
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    // from a file that imports nothing, the neighbour wins on proximity
+    let (_, near) = rq(
+        &db,
+        &dir,
+        &["Widget", "--anchor", "app/other.tsx:1", "--ndjson"],
+    );
+    assert_eq!(top_file(&near), "app/widget.ts", "{near}");
+    assert!(!near.contains("imported"), "{near}");
+
+    // the import, through the package's entry and its barrel, names the other
+    let (code, out) = rq(
+        &db,
+        &dir,
+        &["Widget", "--anchor", "app/page.tsx:1", "--explain"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        first_line(&out).starts_with("packages/ui/src/widget.ts"),
+        "{out}"
+    );
+    assert!(out.contains("imported 450"), "{out}");
+    assert!(
+        out.contains("app/widget.ts"),
+        "a boost, not a filter: {out}"
+    );
+}
+
+#[test]
 fn an_anchor_ranks_the_enclosing_class_first() {
     let (dir, db) = three_saves("anchor");
     let (_, plain) = rq(&db, &dir, &["save", "-k", "method", "--ndjson"]);
