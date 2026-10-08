@@ -280,7 +280,8 @@ Decisions worth calling out:
   re-reads TS/JS for ambient declarations and overload signatures and Python
   for its local classes, v22 re-reads every language but Ruby for fields,
   v24 every language but Go for `singleton`, and v25 TS/JS for `export
-  let` and CommonJS member assignments: users
+  let` and CommonJS member assignments, and v26 TS/JS for the visibility a
+  CommonJS export of a local (`exports.x = x`) gives it: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to

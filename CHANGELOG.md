@@ -14,6 +14,10 @@ rule excludes (in next.js, 721 files of `packages/next/src/compiled/**`). They
 are dropped at the next full sweep, which a commit, checkout or pull starts;
 run `rq --index` once to drop them now.
 
+The first run after upgrading re-reads every TypeScript and JavaScript file
+once, in the background, for the visibility below; results answer from the
+old rows meanwhile. Nothing to run by hand.
+
 ### Fixed
 - **A background warm and `rq --index` read the same files.** A warm listed
   files with git and read tracked ones that `.gitignore`, `.ignore` or
@@ -22,6 +26,12 @@ run `rq --index` once to drop them now.
   Both now read what the index's walk reaches, submodules included. An edited
   file that an ignore rule excludes no longer leaves a search reporting
   "still indexing" forever (DECISIONS D62).
+- **A declaration a CommonJS module exports reads public**, not private:
+  `function View() {}` with `module.exports = View`, `const keep = …` with
+  `exports.keep = keep`, and each shorthand or name-valued key of
+  `module.exports = { a, b: c }` no longer take the private-visibility
+  penalty, as an ESM `export { … }` list already didn't. An export made inside
+  a function or an `if` doesn't count.
 
 ## 0.60.6 — 2026-10-07
 

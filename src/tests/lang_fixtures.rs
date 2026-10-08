@@ -393,8 +393,12 @@ fn commonjs_assignments_rank_above_test_doubles() {
         assert_eq!(hit.parent.as_deref(), parent, "{query}");
     }
     // a constructor's own name, re-exported, is still its declaration
+    // and exporting it makes it public
     let ctor = top(&store, "WidgetStore");
-    assert_eq!((ctor.kind.as_str(), ctor.line), ("function", 9));
+    assert_eq!(
+        (ctor.kind.as_str(), ctor.line, ctor.visibility.as_deref()),
+        ("function", 9, Some("public"))
+    );
 
     fs::remove_dir_all(&dir).ok();
 }

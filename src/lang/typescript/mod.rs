@@ -41,13 +41,13 @@
 //! callback it was built with.
 //!
 //! Visibility: a class member takes its `private`/`protected` modifier (or `#`
-//! prefix); anything module-level reads public when `export`ed (where it is
-//! declared, or by a later `export { … }` list or `export default name`) and
-//! private when not. That last convention is ESM's — a CommonJS file exports its
-//! declarations (`function x` … `module.exports = x`) by a statement the
-//! grammar can't connect to them, so they read private; what it defines by
-//! assigning to a member reads public. Visibility is only ever a small ranking
-//! nudge, so the mislabel costs little.
+//! prefix); anything module-level reads public when exported — `export`ed
+//! where it is declared, named by a later `export { … }` list or `export
+//! default name`, or by CommonJS's `exports.x = name`, `module.exports = name`
+//! or `module.exports = { name }` — and private when not. What CommonJS
+//! defines by assigning to a member reads public. An export the module's own
+//! statements don't make (one in a function or a branch, or `Object.assign`)
+//! leaves its declaration private.
 
 use std::collections::HashSet;
 
@@ -134,42 +134,28 @@ fn run(language: &'static str, (key, grammar): Grammar, file: &str, source: &str
     };
     extract_with_key(key, language, grammar, file, source, |ctx, root, out| {
         walk(ctx, root, scope, out);
-        export_lists(ctx, root, out);
+        exported_locals(ctx, root, out);
     })
 }
 
 /// A module's `export { a, b as c }` and `export default a` export what it
-/// declared elsewhere, by local name: those declarations read public, as if
-/// marked `export` where they stand. A list with a `from` re-exports another
-/// module's and names nothing here; one inside a namespace exports from the
-/// namespace, so only the module's own statements count. An enum's variants,
-/// which took its visibility where they stand, go public with it.
-fn export_lists(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
+/// declared elsewhere, by local name, and so does CommonJS's `exports.x = a`,
+/// `module.exports = a` and `module.exports = { a, x: b }`: those declarations
+/// read public, as if marked `export` where they stand. A list with a `from`
+/// re-exports another module's and names nothing here; one inside a namespace
+/// exports from the namespace, so only the module's own statements count. An
+/// enum's variants, which took its visibility where they stand, go public with
+/// it.
+fn exported_locals(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
     let mut names = HashSet::new();
     let mut cursor = root.walk();
-    for stmt in root
-        .children(&mut cursor)
-        .filter(|n| n.kind() == "export_statement" && n.child_by_field_name("source").is_none())
-    {
-        if let Some(value) = stmt
-            .child_by_field_name("value")
-            .filter(|v| v.kind() == "identifier")
-        {
-            names.extend(ctx.node_text(value));
-        }
-        let mut c = stmt.walk();
-        for clause in stmt
-            .named_children(&mut c)
-            .filter(|n| n.kind() == "export_clause")
-        {
-            let mut cc = clause.walk();
-            names.extend(
-                clause
-                    .named_children(&mut cc)
-                    .filter(|n| n.kind() == "export_specifier")
-                    .filter_map(|spec| spec.child_by_field_name("name"))
-                    .filter_map(|name| ctx.node_text(name)),
-            );
+    for stmt in root.children(&mut cursor) {
+        match stmt.kind() {
+            "export_statement" if stmt.child_by_field_name("source").is_none() => {
+                export_list(ctx, stmt, &mut names)
+            }
+            "expression_statement" => commonjs_exports(ctx, stmt, &mut names),
+            _ => {}
         }
     }
     let mut enums = HashSet::new();
@@ -187,6 +173,68 @@ fn export_lists(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
             && s.parent.as_ref().is_some_and(|p| enums.contains(p))
     }) {
         s.visibility = Some("public");
+    }
+}
+
+/// The local names an ESM `export { a, b as c }` or `export default a` exports.
+fn export_list(ctx: &Ctx, stmt: Node, names: &mut HashSet<String>) {
+    if let Some(value) = stmt
+        .child_by_field_name("value")
+        .filter(|v| v.kind() == "identifier")
+    {
+        names.extend(ctx.node_text(value));
+    }
+    let mut c = stmt.walk();
+    for clause in stmt
+        .named_children(&mut c)
+        .filter(|n| n.kind() == "export_clause")
+    {
+        let mut cc = clause.walk();
+        names.extend(
+            clause
+                .named_children(&mut cc)
+                .filter(|n| n.kind() == "export_specifier")
+                .filter_map(|spec| spec.child_by_field_name("name"))
+                .filter_map(|name| ctx.node_text(name)),
+        );
+    }
+}
+
+/// The local names a CommonJS statement exports: the identifier assigned to
+/// `exports.x`, `module.exports.x` or `module.exports`, and each shorthand or
+/// identifier-valued key of `module.exports = { … }`.
+fn commonjs_exports(ctx: &Ctx, stmt: Node, names: &mut HashSet<String>) {
+    for (_, targets, value) in assignments(stmt) {
+        let paths: Vec<String> = targets
+            .into_iter()
+            .filter_map(|t| member_path(ctx, t))
+            .map(|p| p.join("."))
+            .collect();
+        let whole = paths.iter().any(|p| p == "module.exports");
+        let member = paths.iter().any(|p| {
+            p.rsplit_once('.')
+                .is_some_and(|(owner, _)| matches!(owner, "exports" | "module.exports"))
+        });
+        if !(whole || member) {
+            continue;
+        }
+        match value.kind() {
+            "identifier" => names.extend(ctx.node_text(value)),
+            "object" if whole => {
+                let mut cursor = value.walk();
+                for entry in value.named_children(&mut cursor) {
+                    let local = match entry.kind() {
+                        "shorthand_property_identifier" => Some(entry),
+                        "pair" => entry
+                            .child_by_field_name("value")
+                            .filter(|v| v.kind() == "identifier"),
+                        _ => None,
+                    };
+                    names.extend(local.and_then(|l| ctx.node_text(l)));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -420,13 +468,24 @@ fn is_top_level(node: Node) -> bool {
 }
 
 /// Emit what a top-level CommonJS statement defines by assignment, and say
-/// whether it defined anything. A sequence (`a.x = f, a.y = g`, each perhaps
-/// parenthesized) is each of its assignments, and a chain (`a.x = a.y = f`)
-/// assigns its value to each target.
-/// Anything that defines nothing is walked by the caller as any other
-/// expression.
+/// whether it defined anything. Anything that defines nothing is walked by the
+/// caller as any other expression.
 fn assignment(ctx: &Ctx, stmt: Node, scope: Scope, out: &mut Vec<Symbol>) -> bool {
     let mut defined = false;
+    for (node, targets, value) in assignments(stmt) {
+        for target in targets {
+            defined |= assigned(ctx, node, target, value, scope, out);
+        }
+    }
+    defined
+}
+
+/// Each assignment a statement makes: the assignment, its targets, and the
+/// value they all receive. A sequence (`a.x = f, a.y = g`, each perhaps
+/// parenthesized) is each of its assignments, and a chain (`a.x = a.y = f`)
+/// assigns its value to each target.
+fn assignments(stmt: Node) -> Vec<(Node, Vec<Node>, Node)> {
+    let mut found = Vec::new();
     let mut pending = vec![stmt];
     while let Some(node) = pending.pop() {
         match node.kind() {
@@ -442,16 +501,12 @@ fn assignment(ctx: &Ctx, stmt: Node, scope: Scope, out: &mut Vec<Symbol>) -> boo
                     targets.extend(a.child_by_field_name("left"));
                     value = a.child_by_field_name("right");
                 }
-                if let Some(value) = value {
-                    for target in targets {
-                        defined |= assigned(ctx, node, target, value, scope, out);
-                    }
-                }
+                found.extend(value.map(|value| (node, targets, value)));
             }
             _ => {}
         }
     }
-    defined
+    found
 }
 
 /// Emit what assigning `value` to `target` defines, `node` being the
@@ -1497,6 +1552,46 @@ exports.methods = METHODS.map((m) => m.toLowerCase());
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
         }
         assert_eq!(syms.len(), 2, "{syms:?}");
+    }
+
+    #[test]
+    fn a_commonjs_export_of_a_local_makes_it_public() {
+        let src = r#"
+function compile() {}
+function render() {}
+const dead = require("./dead"), keep = "kept";
+const LIMIT = 3;
+class Store {}
+function create() {}
+function open() {}
+function close() {}
+function hidden() {}
+function patched() {}
+function guarded() {}
+exports.compile = compile;
+module.exports.view = render;
+module.exports = { keep, max: LIMIT, Store: Store, other: hidden.bind(null) };
+exports = module.exports = create;
+(exports.open = open), (exports.close = close);
+function setup() {
+  exports.patched = patched;
+}
+if (typeof window === "undefined") {
+  exports.guarded = guarded;
+}
+"#;
+        let syms = JavaScript.extract("lib/widget.js", src);
+        for name in [
+            "compile", "render", "keep", "LIMIT", "Store", "create", "open", "close",
+        ] {
+            assert_eq!(find(&syms, name).visibility, Some("public"), "{name}");
+        }
+        // a call's result isn't the local; a body or a branch isn't the module's own
+        for name in ["hidden", "patched", "guarded"] {
+            assert_eq!(find(&syms, name).visibility, Some("private"), "{name}");
+        }
+        // the exported name is an alias: nothing is defined by it
+        assert!(!syms.iter().any(|s| s.name == "view"), "{syms:?}");
     }
 
     #[test]

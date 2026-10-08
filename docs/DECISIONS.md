@@ -3439,6 +3439,46 @@ literal. Among the recall corpora's top-level assignments that drops 3 jest mock
 next.js example (`exports.nextjsFunc = https.onRequest(…)`, a Firebase handler: the one
 wrapper that is an API, accepted). `self.` (a worker's global) joins the host globals.
 
+*Exports of a local* (2026-10-08, schema v26). D57 left a CommonJS module's own
+declarations private: `function View() {}` … `module.exports = View` names it by a statement
+the walk didn't connect to it, the mislabel the plugin's module docs accepted and D61's
+file-scoped privacy couldn't afford. The pass that reads D60's export lists now reads the
+module's own CommonJS exports the same way: the identifier assigned to `exports.x`,
+`module.exports.x` or `module.exports` (anywhere in a chain or a sequence, so `exports =
+module.exports = create` counts), and each shorthand or identifier-valued key of
+`module.exports = { a, b: c }`, make that top-level declaration public. Visibility only;
+no row is added or removed, and an export made in a function body or an `if` doesn't
+count. A rename (`exports.a = b`) makes `b` public; nothing is defined as `a`.
+
+| corpus (~/code/lib/js) | JS/TS rows | private → public | added / removed |
+|---|---|---|---|
+| express | 137 | 9 (`createApplication`, `View` …) | 0 / 0 |
+| jest | 7,738 | 88 | 0 / 0 |
+| lodash | 70 | 9 | 0 / 0 |
+| next.js | 55,271 | 758 (666 under a test, example or fixture tree) | 0 / 0 |
+| react | 32,332 | 363 | 0 / 0 |
+| zod | 6,359 | 0 | 0 / 0 |
+
+Most of next.js's are `const nextConfig = { … }; module.exports = nextConfig`, one per
+test app. Against v0.60.6, anchored #1 / top 10:
+
+| set | v0.60.6 | exports of a local |
+|---|---|---|
+| calls (446) | 349 / 441 | 349 / 441 |
+| imports (908) | 807 / 905 | 807 / 905 |
+| packages (231) | 147 / 228 | 146 / 228 |
+
+0 up, 3 down, none out of the top 10. Each loses to a correct label: react `resolve`
+asked from `fixtures/flight-esm/loader/` (#1 → #2) now ties on everything but extent with
+`scripts/sizebot/pull-request-comment.js`'s `resolve`, exported by `module.exports =
+resolve`, which no longer takes the private penalty; the same name moves jest's `resolve`
+from `jest-config/src/normalize.ts` #2 → #3, and react `transformSource`, asked from the
+same fixture, #2 → #3.
+Unanchored: 1 of 6,879 top 10s changes (discourse `tesbr` → `test_br` #1 → #2, behind a
+CommonJS-exported `patchTestemBrowserWatchdog`), none leaves the top 10; regress 54 of 57
+both. Accepted as D60's export-list fix accepted `SyntheticEvent`: a label that is
+right costs a near-tie the wrong one happened to win.
+
 ## D58 — A wrapper function's body as the top level: measured, not adopted
 
 **Rejected**, 2026-10-05. The second half of #30: lodash's `lodash.js` puts every

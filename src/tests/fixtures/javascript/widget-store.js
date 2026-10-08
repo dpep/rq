@@ -24,6 +24,10 @@ exports.createWidgetStore = function (options) {
 
 exports.WidgetStore = WidgetStore;
 
+// exporting a local makes it public
+const DEFAULT_SIZE = 3;
+module.exports.DEFAULT_SIZE = DEFAULT_SIZE;
+
 function setup() {
   proto.reset = () => {};
 }

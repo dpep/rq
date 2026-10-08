@@ -1,8 +1,8 @@
 # Each language's extraction of src/tests/fixtures, hashed by
 # src/tests/extraction_guard.rs. Regenerate: UPDATE_GOLDEN=1 cargo test extraction_guard
-schema 25
+schema 26
 go c9c080e3c809d483
-javascript 75c7861beee131ad
+javascript a9a79d7ed5dfeca4
 python 7a483be0494788ad
 ruby 93d2d54486623cc2
 rust 07b12c25bd168117
