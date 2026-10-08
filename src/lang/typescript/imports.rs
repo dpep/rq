@@ -721,14 +721,23 @@ fn entries(manifest: &Value, sub: &str) -> Vec<String> {
                 conditions(exports, None, &mut out);
             }
         } else if let Some(map) = exports.as_object() {
-            if let Some(v) = map.get(&key) {
-                conditions(v, None, &mut out);
-            } else if let Some((v, star)) = map.iter().find_map(|(k, v)| {
-                let (pre, post) = k.split_once('*')?;
-                let mid = key.strip_prefix(pre)?.strip_suffix(post)?;
-                Some((v, mid))
-            }) {
-                conditions(v, Some(star), &mut out);
+            // Node's order: the exact key, else the pattern with the longest
+            // prefix before its `*`, then the longest key
+            let matched = map.get(&key).map(|v| (v, None)).or_else(|| {
+                map.iter()
+                    .filter_map(|(k, v)| {
+                        let (pre, post) = k.split_once('*')?;
+                        let mid = key.strip_prefix(pre)?.strip_suffix(post)?;
+                        Some(((pre.len(), k.len()), v, mid))
+                    })
+                    .max_by_key(|(rank, ..)| *rank)
+                    .map(|(_, v, mid)| (v, Some(mid)))
+            });
+            if let Some((v, star)) = matched {
+                if v.is_null() {
+                    return out; // excluded: the package hides it
+                }
+                conditions(v, star, &mut out);
             }
         }
     }
@@ -1230,6 +1239,26 @@ mod tests {
                 ("lib/loader.js".into(), "parse".into())
             ]
         );
+    }
+
+    #[test]
+    fn exports_take_the_longest_pattern_and_honor_exclusions() {
+        let manifest: Value = serde_json::from_str(
+            r#"{"exports": {"./*": "./flat/*.ts", "./sub/*": "./deep/*.ts",
+                            "./sub/x*": "./x/*.ts", "./internal": null,
+                            "./hidden/*": null}}"#,
+        )
+        .unwrap();
+        let cases: [(&str, &[&str]); 5] = [
+            ("a", &["./flat/a.ts", "a"]),
+            ("sub/btn", &["./deep/btn.ts", "sub/btn"]),
+            ("sub/xy", &["./x/y.ts", "sub/xy"]),
+            ("internal", &[]),
+            ("hidden/a", &[]),
+        ];
+        for (sub, want) in cases {
+            assert_eq!(entries(&manifest, sub), want, "{sub}");
+        }
     }
 
     #[test]
