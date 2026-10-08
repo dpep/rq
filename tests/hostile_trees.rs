@@ -93,6 +93,69 @@ fn rows() -> Vec<Row> {
             ..ROW
         },
         Row {
+            name: ".ignore'd dir",
+            plant: |d| {
+                fs::write(d.join(".ignore"), "vendor/\n").unwrap();
+                fs::create_dir(d.join("vendor")).unwrap();
+                fs::write(d.join("vendor/v.rb"), "class Vendored\nend\n").unwrap();
+            },
+            ..ROW
+        },
+        Row {
+            name: "tracked, then .gitignore'd",
+            plant: |d| fs::write(d.join("gen.rb"), "class Generated\nend\n").unwrap(),
+            mangle: |d| fs::write(d.join(".gitignore"), "gen.rb\n").unwrap(),
+            ..ROW
+        },
+        Row {
+            name: "tracked, then .gitignore'd and edited",
+            plant: |d| fs::write(d.join("gen.rb"), "class Generated\nend\n").unwrap(),
+            mangle: |d| {
+                fs::write(d.join(".gitignore"), "gen.rb\n").unwrap();
+                fs::write(d.join("gen.rb"), "class Regenerated\nend\n").unwrap();
+            },
+            ..ROW
+        },
+        Row {
+            name: "tracked, then excluded",
+            plant: |d| fs::write(d.join("excl.rb"), "class Excluded\nend\n").unwrap(),
+            mangle: |d| {
+                if d.join(".git").is_dir() {
+                    fs::write(d.join(".git/info/exclude"), "excl.rb\n").unwrap();
+                }
+            },
+            ..ROW
+        },
+        Row {
+            name: "hidden dir",
+            plant: |d| {
+                fs::create_dir(d.join(".tools")).unwrap();
+                fs::write(d.join(".tools/t.rb"), "class Tool\nend\n").unwrap();
+            },
+            ..ROW
+        },
+        Row {
+            name: "submodule",
+            plant: |d| {
+                let sub = d.join("lib");
+                fs::create_dir(&sub).unwrap();
+                fs::write(sub.join("s.rb"), "class Sub\nend\n").unwrap();
+                git(&sub, &["init", "-q"]);
+                commit(&sub);
+                fs::write(
+                    d.join(".gitmodules"),
+                    "[submodule \"lib\"]\n\tpath = lib\n\turl = ./lib\n",
+                )
+                .unwrap();
+            },
+            // a submodule is active once its url is configured; before a
+            // first commit there's nothing to init
+            mangle: |d| {
+                let _ = git_cmd(d).args(["submodule", "init"]).output();
+            },
+            ..ROW
+        },
+        Row {
             name: "symlink",
             plant: |d| std::os::unix::fs::symlink("a.rb", d.join("link.rb")).unwrap(),
             ..ROW
@@ -235,6 +298,59 @@ fn failures(state: State) -> Vec<String> {
     failed
 }
 
+/// The files the index holds, by path.
+fn indexed(db: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT path FROM checkout_files ORDER BY path")
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// Every row in `state`: the files an explicit index holds against those a
+/// cold warm holds once settled, and an index after that warm.
+fn set_failures(state: State) -> Vec<String> {
+    let mut failed = Vec::new();
+    for row in rows() {
+        let dir = Scratch::new(&format!("same-set-{state:?}"));
+        fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+        (row.plant)(&dir);
+        state.setup(&dir);
+        (row.mangle)(&dir);
+        let fifo = dir.join("pipe.rb");
+        let _release = fs::symlink_metadata(&fifo)
+            .is_ok_and(|m| m.file_type().is_fifo())
+            .then(|| Fifo(fifo));
+        let run = |db: &Path, args: &[&str]| {
+            rq_bounded(db, &dir, args, &[("RQ_WARM_DETACH", "0")], None, LIMIT).map(|_| indexed(db))
+        };
+        let warming = dir.db();
+        let indexing = std::path::PathBuf::from(format!("{}-index.db", dir.display()));
+        let index = run(&indexing, &["--index"]);
+        let warm = run(&warming, &["--warm"]);
+        let warm_then_index = run(&warming, &["--index"]);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(format!("{}{suffix}", indexing.display()));
+        }
+        match (index, warm, warm_then_index) {
+            (Some(index), Some(warm), Some(after)) => {
+                if index != warm || index != after {
+                    failed.push(format!(
+                        "{state:?} × {}: --index {index:?}, warm {warm:?}, warm then --index {after:?}",
+                        row.name
+                    ));
+                }
+            }
+            _ => failed.push(format!("{state:?} × {}: hung", row.name)),
+        }
+        (row.cleanup)(&dir);
+    }
+    failed
+}
+
 /// Exit 1, allowing a 2 first where a warm was genuinely pending.
 fn settles_to_a_miss(
     db: &Path,
@@ -276,4 +392,16 @@ fn before_a_first_commit() {
 #[test]
 fn outside_git() {
     assert_settles(State::NonGit);
+}
+
+/// A warm lists files with git; an explicit index walks the disk. Whatever
+/// each finds, both hold the same files: the walk decides (D62). Outside git
+/// nothing warms.
+#[test]
+fn a_warm_and_an_index_hold_the_same_files() {
+    let failed: Vec<String> = [State::GitMain, State::GitFeature, State::GitUnborn]
+        .into_iter()
+        .flat_map(set_failures)
+        .collect();
+    assert!(failed.is_empty(), "\n{}", failed.join("\n"));
 }

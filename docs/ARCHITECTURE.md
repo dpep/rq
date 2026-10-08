@@ -311,12 +311,16 @@ search only reads.
   batches as they arrive — never collect-then-parse, so a pass cut short
   still keeps what it parsed.
 - **Incremental** — a cheap `mtime` match short-circuits before any read; the
-  content `hash` then guards the write. The walker respects `.gitignore`, and
-  no pass indexes a hidden path (a `.`-prefixed file or directory): a warm
-  enumerates with `git ls-files`, which lists tracked ones. So every
-  enumeration and both moved-detectors ask one owner — `index_key` (a source
-  file below the root, named in UTF-8) and `on_disk` (one `lstat`: a regular
-  file, absent, or unknown on an I/O error) — and the indexed set is the same
+  content `hash` then guards the write. One walk (`walk`: `.gitignore`,
+  `.ignore`, git's excludes, hidden entries skipped, symlinks not followed)
+  decides what any pass reads. An explicit index enumerates with it; a warm
+  lists with `git ls-files --recurse-submodules` and keeps what that walk
+  reaches (`walk_reaches`, which descends only into directories holding a
+  listed file), as does the moved-detector for dirty files. So a tracked file
+  matching an ignore rule — vendored or compiled code, usually — is out for
+  both (D62). Every enumeration also asks `index_key` (a source file below
+  the root, named in UTF-8) and `on_disk` (one `lstat`: a regular file,
+  absent, or unknown on an I/O error), and the indexed set is the same
   whichever pass finishes. A symlink, FIFO or device is never read; an error
   is never taken for a delete.
   Untracked files are in a checkout's index too: an explicit index walks the

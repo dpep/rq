@@ -7,6 +7,22 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+A tree's existing index may hold files a background warm read that an ignore
+rule excludes (in next.js, 721 files of `packages/next/src/compiled/**`). They
+are dropped at the next full sweep, which a commit, checkout or pull starts;
+run `rq --index` once to drop them now.
+
+### Fixed
+- **A background warm and `rq --index` read the same files.** A warm listed
+  files with git and read tracked ones that `.gitignore`, `.ignore` or
+  `.git/info/exclude` excludes, which `rq --index` skips, so the set flipped
+  between passes; and it missed a submodule's files, which `rq --index` reads.
+  Both now read what the index's walk reaches, submodules included. An edited
+  file that an ignore rule excludes no longer leaves a search reporting
+  "still indexing" forever (DECISIONS D62).
+
 ## 0.60.6 — 2026-10-07
 
 The first run after upgrading re-reads every TypeScript and JavaScript file

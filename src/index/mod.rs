@@ -315,15 +315,16 @@ fn write_files(
     Ok(out)
 }
 
-/// Source-file candidates from `git ls-files` — read out of git's index, not by
-/// walking the filesystem. On a huge repo this is the difference between
-/// answering and timing out: enumeration is O(index read), and source-extension
-/// pathspecs make git hand back only files we can parse, so warming never burns
-/// its budget re-traversing non-source trees. Tracked files only: an explicit
-/// `rq --index`'s filesystem walk finds untracked ones, and a warm keeps those
-/// the index holds (D53). `None` outside a git work tree, so the caller falls
-/// back to walking the filesystem.
-fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
+/// Source-file candidates from `git ls-files`, as index keys in git's order —
+/// read out of git's index, not by walking the filesystem. On a huge repo
+/// this is the difference between answering and timing out: enumeration is
+/// O(index read), and source-extension pathspecs make git hand back only
+/// files we can parse. Tracked files only: an explicit `rq --index`'s
+/// filesystem walk finds untracked ones, and a warm keeps those the index
+/// holds (D53). What git lists isn't yet what a pass reads: see
+/// [`walk_reaches`]. `None` outside a git work tree, so the caller falls back
+/// to walking the filesystem.
+fn git_listed(root: &Path) -> Option<Vec<String>> {
     if !is_git_repo(root) {
         return None;
     }
@@ -331,40 +332,106 @@ fn git_source_candidates(root: &Path) -> Option<Vec<std::path::PathBuf>> {
         .iter()
         .flat_map(|p| p.extensions().iter().map(|e| format!("*.{e}")))
         .collect();
-    let mut cmd = git(root);
-    // `-t` tags skip-worktree entries `S`: a sparse checkout's files outside
-    // its cone, which aren't on disk to read
-    cmd.args(["ls-files", "-z", "-t", "--cached", "--"])
-        .args(&globs);
-    let out = cmd.output().ok()?;
+    let out = git(root)
+        // a submodule's files are in the checkout, as the walk sees them
+        .args(["ls-files", "-z", "--cached", "--recurse-submodules", "--"])
+        .args(&globs)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     Some(
         out.stdout
             .split(|&b| b == 0)
-            .filter_map(|entry| {
-                let (tag, path) = (entry.first()?, entry.get(2..)?);
-                // a name that isn't UTF-8 has no key (see `rel_key`)
-                let path = root.join(std::str::from_utf8(path).ok()?);
-                // skip-worktree also hides local edits to a file still there
-                (*tag != b'S' || !gone(&path)).then_some(path)
-            })
+            // a name that isn't UTF-8 has no key (see `rel_key`)
+            .filter_map(|p| std::str::from_utf8(p).ok())
+            .filter(|key| is_source(key))
+            .map(str::to_owned)
             .collect(),
     )
 }
 
-/// The keys of the source files among `paths`.
-fn rel_paths(paths: &[std::path::PathBuf], root: &Path) -> HashSet<String> {
-    paths.iter().filter_map(|p| index_key(root, p)).collect()
+/// The filesystem walk every pass answers to: `.gitignore`, `.ignore` and
+/// git's excludes, hidden entries skipped, symlinks not followed. An explicit
+/// index enumerates with it; a warm, which lists with git, keeps only what it
+/// reaches ([`walk_reaches`]) — so both read the same files.
+fn walk(root: &Path) -> WalkBuilder {
+    WalkBuilder::new(root)
 }
 
-/// The source files git tracks under `root`; `None` outside git, or before a
-/// first commit, where only a whole walk could count the tree.
+/// Which of `keys` (index keys below `root`) [`walk`] reaches as a regular
+/// file: exactly what an explicit index's walk would read of them. Descends
+/// only into directories holding one of them, so it costs a directory read
+/// per such directory, not a walk of the tree. The directories it couldn't
+/// read come back too: a key under one is neither reached nor gone.
+fn walk_reaches<'k>(
+    root: &Path,
+    keys: impl IntoIterator<Item = &'k str>,
+) -> (HashSet<String>, Vec<std::path::PathBuf>) {
+    use ignore::WalkState;
+    use std::sync::Mutex;
+    let want: HashSet<&str> = keys.into_iter().collect();
+    if want.is_empty() {
+        return (HashSet::new(), Vec::new());
+    }
+    let mut dirs: HashSet<&str> = HashSet::new();
+    for key in &want {
+        let mut dir = *key;
+        while let Some(i) = dir.rfind('/') {
+            dir = &dir[..i];
+            if !dirs.insert(dir) {
+                break; // and so are its ancestors
+            }
+        }
+    }
+    let (reached, unwalked) = (Mutex::new(HashSet::new()), Mutex::new(Vec::new()));
+    walk(root).threads(parse_jobs()).build_parallel().run(|| {
+        let (want, dirs, reached, unwalked) = (&want, &dirs, &reached, &unwalked);
+        Box::new(move |entry| {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    let at = unwalked_at(&e, root);
+                    unwalked.lock().expect("unwalked lock").extend(at);
+                    return WalkState::Continue;
+                }
+            };
+            let Some(rel) = entry.path().strip_prefix(root).ok().and_then(Path::to_str) else {
+                return WalkState::Continue;
+            };
+            match entry.file_type() {
+                _ if entry.depth() == 0 => WalkState::Continue,
+                Some(t) if t.is_dir() && !dirs.contains(rel) => WalkState::Skip,
+                Some(t) if t.is_file() && want.contains(rel) => {
+                    reached.lock().expect("reached lock").insert(rel.to_owned());
+                    WalkState::Continue
+                }
+                _ => WalkState::Continue,
+            }
+        })
+    });
+    (
+        reached.into_inner().expect("reached lock"),
+        unwalked.into_inner().expect("unwalked lock"),
+    )
+}
+
+/// The source files git tracks under `root` that a pass reads, in git's
+/// order: [`git_listed`] as far as [`walk_reaches`]. `None` outside git.
+fn git_source_candidates(root: &Path) -> Option<Vec<String>> {
+    let listed = git_listed(root)?;
+    let (reached, _) = walk_reaches(root, listed.iter().map(String::as_str));
+    Some(listed.into_iter().filter(|k| reached.contains(k)).collect())
+}
+
+/// The source files git tracks under `root` that a pass reads; `None` outside
+/// git, or before a first commit, where only a whole walk could count the
+/// tree.
 fn tracked_files(root: &Path) -> Option<HashSet<String>> {
     git_source_candidates(root)
         .filter(|p| !p.is_empty())
-        .map(|p| rel_paths(&p, root))
+        .map(|p| p.into_iter().collect())
 }
 
 /// How many files the tree spans, counted as D52's `read` counts the files
@@ -402,7 +469,7 @@ fn fs_walk_candidates(
 ) -> impl Iterator<Item = std::path::PathBuf> {
     roots.into_iter().flat_map(move |root| {
         let unwalked = unwalked.clone();
-        WalkBuilder::new(&root)
+        walk(&root)
             .filter_entry(move |_| !past(deadline))
             .build()
             .filter_map(move |entry| {
@@ -705,10 +772,91 @@ fn run_index(
         store.suspend_name_index(checkout.repo)?;
     }
 
+    // walk the whole repo, or just the requested subtrees — paths stay relative
+    // to `root` so they're repo-relative either way
+    let walk_roots: Vec<std::path::PathBuf> = if subdirs.is_empty() {
+        vec![root.to_path_buf()]
+    } else {
+        subdirs.iter().map(|s| root.join(s)).collect()
+    };
+
+    // Enumerate candidates. A budgeted (warming) pass on a git repo reads git's
+    // index — O(index read), no filesystem traversal — so a huge repo isn't stuck
+    // re-walking non-source trees every pass and never reaching source. An
+    // explicit unbounded index, or a non-git dir, walks the filesystem (thorough;
+    // catches untracked files). Enumeration runs *before* the deadline so its
+    // (cheap) work never eats the parse budget.
+    // An empty result means nothing is tracked yet (a fresh/uncommitted repo), so
+    // fall back to the filesystem walk, which sees untracked files.
+    let mut enum_span = crate::profile::span("index: enumerate");
+    let listed = budget
+        .and_then(|_| git_listed(root))
+        .filter(|listed| !listed.is_empty());
+    // Git's index lists no untracked file, but the checkout holds those an
+    // explicit index's filesystem walk read: keep them, or completing would
+    // reconcile them away (D53). Listing every untracked file instead
+    // (`--others`) walks the tree, ~2 s a pass on 97k files. Whatever names a
+    // file — git, the checkout, the branch — the explicit index's walk decides
+    // whether a pass reads it, so both passes read one set (D62).
+    let unwalked = Unwalked::default();
+    let held_unlisted: Vec<&str> = match &listed {
+        Some(listed) => {
+            let listed: HashSet<&str> = listed.iter().map(String::as_str).collect();
+            stored
+                .keys()
+                .map(String::as_str)
+                .filter(|f| !listed.contains(f))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let named = listed
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .chain(held_unlisted.iter().copied())
+        .chain(active.iter().map(String::as_str));
+    let (reached, unread) = walk_reaches(root, named);
+    unwalked.lock().expect("unwalked lock").extend(unread);
+    let listed: Option<Vec<String>> =
+        listed.map(|l| l.into_iter().filter(|f| reached.contains(f)).collect());
+    let git_candidates: Option<Vec<std::path::PathBuf>> = listed.as_ref().map(|listed| {
+        listed
+            .iter()
+            .map(String::as_str)
+            .chain(
+                held_unlisted
+                    .iter()
+                    .copied()
+                    .filter(|f| reached.contains(*f)),
+            )
+            .map(|f| root.join(f))
+            .collect()
+    });
+    enum_span.note(|| match &git_candidates {
+        Some(p) => format!("git ls-files, {} path(s)", p.len()),
+        None => "filesystem walk (lazy — time lands in walk+parse+write)".to_string(),
+    });
+    drop(enum_span);
+    let listed: Option<HashSet<String>> = listed.map(|l| l.into_iter().collect());
+    let unlisted;
+    let tracked = match &listed {
+        _ if !marked => None,
+        Some(listed) => Some(listed),
+        None => {
+            unlisted = tracked_files(root);
+            unlisted.as_ref()
+        }
+    };
+    if marked {
+        let span = tracked.map(|t| span_of(t, stored.keys().map(String::as_str)));
+        store.begin_pass(&root_key, std::process::id(), span)?;
+    }
+
     // Active (branch) files first: always parsed and written, so the working set
     // stays fresh even when a tight budget cuts the walk short.
     let mut active_to_parse: Vec<std::path::PathBuf> = Vec::new();
-    for rel in active {
+    for rel in active.iter().filter(|f| reached.contains(*f)) {
         note_candidate(
             root,
             &root.join(rel),
@@ -723,61 +871,6 @@ fn run_index(
     active_span.note(|| format!("{} file(s)", active_parsed.len()));
     drop(active_span);
 
-    // walk the whole repo, or just the requested subtrees — paths stay relative
-    // to `root` so they're repo-relative either way
-    let walk_roots: Vec<std::path::PathBuf> = if subdirs.is_empty() {
-        vec![root.to_path_buf()]
-    } else {
-        subdirs.iter().map(|s| root.join(s)).collect()
-    };
-
-    // Enumerate candidates. A budgeted (warming) pass on a git repo reads git's
-    // index — O(index read), no filesystem traversal — so a huge repo isn't stuck
-    // re-walking non-source trees every pass and never reaching source. An
-    // explicit unbounded index, or a non-git dir, walks the filesystem (thorough;
-    // catches untracked files). `git ls-files` runs *before* the deadline so its
-    // (cheap) work never eats the parse budget.
-    // An empty result means nothing is tracked yet (a fresh/uncommitted repo), so
-    // fall back to the filesystem walk, which sees untracked files.
-    let mut enum_span = crate::profile::span("index: enumerate");
-    let git_candidates = budget
-        .and_then(|_| git_source_candidates(root))
-        .filter(|paths| !paths.is_empty());
-    enum_span.note(|| match &git_candidates {
-        Some(p) => format!("git ls-files, {} path(s)", p.len()),
-        None => "filesystem walk (lazy — time lands in walk+parse+write)".to_string(),
-    });
-    drop(enum_span);
-    let listed = git_candidates.as_ref().map(|paths| rel_paths(paths, root));
-    let unlisted;
-    let tracked = match &listed {
-        _ if !marked => None,
-        Some(listed) => Some(listed),
-        None => {
-            unlisted = tracked_files(root);
-            unlisted.as_ref()
-        }
-    };
-    if marked {
-        let span = tracked.map(|t| span_of(t, stored.keys().map(String::as_str)));
-        store.begin_pass(&root_key, std::process::id(), span)?;
-    }
-    // Git's index lists no untracked file, but the checkout holds those an
-    // explicit index's filesystem walk read: keep the ones still on disk, or
-    // completing would reconcile them away (D53). Listing every untracked file
-    // instead (`--others`) walks the tree, ~2 s a pass on 97k files.
-    let git_candidates = git_candidates
-        .zip(listed.as_ref())
-        .map(|(mut paths, listed)| {
-            paths.extend(
-                stored
-                    .keys()
-                    .filter(|f| !listed.contains(*f))
-                    .map(|f| root.join(f))
-                    .filter(|p| !gone(p)),
-            );
-            paths
-        });
     // parse query-relevant files (by path) first — a cheap in-memory reorder
     let git_candidates = git_candidates.map(|paths| prioritize_by_path(paths, root, query));
 
@@ -794,7 +887,6 @@ fn run_index(
         _ => true, // new file, or one stored without an mtime
     };
     let skipped = std::sync::atomic::AtomicU64::new(0);
-    let unwalked = Unwalked::default();
     let stream_start = Instant::now();
     let mut fused_span = crate::profile::span("index: walk+parse+write");
     let (seen, completed, walked, write_time, batches) = {
@@ -1350,7 +1442,9 @@ pub(crate) struct LiveTree<'a> {
 impl<'a> LiveTree<'a> {
     /// `root` under an identity the caller already resolved.
     pub(crate) fn new(root: &'a Path, identity: String) -> LiveTree<'a> {
-        let tracked = git_source_candidates(root).filter(|paths| !paths.is_empty());
+        let tracked = git_source_candidates(root)
+            .filter(|keys| !keys.is_empty())
+            .map(|keys| keys.iter().map(|k| root.join(k)).collect());
         LiveTree {
             root,
             identity,
@@ -1588,23 +1682,28 @@ fn parse_porcelain_z(out: &[u8]) -> Vec<String> {
 /// one never indexed. An edit the index already reflects is *not* a change —
 /// the worktree stays dirty until commit, and treating dirty as stale re-warmed
 /// on every query and made every miss read as "still warming".
+///
+/// A file is a change only if a pass would read it: one the walk doesn't
+/// reach (ignored, say) is no edit to the index, however dirty.
 fn has_unindexed_edits(store: &Store, checkout: i64, root: &Path, dirty: &[String]) -> bool {
-    dirty.iter().any(|rel| {
-        if !is_source(rel) {
-            return false;
-        }
+    let mut unread = Vec::new();
+    for rel in dirty.iter().filter(|f| is_source(f)) {
         let path = root.join(rel);
         let Ok(held) = store.file_mtime(checkout, rel) else {
             return true;
         };
-        match (on_disk(&path), held) {
-            (OnDisk::Unknown, _) => false,
-            (OnDisk::Absent, held) => held.is_some(),
+        let moved = match (on_disk(&path), held) {
+            (OnDisk::Absent, Some(_)) => return true,
+            (OnDisk::Unknown, _) | (OnDisk::Absent, None) => false,
             (OnDisk::File(now), Some(Some(indexed))) => Some(indexed) != now && readable(&path),
             // never read, or held without an mtime
             (OnDisk::File(_), _) => readable(&path),
+        };
+        if moved {
+            unread.push(rel.as_str());
         }
-    })
+    }
+    !walk_reaches(root, unread).0.is_empty()
 }
 
 /// Whether a tree git can't speak for differs from its index: a source file
@@ -1621,50 +1720,47 @@ pub(crate) fn untracked_tree_moved(store: &Store, checkout: i64, root: &Path) ->
     let (moved, held) = (AtomicBool::new(false), AtomicUsize::new(0));
     let unwalked = std::sync::Mutex::new(Vec::new());
     // parallel: on a large tree the stats are the whole cost of a miss
-    WalkBuilder::new(root)
-        .threads(parse_jobs())
-        .build_parallel()
-        .run(|| {
-            let (indexed, moved, held, unwalked) = (&indexed, &moved, &held, &unwalked);
-            Box::new(move |entry| {
-                if moved.load(Relaxed) {
-                    return WalkState::Quit;
-                }
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(e) => {
-                        let at = unwalked_at(&e, root);
-                        unwalked.lock().expect("unwalked lock").extend(at);
-                        return WalkState::Continue;
-                    }
-                };
-                let path = entry.path();
-                let Some(rel) = index_key(root, path) else {
+    walk(root).threads(parse_jobs()).build_parallel().run(|| {
+        let (indexed, moved, held, unwalked) = (&indexed, &moved, &held, &unwalked);
+        Box::new(move |entry| {
+            if moved.load(Relaxed) {
+                return WalkState::Quit;
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    let at = unwalked_at(&e, root);
+                    unwalked.lock().expect("unwalked lock").extend(at);
                     return WalkState::Continue;
-                };
-                let stored = indexed.get(&rel);
-                let now = match on_disk(path) {
-                    OnDisk::File(now) => now,
-                    OnDisk::Absent => return WalkState::Continue,
-                    OnDisk::Unknown => {
-                        // nothing known: held as it is
-                        if stored.is_some() {
-                            held.fetch_add(1, Relaxed);
-                        }
-                        return WalkState::Continue;
+                }
+            };
+            let path = entry.path();
+            let Some(rel) = index_key(root, path) else {
+                return WalkState::Continue;
+            };
+            let stored = indexed.get(&rel);
+            let now = match on_disk(path) {
+                OnDisk::File(now) => now,
+                OnDisk::Absent => return WalkState::Continue,
+                OnDisk::Unknown => {
+                    // nothing known: held as it is
+                    if stored.is_some() {
+                        held.fetch_add(1, Relaxed);
                     }
-                };
-                let same = matches!(stored, Some(&Some(m)) if Some(m) == now);
-                if !same && readable(path) {
-                    moved.store(true, Relaxed);
-                    return WalkState::Quit;
+                    return WalkState::Continue;
                 }
-                if stored.is_some() {
-                    held.fetch_add(1, Relaxed);
-                }
-                WalkState::Continue
-            })
-        });
+            };
+            let same = matches!(stored, Some(&Some(m)) if Some(m) == now);
+            if !same && readable(path) {
+                moved.store(true, Relaxed);
+                return WalkState::Quit;
+            }
+            if stored.is_some() {
+                held.fetch_add(1, Relaxed);
+            }
+            WalkState::Continue
+        })
+    });
     if moved.into_inner() {
         return true;
     }
@@ -1724,7 +1820,8 @@ pub(crate) fn rel_key(root: &Path, path: &Path) -> Option<String> {
 /// The key an index pass holds `path` under, if it holds it at all: a source
 /// file below `root`. Every enumeration — git's lists, the filesystem walk,
 /// the moved-detectors — asks this, so they agree on the set. What's on disk
-/// there is [`on_disk`]'s half.
+/// there is [`on_disk`]'s half, and whether ignore rules let a pass read it
+/// [`walk_reaches`]'s.
 pub(crate) fn index_key(root: &Path, path: &Path) -> Option<String> {
     rel_key(root, path).filter(|key| is_source(key))
 }

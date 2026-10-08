@@ -3092,7 +3092,7 @@ would make a brand-new file unfindable until it's added.
 
 *Known gaps.* Renaming an untracked file drops it until `rq --index` (the warm forgets
 the old path and never discovers the new one), and a file ignored after it was indexed
-stays until `rq --index`.
+stays until `rq --index` (closed by D62: a completed warm drops it too).
 
 *Reverses if:* git's untracked cache (or fsmonitor) makes `--others` cheap enough to run
 per pass.
@@ -3746,3 +3746,75 @@ making `x` public (as the export-list fix did for ESM in D60), at which point th
 measured set has no loss left; or an anchored Rust set shows sibling private items
 outranking the library. The patch is `core::PrivateScope`, the trait default plus three
 overrides, `lang::private_scope(language)`, and `in_tree` taking the candidate row.
+
+## D62 — The index's walk decides what every pass reads
+
+**Adopted**, 2026-10-08. `walk`, `walk_reaches`, `git_listed` and the candidate list in
+`run_index` (`src/index/mod.rs`); `a_warm_and_an_index_hold_the_same_files` and the
+hostile-tree rows in `tests/hostile_trees.rs`.
+
+*The problem.* The two passes enumerate differently: `rq --index` walks the disk with the
+`ignore` crate, a warm lists `git ls-files --cached`. Git lists a tracked file whatever
+an ignore rule says, and knows nothing of rq's `.ignore`, so a warm read files an index
+skipped, and each pass reconciled the other's away. In next.js a cold warm held 26,627
+files and 90,010 symbols against 25,906 and 79,210 for `rq --index`; 706 of the 721
+extra files are `packages/next/src/compiled/**`, vendored and minified bundles. A `.ignore`d tracked file flipped in
+and out with whichever pass ran last.
+
+*Every divergence found* (each a hostile-tree row unless noted):
+- **Ignore rules on tracked files** — `.gitignore`, `.ignore` (file or directory),
+  `.git/info/exclude`, the global excludes file, a `.ignore` above the root. Warm in,
+  index out.
+- **Branch files** — a warm admitted the branch's changed files directly, past any
+  enumeration, so an edited ignored file was read even where nothing else was.
+- **The dirty-file check** — once a warm stops reading an ignored file, editing it read
+  as an unindexed edit forever: every search exited 2, "still indexing". The row
+  "tracked, then .gitignore'd and edited" fails exactly this way without the fix.
+- **The live scan** a warming search folds into the index, and the span (`of`), both
+  from git's list: the scan wrote ignored files, and `of` counted files no pass reads,
+  so `read` could never reach it.
+- **Submodules** — the walk descends into one; `ls-files` without `--recurse-submodules`
+  lists only the gitlink, so a cold warm never read a submodule's files.
+- **An unreadable directory** — the walk notes it and keeps what lies under it; the
+  warm read past it by path. It now notes it the same way.
+- Already one rule, left as is: hidden paths (`is_source`), symlinks, FIFOs and devices
+  (`on_disk`), a sparse checkout's absent files, non-UTF-8 names, the size cap, binary
+  and generated files (all in the read every pass shares).
+
+*The rule.* Ignore rules win: a file is in a checkout's index only if the index's walk
+reaches it. A warm still lists with git (O(index read)), now with
+`--recurse-submodules`, then keeps what `walk_reaches` reaches of git's list, the
+untracked files the checkout holds (D53) and the branch's files. That walk is the same
+`WalkBuilder` the index walks with, descending only into directories holding a named
+file and reporting the directories it couldn't read, so the two agree by construction
+rather than by a second matcher kept in step. Rejected: `git ls-files -i
+--exclude-standard`, which is cheap but knows neither `.ignore` nor the `ignore`
+crate's precedence, so it agrees with the walk only usually; and in, tracked files
+counting whatever the ignore rules say, which in next.js adds 706 compiled files nobody
+navigates to and leaves `.ignore` meaning nothing to a warm.
+
+| files / symbols | `--index` | cold warm (before) | cold warm (after) | warm then `--index` |
+|---|---|---|---|---|
+| next.js | 25,906 / 79,210 | 26,627 / 90,010 | 25,906 / 79,210 | 25,906 / 79,210 |
+| react | 4,579 / 36,608 | 4,579 / 36,608 | 4,579 / 36,608 | 4,579 / 36,608 |
+| rails | 3,534 / 56,553 | 3,534 / 56,553 | 3,534 / 56,553 | 3,534 / 56,553 |
+| discourse | 14,399 / 79,140 | 14,399 / 79,140 | 14,399 / 79,140 | 14,399 / 79,140 |
+
+*The cost* is the walk before a warm pass reads anything: `index: enumerate` on a cold
+warm, release, 4 jobs, load 8–10, interleaved — next.js 27–48 ms before against
+204–286 ms after (4 runs each), discourse 18–31 ms against 59–63 ms (3 each). A pass
+on a complete checkout runs only once something moved, and a search on a complete one
+runs no walk unless a dirty file reads as unindexed. Recall indexes with `--index` and is
+unchanged: 0 of 6,879 top 10s changed, #1 5,160 both, regress 54 of 57 both.
+
+*Migration.* A store a warm filled keeps the ignored files it read until the next
+completed sweep (a commit, checkout or pull starts one) or `rq --index`. D53's gap — a
+file ignored after it was indexed stays until `rq --index` — closes the same way.
+
+*Known gap.* A case-only rename on a case-insensitive filesystem made outside git
+(`Foo.rb` on disk, `foo.rb` in git's index): the walk reaches `Foo.rb`, git names
+`foo.rb`, and a warm now reads neither, where it used to hold git's name.
+
+*Reverses if:* the walk's cost before a pass shows in a monorepo's first answer (the
+97k-file corpus wasn't measured here), in which case a cheaper exact test — the ignore
+files git tracks, matched without a walk — is the thing to build, not giving up the rule.
