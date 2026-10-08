@@ -80,8 +80,9 @@ impl fmt::Display for Kind {
 }
 
 /// How far a definition its language marks private can be called from: the
-/// file that defines it (an ES module, a Rust module's own file), or every file
-/// in its directory (a Go package, and the default where a language's privacy
+/// file that defines it (an ES module), or every file in its directory (a Go
+/// package; a Rust module, whose children beside a `mod.rs` or crate root call
+/// its private items via `super::`; and the default where a language's privacy
 /// isn't a place at all: a Ruby private method, Python's `_x`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrivateScope {

@@ -1845,6 +1845,7 @@ mod tests {
             ("examples/blog/app/helpers.rb", Some("private")),
             ("examples/blog/app/fake.ts", Some("private")),
             ("examples/blog/app/pkg.go", Some("private")),
+            ("examples/blog/app/main.rs", Some("private")),
             ("examples/shop/range.rb", Some("public")),
         ] {
             let name = match file {
@@ -1852,11 +1853,13 @@ mod tests {
                 "examples/blog/app/helpers.rb" => "range_sibling",
                 "examples/blog/app/fake.ts" => "range_fake",
                 "examples/blog/app/pkg.go" => "range_pkg",
+                "examples/blog/app/main.rs" => "range_parent",
                 _ => "range",
             };
             let language = match file.rsplit('.').next() {
                 Some("ts") => "typescript",
                 Some("go") => "go",
+                Some("rs") => "rust",
                 _ => "ruby",
             };
             store
@@ -1902,6 +1905,8 @@ mod tests {
         // the directory (the default; Go's unexported names are package-wide)
         assert!(!penalized("range_sibling", "examples/blog/app/helpers.rb"));
         assert!(!penalized("range_pkg", "examples/blog/app/pkg.go"));
+        // a Rust crate root's private fn, which its child modules here call via `super::`
+        assert!(!penalized("range_parent", "examples/blog/app/main.rs"));
         // ...and not where it is the file: an ES module's unexported const
         assert!(penalized("range_fake", "examples/blog/app/fake.ts"));
     }

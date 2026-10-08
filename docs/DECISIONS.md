@@ -3804,6 +3804,15 @@ Go repro keeps `examples/cli/args.go` #1. Rust's `File` stays unmeasured, an
 approximation of "the module and its descendants" that only matters inside a test or
 example tree; the second condition still reverses that part.
 
+*Rust back on the directory* (2026-10-08, before release). `File` was wrong where it
+matters most for Rust: a private item is visible to its module's descendants, and the
+children of a `mod.rs`, `main.rs` or `lib.rs` sit in its directory. In an
+`examples/app/` crate whose `util.rs` calls `super::render_frame()`, the private
+`render_frame` in `main.rs` lost its waiver and a library `pub fn render_frame` took #1
+at confidence 1.00. Rust takes the default (`Directory`), the pre-D61 rule, until an
+anchored Rust set measures a finer one. No recall set holds anchored Rust, so the
+measured numbers above are unchanged.
+
 ## D62 — The index's walk decides what every pass reads
 
 **Adopted**, 2026-10-08. `walk`, `walk_reaches`, `git_listed` and the candidate list in

@@ -493,7 +493,8 @@ why a result ranked where it did:
   the anchor's own tree, the innermost test or example directory holding it and
   one level below (`examples/blog/`, `test/e2e/`), unless it is private and
   outside its language's private scope as the plugin declares it: its own file
-  for TS/JS and Rust, its directory otherwise (a Go package; D60, D61)
+  for TS/JS, its directory otherwise (a Go package, a Rust module and its
+  children; D60, D61)
 - **visibility** — a definition its language marks private/protected takes a
   small penalty (public API over internal helpers; a tiebreaker, never a
   filter — and unknown visibility carries no signal). Sourced per language:

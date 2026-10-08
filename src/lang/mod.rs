@@ -310,7 +310,7 @@ mod tests {
         for (language, scope) in [
             ("typescript", PrivateScope::File),
             ("javascript", PrivateScope::File),
-            ("rust", PrivateScope::File),
+            ("rust", PrivateScope::Directory),
             ("go", PrivateScope::Directory),
             ("ruby", PrivateScope::Directory),
             ("python", PrivateScope::Directory),
