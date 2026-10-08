@@ -1174,6 +1174,156 @@ fn an_anchor_ranks_the_definition_its_file_imports_first() {
     );
 }
 
+/// Import shapes whose truth is set by hand, not by the resolver's own probing
+/// rules (the anchored recall sets derive theirs that way, so can't see these).
+/// Each wrong answer sits beside the anchor, so only a correct resolution wins.
+#[test]
+fn an_anchor_resolves_imports_by_the_languages_rules() {
+    let (dir, db) = scratch("anchor-import-truth");
+    let stars: String = (0..40)
+        .map(|i| format!("export * from './m{i}'\n"))
+        .chain(std::iter::once("export * from './target'\n".to_string()))
+        .collect();
+    let mut files: Vec<(String, String)> = [
+        (
+            "package.json",
+            r#"{"name": "root", "workspaces": ["packages/*", "!packages/ignored"]}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages: ['tools/*'] # tools too\n"),
+        // a renamed re-export doesn't export the name; the star beside it does
+        (
+            "ui/index.ts",
+            "export { Button as LegacyButton } from './legacy/Button'\n\
+             export * from './current/Button'\n",
+        ),
+        ("ui/legacy/Button.tsx", "export function Button() {}\n"),
+        ("ui/current/Button.tsx", "export function Button() {}\n"),
+        ("app/page.tsx", "import { Button } from '../ui'\n\nButton()\n"),
+        // an alias binds another name; the unaliased import is the one used
+        (
+            "app/alias.ts",
+            "import { Widget as OldWidget } from './legacy/widget'\n\
+             import { Widget } from '../modern/widget'\n\n\
+             new Widget()\n",
+        ),
+        ("app/legacy/widget.ts", "export class Widget {}\n"),
+        ("modern/widget.ts", "export class Widget {}\n"),
+        // a same-name wrapper: the import it wraps isn't the one asked about
+        (
+            "app/wrap.tsx",
+            "import { Card } from '../lib/components/Card'\n\nCard()\n",
+        ),
+        (
+            "lib/components/Card.tsx",
+            "import { Card as BaseCard } from '../../app/base/card'\n\n\
+             export function Card() { return BaseCard() }\n",
+        ),
+        ("app/base/card.tsx", "export function Card() {}\n"),
+        // a declaration beside its implementation: the implementation first
+        (
+            "packages/fmt/package.json",
+            r#"{"name": "fmt", "main": "index.js", "types": "index.d.ts"}"#,
+        ),
+        (
+            "packages/fmt/index.js",
+            "function formatDate() {}\nmodule.exports = { formatDate }\n",
+        ),
+        (
+            "packages/fmt/index.d.ts",
+            "export declare function formatDate(): string\n",
+        ),
+        (
+            "app/main.js",
+            "const { formatDate } = require('fmt')\n\nformatDate()\n",
+        ),
+        ("app/legacy.js", "export function formatDate() {}\n"),
+        (
+            "lib/loader.js",
+            "function parseThing() {}\nmodule.exports = { parseThing }\n",
+        ),
+        (
+            "lib/loader.d.ts",
+            "export declare function parseThing(): void\n",
+        ),
+        (
+            "app/usejs.js",
+            "const { parseThing } = require('../lib/loader')\n\nparseThing()\n",
+        ),
+        ("app/parse.js", "export function parseThing() {}\n"),
+        // `myns.load` doesn't spell `ns.load`
+        (
+            "app/ns.ts",
+            "import * as ns from './nsmod'\nimport * as myns from '../lib/other'\n\nmyns.load()\n",
+        ),
+        ("app/nsmod.ts", "export function load() {}\n"),
+        ("lib/other.ts", "export function load() {}\n"),
+        // `exports`: the longest matching pattern wins, and null excludes
+        (
+            "packages/ui/package.json",
+            r#"{"name": "@acme/ui", "exports": {"./*": "./src/flat/*.ts", "./sub/*": "./src/deep/*.ts", "./internal": null}}"#,
+        ),
+        ("packages/ui/src/deep/btn.ts", "export function Btn() {}\n"),
+        ("packages/ui/src/flat/sub/btn.ts", "export function Btn() {}\n"),
+        ("app/btn.ts", "import { Btn } from '@acme/ui/sub/btn'\n\nBtn()\n"),
+        ("packages/ui/internal.ts", "export function Secret() {}\n"),
+        ("app/secret.ts", "export function Secret() {}\n"),
+        (
+            "app/internal.ts",
+            "import { Secret } from '@acme/ui/internal'\n\nSecret()\n",
+        ),
+        // a workspace's negated pattern, and pnpm's inline list
+        ("packages/ignored/package.json", r#"{"name": "ign"}"#),
+        ("packages/ignored/index.ts", "export function Ign() {}\n"),
+        ("app/ign.ts", "export function Ign() {}\n"),
+        ("app/ignored.ts", "import { Ign } from 'ign'\n\nIgn()\n"),
+        (
+            "tools/cli/package.json",
+            r#"{"name": "cli", "main": "src/main.ts"}"#,
+        ),
+        ("tools/cli/src/main.ts", "export function run() {}\n"),
+        ("app/run.ts", "export function run() {}\n"),
+        ("app/cli.ts", "import { run } from 'cli'\n\nrun()\n"),
+        // a barrel of many stars still reaches the one defining the name
+        ("lib/stars/target.js", "export function Target() {}\n"),
+        ("app/target.js", "export function Target() {}\n"),
+        (
+            "app/stars.js",
+            "import { Target } from '../lib/stars'\n\nTarget()\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(f, s)| (f.to_string(), s.to_string()))
+    .collect();
+    files.push(("lib/stars/index.js".into(), stars));
+    files.extend((0..40).map(|i| {
+        (
+            format!("lib/stars/m{i}.js"),
+            format!("export const v{i} = {i}\n"),
+        )
+    }));
+    for (file, src) in &files {
+        fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+        fs::write(dir.join(file), src).unwrap();
+    }
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let cases = [
+        ("Button", "app/page.tsx:3", "ui/current/Button.tsx"),
+        ("Widget", "app/alias.ts:4", "modern/widget.ts"),
+        ("Card", "app/wrap.tsx:3", "lib/components/Card.tsx"),
+    ];
+    let wrong: Vec<String> = cases
+        .iter()
+        .filter_map(|(query, anchor, want)| {
+            let (_, out) = rq(&db, &dir, &[query, "--anchor", anchor, "--ndjson"]);
+            let got = top_file(&out);
+            (got != *want).then(|| format!("{query} @ {anchor}: want {want}, got {got}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 #[test]
 fn an_anchor_ranks_the_enclosing_class_first() {
     let (dir, db) = three_saves("anchor");

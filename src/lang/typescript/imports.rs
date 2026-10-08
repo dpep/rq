@@ -71,7 +71,10 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
         {
             continue;
         }
-        let used = (depth == 0).then(|| source.lines().nth(line.saturating_sub(1)).unwrap_or(""));
+        let used = (depth == 0).then(|| {
+            let row = line.saturating_sub(1);
+            (row, source.lines().nth(row).unwrap_or(""))
+        });
         let bindings = bindings(&from, &module_statements(&source));
         for (spec, target) in edges(&bindings, &wanted, used) {
             let Some(found) = r.locate(&from, &spec) else {
@@ -104,6 +107,8 @@ enum Binding {
         local: String,
         imported: String,
         spec: String,
+        /// The statement's lines, 0-based: where the imported name is spelled.
+        rows: (usize, usize),
     },
     /// `import local from`.
     Default { local: String, spec: String },
@@ -114,10 +119,15 @@ enum Binding {
 }
 
 /// Where `wanted` leads from these bindings: each specifier and the name the
-/// definition has there. `used` is the anchor's line in the importing file
-/// (where a namespace is spelled out); `None` past the first hop, where a
-/// star re-export also counts, unless an explicit one names the name.
-fn edges(bindings: &[Binding], wanted: &str, used: Option<&str>) -> Vec<(String, String)> {
+/// definition has there. `used` is the anchor's row and line in the importing
+/// file; `None` past the first hop, where a star re-export also counts, unless
+/// an explicit one names the name.
+///
+/// A module binds, and re-exports, the local name: `import { a as b }` and
+/// `export { a as b } from` are `b`. The original `a` counts only on the
+/// anchor's own import statement, as a namespace counts only where the
+/// anchor's line spells `ns.name`.
+fn edges(bindings: &[Binding], wanted: &str, used: Option<(usize, &str)>) -> Vec<(String, String)> {
     let mut explicit = Vec::new();
     let mut stars = Vec::new();
     for b in bindings {
@@ -126,21 +136,25 @@ fn edges(bindings: &[Binding], wanted: &str, used: Option<&str>) -> Vec<(String,
                 local,
                 imported,
                 spec,
-            } if local == wanted || imported == wanted => {
+                rows,
+            } if local == wanted
+                || (imported == wanted
+                    && used.is_some_and(|(row, _)| (rows.0..=rows.1).contains(&row))) =>
+            {
                 // a default has no name of its own to look up; the local one is the best guess
                 let target = if imported == "default" {
-                    wanted
+                    local
                 } else {
                     imported
                 };
-                explicit.push((spec.clone(), target.to_string()));
+                explicit.push((spec.clone(), target.clone()));
             }
             Binding::Default { local, spec } if local == wanted => {
                 explicit.push((spec.clone(), wanted.to_string()));
             }
             Binding::Namespace { local, spec }
                 if local == wanted
-                    || used.is_some_and(|l| l.contains(&format!("{local}.{wanted}"))) =>
+                    || used.is_some_and(|(_, l)| l.contains(&format!("{local}.{wanted}"))) =>
             {
                 explicit.push((spec.clone(), wanted.to_string()));
             }
@@ -157,16 +171,16 @@ fn edges(bindings: &[Binding], wanted: &str, used: Option<&str>) -> Vec<(String,
 /// of code at column 0 (a function, class, type or exported declaration; a
 /// `const` may be a `require` and doesn't end it), then any later top-level
 /// `import`, `export … from` or `module.exports = require(…)` statement. A
-/// small source is parsed whole.
+/// small source is parsed whole. Skipped lines are left blank, so a statement
+/// keeps its line.
 fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
     if source.len() <= PARSE_WHOLE {
         return source.into();
     }
-    let lines: Vec<&str> = source.lines().collect();
+    let mut lines: Vec<&str> = source.lines().collect();
     let Some(cut) = lines.iter().position(|l| is_code(l)) else {
         return source.into();
     };
-    let mut out = lines[..cut].join("\n");
     let mut i = cut;
     while i < lines.len() {
         let line = lines[i];
@@ -174,6 +188,7 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
             || (line.starts_with("export ") && !is_code(line))
             || line.starts_with("module.exports = require(");
         if !module {
+            lines[i] = "";
             i += 1;
             continue;
         }
@@ -184,11 +199,9 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
                 l.contains("from") || l.contains("require(") || l.trim_end().ends_with(';')
             })
             .unwrap_or(i);
-        out.push('\n');
-        out.push_str(&lines[i..=end].join("\n"));
         i = end + 1;
     }
-    out.into()
+    lines.join("\n").into()
 }
 
 /// A top-level line that starts code rather than a module statement.
@@ -339,7 +352,7 @@ fn import(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                     .into_iter()
                     .filter(|n| n.kind() == "import_specifier")
                 {
-                    out.extend(specifier(s, src, &spec));
+                    out.extend(specifier(s, src, &spec, rows(stmt)));
                 }
             }
             _ => {}
@@ -347,8 +360,13 @@ fn import(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
     }
 }
 
+/// A statement's first and last rows.
+fn rows(node: Node) -> (usize, usize) {
+    (node.start_position().row, node.end_position().row)
+}
+
 /// An `import_specifier` / `export_specifier`: `name` or `name as alias`.
-fn specifier(node: Node, src: &[u8], spec: &str) -> Option<Binding> {
+fn specifier(node: Node, src: &[u8], spec: &str, rows: (usize, usize)) -> Option<Binding> {
     let name = node.child_by_field_name("name")?;
     let imported = string(name, src).unwrap_or_else(|| text(name, src));
     let local = node
@@ -358,6 +376,7 @@ fn specifier(node: Node, src: &[u8], spec: &str) -> Option<Binding> {
         local,
         imported,
         spec: spec.to_string(),
+        rows,
     })
 }
 
@@ -377,7 +396,7 @@ fn reexport(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                     .into_iter()
                     .filter(|n| n.kind() == "export_specifier")
                 {
-                    out.extend(specifier(s, src, &spec));
+                    out.extend(specifier(s, src, &spec, rows(stmt)));
                 }
             }
             "namespace_export" => {
@@ -438,6 +457,7 @@ fn required(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                 local: text(name, src),
                 imported: text(prop, src),
                 spec,
+                rows: rows(stmt),
             });
             continue;
         }
@@ -467,6 +487,7 @@ fn required(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                         local,
                         imported,
                         spec: spec.clone(),
+                        rows: rows(stmt),
                     });
                 }
             }
@@ -840,17 +861,78 @@ mod tests {
             ],
         );
         let cases = [
-            ("Widget", one("app/widget.tsx", "Widget")),
-            ("Card", one("lib/card.ts", "Card")),
-            ("P", one("lib/card.ts", "Panel")),
-            ("Panel", one("lib/card.ts", "Panel")),
-            ("Grid", one("lib/grid/index.ts", "Grid")),
-            ("Shape", one("app/shape.mts", "Shape")),
-            ("Missing", vec![]),
+            ("Widget", 1, one("app/widget.tsx", "Widget")),
+            ("Card", 1, one("lib/card.ts", "Card")),
+            ("P", 1, one("lib/card.ts", "Panel")),
+            // the original name only on the import that spells it
+            ("Panel", 2, one("lib/card.ts", "Panel")),
+            ("Panel", 1, vec![]),
+            ("Grid", 1, one("lib/grid/index.ts", "Grid")),
+            ("Shape", 1, one("app/shape.mts", "Shape")),
+            ("Missing", 1, vec![]),
         ];
-        for (name, want) in cases {
-            assert_eq!(targets(&root, "app/page.tsx", 1, name), want, "{name}");
+        for (name, line, want) in cases {
+            assert_eq!(targets(&root, "app/page.tsx", line, name), want, "{name}");
         }
+    }
+
+    #[test]
+    fn a_rename_binds_its_local_name() {
+        let root = checkout(
+            "rename",
+            &[
+                (
+                    "app.ts",
+                    "import { Button } from './ui'
+                     import { Card as Base } from './base'
+                     import { Card } from './card'
+",
+                ),
+                (
+                    "ui.ts",
+                    "export { Button as LegacyButton } from './legacy'
+                     export * from './current'
+",
+                ),
+                (
+                    "legacy.ts",
+                    "export function Button() {}
+",
+                ),
+                (
+                    "current.ts",
+                    "export function Button() {}
+",
+                ),
+                (
+                    "base.ts",
+                    "export function Card() {}
+",
+                ),
+                (
+                    "card.ts",
+                    "export function Card() {}
+",
+                ),
+            ],
+        );
+        assert_eq!(
+            targets(&root, "app.ts", 1, "Button"),
+            vec![
+                ("ui.ts".into(), "Button".into()),
+                ("current.ts".into(), "Button".into())
+            ],
+            "a renamed re-export doesn't shadow the star that exports the name"
+        );
+        assert_eq!(targets(&root, "app.ts", 4, "Card"), one("card.ts", "Card"));
+        assert_eq!(
+            targets(&root, "app.ts", 2, "Card"),
+            vec![
+                ("base.ts".into(), "Card".into()),
+                ("card.ts".into(), "Card".into())
+            ],
+            "on the aliasing import, the original name is the one spelled"
+        );
     }
 
     #[test]
