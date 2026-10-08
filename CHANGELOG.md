@@ -23,9 +23,11 @@ old rows meanwhile. Nothing to run by hand.
   JavaScript). `import { Widget } from './widget'`, a CommonJS `require`, or an
   import of one of the checkout's own workspace packages (`from '@acme/ui'`)
   now ranks the definition it resolves to first, through re-exports and
-  barrels, as the `imported` feature in `--explain`. A boost, not a filter;
-  third-party packages and `tsconfig` path aliases aren't resolved
-  (DECISIONS D63).
+  barrels, as the `imported` feature in `--explain`; where a `.d.ts` sits
+  beside its `.js`, the implementation ranks first. A boost, not a filter;
+  third-party packages and `tsconfig` path aliases aren't resolved, and an
+  alias (`import { Widget as OldWidget }`) asked by its own name, `OldWidget`,
+  still finds nothing (DECISIONS D63).
 
 ### Changed
 - **Asked from inside a test or example tree, `--anchor` holds back a private

@@ -55,7 +55,7 @@ next.js	headers	test/e2e/app-dir/segment-cache/cached-navigations/default/app/ru
 next.js	headers	test/e2e/app-dir/cache-components-console/fixtures/default/app/console-after-abort/client/page.tsx:1:10	packages/next/src/server/request/headers.ts:43	package
 next.js	headers	crates/next-custom-transforms/tests/fixture/source-maps/client-graph/development/server-actions/1/input.js:6:10	packages/next/src/server/request/headers.ts:43	package
 next.js	UpdateInfo	test/development/basic/next-rs-api.test.ts:11:3	packages/next/src/build/swc/types.ts:322	package
-next.js	unstable_cacheTag	test/e2e/app-dir/cache-components-errors/fixtures/unstable-deprecations/app/tag/page.tsx:1:10	packages/next/cache.d.ts:165	package
+next.js	unstable_cacheTag	test/e2e/app-dir/cache-components-errors/fixtures/unstable-deprecations/app/tag/page.tsx:1:10	packages/next/cache.js:72	package
 next.js	Inter	crates/next-custom-transforms/tests/errors/next-font-loaders/not-const/input.js:1:10	packages/font/src/google/index.ts:11182	package
 next.js	Inter	crates/next-custom-transforms/tests/errors/next-font-loaders/export-let/input.js:2:16	packages/font/src/google/index.ts:11182	package
 next.js	Inter	crates/next-custom-transforms/tests/fixture/next-font-loaders/multiple-imports/input.js:2:10	packages/font/src/google/index.ts:11182	package
@@ -110,8 +110,8 @@ next.js	throwTurbopackInternalError	test/unit/TurbopackInternalError.test.ts:4:3
 next.js	after	test/e2e/app-dir/next-after-app-static/generate-static-params-error/app/callback/[myParam]/page.tsx:2:10	packages/next/src/server/after/after.ts:10	package
 next.js	after	test/development/app-dir/server-components-hmr-cache/components/shared-page.tsx:2:10	packages/next/src/server/after/after.ts:10	package
 next.js	after	test/e2e/app-dir/phase-changes/app/cookies/action-to-after/via-closure/page.tsx:1:10	packages/next/src/server/after/after.ts:10	package
-next.js	unstable_cacheLife	test/e2e/app-dir/cache-components-errors/fixtures/unstable-deprecations/app/life/page.tsx:1:10	packages/next/cache.d.ts:164	package
-next.js	unstable_cacheLife	test/e2e/cache-life-typecheck/typecheck-validation.ts:1:21	packages/next/cache.d.ts:164	package
+next.js	unstable_cacheLife	test/e2e/app-dir/cache-components-errors/fixtures/unstable-deprecations/app/life/page.tsx:1:10	packages/next/cache.js:60	package
+next.js	unstable_cacheLife	test/e2e/cache-life-typecheck/typecheck-validation.ts:1:21	packages/next/cache.js:60	package
 next.js	Span	test/unit/next-babel-loader-prod.test.ts:4:10	packages/next/src/trace/trace.ts:30	package
 next.js	Span	test/lib/next-modes/next-dev.ts:2:10	packages/next/src/trace/trace.ts:30	package
 next.js	Span	test/lib/next-modes/base.ts:16:10	packages/next/src/trace/trace.ts:30	package

@@ -17,7 +17,8 @@ own workspace packages (`from 'next/document'`, `from '@jest/globals'`: a
 tree outside that package, and the truth is the package's one exported
 top-level definition of the name outside its own tests and examples; a name it
 exports more than once there, or not at all (a virtual or re-exported module),
-is skipped. This is the other direction from the relative
+is skipped; a declaration's truth moves to the implementation beside it, as
+in the relative set. This is the other direction from the relative
 set, whose truths sit beside the anchor: here the answer is library code
 outside the anchor's tree.
 
@@ -150,6 +151,14 @@ def main():
             for (f, n), line in sorted(exported.items()):
                 exported_by_name.setdefault(n, []).append((f, line))
 
+            def implementation(target, name):
+                """The implementation beside a declaration, where both define `name`."""
+                decl = next((d for d in IMPLEMENTATION_OF if target.endswith(d)), None)
+                if not decl:
+                    return target
+                stem = target[: -len(decl)]
+                return next((stem + e for e in IMPLEMENTATION_OF[decl] if (stem + e, name) in top), target)
+
             def truth(file, specifier, name):
                 if count.get(name, 0) < 2:
                     return None
@@ -159,19 +168,18 @@ def main():
                     target = resolve(file, specifier, files)
                     if (target, name) not in top:
                         return None
-                    # the implementation over its declaration, where both define it
-                    decl = next((d for d in IMPLEMENTATION_OF if target.endswith(d)), None)
-                    if decl:
-                        stem = target[: -len(decl)]
-                        target = next((stem + e for e in IMPLEMENTATION_OF[decl]
-                                       if (stem + e, name) in top), target)
+                    target = implementation(target, name)
                     return f"{target}:{top[(target, name)]}"
                 pkg = packages.get(package_of(specifier))
                 if specifier.startswith(".") or not pkg or file.startswith(pkg) or not secondary(file):
                     return None
-                defs = [f"{f}:{line}" for f, line in exported_by_name.get(name, [])
+                defs = [f for f, _ in exported_by_name.get(name, [])
                         if f.startswith(pkg) and not secondary(f)]
-                return defs[0] if len(defs) == 1 else None
+                if len(defs) != 1:
+                    return None
+                target = implementation(defs[0], name)
+                line = exported[(target, name)] if target == defs[0] else top[(target, name)]
+                return f"{target}:{line}"
 
             by_name = {}
             for file in sorted(files):

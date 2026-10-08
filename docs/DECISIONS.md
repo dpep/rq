@@ -3937,9 +3937,10 @@ The TypeScript/JavaScript plugin resolves, from the module's top-level statement
   then `types`/`module`/`main`. A built path the checkout doesn't hold (`dist/x.js`,
   `build/index.d.ts`) is read as its source (`src/x.ts`): next.js's `next/document`
   stub and jest's `build/` entries resolve this way. Discovery is cached per process.
-- then re-exports, up to three hops past the imported file and 32 files: `export { a }
-  from`, `export * from` (only when no explicit re-export names it), `module.exports =
-  require(…)`, and an import the file passes on. A default import looks up its local name.
+- then re-exports, up to three hops past the imported file, 32 targets and 64 files read:
+  `export { a } from`, `export * from` (only when no explicit re-export names it),
+  `module.exports = require(…)`, and an import the file passes on. A default import looks
+  up its local name.
 
 Not resolved: third-party packages (no `node_modules` walk), `tsconfig` `paths`
 aliases, dynamic `import()`, and `ns.name` asked as a qualified query (the qualifier
@@ -4011,3 +4012,57 @@ sets measure the same with and without it. The median resolution is ~3 ms
 *Reverses if:* anchored use shows a resolution confidently wrong (a workspace package
 shadowing the third-party one a file actually loads), in which case drop bare specifiers
 first; or a second language's plugin needs more than (file, name), such as a member path.
+
+*Corrected* (2026-10-08, before release). A re-verify hunt found the resolver confidently
+wrong in shapes neither anchored set holds, because `derive_imports.py` picks its truth by
+the resolver's own probing rules. `an_anchor_resolves_imports_by_the_languages_rules`
+(`tests/cli_e2e.rs`) now holds 11 hand-verified cases, each with the wrong answer beside
+the anchor; all 11 failed on `f6e1898`. Fixed:
+- **A rename binds its local name.** `export { Button as LegacyButton } from` exported
+  `Button` too, took the boost and shadowed the `export *` that does export it;
+  a same-name wrapper's `import { Button as Base }` followed into what it wraps. A module
+  binds, and re-exports, the local name; the original counts only on the anchor's own
+  import statement (`import { a as b }` asked as `a` there), as a namespace counts only
+  where the anchor's line spells it.
+- **A declaration brings its implementation.** `.d.ts` is probed before `.js`, and
+  `types` before `main`, so `index.d.ts` took the boost and `index.js` fell to confidence 0.
+  A declaration found also names the sibling implementation, or the manifest's first
+  non-declaration entry; `stub` ranks it first. `derive_imports.py` now prefers the
+  implementation where both define the name: 2 relative and 3 package truths moved
+  (`dset`, convex's `query`, next's `unstable_cacheLife` ×2 and `unstable_cacheTag`),
+  updated in place, since regenerating against today's index resamples the set.
+- **A namespace is spelled as a whole member access**: `myns.load` no longer reads as
+  `ns.load`.
+- **`exports`**: the exact key, else the pattern with the longest prefix before its `*`,
+  then the longest key (Node's order); a null target excludes the subpath, with no fallback.
+- **A bundle is never parsed whole.** The header is capped at 16 KB; past it only lines
+  starting a module statement are kept (a one-line `require` declaration too), each at most
+  16 KB. A multi-line destructured `require` past the cap is missed.
+- Workspace `!negations` remove what they name; pnpm's one-line `packages: […]`, `#`
+  comments and blank lines read right. A file reached is a target only unless its text
+  can't hold the name, so a barrel's unrelated `export *` lines spend the 64-file budget,
+  not the 32 targets.
+
+| anchored #1 (updated truths) | main `f6e1898` | corrected |
+|---|---|---|
+| calls (446) | 349 | 349 |
+| imports (908) | 896 | 900 |
+| packages (231) | 215 | 221 |
+
+10 up, 0 down; no row lost the top 10. Five are the moved declaration truths, which main
+ranks second behind the `.d.ts`; four are renames main followed (`turbopackBuild`, and
+jest's `afterEach`, `beforeEach` and `test` beside `import { afterEach as circusAfterEach }`);
+one is turbopack's `Bar`. On the original truths main measured 898 / 218. Unanchored: 0 of
+6,879 top 10s changed, #1 5,159 both, regress 54 of 57 both.
+
+Latency, medians, interleaved with main, load 3–5: 40 sampled import and package rows,
+5 runs each, wall p50/p90 next.js 9.5/14.7 → 9.7/14.8 ms, react 7.2/9.1 → 7.1/8.9 ms
+(`--profile`), `setup: imports` unchanged (p50 0.6 and 1.0 ms). Anchored in next.js's
+compiled `fetch.js` (800 KB, esbuild output with no cut), `setup: imports` 49.7 → 2.5 ms;
+through a barrel of twelve 900 KB one-line modules, 1,795 → 3.3 ms. A barrel of 40 such
+modules now costs 11 ms where main took 0.5 ms, because main stopped at 32 named files
+without reading them, and never reached the definition.
+
+Still not resolved: an alias asked by its own name (`rq OldWidget` for
+`import { Widget as OldWidget }`) finds nothing, as before D63; the original name is what
+the index holds.

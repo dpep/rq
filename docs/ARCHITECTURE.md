@@ -571,7 +571,8 @@ why a result ranked where it did:
   and module resolution from disk, per query; the core sees only (file, name)
   pairs. Only TypeScript/JavaScript resolves imports: relative specifiers by
   TypeScript's probing, and bare ones naming the checkout's own workspace
-  packages; never `node_modules` (D63).
+  packages; never `node_modules`. A declaration (`.d.ts`) it lands on names the
+  implementation beside it too, which `stub` then ranks first (D63).
 
 Match quality and the static features live in the pure `score()` function. The
 dynamic, context-dependent signals (`recency`, `branch`, `enclosing`,
