@@ -3697,4 +3697,52 @@ sibling `detect-content-type.test.ts` wraps the library function in a module-pri
 `const detectContentType`: in ESM the anchor can't call it, but by directory it is a
 sibling, the fake-beside-the-test limit of `sharded?` and `equals`. Unanchored recall is
 unchanged against main (0 of 6,879 top 10s). A plugin-declared privacy scope (file or
-directory) would keep that row; it isn't worth a new plugin hook for one fake.
+directory) would keep that row; D61 measured one, and it trades a row for it.
+
+## D61 — A plugin-declared private scope: measured, not adopted
+
+**Rejected**, 2026-10-08. Anchored recall (all three sets) and the recall harness,
+against v0.60.6.
+
+*The question.* D60's waiver lets a private definition in the anchor's test or example
+tree count as callable when it sits in the anchor's directory, the widest place any
+language's privacy reaches (a Go package). That is wrong for languages whose privacy
+stops at the file: next.js `detectContentType` lost #1 to a module-private ESM `const` in
+a sibling test file. Would each plugin declaring its scope settle it?
+
+*What was tried.* A neutral `core::PrivateScope { File, Directory }`, a defaulted
+`LanguagePlugin::private_scope()` (Directory, the current rule), overridden to `File` for
+TypeScript, JavaScript and Rust, and consumed only by `Anchor::in_tree`: a private
+candidate is callable from beside the anchor only when its language's scope is the
+directory. Ruby (private is per class, across any file reopening it), Python (`_x` is a
+convention) and Go keep the default. The core stays language-blind; the hook is
+`family`'s shape, a dozen lines.
+
+| anchored #1 / top 10 | v0.60.6 | plugin scope |
+|---|---|---|
+| calls (446) | 349 / 441 | 349 / 441 |
+| imports (908) | 807 / 905 | 806 / 905 |
+| packages (231) | 147 / 228 | 148 / 228 |
+
+3 up, 1 down; no row leaves the top 10. Unanchored: 0 of 6,879 top 10s change. The
+Go repro (`rq parseArgs --anchor examples/cli/main.go:4`) keeps `examples/cli/args.go`
+#1, Go being on the default.
+
+- **Gained:** `detectContentType` back to #1 (#2 → #1), and two react `useState` rows from
+  compiler fixtures #4 → #3.
+- **Lost:** next.js `keep` (#1 → #3), from a turbopack fixture's `index.js`. Its truth,
+  `lib.js`, declares `const dead = require(…), keep = 'kept'` and exports it with
+  `exports.keep = keep`, which the plugin can't connect to the declaration and reads as
+  private (the CommonJS mislabel the plugin's module docs accept). A file scope turns that
+  mislabel from a −15 nudge into a lost waiver.
+
+*Why not.* Net #1s are even (one gained, one lost), and the loss is the hook trusting a
+label the JS plugin knows is wrong for CommonJS. Rust's `File` is unmeasured: no anchored
+set holds Rust, and Rust's true scope is the module and its descendants, which `File`
+only approximates.
+
+*Reverses if:* the JavaScript plugin reads `exports.x = x` / `module.exports = { x }` as
+making `x` public (as the export-list fix did for ESM in D60), at which point this
+measured set has no loss left; or an anchored Rust set shows sibling private items
+outranking the library. The patch is `core::PrivateScope`, the trait default plus three
+overrides, `lang::private_scope(language)`, and `in_tree` taking the candidate row.
