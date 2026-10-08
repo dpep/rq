@@ -16,7 +16,7 @@
 
 use tree_sitter::Node;
 
-use crate::core::{Kind, Symbol};
+use crate::core::{Kind, PrivateScope, Symbol};
 use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "rust";
@@ -26,6 +26,11 @@ pub(crate) struct Rust;
 impl LanguagePlugin for Rust {
     fn language(&self) -> &'static str {
         LANGUAGE
+    }
+
+    // a private item is its module's: this file (and child modules, not counted here)
+    fn private_scope(&self) -> PrivateScope {
+        PrivateScope::File
     }
 
     fn extensions(&self) -> &[&str] {

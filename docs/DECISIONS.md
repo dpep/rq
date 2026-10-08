@@ -3739,10 +3739,10 @@ sibling, the fake-beside-the-test limit of `sharded?` and `equals`. Unanchored r
 unchanged against main (0 of 6,879 top 10s). A plugin-declared privacy scope (file or
 directory) would keep that row; D61 measured one, and it trades a row for it.
 
-## D61 — A plugin-declared private scope: measured, not adopted
+## D61 — A plugin-declared private scope: rejected, then adopted
 
-**Rejected**, 2026-10-08. Anchored recall (all three sets) and the recall harness,
-against v0.60.6.
+**Rejected**, then **adopted** (see *Reversed*), 2026-10-08. Anchored recall (all three
+sets) and the recall harness, against v0.60.6.
 
 *The question.* D60's waiver lets a private definition in the anchor's test or example
 tree count as callable when it sits in the anchor's directory, the widest place any
@@ -3786,6 +3786,23 @@ making `x` public (as the export-list fix did for ESM in D60), at which point th
 measured set has no loss left; or an anchored Rust set shows sibling private items
 outranking the library. The patch is `core::PrivateScope`, the trait default plus three
 overrides, `lang::private_scope(language)`, and `in_tree` taking the candidate row.
+
+*Reversed* (2026-10-08, the same day). The first condition held: D57's *exports of a
+local* addendum reads `exports.keep = keep` as making `keep` public, so the hook no longer
+trusts a wrong label. The patch above is adopted unchanged, re-measured on top of that fix
+(and D62):
+
+| anchored #1 / top 10 | exports of a local | + plugin scope |
+|---|---|---|
+| calls (446) | 349 / 441 | 349 / 441 |
+| imports (908) | 807 / 905 | 807 / 905 |
+| packages (231) | 146 / 228 | 147 / 228 |
+
+3 up, 0 down: `detectContentType` #2 → #1 and the two react `useState` rows #4 → #3, as
+before; `keep` stays #1. Unanchored: 0 of 6,879 top 10s change, regress 54 of 57 both. The
+Go repro keeps `examples/cli/args.go` #1. Rust's `File` stays unmeasured, an
+approximation of "the module and its descendants" that only matters inside a test or
+example tree; the second condition still reverses that part.
 
 ## D62 — The index's walk decides what every pass reads
 

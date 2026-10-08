@@ -79,6 +79,16 @@ impl fmt::Display for Kind {
     }
 }
 
+/// How far a definition its language marks private can be called from: the
+/// file that defines it (an ES module, a Rust module's own file), or every file
+/// in its directory (a Go package, and the default where a language's privacy
+/// isn't a place at all: a Ruby private method, Python's `_x`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrivateScope {
+    File,
+    Directory,
+}
+
 /// A definition extracted from source.
 ///
 /// Every language plugin emits this same shape; the core never sees a

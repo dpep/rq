@@ -53,7 +53,7 @@ use std::collections::HashSet;
 
 use tree_sitter::{Language, Node};
 
-use crate::core::{Kind, Symbol};
+use crate::core::{Kind, PrivateScope, Symbol};
 use crate::lang::{Ctx, LanguagePlugin, extract_with_key, qualify};
 
 const TYPESCRIPT: &str = "typescript";
@@ -76,6 +76,11 @@ impl LanguagePlugin for TypeScript {
 
     fn family(&self) -> &'static str {
         FAMILY
+    }
+
+    // an unexported module-level name, or a class's `private` member, is the file's alone
+    fn private_scope(&self) -> PrivateScope {
+        PrivateScope::File
     }
 
     fn extensions(&self) -> &[&str] {
@@ -101,6 +106,11 @@ impl LanguagePlugin for JavaScript {
 
     fn family(&self) -> &'static str {
         FAMILY
+    }
+
+    // an unexported module-level name, or a class's `private` member, is the file's alone
+    fn private_scope(&self) -> PrivateScope {
+        PrivateScope::File
     }
 
     fn extensions(&self) -> &[&str] {

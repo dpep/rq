@@ -10,4 +10,4 @@ mod symbol;
 
 pub(crate) use clock::now_unix;
 pub(crate) use identity::RepoIdentity;
-pub(crate) use symbol::{Kind, Symbol};
+pub(crate) use symbol::{Kind, PrivateScope, Symbol};

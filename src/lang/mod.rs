@@ -6,7 +6,7 @@
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::core::{Kind, Symbol};
+use crate::core::{Kind, PrivateScope, Symbol};
 
 pub(crate) mod go;
 pub(crate) mod python;
@@ -200,6 +200,14 @@ pub(crate) trait LanguagePlugin {
         self.language()
     }
 
+    /// Where a definition this language marks private can be called from.
+    /// The default, its directory, is the widest any language's privacy
+    /// reaches by place; a language whose private names stop at their file
+    /// says so.
+    fn private_scope(&self) -> PrivateScope {
+        PrivateScope::Directory
+    }
+
     /// Extract definitions from `source`. `file` is the repo-relative path,
     /// recorded on each emitted [`Symbol`].
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol>;
@@ -257,6 +265,15 @@ pub(crate) fn reachable_from(file: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Where a private definition in `language` can be called from, as its plugin
+/// declares it; a language no plugin registers gets the default.
+pub(crate) fn private_scope(language: &str) -> PrivateScope {
+    REGISTRY
+        .iter()
+        .find(|p| p.language() == language)
+        .map_or(PrivateScope::Directory, |p| p.private_scope())
+}
+
 /// Is `name` the constructor a `Foo.new` query means, in `language`?
 pub(crate) fn is_constructor(language: &str, name: &str) -> bool {
     REGISTRY
@@ -287,6 +304,21 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_scope_is_the_plugins_and_defaults_to_the_directory() {
+        for (language, scope) in [
+            ("typescript", PrivateScope::File),
+            ("javascript", PrivateScope::File),
+            ("rust", PrivateScope::File),
+            ("go", PrivateScope::Directory),
+            ("ruby", PrivateScope::Directory),
+            ("python", PrivateScope::Directory),
+            ("cobol", PrivateScope::Directory),
+        ] {
+            assert_eq!(private_scope(language), scope, "{language}");
+        }
+    }
 
     #[test]
     fn languages_are_registered_by_extension() {

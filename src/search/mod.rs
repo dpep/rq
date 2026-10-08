@@ -17,7 +17,7 @@ pub(crate) use score::{
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crate::core::now_unix;
+use crate::core::{PrivateScope, now_unix};
 use crate::store::{Checkout, Store, SymbolRow};
 
 /// Per-layer cap on candidates pulled from the store before ranking. Exact and
@@ -145,15 +145,19 @@ impl Anchor {
 
     /// The candidate is in the anchor's own file, or under the anchor's test or
     /// example tree and callable from it: what is secondary elsewhere is the
-    /// context there (D31, D60). A private definition stays secondary unless it
-    /// sits beside the anchor: privacy is file-wide in some languages but
-    /// directory-wide in others (a Go package), so only farther off is it
-    /// surely out of the anchor's reach.
-    fn in_tree(&self, root: &str, file: &str, visibility: Option<&str>) -> bool {
-        root == self.root
-            && (file == self.file
-                || ((visibility != Some("private") || parent_dir(file) == parent_dir(&self.file))
-                    && self.tree.as_deref().is_some_and(|t| file.starts_with(t))))
+    /// context there (D31, D60). A private definition is callable only within
+    /// its language's private scope: its file, or its directory (a Go package).
+    fn in_tree(&self, c: &SymbolRow) -> bool {
+        let callable = || match c.visibility.as_deref() {
+            Some("private") => match crate::lang::private_scope(&c.language) {
+                PrivateScope::File => false,
+                PrivateScope::Directory => parent_dir(&c.file) == parent_dir(&self.file),
+            },
+            _ => true,
+        };
+        c.root == self.root
+            && (c.file == self.file
+                || (self.tree.as_deref().is_some_and(|t| c.file.starts_with(t)) && callable()))
     }
 
     /// Code at the anchor can refer to a definition in `language`: the same
@@ -250,7 +254,7 @@ impl Context {
                     a.enclosing(c.parent.as_deref()),
                     a.proximity(&c.root, &c.file),
                     if reach { a.reachable(&c.language) } else { 0.0 },
-                    a.in_tree(&c.root, &c.file, c.visibility.as_deref()),
+                    a.in_tree(c),
                 )
             });
         Boosts {
@@ -1839,22 +1843,32 @@ mod tests {
             ("examples/blog/utils/range.rb", Some("public")),
             ("examples/blog/utils/helpers.rb", Some("private")),
             ("examples/blog/app/helpers.rb", Some("private")),
+            ("examples/blog/app/fake.ts", Some("private")),
+            ("examples/blog/app/pkg.go", Some("private")),
             ("examples/shop/range.rb", Some("public")),
         ] {
             let name = match file {
                 "examples/blog/utils/helpers.rb" => "range_helper",
                 "examples/blog/app/helpers.rb" => "range_sibling",
+                "examples/blog/app/fake.ts" => "range_fake",
+                "examples/blog/app/pkg.go" => "range_pkg",
                 _ => "range",
+            };
+            let language = match file.rsplit('.').next() {
+                Some("ts") => "typescript",
+                Some("go") => "go",
+                _ => "ruby",
             };
             store
                 .replace_file_symbols(
                     repo,
                     file,
-                    "ruby",
+                    language,
                     None,
                     "h",
                     &[Symbol {
                         visibility,
+                        language: language.into(),
                         ..sym(name, Kind::Method)
                     }],
                 )
@@ -1884,8 +1898,12 @@ mod tests {
         assert!(penalized("range", "examples/shop/range.rb"));
         // a private helper in another file is nothing the anchor can call
         assert!(penalized("range_helper", "examples/blog/utils/helpers.rb"));
-        // ...but beside the anchor it may be: Go's unexported names are package-wide
+        // ...but beside the anchor it may be, where the language's privacy is
+        // the directory (the default; Go's unexported names are package-wide)
         assert!(!penalized("range_sibling", "examples/blog/app/helpers.rb"));
+        assert!(!penalized("range_pkg", "examples/blog/app/pkg.go"));
+        // ...and not where it is the file: an ES module's unexported const
+        assert!(penalized("range_fake", "examples/blog/app/fake.ts"));
     }
 
     #[test]

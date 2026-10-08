@@ -18,6 +18,13 @@ The first run after upgrading re-reads every TypeScript and JavaScript file
 once, in the background, for the visibility below; results answer from the
 old rows meanwhile. Nothing to run by hand.
 
+### Changed
+- **Asked from inside a test or example tree, `--anchor` holds back a private
+  TypeScript, JavaScript or Rust definition in a sibling file**, which the
+  anchor can't call: such privacy stops at the file. A Go unexported name
+  beside the anchor is still lifted, its package being the directory
+  (DECISIONS D61).
+
 ### Fixed
 - **A background warm and `rq --index` read the same files.** A warm listed
   files with git and read tracked ones that `.gitignore`, `.ignore` or

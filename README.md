@@ -104,7 +104,8 @@ enclosing that line rank first, then the same file and nearby directories. In a
 mixed-language repo, definitions the file's language can refer to (TS and JS
 reach each other) rank above the rest. Asked from inside a test or example
 app (`examples/blog/`), that app's own definitions aren't held back as test or
-example code, though a private one is only beside the anchor.
+example code, though a private one only where its language lets the anchor call
+it (its own file in TS/JS and Rust, its package in Go).
 
 ```sh
 $ rq 'valid?' -l 2
