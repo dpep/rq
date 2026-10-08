@@ -153,8 +153,7 @@ fn edges(bindings: &[Binding], wanted: &str, used: Option<(usize, &str)>) -> Vec
                 explicit.push((spec.clone(), wanted.to_string()));
             }
             Binding::Namespace { local, spec }
-                if local == wanted
-                    || used.is_some_and(|(_, l)| l.contains(&format!("{local}.{wanted}"))) =>
+                if local == wanted || used.is_some_and(|(_, l)| spells(l, local, wanted)) =>
             {
                 explicit.push((spec.clone(), wanted.to_string()));
             }
@@ -165,6 +164,20 @@ fn edges(bindings: &[Binding], wanted: &str, used: Option<(usize, &str)>) -> Vec
         }
     }
     if explicit.is_empty() { stars } else { explicit }
+}
+
+/// `line` spells `ns.name` as a member access of its own: not `myns.name` or
+/// `ns.names`.
+fn spells(line: &str, ns: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let needle = format!("{ns}.{name}");
+    line.match_indices(&needle).any(|(i, _)| {
+        !line[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| ident(c) || c == '.')
+            && !line[i + needle.len()..].chars().next().is_some_and(ident)
+    })
 }
 
 /// What of a large `source` can bind a module: the header up to the first line
@@ -1020,6 +1033,22 @@ mod tests {
             targets(&root, "main.js", 1, "format").is_empty(),
             "a namespace counts only where the line spells it"
         );
+    }
+
+    #[test]
+    fn a_namespace_is_spelled_as_a_whole_member_access() {
+        for (line, want) in [
+            ("ns.load()", true),
+            ("x = ns.load", true),
+            ("(ns.load)", true),
+            ("myns.load()", false),
+            ("a.ns.load()", false),
+            ("ns.loadAll()", false),
+            ("$ns.load()", false),
+            ("ns.load$()", false),
+        ] {
+            assert_eq!(spells(line, "ns", "load"), want, "{line}");
+        }
     }
 
     #[test]
