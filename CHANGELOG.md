@@ -32,7 +32,11 @@ old rows meanwhile. Nothing to run by hand.
   between passes; and it missed a submodule's files, which `rq --index` reads.
   Both now read what the index's walk reaches, submodules included. An edited
   file that an ignore rule excludes no longer leaves a search reporting
-  "still indexing" forever (DECISIONS D62).
+  "still indexing" forever. On a filesystem that folds case or Unicode
+  normalization (macOS), a file whose name on disk differs from git's that way
+  — a directory renamed `Src` → `src` outside git, an NFD name git lists as
+  NFC — is read under the disk's name, as `rq --index` reads it, rather than
+  dropped with everything under it (DECISIONS D62).
 - **A declaration a CommonJS module exports reads public**, not private:
   `function View() {}` with `module.exports = View`, `const keep = …` with
   `exports.keep = keep`, and each shorthand or name-valued key of

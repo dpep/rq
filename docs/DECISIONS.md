@@ -3877,9 +3877,24 @@ unchanged: 0 of 6,879 top 10s changed, #1 5,160 both, regress 54 of 57 both.
 completed sweep (a commit, checkout or pull starts one) or `rq --index`. D53's gap — a
 file ignored after it was indexed stays until `rq --index` — closes the same way.
 
-*Known gap.* A case-only rename on a case-insensitive filesystem made outside git
-(`Foo.rb` on disk, `foo.rb` in git's index): the walk reaches `Foo.rb`, git names
-`foo.rb`, and a warm now reads neither, where it used to hold git's name.
+*Names the filesystem folds* (closed before release). Git and the disk can spell one
+file two ways where the filesystem folds case or Unicode normalization: a directory
+renamed `Src` → `src` outside git (under `core.ignorecase` git sees no change), or an
+NFD name on disk that git, with `core.precomposeunicode` (macOS's default), lists as NFC.
+Matching git's names to the walk's byte for byte, a warm read neither, and a directory
+rename lost its whole subtree; a tree whose only source was such a file stayed
+"warming 0 of 0" forever. `walk_reaches` now matches a key the walk didn't spell by the
+file it names: an `lstat` gives its device and inode, a second walk descends only into
+the directories above such files (by inode, so the directory prefilter folds too) and
+keeps the regular file that is the same one, under the walk's spelling, which every pass
+holds and an explicit index already did. The filesystem's own rule decides what is one
+name, so there is no case-folding or normalization table to keep in step with APFS, and
+nothing changes where the filesystem is exact. Only keys the walk missed pay: an `lstat`
+each (in next.js, the ignored tracked files), and the second walk only when one of them
+is on disk. A dirty file git reports by its spelling is checked against the index under
+the walk's (`has_unindexed_edits`), or its edit would read as unindexed forever. Rows
+"NFD-named dir", "case-renamed dir" and "case-renamed dir, edited" (the last two where
+the scratch filesystem folds case).
 
 *Reverses if:* the walk's cost before a pass shows in a monorepo's first answer (the
 97k-file corpus wasn't measured here), in which case a cheaper exact test — the ignore

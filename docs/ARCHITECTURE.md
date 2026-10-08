@@ -319,8 +319,10 @@ search only reads.
   reaches (`walk_reaches`, which descends only into directories holding a
   listed file), as does the moved-detector for dirty files. So a tracked file
   matching an ignore rule — vendored or compiled code, usually — is out for
-  both (D62). Every enumeration also asks `index_key` (a source file below
-  the root, named in UTF-8) and `on_disk` (one `lstat`: a regular file,
+  both (D62). A name git spells differently from the disk where the filesystem
+  folds case or Unicode normalization is matched by the file it names (device
+  and inode) and held under the walk's spelling. Every enumeration also asks
+  `index_key` (a source file below the root, named in UTF-8) and `on_disk` (one `lstat`: a regular file,
   absent, or unknown on an I/O error), and the indexed set is the same
   whichever pass finishes. A symlink, FIFO or device is never read; an error
   is never taken for a delete.

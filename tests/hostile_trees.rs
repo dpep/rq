@@ -180,7 +180,46 @@ fn rows() -> Vec<Row> {
             after_index: |d| fs::remove_file(d.join("doomed.rb")).unwrap(),
             ..ROW
         },
+        Row {
+            // git (precomposeunicode) lists it NFC; the walk reads it as made
+            name: "NFD-named dir",
+            plant: |d| {
+                let dir = d.join("cafe\u{301}");
+                fs::create_dir(&dir).unwrap();
+                fs::write(dir.join("menu.rb"), "class Menu\nend\n").unwrap();
+            },
+            ..ROW
+        },
     ];
+    if case_insensitive() {
+        rows.push(Row {
+            // renamed behind git's back, which under core.ignorecase sees no change
+            name: "case-renamed dir",
+            plant: |d| {
+                fs::create_dir(d.join("Src")).unwrap();
+                fs::write(d.join("Src/c.rb"), "class Cased\nend\n").unwrap();
+            },
+            mangle: |d| {
+                fs::rename(d.join("Src"), d.join("src.tmp")).unwrap();
+                fs::rename(d.join("src.tmp"), d.join("src")).unwrap();
+            },
+            ..ROW
+        });
+        rows.push(Row {
+            // git reports the edit by its spelling, the index holds the walk's
+            name: "case-renamed dir, edited",
+            plant: |d| {
+                fs::create_dir(d.join("Src")).unwrap();
+                fs::write(d.join("Src/c.rb"), "class Cased\nend\n").unwrap();
+            },
+            mangle: |d| {
+                fs::rename(d.join("Src"), d.join("src.tmp")).unwrap();
+                fs::rename(d.join("src.tmp"), d.join("src")).unwrap();
+                fs::write(d.join("src/c.rb"), "class Recased\nend\n").unwrap();
+            },
+            ..ROW
+        });
+    }
     if cfg!(target_os = "linux") {
         // APFS refuses a name that isn't UTF-8
         rows.push(Row {
@@ -194,6 +233,13 @@ fn rows() -> Vec<Row> {
         });
     }
     rows
+}
+
+/// Whether the filesystem scratch trees live on folds case (APFS's default).
+fn case_insensitive() -> bool {
+    let probe = Scratch::new("case-probe");
+    fs::write(probe.join("probe"), "").unwrap();
+    probe.join("PROBE").try_exists().unwrap()
 }
 
 /// The states a tree can be indexed in.

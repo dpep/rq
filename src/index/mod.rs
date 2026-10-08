@@ -360,24 +360,79 @@ fn walk(root: &Path) -> WalkBuilder {
     WalkBuilder::new(root)
 }
 
+/// What [`walk_reaches`] reached of the keys it was given, each spelled as the
+/// walk spells it: an explicit index holds that spelling, so a warm must too.
+#[derive(Debug, Default)]
+struct Reached(HashMap<String, String>);
+
+impl Reached {
+    /// The walk's spelling of `key`, if the walk reaches it.
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).map(String::as_str)
+    }
+
+    /// The walk's spellings of `keys`, in their order, each once: two keys a
+    /// case-insensitive filesystem holds as one file are one file.
+    fn spell<'a>(&'a self, keys: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let mut seen = HashSet::new();
+        keys.into_iter()
+            .filter_map(|k| self.get(k))
+            .filter(|k| seen.insert(*k))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
 /// Which of `keys` (index keys below `root`) [`walk`] reaches as a regular
 /// file: exactly what an explicit index's walk would read of them. Descends
 /// only into directories holding one of them, so it costs a directory read
 /// per such directory, not a walk of the tree. The directories it couldn't
 /// read come back too: a key under one is neither reached nor gone.
+///
+/// A key names a file by git's spelling, which can differ from the disk's
+/// where the filesystem folds case or Unicode normalization (a directory
+/// renamed `Src` → `src` behind git's back, an NFD name git lists as NFC).
+/// A key the walk doesn't spell is matched again by the file it names, so the
+/// filesystem's own rule decides what is the same name.
 fn walk_reaches<'k>(
     root: &Path,
     keys: impl IntoIterator<Item = &'k str>,
-) -> (HashSet<String>, Vec<std::path::PathBuf>) {
-    use ignore::WalkState;
-    use std::sync::Mutex;
+) -> (Reached, Vec<std::path::PathBuf>) {
     let want: HashSet<&str> = keys.into_iter().collect();
     if want.is_empty() {
-        return (HashSet::new(), Vec::new());
+        return (Reached::default(), Vec::new());
     }
-    let mut dirs: HashSet<&str> = HashSet::new();
-    for key in &want {
-        let mut dir = *key;
+    let dirs = ancestors(want.iter().copied());
+    let (exact, mut unwalked) = walk_matching(
+        root,
+        |rel, _| dirs.contains(rel),
+        |rel, _| want.contains(rel).then(|| rel.to_owned()),
+    );
+    let mut reached: HashMap<String, String> =
+        exact.into_iter().map(|(k, _)| (k.clone(), k)).collect();
+    let missed: Vec<&str> = want
+        .into_iter()
+        .filter(|k| !reached.contains_key(*k))
+        .collect();
+    let (respelled, unread) = respelled(root, &missed);
+    unwalked.extend(unread);
+    unwalked.sort();
+    unwalked.dedup();
+    for (key, spelled) in respelled {
+        // the walk's spelling reaches itself, so spelling twice changes nothing
+        reached
+            .entry(spelled.clone())
+            .or_insert_with(|| spelled.clone());
+        reached.entry(key).or_insert(spelled);
+    }
+    (Reached(reached), unwalked)
+}
+
+/// Every directory above `keys`, as keys.
+fn ancestors<'k>(keys: impl IntoIterator<Item = &'k str>) -> HashSet<&'k str> {
+    let mut dirs = HashSet::new();
+    for key in keys {
+        let mut dir = key;
         while let Some(i) = dir.rfind('/') {
             dir = &dir[..i];
             if !dirs.insert(dir) {
@@ -385,9 +440,22 @@ fn walk_reaches<'k>(
             }
         }
     }
-    let (reached, unwalked) = (Mutex::new(HashSet::new()), Mutex::new(Vec::new()));
+    dirs
+}
+
+/// Walk `root` with [`walk`], descending into the directories `descend`
+/// accepts, and collecting `(key, walk's spelling)` for each regular file
+/// `take` names a key for.
+fn walk_matching(
+    root: &Path,
+    descend: impl Fn(&str, &ignore::DirEntry) -> bool + Sync,
+    take: impl Fn(&str, &ignore::DirEntry) -> Option<String> + Sync,
+) -> (Vec<(String, String)>, Vec<std::path::PathBuf>) {
+    use ignore::WalkState;
+    use std::sync::Mutex;
+    let (found, unwalked) = (Mutex::new(Vec::new()), Mutex::new(Vec::new()));
     walk(root).threads(parse_jobs()).build_parallel().run(|| {
-        let (want, dirs, reached, unwalked) = (&want, &dirs, &reached, &unwalked);
+        let (descend, take, found, unwalked) = (&descend, &take, &found, &unwalked);
         Box::new(move |entry| {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -402,9 +470,14 @@ fn walk_reaches<'k>(
             };
             match entry.file_type() {
                 _ if entry.depth() == 0 => WalkState::Continue,
-                Some(t) if t.is_dir() && !dirs.contains(rel) => WalkState::Skip,
-                Some(t) if t.is_file() && want.contains(rel) => {
-                    reached.lock().expect("reached lock").insert(rel.to_owned());
+                Some(t) if t.is_dir() && !descend(rel, &entry) => WalkState::Skip,
+                Some(t) if t.is_file() => {
+                    if let Some(key) = take(rel, &entry) {
+                        found
+                            .lock()
+                            .expect("found lock")
+                            .push((key, rel.to_owned()));
+                    }
                     WalkState::Continue
                 }
                 _ => WalkState::Continue,
@@ -412,8 +485,43 @@ fn walk_reaches<'k>(
         })
     });
     (
-        reached.into_inner().expect("reached lock"),
+        found.into_inner().expect("found lock"),
         unwalked.into_inner().expect("unwalked lock"),
+    )
+}
+
+/// Which of `missed` the walk reaches under another spelling, as `(key, walk's
+/// spelling)`: the regular file it yields that is the same file (device and
+/// inode) the key names. It descends only into the directories above such a
+/// file, so a key that is absent or ignored costs an `lstat`.
+fn respelled(root: &Path, missed: &[&str]) -> (Vec<(String, String)>, Vec<std::path::PathBuf>) {
+    use std::os::unix::fs::MetadataExt;
+    let meta = |key: &str| std::fs::symlink_metadata(root.join(key)).ok();
+    let files: HashMap<(u64, u64), &str> = missed
+        .iter()
+        .filter_map(|&key| {
+            let m = meta(key).filter(std::fs::Metadata::is_file)?;
+            Some(((m.dev(), m.ino()), key))
+        })
+        .collect();
+    if files.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let inos: HashSet<u64> = files.keys().map(|&(_, ino)| ino).collect();
+    let dirs: HashSet<u64> = ancestors(files.values().copied())
+        .into_iter()
+        .filter_map(|dir| meta(dir).filter(std::fs::Metadata::is_dir))
+        .map(|m| m.ino())
+        .collect();
+    walk_matching(
+        root,
+        |_, entry| entry.ino().is_some_and(|ino| dirs.contains(&ino)),
+        |_, entry| {
+            // the inode alone is a hint; the device settles it
+            let ino = entry.ino().filter(|ino| inos.contains(ino))?;
+            let dev = entry.metadata().ok()?.dev();
+            files.get(&(dev, ino)).map(|&key| key.to_owned())
+        },
     )
 }
 
@@ -422,7 +530,7 @@ fn walk_reaches<'k>(
 fn git_source_candidates(root: &Path) -> Option<Vec<String>> {
     let listed = git_listed(root)?;
     let (reached, _) = walk_reaches(root, listed.iter().map(String::as_str));
-    Some(listed.into_iter().filter(|k| reached.contains(k)).collect())
+    Some(reached.spell(listed.iter().map(String::as_str)))
 }
 
 /// The source files git tracks under `root` that a pass reads; `None` outside
@@ -818,18 +926,17 @@ fn run_index(
         .chain(active.iter().map(String::as_str));
     let (reached, unread) = walk_reaches(root, named);
     unwalked.lock().expect("unwalked lock").extend(unread);
-    let listed: Option<Vec<String>> =
-        listed.map(|l| l.into_iter().filter(|f| reached.contains(f)).collect());
+    let listed: Option<Vec<String>> = listed.map(|l| reached.spell(l.iter().map(String::as_str)));
     let git_candidates: Option<Vec<std::path::PathBuf>> = listed.as_ref().map(|listed| {
-        listed
-            .iter()
-            .map(String::as_str)
-            .chain(
-                held_unlisted
+        // spelled together: a held file may be one git lists under another spelling
+        reached
+            .spell(
+                listed
                     .iter()
-                    .copied()
-                    .filter(|f| reached.contains(*f)),
+                    .map(String::as_str)
+                    .chain(held_unlisted.iter().copied()),
             )
+            .into_iter()
             .map(|f| root.join(f))
             .collect()
     });
@@ -856,7 +963,7 @@ fn run_index(
     // Active (branch) files first: always parsed and written, so the working set
     // stays fresh even when a tight budget cuts the walk short.
     let mut active_to_parse: Vec<std::path::PathBuf> = Vec::new();
-    for rel in active.iter().filter(|f| reached.contains(*f)) {
+    for rel in reached.spell(active.iter().map(String::as_str)) {
         note_candidate(
             root,
             &root.join(rel),
@@ -1688,22 +1795,44 @@ fn parse_porcelain_z(out: &[u8]) -> Vec<String> {
 fn has_unindexed_edits(store: &Store, checkout: i64, root: &Path, dirty: &[String]) -> bool {
     let mut unread = Vec::new();
     for rel in dirty.iter().filter(|f| is_source(f)) {
-        let path = root.join(rel);
-        let Ok(held) = store.file_mtime(checkout, rel) else {
-            return true;
-        };
-        let moved = match (on_disk(&path), held) {
-            (OnDisk::Absent, Some(_)) => return true,
-            (OnDisk::Unknown, _) | (OnDisk::Absent, None) => false,
-            (OnDisk::File(now), Some(Some(indexed))) => Some(indexed) != now && readable(&path),
-            // never read, or held without an mtime
-            (OnDisk::File(_), _) => readable(&path),
-        };
-        if moved {
-            unread.push(rel.as_str());
+        match edit_of(store, checkout, root, rel) {
+            Edit::Changed => return true,
+            Edit::IfRead => unread.push(rel.as_str()),
+            Edit::None => {}
         }
     }
-    !walk_reaches(root, unread).0.is_empty()
+    let (reached, _) = walk_reaches(root, unread.iter().copied());
+    // git names a file by its spelling, the index by the walk's (case, Unicode
+    // normalization): a respelled file is an edit only if the walk's is one
+    unread.iter().any(|&rel| {
+        reached.get(rel).is_some_and(|spelled| {
+            spelled == rel || !matches!(edit_of(store, checkout, root, spelled), Edit::None)
+        })
+    })
+}
+
+/// What one dirty file is to the index ([`has_unindexed_edits`]).
+enum Edit {
+    /// A change whatever the walk says: indexed but gone, or the store failed.
+    Changed,
+    /// Moved since it was read, or never read: a change if a pass reads it.
+    IfRead,
+    None,
+}
+
+fn edit_of(store: &Store, checkout: i64, root: &Path, rel: &str) -> Edit {
+    let path = root.join(rel);
+    let Ok(held) = store.file_mtime(checkout, rel) else {
+        return Edit::Changed;
+    };
+    let moved = match (on_disk(&path), held) {
+        (OnDisk::Absent, Some(_)) => return Edit::Changed,
+        (OnDisk::Unknown, _) | (OnDisk::Absent, None) => false,
+        (OnDisk::File(now), Some(Some(indexed))) => Some(indexed) != now && readable(&path),
+        // never read, or held without an mtime
+        (OnDisk::File(_), _) => readable(&path),
+    };
+    if moved { Edit::IfRead } else { Edit::None }
 }
 
 /// Whether a tree git can't speak for differs from its index: a source file
@@ -2395,6 +2524,34 @@ mod tests {
         // a rename from a name that isn't UTF-8 still pairs
         let out = b"R  new.rb\0caf\xe9.rb\0 M a.rb\0";
         assert_eq!(parse_porcelain_z(out), ["new.rb", "a.rb"]);
+    }
+
+    #[test]
+    fn the_walk_reaches_a_key_under_the_disks_spelling() {
+        let root = std::env::temp_dir().join(format!("rq-respell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nfd = "cafe\u{301}";
+        for dir in ["src", nfd, "kept"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("a.rb"), "").unwrap();
+        }
+        std::fs::write(root.join(".ignore"), "kept/\n").unwrap();
+        let folds = std::fs::symlink_metadata(root.join("SRC")).is_ok();
+        let (reached, _) = walk_reaches(
+            &root,
+            ["Src/a.rb", "caf\u{e9}/a.rb", "kept/a.rb", "gone/a.rb"],
+        );
+        // only where the filesystem holds the two spellings as one name
+        let nfd_key = format!("{nfd}/a.rb");
+        let normalizes = std::fs::symlink_metadata(root.join("caf\u{e9}")).is_ok();
+        assert_eq!(reached.get("Src/a.rb"), folds.then_some("src/a.rb"));
+        assert_eq!(
+            reached.get("caf\u{e9}/a.rb"),
+            normalizes.then_some(nfd_key.as_str())
+        );
+        assert_eq!(reached.get("kept/a.rb"), None, "ignored under any spelling");
+        assert_eq!(reached.get("gone/a.rb"), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
