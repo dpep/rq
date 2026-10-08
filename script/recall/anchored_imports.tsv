@@ -129,7 +129,7 @@ next.js	Input	test/e2e/app-dir/ppr-history-replace-state/app/page.tsx:2:10	test/
 next.js	exportNumber05	turbopack/crates/turbopack-tests/tests/execution/turbopack/exports/mangle-many-exports/input/consume.js:7:3	turbopack/crates/turbopack-tests/tests/execution/turbopack/exports/mangle-many-exports/input/many-named.js:6	import
 next.js	qux	test/development/app-dir/source-mapping/app/client/page.tsx:4:41	test/development/app-dir/source-mapping/app/actions1.ts:15	import
 next.js	qux	test/development/app-dir/source-mapping/app/page.tsx:2:41	test/development/app-dir/source-mapping/app/actions1.ts:15	import
-next.js	query	examples/convex/convex/messages.ts:1:10	examples/convex/convex/_generated/server.d.ts:33	import
+next.js	query	examples/convex/convex/messages.ts:1:10	examples/convex/convex/_generated/server.js:30	import
 next.js	keep	turbopack/crates/turbopack-tests/tests/execution/turbopack/cjs-remove-unused-imports/sibling-declarator/input/index.js:1:10	turbopack/crates/turbopack-tests/tests/execution/turbopack/cjs-remove-unused-imports/sibling-declarator/input/lib.js:4	import
 next.js	Reporter	packages/next/src/trace/report/to-json.ts:6:15	packages/next/src/trace/report/types.ts:3	import
 next.js	Reporter	packages/next/src/trace/trace.test.ts:10:15	packages/next/src/trace/report/types.ts:3	import
@@ -268,7 +268,7 @@ next.js	Main	examples/with-styled-components/app/page.tsx:5:3	examples/with-styl
 next.js	refreshAction	test/e2e/app-dir/router-autoscroll/app/server-action-refresh/page.tsx:1:10	test/e2e/app-dir/router-autoscroll/app/server-action-refresh/actions.ts:5	import
 next.js	refreshAction	test/e2e/app-dir/resume-data-cache/app/server-action/page.tsx:3:10	test/e2e/app-dir/resume-data-cache/app/actions.ts:5	import
 next.js	refreshAction	test/e2e/app-dir/use-router-bfcache-id/app/[group]/[page]/leaf-content.tsx:6:10	test/e2e/app-dir/use-router-bfcache-id/app/actions.ts:5	import
-next.js	dset	packages/next/src/server/config.ts:48:10	packages/next/src/shared/lib/dset.d.ts:1	import
+next.js	dset	packages/next/src/server/config.ts:48:10	packages/next/src/shared/lib/dset.js:17	import
 next.js	FetchesClientData	test/e2e/app-dir/instant-validation/app/suspense-in-root/static/invalid-client-data-blocks-validation/layout.tsx:2:10	test/e2e/app-dir/instant-validation/app/suspense-in-root/static/invalid-client-data-blocks-validation/client.tsx:6	import
 next.js	FetchesClientData	test/e2e/app-dir/instant-validation/app/suspense-in-root/static/valid-client-data-does-not-block-validation/layout.tsx:2:10	test/e2e/app-dir/instant-validation/app/suspense-in-root/static/valid-client-data-does-not-block-validation/client.tsx:6	import
 next.js	font	test/e2e/app-dir/app-inline-css/app/page.tsx:1:10	test/e2e/app-dir/app-inline-css/app/font.ts:3	import

@@ -77,21 +77,20 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
         });
         let bindings = bindings(&from, &module_statements(&source));
         for (spec, target) in edges(&bindings, &wanted, used) {
-            let Some(found) = r.locate(&from, &spec) else {
-                continue;
-            };
-            if found == from || !seen.insert((found.clone(), target.clone())) {
-                continue;
-            }
-            out.push(ImportTarget {
-                file: found.clone(),
-                name: target.clone(),
-            });
-            if out.len() >= MAX_TARGETS {
-                return out;
-            }
-            if depth < MAX_HOPS {
-                queue.push_back((found, target, depth + 1));
+            for found in r.locate(&from, &spec) {
+                if found == from || !seen.insert((found.clone(), target.clone())) {
+                    continue;
+                }
+                out.push(ImportTarget {
+                    file: found.clone(),
+                    name: target.clone(),
+                });
+                if out.len() >= MAX_TARGETS {
+                    return out;
+                }
+                if depth < MAX_HOPS {
+                    queue.push_back((found, target.clone(), depth + 1));
+                }
             }
         }
     }
@@ -564,13 +563,26 @@ fn join(dir: &str, rel: &str) -> String {
     }
 }
 
+/// Declaration extensions, each with the implementations it declares.
+const DECLARATIONS: [(&str, &[&str]); 3] = [
+    (".d.ts", &[".js", ".jsx"]),
+    (".d.mts", &[".mjs"]),
+    (".d.cts", &[".cjs"]),
+];
+
 /// `path` without a module extension (`.d.ts` whole).
 fn stem(path: &str) -> &str {
-    [".d.ts", ".d.mts", ".d.cts"]
+    DECLARATIONS
         .iter()
+        .map(|(d, _)| d)
         .chain(EXTS.iter())
         .find_map(|e| path.strip_suffix(e))
         .unwrap_or(path)
+}
+
+/// A declaration file: types only, its implementation elsewhere.
+fn is_declaration(path: &str) -> bool {
+    DECLARATIONS.iter().any(|(d, _)| path.ends_with(d))
 }
 
 /// A workspace's packages: name → directory relative to the checkout root.
@@ -586,16 +598,32 @@ impl Resolver<'_> {
         !rel.is_empty() && self.root.join(rel).is_file()
     }
 
-    /// The file `spec`, imported from `from`, names.
-    fn locate(&mut self, from: &str, spec: &str) -> Option<String> {
+    /// The files `spec`, imported from `from`, names: the module TypeScript
+    /// resolves, and when that's a declaration (`.d.ts`, a manifest's `types`),
+    /// the implementation it declares too, which the stub penalty ranks first.
+    fn locate(&mut self, from: &str, spec: &str) -> Vec<String> {
         if spec.starts_with("./") || spec.starts_with("../") || spec == "." || spec == ".." {
             let dir = from.rfind('/').map_or("", |i| &from[..i]);
-            return self.probe(&normalize(&join(dir, spec))?);
+            let Some(found) = normalize(&join(dir, spec)).and_then(|base| self.probe(&base)) else {
+                return Vec::new();
+            };
+            let beside = self.beside(&found);
+            return std::iter::once(found).chain(beside).collect();
         }
         if spec.starts_with('/') || spec.contains(':') {
-            return None; // absolute, or a scheme (`node:fs`)
+            return Vec::new(); // absolute, or a scheme (`node:fs`)
         }
         self.package(spec)
+    }
+
+    /// The implementation beside a declaration: `x.js` for `x.d.ts`.
+    fn beside(&self, found: &str) -> Option<String> {
+        let (decl, impls) = DECLARATIONS.iter().find(|(d, _)| found.ends_with(d))?;
+        let stem = &found[..found.len() - decl.len()];
+        impls
+            .iter()
+            .map(|e| format!("{stem}{e}"))
+            .find(|p| self.is_file(p))
     }
 
     /// TypeScript's probing for a module path, then the source of a built one.
@@ -633,8 +661,10 @@ impl Resolver<'_> {
             .find(|p| self.is_file(p))
     }
 
-    /// A bare specifier naming one of the workspace's own packages.
-    fn package(&mut self, spec: &str) -> Option<String> {
+    /// A bare specifier naming one of the workspace's own packages: its
+    /// preferred entry, then if that's a declaration, the first entry that
+    /// isn't (`main` beside `types`), or else the implementation beside it.
+    fn package(&mut self, spec: &str) -> Vec<String> {
         let parts: Vec<&str> = spec.splitn(3, '/').collect();
         let (name, sub) = if spec.starts_with('@') && parts.len() >= 2 {
             (
@@ -649,14 +679,26 @@ impl Resolver<'_> {
         };
         let root = self.root;
         let packages = self.packages.get_or_insert_with(|| workspace(root));
-        let dir = packages.get(&name)?.clone();
+        let Some(dir) = packages.get(&name).cloned() else {
+            return Vec::new();
+        };
         let manifest: Value = read(&self.root.join(join(&dir, "package.json")))
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(Value::Null);
-        entries(&manifest, sub)
-            .iter()
-            .filter_map(|e| normalize(&join(&dir, e)))
-            .find_map(|p| self.probe(&p))
+        let mut found = entries(&manifest, sub)
+            .into_iter()
+            .filter_map(|e| normalize(&join(&dir, &e)))
+            .filter_map(|p| self.probe(&p));
+        let Some(first) = found.next() else {
+            return Vec::new();
+        };
+        if !is_declaration(&first) {
+            return vec![first];
+        }
+        let implementation = found
+            .find(|p| !is_declaration(p))
+            .or_else(|| self.beside(&first));
+        std::iter::once(first).chain(implementation).collect()
     }
 }
 
@@ -1148,6 +1190,46 @@ mod tests {
             })
             .collect();
         assert_eq!(names, ["Early", "req", "Late", "After"]);
+    }
+
+    #[test]
+    fn a_declaration_brings_its_implementation() {
+        let root = checkout(
+            "declaration",
+            &[
+                ("package.json", r#"{"workspaces": ["packages/*"]}"#),
+                (
+                    "packages/fmt/package.json",
+                    r#"{"name": "fmt", "main": "lib/index.js", "types": "types/index.d.ts"}"#,
+                ),
+                ("packages/fmt/lib/index.js", "exports.format = 1\n"),
+                (
+                    "packages/fmt/types/index.d.ts",
+                    "export declare const format: number\n",
+                ),
+                ("lib/loader.js", "exports.parse = 1\n"),
+                ("lib/loader.d.ts", "export declare const parse: number\n"),
+                (
+                    "main.js",
+                    "const { format } = require('fmt')\n\
+                     const { parse } = require('./lib/loader')\n",
+                ),
+            ],
+        );
+        assert_eq!(
+            targets(&root, "main.js", 1, "format"),
+            vec![
+                ("packages/fmt/types/index.d.ts".into(), "format".into()),
+                ("packages/fmt/lib/index.js".into(), "format".into())
+            ]
+        );
+        assert_eq!(
+            targets(&root, "main.js", 2, "parse"),
+            vec![
+                ("lib/loader.d.ts".into(), "parse".into()),
+                ("lib/loader.js".into(), "parse".into())
+            ]
+        );
     }
 
     #[test]

@@ -135,7 +135,9 @@ holds 908 JS/TS import sites (300 next.js, 222 jest, 86 zod, 300 react; up to
 three per name, `recv` = `import`): the query is a name in
 `import { a } from './x'`, the anchor is that name, and the truth is the
 top-level definition of it in the file the relative specifier resolves to, by
-TypeScript's probing (extensions, `/index`, and `./x.js` naming `./x.ts`). A
+TypeScript's probing (extensions, `/index`, and `./x.js` naming `./x.ts`), or in
+the implementation beside it when that is a declaration (`x.js` beside `x.d.ts`;
+2 rows, applied to the committed set in place). A
 re-export, a package import, or a name defined only once is skipped.
 [`derive_imports.py`](../script/recall/derive_imports.py) regenerates it. next.js
 is the mixed-language case (TS beside turbopack's Rust); react, jest and zod

@@ -1312,6 +1312,8 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("Button", "app/page.tsx:3", "ui/current/Button.tsx"),
         ("Widget", "app/alias.ts:4", "modern/widget.ts"),
         ("Card", "app/wrap.tsx:3", "lib/components/Card.tsx"),
+        ("formatDate", "app/main.js:3", "packages/fmt/index.js"),
+        ("parseThing", "app/usejs.js:3", "lib/loader.js"),
         ("load", "app/ns.ts:4", "lib/other.ts"),
     ];
     let wrong: Vec<String> = cases

@@ -7,8 +7,9 @@ that name in the import statement, and the truth is where it is defined.
 
 By default (anchored_imports.tsv) the specifier is relative, and the truth is
 the top-level definition of the name in the file it resolves to (TypeScript's
-rules: extension and `/index` probing, and `./x.js` naming `./x.ts`); a
-re-export is skipped.
+rules: extension and `/index` probing, and `./x.js` naming `./x.ts`), or in the
+implementation beside it when that is a declaration (`x.js` beside `x.d.ts`);
+a re-export is skipped.
 
 With --packages (anchored_packages.tsv) the specifier names one of the repo's
 own workspace packages (`from 'next/document'`, `from '@jest/globals'`: a
@@ -55,6 +56,8 @@ SPECIFIER = re.compile(r"(?:\btype\s+)?([A-Za-z_$][\w$]*)(?:\s+as\s+[\w$]+)?")
 EXTS = [".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
 # `./x.js` in TypeScript's ESM style names the `.ts` file it compiles from
 SOURCE_OF = {".js": [".ts", ".tsx"], ".jsx": [".tsx"], ".mjs": [".mts"], ".cjs": [".cts"]}
+# a declaration file's implementation beside it, the definition a reader wants
+IMPLEMENTATION_OF = {".d.ts": [".js", ".jsx"], ".d.mts": [".mjs"], ".d.cts": [".cjs"]}
 # rq's test and example directory names (src/search/score.rs)
 SECONDARY_DIRS = {"test", "tests", "spec", "specs", "__tests__", "__mocks__", "testdata", "fixtures",
                   "example", "examples", "_examples", "demo", "demos", "docs", "dev-docs"}
@@ -154,7 +157,15 @@ def main():
                     if not specifier.startswith("."):
                         return None
                     target = resolve(file, specifier, files)
-                    return f"{target}:{top[(target, name)]}" if (target, name) in top else None
+                    if (target, name) not in top:
+                        return None
+                    # the implementation over its declaration, where both define it
+                    decl = next((d for d in IMPLEMENTATION_OF if target.endswith(d)), None)
+                    if decl:
+                        stem = target[: -len(decl)]
+                        target = next((stem + e for e in IMPLEMENTATION_OF[decl]
+                                       if (stem + e, name) in top), target)
+                    return f"{target}:{top[(target, name)]}"
                 pkg = packages.get(package_of(specifier))
                 if specifier.startswith(".") or not pkg or file.startswith(pkg) or not secondary(file):
                     return None
