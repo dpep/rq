@@ -640,7 +640,9 @@ The index is **never assumed complete**.
 - **Opportunistic extraction** grows coverage through normal use.
 - **Staleness:** a `content_hash` mismatch marks a file's symbols stale; search
   lazily validates only the **top-N** results (stat, re-parse if changed) before
-  presenting — cheap because it touches a handful of files, not the index.
+  presenting — cheap because it touches a handful of files, not the index. A
+  changed file the walk no longer reaches (ignored since) isn't re-read: it
+  waits for a sweep to drop it, as every pass would (D62).
 
 Degradation ladder:
 

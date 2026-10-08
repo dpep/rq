@@ -2144,7 +2144,8 @@ fn trunk_ref(root: &Path) -> Option<String> {
 }
 
 /// Lazily revalidate one indexed file against disk: re-extract it if its content
-/// changed. This is the staleness check search runs over its top results.
+/// changed and a pass would still read it ([`walk_reaches`]). This is the
+/// staleness check search runs over its top results.
 ///
 /// It deliberately **never forgets** a file: a failed read isn't proof of
 /// deletion (a wrong checkout root, a transient FS error, or a race all look the
@@ -2164,6 +2165,10 @@ pub(crate) fn refresh_file(
     // it. An unchanged mtime is the same skip the indexer's walk makes.
     let mtime = file_mtime(&path);
     if mtime.is_some() && store.file_mtime(checkout.id, rel)? == Some(mtime) {
+        return Ok(Refresh::Unchanged);
+    }
+    // a file no pass would read now (ignored since) waits for a sweep to drop it
+    if mtime.is_some() && walk_reaches(root, [rel]).0.get(rel).is_none() {
         return Ok(Refresh::Unchanged);
     }
     let source = match read_source(&path) {

@@ -162,3 +162,44 @@ fn refresh_remembers_a_touch_and_still_sees_the_next_edit() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn refresh_leaves_a_file_an_ignore_rule_now_excludes() {
+    let dir = std::env::temp_dir().join(format!("rq-stale-ignored-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.rb");
+    fs::write(&file, "class Foo\nend\n").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    index::index_path(&mut store, &dir).unwrap();
+    let repo = store
+        .checkout(&dir.canonicalize().unwrap().to_string_lossy())
+        .unwrap()
+        .unwrap();
+
+    // ignored, then edited: no pass reads it now, so a search mustn't either
+    fs::write(dir.join(".ignore"), "a.rb\n").unwrap();
+    fs::write(&file, "class Bar\nend\n").unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    assert_eq!(
+        index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
+        Refresh::Unchanged
+    );
+    let found = |q: &str| {
+        !search::search(&store, q, None, None, &search::Context::default(), 5)
+            .unwrap()
+            .is_empty()
+    };
+    assert!(!found("Bar"));
+    assert!(
+        found("Foo"),
+        "left for a sweep to drop, never forgotten by a search"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

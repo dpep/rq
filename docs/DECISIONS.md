@@ -3841,6 +3841,10 @@ and out with whichever pass ran last.
   so `read` could never reach it.
 - **Submodules** — the walk descends into one; `ls-files` without `--recurse-submodules`
   lists only the gitlink, so a cold warm never read a submodule's files.
+- **The search-time refresh** of a top hit (`refresh_file`, also `--symbols` on a
+  complete index) re-read a changed file the walk no longer reaches, writing an
+  ignored file's edits back into the index. It now asks the walk first, after the
+  mtime check so an unchanged hit costs nothing more.
 - **An unreadable directory** — the walk notes it and keeps what lies under it; the
   warm read past it by path. It now notes it the same way.
 - Already one rule, left as is: hidden paths (`is_source`), symlinks, FIFOs and devices

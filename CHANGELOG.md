@@ -36,7 +36,8 @@ old rows meanwhile. Nothing to run by hand.
   normalization (macOS), a file whose name on disk differs from git's that way
   — a directory renamed `Src` → `src` outside git, an NFD name git lists as
   NFC — is read under the disk's name, as `rq --index` reads it, rather than
-  dropped with everything under it (DECISIONS D62).
+  dropped with everything under it. A search no longer re-reads an edited top
+  hit that an ignore rule now excludes (DECISIONS D62).
 - **A declaration a CommonJS module exports reads public**, not private:
   `function View() {}` with `module.exports = View`, `const keep = …` with
   `exports.keep = keep`, and each shorthand or name-valued key of
