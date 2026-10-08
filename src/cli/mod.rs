@@ -140,11 +140,14 @@ struct Cli {
     /// Pass an editor's cursor, or the file an agent is reading. Definitions in
     /// the scopes around that line come first, then ones in the same file and
     /// nearby directories, and ones in a language that file can refer to (TS
-    /// and JS reach each other) rank above ones it can't. Asked from inside a
+    /// and JS reach each other) rank above ones it can't. In TS and JS, the
+    /// definition the file's imports resolve the name to ranks first (relative
+    /// imports and the checkout's own workspace packages). Asked from inside a
     /// test or example tree, that tree's own definitions aren't held back as
-    /// test or example code (a private one only in the anchor's directory).
-    /// It's context, not a filter. FILE is relative to
-    /// the current directory; COL is accepted and ignored.
+    /// test or example code (a private one only where the anchor can reach it:
+    /// its own file in TS and JS, its directory elsewhere). It's context, not a
+    /// filter. FILE is relative to the current directory; COL is accepted and
+    /// ignored.
     #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with = "mode")]
     anchor: Option<AnchorSpec>,
 
