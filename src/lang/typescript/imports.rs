@@ -179,38 +179,54 @@ fn spells(line: &str, ns: &str, name: &str) -> bool {
     })
 }
 
-/// What of a large `source` can bind a module: the header up to the first line
-/// of code at column 0 (a function, class, type or exported declaration; a
-/// `const` may be a `require` and doesn't end it), then any later top-level
-/// `import`, `export … from` or `module.exports = require(…)` statement. A
-/// small source is parsed whole. Skipped lines are left blank, so a statement
-/// keeps its line.
+/// What of a large `source` can bind a module: a header of at most
+/// [`PARSE_WHOLE`] bytes, up to the first line of code at column 0 (a function,
+/// class, type or exported declaration; a `const` may be a `require` and
+/// doesn't end it), then any later line that starts a top-level `import`,
+/// `export … from`, `module.exports = require(…)` or one-line `require`
+/// declaration, a statement no bigger than the header. Bundles have no cut, or
+/// a cut a megabyte in; the cap keeps them from being parsed whole. A small
+/// source is parsed whole. Skipped lines are left blank, so a statement keeps
+/// its line.
 fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
     if source.len() <= PARSE_WHOLE {
         return source.into();
     }
     let mut lines: Vec<&str> = source.lines().collect();
-    let Some(cut) = lines.iter().position(|l| is_code(l)) else {
-        return source.into();
-    };
+    let mut bytes = 0;
+    let cut = lines
+        .iter()
+        .position(|l| {
+            bytes += l.len() + 1;
+            bytes > PARSE_WHOLE || is_code(l)
+        })
+        .unwrap_or(lines.len());
     let mut i = cut;
     while i < lines.len() {
         let line = lines[i];
         let module = line.starts_with("import ")
             || (line.starts_with("export ") && !is_code(line))
-            || line.starts_with("module.exports = require(");
-        if !module {
+            || line.starts_with("module.exports = require(")
+            || (["const ", "let ", "var "]
+                .iter()
+                .any(|k| line.starts_with(k))
+                && line.contains("require("));
+        // the statement runs to its specifier, or to the end of a local list
+        let end = module.then(|| {
+            (i..lines.len().min(i + 64))
+                .find(|&j| {
+                    let l = lines[j];
+                    l.contains("from") || l.contains("require(") || l.trim_end().ends_with(';')
+                })
+                .unwrap_or(i)
+        });
+        let kept =
+            end.filter(|&e| lines[i..=e].iter().map(|l| l.len() + 1).sum::<usize>() <= PARSE_WHOLE);
+        let Some(end) = kept else {
             lines[i] = "";
             i += 1;
             continue;
-        }
-        // the statement runs to its specifier, or to the end of a local list
-        let end = (i..lines.len().min(i + 64))
-            .find(|&j| {
-                let l = lines[j];
-                l.contains("from") || l.contains("require(") || l.trim_end().ends_with(';')
-            })
-            .unwrap_or(i);
+        };
         i = end + 1;
     }
     lines.join("\n").into()
@@ -1259,6 +1275,35 @@ mod tests {
         for (sub, want) in cases {
             assert_eq!(entries(&manifest, sub), want, "{sub}");
         }
+    }
+
+    #[test]
+    fn a_bundle_is_never_parsed_whole() {
+        // one minified line, and a bundle whose code starts with `var`
+        let minified = format!("!function(e){{{}}}\n", "var t=e*2;".repeat(4_000));
+        let unminified = format!(
+            "\"use strict\";\n{}var dep = require('./dep');\nfunction f() {{}}\n",
+            "var x = Object.create;\n".repeat(2_000)
+        );
+        for source in [&minified, &unminified] {
+            assert!(source.len() > PARSE_WHOLE);
+            let kept = module_statements(source);
+            assert_eq!(
+                kept.split('\n').count(),
+                source.lines().count(),
+                "lines kept"
+            );
+            let text: usize = kept.lines().map(str::len).sum();
+            assert!(text <= PARSE_WHOLE, "{text}");
+        }
+        let names: Vec<String> = bindings("bundle.js", &module_statements(&unminified))
+            .into_iter()
+            .filter_map(|b| match b {
+                Binding::Namespace { local, .. } => Some(local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["dep"], "a require past the header still binds");
     }
 
     #[test]
