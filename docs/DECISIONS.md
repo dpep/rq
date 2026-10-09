@@ -4088,3 +4088,9 @@ before its fix:
   `local.name` for a named import, the hop carries the member until a module binds
   that name as a namespace, and only the namespace's module is a target, not the files
   on the way. Same recall as main, every set (see below).
+- **A late statement ends at its specifier.** Past a large source's cut, a multi-line
+  import ended at the first line holding the substring `from`, so a name like
+  `fromThing` cut it short and the rest was blanked. It now ends at `from '…'`. Over
+  the 1,029 sources above 16 KB in next.js, react, jest, zod and excalidraw, against a
+  whole parse: no binding lost, 2 gained, both `require`s in next's
+  `build/utils.ts` that sit in a template literal (see below).

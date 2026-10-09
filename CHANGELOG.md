@@ -15,6 +15,8 @@ and aren't listed; see `git log` for those.
   name first (DECISIONS D63).
 - `--anchor` on `tools.frob()` follows `import { tools }` into a barrel's
   `export * as tools from './frob'`.
+- `--anchor` in a large file follows a late multi-line import holding a name
+  like `fromThing`.
 
 ## 0.60.7 — 2026-10-08
 

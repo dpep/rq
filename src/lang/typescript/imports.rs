@@ -309,7 +309,7 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
             (i..lines.len().min(i + 64))
                 .find(|&j| {
                     let l = lines[j];
-                    l.contains("from") || l.contains("require(") || l.trim_end().ends_with(';')
+                    names_module(l) || l.contains("require(") || l.trim_end().ends_with(';')
                 })
                 .unwrap_or(i)
         });
@@ -323,6 +323,12 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
         i = end + 1;
     }
     lines.join("\n").into()
+}
+
+/// `line` holds a `from '…'` specifier: not a name like `fromThing`.
+fn names_module(line: &str) -> bool {
+    line.match_indices("from")
+        .any(|(i, _)| line[i + 4..].trim_start().starts_with(['\'', '"']))
 }
 
 /// A top-level line that starts code rather than a module statement.
@@ -1471,6 +1477,24 @@ mod tests {
             })
             .collect();
         assert_eq!(names, ["Early", "req", "Late", "After"]);
+    }
+
+    #[test]
+    fn a_late_statement_runs_to_its_specifier() {
+        let body = "function filler() {\n  return 1;\n}\n".repeat(1_000);
+        // names holding "from" don't end the statement
+        let late = format!(
+            "{body}import {{\n  fromThing,\n  transformFrom,\n  from,\n  Target,\n}} from './fr'\n"
+        );
+        assert!(late.len() > PARSE_WHOLE);
+        let names: Vec<String> = bindings("big.ts", &module_statements(&late))
+            .into_iter()
+            .filter_map(|b| match b {
+                Binding::Named { local, .. } => Some(local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["fromThing", "transformFrom", "from", "Target"]);
     }
 
     #[test]

@@ -1315,6 +1315,24 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
     .map(|(f, s)| (f.to_string(), s.to_string()))
     .collect();
     files.push(("lib/stars/index.js".into(), stars));
+    // past a large module's first code, a name holding "from" doesn't end the import
+    let filler = format!("// {}\n", "x".repeat(76)).repeat(250);
+    files.extend([
+        (
+            "app/late.ts".to_string(),
+            format!(
+                "export function early() {{}}\n{filler}import {{\n  fromThing,\n  lateTarget,\n}} from '../lib/fr'\n\nlateTarget()\n"
+            ),
+        ),
+        (
+            "lib/fr.ts".into(),
+            "export function fromThing() {}\nexport function lateTarget() {}\n".into(),
+        ),
+        (
+            "app/lateTarget.ts".into(),
+            "export function lateTarget() {}\n".into(),
+        ),
+    ]);
     files.extend((0..40).map(|i| {
         (
             format!("lib/stars/m{i}.js"),
@@ -1343,6 +1361,7 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("Panel", "app/dflt.ts:3", "lib/comp/Panel.ts"),
         ("Gizmo", "app/gz.ts:3", "lib/gizmo.ts"),
         ("frob", "app/nsre.ts:3", "lib/nsx.ts"),
+        ("lateTarget", "app/late.ts:257", "lib/fr.ts"),
     ];
     let wrong: Vec<String> = cases
         .iter()
