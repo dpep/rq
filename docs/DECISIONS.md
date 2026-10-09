@@ -4094,3 +4094,26 @@ before its fix:
   the 1,029 sources above 16 KB in next.js, react, jest, zod and excalidraw, against a
   whole parse: no binding lost, 2 gained, both `require`s in next's
   `build/utils.ts` that sit in a template literal (see below).
+- **A statement runs to its end, however many lines.** A statement the 16 KB header
+  cap cut in two lost its tail (the tail's lines don't start with `import`), and a
+  later one ended within 64 lines or was kept as its first line alone: a 200-name
+  import past the cap went missing, and an unterminated `export type X = {` line
+  parsed as a fragment that swallowed the `export { … } from` after it. Every
+  statement now runs to its specifier, a `;`, or a list's closing `}` at column 0,
+  bounded by size (16 KB), not lines; one with no end in that span is dropped, as is
+  the header's share of one. The ends are found in one pass, so the walk stays linear.
+  A single statement over 16 KB is still skipped: that bound is what keeps a minified
+  bundle from being parsed whole. Large-source scan: 8 bindings regained that a whole
+  parse holds (next's `config-shared.ts` and `stream-ops.node.ts` re-exports, react's
+  `DOCTYPE` import, a renaming list), 2 more template-literal ones, 0 lost.
+  One package truth was wrong and is corrected: next.js `workUnitAsyncStorage` from
+  `test/e2e/app-dir/app-external/app/async-storage/page.js`, which writes
+  `import { workUnitAsyncStorage } from
+  'next/dist/server/app-render/work-unit-async-storage.external'`. That module's
+  `export { workUnitAsyncStorageInstance as workUnitAsyncStorage }` sits past its
+  16 KB cut, so the truth was taken to be the browser stub
+  `client/components/server-async-storage.browser.ts:7` (`= undefined`); the
+  definition is `server/app-render/work-unit-async-storage-instance.ts:4`. On the
+  old truth this change measured packages #1 221 → 220; on the corrected one,
+  main 220, this 221 (1 up, 0 down), calls and imports 349 / 900 both, unanchored
+  5,159 / 6,147 both, 0 of 6,821 changed, regress 54 of 57 both.

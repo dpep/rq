@@ -1333,6 +1333,22 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
             "export function lateTarget() {}\n".into(),
         ),
     ]);
+    // an import the 16 KB header cap cuts in two is read to its end
+    let singles: String = (0..480)
+        .map(|i| format!("import {{ One{i:03} }} from '../lib/one'\n"))
+        .collect();
+    let list: String = (0..200).map(|i| format!("  Two{i:03},\n")).collect();
+    files.extend([
+        (
+            "app/straddle.ts".to_string(),
+            format!("{singles}import {{\n{list}}} from '../lib/two'\n\nTwo199()\n"),
+        ),
+        ("lib/two.ts".into(), "export function Two199() {}\n".into()),
+        (
+            "app/Two199.ts".into(),
+            "export function Two199() {}\n".into(),
+        ),
+    ]);
     files.extend((0..40).map(|i| {
         (
             format!("lib/stars/m{i}.js"),
@@ -1362,6 +1378,7 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("Gizmo", "app/gz.ts:3", "lib/gizmo.ts"),
         ("frob", "app/nsre.ts:3", "lib/nsx.ts"),
         ("lateTarget", "app/late.ts:257", "lib/fr.ts"),
+        ("Two199", "app/straddle.ts:684", "lib/two.ts"),
     ];
     let wrong: Vec<String> = cases
         .iter()

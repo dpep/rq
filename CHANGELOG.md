@@ -17,6 +17,8 @@ and aren't listed; see `git log` for those.
   `export * as tools from './frob'`.
 - `--anchor` in a large file follows a late multi-line import holding a name
   like `fromThing`.
+- `--anchor` in a large file follows an import the 16 KB header cut in two, or
+  one past it longer than 64 lines.
 
 ## 0.60.7 — 2026-10-08
 

@@ -99,7 +99,7 @@ next.js	notFound	test/e2e/app-dir/navigation/app/not-found/servercomponent/page.
 next.js	useSearchParams	test/e2e/app-dir/shallow-routing/app/(shallow)/pushstate-string-url/page.tsx:4:10	packages/next/src/client/components/navigation.ts:55	package
 next.js	useSearchParams	test/e2e/app-dir/instant-validation/app/suspense-in-root/static/valid-client-api-in-parent/search-params/client.tsx:3:10	packages/next/src/client/components/navigation.ts:55	package
 next.js	useSearchParams	examples/with-segment-analytics/components/analytics.tsx:4:23	packages/next/src/client/components/navigation.ts:55	package
-next.js	workUnitAsyncStorage	test/e2e/app-dir/app-external/app/async-storage/page.js:1:10	packages/next/src/client/components/server-async-storage.browser.ts:7	package
+next.js	workUnitAsyncStorage	test/e2e/app-dir/app-external/app/async-storage/page.js:1:10	packages/next/src/server/app-render/work-unit-async-storage-instance.ts:4	package
 next.js	TraceEvent	test/lib/parse-trace-file.ts:2:15	packages/next/src/trace/types.ts:9	package
 next.js	unauthorized	test/development/app-dir/segment-explorer/app/boundary/page.tsx:1:31	packages/next/src/client/components/unauthorized.ts:21	package
 next.js	unauthorized	test/e2e/app-dir/unauthorized/default/app/metadata-layout-unauthorized/layout.js:1:10	packages/next/src/client/components/unauthorized.ts:21	package

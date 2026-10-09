@@ -275,12 +275,12 @@ fn spells(line: &str, ns: &str, name: &str) -> bool {
 /// What of a large `source` can bind a module: a header of at most
 /// [`PARSE_WHOLE`] bytes, up to the first line of code at column 0 (a function,
 /// class, type or exported declaration; a `const` may be a `require` and
-/// doesn't end it), then any later line that starts a top-level `import`,
-/// `export … from`, `module.exports = require(…)` or one-line `require`
-/// declaration, a statement no bigger than the header. Bundles have no cut, or
-/// a cut a megabyte in; the cap keeps them from being parsed whole. A small
-/// source is parsed whole. Skipped lines are left blank, so a statement keeps
-/// its line.
+/// doesn't end it), and on to the end of a statement the cap cut in two, then
+/// any later line that starts a top-level `import`, `export … from`,
+/// `module.exports = require(…)` or one-line `require` declaration. Each
+/// statement is no bigger than the header. Bundles have no cut, or a cut a
+/// megabyte in; the cap keeps them from being parsed whole. A small source is
+/// parsed whole. Skipped lines are left blank, so a statement keeps its line.
 fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
     if source.len() <= PARSE_WHOLE {
         return source.into();
@@ -294,35 +294,82 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
             bytes > PARSE_WHOLE || is_code(l)
         })
         .unwrap_or(lines.len());
+    let ends = Ends::new(&lines);
     let mut i = cut;
+    let capped = (0..cut)
+        .rev()
+        .find(|&j| opens_statement(lines[j]))
+        .filter(|_| bytes > PARSE_WHOLE);
+    if let Some(start) = capped {
+        match ends.of(start) {
+            Some(end) if end >= cut => i = end + 1,
+            Some(_) => {}
+            // a fragment would parse as garbage swallowing what follows it
+            None => lines[start..cut].fill(""),
+        }
+    }
     while i < lines.len() {
-        let line = lines[i];
-        let module = line.starts_with("import ")
-            || (line.starts_with("export ") && !is_code(line))
-            || line.starts_with("module.exports = require(")
-            || (["const ", "let ", "var "]
-                .iter()
-                .any(|k| line.starts_with(k))
-                && line.contains("require("));
         // the statement runs to its specifier, or to the end of a local list
-        let end = module.then(|| {
-            (i..lines.len().min(i + 64))
-                .find(|&j| {
-                    let l = lines[j];
-                    names_module(l) || l.contains("require(") || l.trim_end().ends_with(';')
-                })
-                .unwrap_or(i)
-        });
-        let kept =
-            end.filter(|&e| lines[i..=e].iter().map(|l| l.len() + 1).sum::<usize>() <= PARSE_WHOLE);
-        let Some(end) = kept else {
-            lines[i] = "";
-            i += 1;
-            continue;
-        };
-        i = end + 1;
+        match ends.of(i).filter(|_| opens_statement(lines[i])) {
+            Some(end) => i = end + 1,
+            None => {
+                lines[i] = "";
+                i += 1;
+            }
+        }
     }
     lines.join("\n").into()
+}
+
+/// A top-level line starting a statement that can bind a module.
+fn opens_statement(line: &str) -> bool {
+    line.starts_with("import ")
+        || (line.starts_with("export ") && !is_code(line))
+        || line.starts_with("module.exports = require(")
+        || (["const ", "let ", "var "]
+            .iter()
+            .any(|k| line.starts_with(k))
+            && line.contains("require("))
+}
+
+/// Where each line's statement ends, found for every line in one pass.
+struct Ends {
+    /// The first line at or after each that holds a specifier, ends with `;`
+    /// or closes a list.
+    next: Vec<Option<usize>>,
+    /// Bytes before each line.
+    offset: Vec<usize>,
+}
+
+impl Ends {
+    fn new(lines: &[&str]) -> Self {
+        let mut next = vec![None; lines.len()];
+        let mut after = None;
+        for (j, l) in lines.iter().enumerate().rev() {
+            // a local list closes at column 0, as a formatter writes it
+            if names_module(l)
+                || l.contains("require(")
+                || l.trim_end().ends_with(';')
+                || l.starts_with('}')
+            {
+                after = Some(j);
+            }
+            next[j] = after;
+        }
+        let offset = std::iter::once(0)
+            .chain(lines.iter().scan(0, |sum, l| {
+                *sum += l.len() + 1;
+                Some(*sum)
+            }))
+            .collect();
+        Ends { next, offset }
+    }
+
+    /// The last line of the statement opening at `start`, no bigger than the
+    /// header.
+    fn of(&self, start: usize) -> Option<usize> {
+        self.next[start].filter(|&e| self.offset[e + 1] - self.offset[start] <= PARSE_WHOLE)
+    }
 }
 
 /// `line` holds a `from '…'` specifier: not a name like `fromThing`.
@@ -1495,6 +1542,39 @@ mod tests {
             })
             .collect();
         assert_eq!(names, ["fromThing", "transformFrom", "from", "Target"]);
+
+        // a long type alias isn't kept as a fragment that swallows the next
+        let fields = "  a: number\n".repeat(70);
+        let late = format!(
+            "{body}export type Shape = {{\n{fields}}}\n\nexport {{\n  After,\n}} from './after'\n"
+        );
+        let names: Vec<String> = bindings("big.ts", &module_statements(&late))
+            .into_iter()
+            .filter_map(|b| match b {
+                Binding::Named { local, .. } => Some(local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["After"]);
+    }
+
+    #[test]
+    fn the_header_runs_to_the_end_of_a_statement_it_started() {
+        let singles: String = (0..480)
+            .map(|i| format!("import {{ One{i:03} }} from './one'\n"))
+            .collect();
+        let list: String = (0..200).map(|i| format!("  Two{i:03},\n")).collect();
+        let source = format!("{singles}import {{\n{list}}} from './two'\n\nTwo199()\n");
+        assert!(singles.len() < PARSE_WHOLE && singles.len() + list.len() > PARSE_WHOLE);
+        let names: Vec<String> = bindings("big.ts", &module_statements(&source))
+            .into_iter()
+            .filter_map(|b| match b {
+                Binding::Named { local, .. } => Some(local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names.len(), 680);
+        assert_eq!(names.last().map(String::as_str), Some("Two199"));
     }
 
     #[test]
