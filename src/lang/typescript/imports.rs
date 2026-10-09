@@ -246,7 +246,7 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
             {
                 explicit.push((spec.clone(), want.clone()));
             }
-            Binding::Star { spec } if used.is_none() && wanted != "default" => {
+            Binding::Star { spec } if used.is_none() && want.export != "default" => {
                 stars.push((spec.clone(), want.clone()));
             }
             Binding::Module { spec } if used.is_none() => {
@@ -1276,7 +1276,8 @@ mod tests {
                     "app.ts",
                     "import Panel from './comp'\nimport Gizmo from './gbar'\n\
                      import Card from './stars'\nimport Util from './cjs'\n\
-                     import Cover from './pass'\nimport Gadget from './list'\n",
+                     import Cover from './pass'\nimport Gadget from './list'\n\
+                     import Sprocket from './own'\n",
                 ),
                 ("comp/index.ts", "export { default } from './Panel'\n"),
                 ("comp/Panel.ts", "export default function Panel() {}\n"),
@@ -1297,6 +1298,12 @@ mod tests {
                     "list.ts",
                     "import { Gizmo } from './gizmo'\nexport { Gizmo as default }\n",
                 ),
+                // a module's own default, beside an `export *` that can't pass one on
+                (
+                    "own.ts",
+                    "function Sprocket() {}\nexport default Sprocket\nexport * from './vendor'\n",
+                ),
+                ("vendor.ts", "export default function Sprocket() {}\n"),
             ],
         );
         let cases = [
@@ -1328,6 +1335,7 @@ mod tests {
             ),
             // a rename to default names the definition
             ("Gadget", 6, one("gizmo.ts", "Gizmo")),
+            ("Sprocket", 7, one("own.ts", "Sprocket")),
         ];
         for (name, line, want) in cases {
             assert_eq!(targets(&root, "app.ts", line, name), want, "{name}");

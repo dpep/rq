@@ -4079,7 +4079,9 @@ before its fix:
   names. The hop now carries what the module exports (`default`) apart from what the
   definition is called (the local name, until a rename names it); a module's own
   `export default a` and `export { a as default }` lead to its binding `a`, and an
-  `export *`, which never passes on a default, isn't followed for one. Anchored
+  `export *`, which never passes on a default, isn't followed for one. (The guard
+  first tested the name looked up, which `export default a` had rewritten to `a`, so
+  a module's own default still let its `export *` through; it tests the export now.) Anchored
   calls/imports/packages #1 349/900/221 before and after; unanchored 5,159 #1 and
   6,147 top 10 both, 0 of 6,821 changed, regress 54 of 57 both: no set holds the shape.
 - **`export * as ns from` is followed to its member.** `import { tools } from './bar'`

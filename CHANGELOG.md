@@ -12,7 +12,8 @@ and aren't listed; see `git log` for those.
 ### Fixed
 - `--anchor` follows a default import through `export { default } from './Panel'`
   barrels and `export { Panel as default } from`, ranking the definition they
-  name first (DECISIONS D63).
+  name first, and never through an `export *`, which passes no default on
+  (DECISIONS D63).
 - `--anchor` on `tools.frob()` follows `import { tools }` into a barrel's
   `export * as tools from './frob'`.
 - `--anchor` in a large file follows a late multi-line import holding a name
