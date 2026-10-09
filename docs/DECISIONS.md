@@ -4041,9 +4041,9 @@ the anchor; all 11 failed on `f6e1898`. Fixed:
   starting a module statement are kept (a one-line `require` declaration too), each at most
   16 KB. A multi-line destructured `require` past the cap is missed.
 - Workspace `!negations` remove what they name; pnpm's one-line `packages: […]`, `#`
-  comments and blank lines read right. A file reached is a target only unless its text
-  can't hold the name, so a barrel's unrelated `export *` lines spend the 64-file budget,
-  not the 32 targets.
+  comments and blank lines read right. A file reached is a target unless its text can't
+  hold the name, so a barrel's unrelated `export *` lines spend the 64-file budget, not
+  the 32 targets.
 
 | anchored #1 (updated truths) | main `f6e1898` | corrected |
 |---|---|---|
@@ -4127,3 +4127,8 @@ before its fix:
   `next-rs-api.test.ts`), 0 real ones lost. Parity can't see a template nested inside
   another's `${…}` across lines: `build/utils.ts` still yields three such bindings. Recall
   against the previous commit: every set unchanged (0 of 1,585 anchored, 0 of 6,821).
+
+*Declined:* **an import statement over 16 KB.** One `import { … }` of ~1,200 names in a
+24 KB file ties at 0.50, where a whole parse resolved it. The per-statement bound is the
+same one that keeps a minified bundle's single line from being parsed whole; lifting it
+for imports would let a bundle that starts `import{…}` through.
