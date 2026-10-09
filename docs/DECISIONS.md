@@ -4140,6 +4140,11 @@ before its fix:
   calls/imports 349/900 both, packages 220 → 221.
   Still open, as in 0.60.7: a header cut inside a template whose text holds `//`
   lines leaves the header's template unclosed, and the parse swallows a later import.
+  Still open, new with parity: two misread backticks (regex literals such as
+  `/[`]/g`, JSX text, a mid-line `/* ` */`) can balance each other and hide a real
+  import between them, which 0.60.7 found. A re-verify scan of 1,054 + 1,141 large
+  sources found 8 files with such a stretch and no real import lost in it; skipping
+  regex literals in the count would retire the commonest case.
 
 *Declined:* **an import statement over 16 KB.** One `import { … }` of ~1,200 names in a
 24 KB file ties at 0.50, where a whole parse resolved it. The per-statement bound is the
