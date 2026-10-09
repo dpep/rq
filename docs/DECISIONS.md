@@ -3939,8 +3939,10 @@ The TypeScript/JavaScript plugin resolves, from the module's top-level statement
   stub and jest's `build/` entries resolve this way. Discovery is cached per process.
 - then re-exports, up to three hops past the imported file, 32 targets and 64 files read:
   `export { a } from`, `export * from` (only when no explicit re-export names it),
-  `module.exports = require(…)`, and an import the file passes on. A default import looks
-  up its local name.
+  `module.exports = require(…)`, and an import the file passes on. A default import
+  follows the export named `default` (`export { default } from`, `export { a as default }`,
+  `export default a`; never an `export *`), looking up its local name, the best guess
+  at the definition's, until a rename names it.
 
 Not resolved: third-party packages (no `node_modules` walk), `tsconfig` `paths`
 aliases, dynamic `import()`, and `ns.name` asked as a qualified query (the qualifier
@@ -4066,3 +4068,17 @@ without reading them, and never reached the definition.
 Still not resolved: an alias asked by its own name (`rq OldWidget` for
 `import { Widget as OldWidget }`) finds nothing, as before D63; the original name is what
 the index holds.
+
+*Followed up* (2026-10-09, 0.60.8). Shapes a final re-verify hunt left open, each with a
+hand-verified case in `an_anchor_resolves_imports_by_the_languages_rules` that failed
+before its fix:
+- **A default is the export named `default`.** A default import used to look for its
+  local name downstream, so `export { default } from './Panel'`, the
+  `components/X/index.ts` barrel (134 files across the pinned corpora), was never
+  followed, and `export { Gizmo as default } from` only by the accident of matching
+  names. The hop now carries what the module exports (`default`) apart from what the
+  definition is called (the local name, until a rename names it); a module's own
+  `export default a` and `export { a as default }` lead to its binding `a`, and an
+  `export *`, which never passes on a default, isn't followed for one. Anchored
+  calls/imports/packages #1 349/900/221 before and after; unanchored 5,159 #1 and
+  6,147 top 10 both, 0 of 6,821 changed, regress 54 of 57 both: no set holds the shape.

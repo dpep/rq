@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- `--anchor` follows a default import through `export { default } from './Panel'`
+  barrels and `export { Panel as default } from`, ranking the definition they
+  name first (DECISIONS D63).
+
 ## 0.60.7 — 2026-10-08
 
 A tree's existing index may hold files a background warm read that an ignore

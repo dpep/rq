@@ -8,7 +8,8 @@
 //! `const a = require(…).b`. A namespace binding counts only where the anchor's
 //! line spells `ns.name`. The named file is then followed through its own
 //! re-exports (`export { a } from`, `export * from`, `module.exports =
-//! require(…)`, an import it passes on), a bounded number of hops.
+//! require(…)`, an import it passes on), a bounded number of hops. A default
+//! import follows the export named `default`.
 //!
 //! A relative specifier is probed as TypeScript does: `./x.js` naming `./x.ts`,
 //! then the extensions, then `/index`. A bare one resolves only to a package
@@ -64,14 +65,18 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
     };
     let mut out: Vec<ImportTarget> = Vec::new();
     let mut seen = HashSet::new();
-    let mut queue = VecDeque::from([(file.to_string(), name.to_string(), 0)]);
-    while let Some((from, wanted, depth)) = queue.pop_front() {
+    let mut queue = VecDeque::from([(file.to_string(), Want::named(name), 0)]);
+    while let Some((from, want, depth)) = queue.pop_front() {
         let source = read(&root.join(&from));
         // unreadable (too big) can't be ruled out
-        if depth > 0 && source.as_ref().is_none_or(|s| s.contains(wanted.as_str())) {
+        if depth > 0
+            && source
+                .as_ref()
+                .is_none_or(|s| s.contains(want.def.as_str()))
+        {
             out.push(ImportTarget {
                 file: from.clone(),
-                name: wanted.clone(),
+                name: want.def.clone(),
             });
             if out.len() >= MAX_TARGETS {
                 break;
@@ -82,7 +87,7 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
         };
         // a cheap test before a parse: what can't name it can't pass it on
         if depth > MAX_HOPS
-            || (!source.contains(wanted.as_str())
+            || (!source.contains(want.export.as_str())
                 && (depth == 0 || !(source.contains('*') || source.contains("module.exports"))))
         {
             continue;
@@ -92,18 +97,37 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
             (row, source.lines().nth(row).unwrap_or(""))
         });
         let bindings = bindings(&from, &module_statements(&source));
-        for (spec, target) in edges(&bindings, &wanted, used) {
+        for (spec, next) in edges(&bindings, &want, used) {
             for found in r.locate(&from, &spec) {
                 if seen.len() < MAX_FILES
                     && found != from
-                    && seen.insert((found.clone(), target.clone()))
+                    && seen.insert((found.clone(), next.clone()))
                 {
-                    queue.push_back((found, target.clone(), depth + 1));
+                    queue.push_back((found, next.clone(), depth + 1));
                 }
             }
         }
     }
     out
+}
+
+/// What a hop looks for in a module.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Want {
+    /// The name the module exports it as: `default` for a default export.
+    export: String,
+    /// The name of the definition: for a default, the importer's local name,
+    /// the best guess at it.
+    def: String,
+}
+
+impl Want {
+    fn named(name: &str) -> Self {
+        Want {
+            export: name.to_string(),
+            def: name.to_string(),
+        }
+    }
 }
 
 /// A name a module's top-level statements bind from another module.
@@ -122,20 +146,34 @@ enum Binding {
     Default { local: String, spec: String },
     /// `import * as local`, `const local = require(…)`, `import local = require(…)`.
     Namespace { local: String, spec: String },
-    /// `export * from`, `module.exports = require(…)`.
+    /// `export * from`: every export but the default.
     Star { spec: String },
+    /// `module.exports = require(…)`: the whole module, its default too.
+    Module { spec: String },
+    /// `export { name as local }`, `export default name`: the module's own
+    /// binding `name`, exported as `local`.
+    Local { local: String, name: String },
 }
 
-/// Where `wanted` leads from these bindings: each specifier and the name the
-/// definition has there. `used` is the anchor's row and line in the importing
-/// file; `None` past the first hop, where a star re-export also counts, unless
-/// an explicit one names the name.
+/// Where `want` leads from these bindings: each specifier and what to look for
+/// there. `used` is the anchor's row and line in the importing file; `None`
+/// past the first hop, where a star re-export also counts, unless an explicit
+/// one names the name.
 ///
 /// A module binds, and re-exports, the local name: `import { a as b }` and
 /// `export { a as b } from` are `b`. The original `a` counts only on the
 /// anchor's own import statement, as a namespace counts only where the
-/// anchor's line spells `ns.name`.
-fn edges(bindings: &[Binding], wanted: &str, used: Option<(usize, &str)>) -> Vec<(String, String)> {
+/// anchor's line spells `ns.name`. A default is followed as the export named
+/// `default` (`export { default } from`, `export { a as default } from`).
+fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<(String, Want)> {
+    // a module exporting its own binding under another name: look that one up
+    let wanted = bindings
+        .iter()
+        .find_map(|b| match b {
+            Binding::Local { local, name } if *local == want.export => Some(name.as_str()),
+            _ => None,
+        })
+        .unwrap_or(&want.export);
     let mut explicit = Vec::new();
     let mut stars = Vec::new();
     for b in bindings {
@@ -149,24 +187,39 @@ fn edges(bindings: &[Binding], wanted: &str, used: Option<(usize, &str)>) -> Vec
                 || (imported == wanted
                     && used.is_some_and(|(row, _)| (rows.0..=rows.1).contains(&row))) =>
             {
-                // a default has no name of its own to look up; the local one is the best guess
-                let target = if imported == "default" {
-                    local
+                // a default has no name of its own to look up; keep the guess
+                let def = if imported == "default" {
+                    &want.def
                 } else {
                     imported
                 };
-                explicit.push((spec.clone(), target.clone()));
+                explicit.push((
+                    spec.clone(),
+                    Want {
+                        export: imported.clone(),
+                        def: def.clone(),
+                    },
+                ));
             }
             Binding::Default { local, spec } if local == wanted => {
-                explicit.push((spec.clone(), wanted.to_string()));
+                explicit.push((
+                    spec.clone(),
+                    Want {
+                        export: "default".to_string(),
+                        def: want.def.clone(),
+                    },
+                ));
             }
             Binding::Namespace { local, spec }
                 if local == wanted || used.is_some_and(|(_, l)| spells(l, local, wanted)) =>
             {
-                explicit.push((spec.clone(), wanted.to_string()));
+                explicit.push((spec.clone(), want.clone()));
             }
-            Binding::Star { spec } if used.is_none() => {
-                stars.push((spec.clone(), wanted.to_string()));
+            Binding::Star { spec } if used.is_none() && wanted != "default" => {
+                stars.push((spec.clone(), want.clone()));
+            }
+            Binding::Module { spec } if used.is_none() => {
+                stars.push((spec.clone(), want.clone()));
             }
             _ => {}
         }
@@ -402,13 +455,19 @@ fn rows(node: Node) -> (usize, usize) {
     (node.start_position().row, node.end_position().row)
 }
 
-/// An `import_specifier` / `export_specifier`: `name` or `name as alias`.
-fn specifier(node: Node, src: &[u8], spec: &str, rows: (usize, usize)) -> Option<Binding> {
+/// An `import_specifier` / `export_specifier`'s (name, alias): `name` or
+/// `name as alias`.
+fn names(node: Node, src: &[u8]) -> Option<(String, String)> {
     let name = node.child_by_field_name("name")?;
     let imported = string(name, src).unwrap_or_else(|| text(name, src));
     let local = node
         .child_by_field_name("alias")
         .map_or_else(|| imported.clone(), |a| text(a, src));
+    Some((imported, local))
+}
+
+fn specifier(node: Node, src: &[u8], spec: &str, rows: (usize, usize)) -> Option<Binding> {
+    let (imported, local) = names(node, src)?;
     Some(Binding::Named {
         local,
         imported,
@@ -422,6 +481,7 @@ fn reexport(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
         .child_by_field_name("source")
         .and_then(|s| string(s, src))
     else {
+        local_exports(stmt, src, out);
         return;
     };
     let mut named = false;
@@ -450,6 +510,34 @@ fn reexport(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
     }
     if !named {
         out.push(Binding::Star { spec });
+    }
+}
+
+/// `export default name` and `export { name as local }`, without a `from`.
+fn local_exports(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
+    if let Some(value) = stmt
+        .child_by_field_name("value")
+        .filter(|v| v.kind() == "identifier")
+    {
+        out.push(Binding::Local {
+            local: "default".to_string(),
+            name: text(value, src),
+        });
+    }
+    for clause in children(stmt)
+        .into_iter()
+        .filter(|n| n.kind() == "export_clause")
+    {
+        for s in children(clause)
+            .into_iter()
+            .filter(|n| n.kind() == "export_specifier")
+        {
+            if let Some((name, local)) = names(s, src)
+                && local != name
+            {
+                out.push(Binding::Local { local, name });
+            }
+        }
     }
 }
 
@@ -550,7 +638,7 @@ fn module_exports(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
             .child_by_field_name("right")
             .and_then(|r| require_of(r, src))
     {
-        out.push(Binding::Star { spec });
+        out.push(Binding::Module { spec });
     }
 }
 
@@ -1037,6 +1125,73 @@ mod tests {
             ],
             "on the aliasing import, the original name is the one spelled"
         );
+    }
+
+    #[test]
+    fn a_default_is_followed_as_the_default_export() {
+        let root = checkout(
+            "default",
+            &[
+                (
+                    "app.ts",
+                    "import Panel from './comp'\nimport Gizmo from './gbar'\n\
+                     import Card from './stars'\nimport Util from './cjs'\n\
+                     import Cover from './pass'\nimport Gadget from './list'\n",
+                ),
+                ("comp/index.ts", "export { default } from './Panel'\n"),
+                ("comp/Panel.ts", "export default function Panel() {}\n"),
+                ("gbar.ts", "export { Gizmo as default } from './gizmo'\n"),
+                ("gizmo.ts", "export function Gizmo() {}\n"),
+                // `export *` passes on every name but the default
+                ("stars.ts", "export * from './card'\n"),
+                ("card.ts", "export default function Card() {}\n"),
+                ("cjs.js", "module.exports = require('./util')\n"),
+                ("util.js", "module.exports = function Util() {}\n"),
+                // a module's own export of what it imports
+                (
+                    "pass.ts",
+                    "import Cover from './cover'\nexport default Cover\n",
+                ),
+                ("cover.ts", "export default function Cover() {}\n"),
+                (
+                    "list.ts",
+                    "import { Gizmo } from './gizmo'\nexport { Gizmo as default }\n",
+                ),
+            ],
+        );
+        let cases = [
+            (
+                "Panel",
+                1,
+                vec![
+                    ("comp/index.ts".into(), "Panel".into()),
+                    ("comp/Panel.ts".into(), "Panel".into()),
+                ],
+            ),
+            (
+                "Gizmo",
+                2,
+                vec![
+                    ("gbar.ts".into(), "Gizmo".into()),
+                    ("gizmo.ts".into(), "Gizmo".into()),
+                ],
+            ),
+            ("Card", 3, vec![]),
+            ("Util", 4, one("util.js", "Util")),
+            (
+                "Cover",
+                5,
+                vec![
+                    ("pass.ts".into(), "Cover".into()),
+                    ("cover.ts".into(), "Cover".into()),
+                ],
+            ),
+            // a rename to default names the definition
+            ("Gadget", 6, one("gizmo.ts", "Gizmo")),
+        ];
+        for (name, line, want) in cases {
+            assert_eq!(targets(&root, "app.ts", line, name), want, "{name}");
+        }
     }
 
     #[test]

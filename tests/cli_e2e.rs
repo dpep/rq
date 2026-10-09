@@ -1283,6 +1283,18 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("tools/cli/src/main.ts", "export function run() {}\n"),
         ("app/run.ts", "export function run() {}\n"),
         ("app/cli.ts", "import { run } from 'cli'\n\nrun()\n"),
+        // a default import follows the default export, not its local name
+        ("lib/comp/index.ts", "export { default } from './Panel'\n"),
+        ("lib/comp/Panel.ts", "export default function Panel() {}\n"),
+        ("app/panel.ts", "export function Panel() {}\n"),
+        (
+            "app/dflt.ts",
+            "import Panel from '../lib/comp'\n\nPanel()\n",
+        ),
+        ("lib/gbar.ts", "export { Gizmo as default } from './gizmo'\n"),
+        ("lib/gizmo.ts", "export function Gizmo() {}\n"),
+        ("app/gizmo.ts", "export function Gizmo() {}\n"),
+        ("app/gz.ts", "import Gizmo from '../lib/gbar'\n\nGizmo()\n"),
         // a barrel of many stars still reaches the one defining the name
         ("lib/stars/target.js", "export function Target() {}\n"),
         ("app/target.js", "export function Target() {}\n"),
@@ -1320,6 +1332,8 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("formatDate", "app/main.js:3", "packages/fmt/index.js"),
         ("parseThing", "app/usejs.js:3", "lib/loader.js"),
         ("load", "app/ns.ts:4", "lib/other.ts"),
+        ("Panel", "app/dflt.ts:3", "lib/comp/Panel.ts"),
+        ("Gizmo", "app/gz.ts:3", "lib/gizmo.ts"),
     ];
     let wrong: Vec<String> = cases
         .iter()
