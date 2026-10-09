@@ -309,17 +309,15 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     // inside a template literal, an `import` at column 0 is text
-    let mut quoted = false;
+    let quoted = in_template(&lines);
     while i < lines.len() {
         // the statement runs to its specifier, or to the end of a local list
-        match ends.of(i).filter(|_| !quoted && opens_statement(lines[i])) {
+        match ends
+            .of(i)
+            .filter(|_| !quoted[i] && opens_statement(lines[i]))
+        {
             Some(end) => i = end + 1,
             None => {
-                // a comment's backticks are markdown, unless the comment is itself text
-                let comment = ["//", "/*", "*"]
-                    .iter()
-                    .any(|c| lines[i].trim_start().starts_with(c));
-                quoted ^= (quoted || !comment) && backticks(lines[i]) % 2 == 1;
                 lines[i] = "";
                 i += 1;
             }
@@ -328,16 +326,55 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
     lines.join("\n").into()
 }
 
-/// The unescaped backticks on `line`.
-fn backticks(line: &str) -> usize {
-    let mut escaped = false;
-    line.chars()
-        .filter(|&c| {
-            let tick = c == '`' && !escaped;
-            escaped = c == '\\' && !escaped;
-            tick
+/// Which lines start inside a template literal, by backtick parity counted
+/// from the top. A count that ends unbalanced misread a backtick (a regex, JSX
+/// text) somewhere, so it marks no line rather than every line after that one.
+fn in_template(lines: &[&str]) -> Vec<bool> {
+    let mut quoted = false;
+    let mut starts: Vec<bool> = lines
+        .iter()
+        .map(|line| {
+            let start = quoted;
+            quoted = template_after(line, quoted);
+            start
         })
-        .count()
+        .collect();
+    if quoted {
+        starts.fill(false);
+    }
+    starts
+}
+
+/// Whether a template literal is open after `line`, given whether one was
+/// before it. Outside one, a string's and a comment's backticks are text.
+fn template_after(line: &str, mut quoted: bool) -> bool {
+    if !quoted && ["/*", "*"].iter().any(|c| line.trim_start().starts_with(c)) {
+        return false;
+    }
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '`' => quoted = !quoted,
+            _ if quoted => {}
+            '\'' | '"' => {
+                while let Some(d) = chars.next() {
+                    match d {
+                        '\\' => {
+                            chars.next();
+                        }
+                        _ if d == c => break,
+                        _ => {}
+                    }
+                }
+            }
+            '/' if chars.as_str().starts_with('/') => break,
+            _ => {}
+        }
+    }
+    quoted
 }
 
 /// A top-level line starting a statement that can bind a module.
@@ -1603,14 +1640,50 @@ mod tests {
             "import {{ Real }} from './real'\n{body}export function gen() {{\n  return `\n\
              import {{ Fake }} from './fake'\n`\n}}\nimport {{ Late }} from './late'\n"
         );
-        let names: Vec<String> = bindings("big.ts", &module_statements(&source))
+        assert_eq!(named_locals(&source), ["Real", "Late"]);
+    }
+
+    fn named_locals(source: &str) -> Vec<String> {
+        bindings("big.ts", &module_statements(source))
             .into_iter()
             .filter_map(|b| match b {
                 Binding::Named { local, .. } => Some(local),
                 _ => None,
             })
-            .collect();
-        assert_eq!(names, ["Real", "Late"]);
+            .collect()
+    }
+
+    #[test]
+    fn a_stray_backtick_never_hides_a_later_import() {
+        let body = "function filler() {\n  return 1;\n}\n".repeat(500);
+        let template = "export function gen() {\n  return `\nimport { Fake } from './fake'\n`\n}\n";
+        // a string's or comment's backtick is skipped; one the count can't
+        // place (a regex, JSX text) leaves it unbalanced, and parity unused
+        let cases: [(&str, &[&str]); 4] = [
+            ("const FENCE = '```'", &["Early", "Late"]),
+            ("const q = 1 // don't use ` here", &["Early", "Late"]),
+            ("const RE = /`/g", &["Early", "Fake", "Late"]),
+            (
+                "export const C = () => <p>press ` to open</p>",
+                &["Early", "Fake", "Late"],
+            ),
+        ];
+        for (stray, want) in cases {
+            let source = format!(
+                "import {{ Early }} from './early'\n{body}{stray}\n{body}{template}import {{ Late }} from './late'\n"
+            );
+            assert_eq!(named_locals(&source), want, "after {stray}");
+        }
+    }
+
+    #[test]
+    fn a_header_cut_inside_a_template_keeps_its_parity() {
+        let schema = "  type Widget { id: ID }\n".repeat(1_000);
+        let body = "function filler() {\n  return 1;\n}\n".repeat(100);
+        let source = format!(
+            "import {{ Early }} from './early'\nconst typeDefs = gql`\n{schema}`\n{body}import {{ Late }} from './late'\n"
+        );
+        assert_eq!(named_locals(&source), ["Early", "Late"]);
     }
 
     #[test]

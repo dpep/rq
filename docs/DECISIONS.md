@@ -4120,13 +4120,24 @@ before its fix:
 - **A template literal's text isn't a statement.** Past a large source's cut, an
   `import` at column 0 inside a backtick string (codegen writing a module) was read as
   a real one; beside a real import of the same name it took the boost, and proximity
-  put the wrong file first. The walk now tracks backtick parity over the lines it
-  skips (unescaped backticks; a comment's backticks are markdown, unless the comment
-  is itself template text). Large-source scan against a whole parse: 11 false
-  bindings dropped (next's codemods, `build/utils.ts`, the types plugin,
-  `next-rs-api.test.ts`), 0 real ones lost. Parity can't see a template nested inside
-  another's `${…}` across lines: `build/utils.ts` still yields three such bindings. Recall
-  against the previous commit: every set unchanged (0 of 1,585 anchored, 0 of 6,821).
+  put the wrong file first. The walk skips a line that starts inside a template, by
+  backtick parity counted from the top of the file, header included. Outside a
+  template, a backtick in a `'…'` or `"…"` string or after `//` is text, and a comment
+  line's (`/*`, `*`) is markdown. One rule bounds the rest: parity is used only when
+  the file's count balances. An unbalanced count misplaced a backtick somewhere (a
+  regex, JSX text), so it marks no line and the walk reads the file as 0.60.7 did.
+  The first cut counted from the cut with no such check: one stray backtick, or a
+  header cut inside a large `gql` template, hid every later import in the file (a
+  re-verify hunt's five repros, now unit cases, two of them in the e2e too). Of 1,053
+  unique sources above 16 KB, 7 end unbalanced (4 are bundles), where the first cut's
+  count left 21. Large-source scan against a whole parse, checkouts deduplicated, vs
+  0.60.7's walk: 0 real bindings lost, 6 gained, 12 false dropped, 3 false added. The 3 are `build/utils.ts` `require`s in a template nested
+  inside another's `${…}` across lines, which parity can't see; the statement fixes
+  above reached them. Recall against 0.60.7, one run: unanchored 5,159 #1 and 6,147
+  top 10 both, 0 of 6,821 changed, regress 54 of 57 both; anchored 1 up, 0 down,
+  calls/imports 349/900 both, packages 220 → 221.
+  Still open, as in 0.60.7: a header cut inside a template whose text holds `//`
+  lines leaves the header's template unclosed, and the parse swallows a later import.
 
 *Declined:* **an import statement over 16 KB.** One `import { … }` of ~1,200 names in a
 24 KB file ties at 0.50, where a whole parse resolved it. The per-statement bound is the

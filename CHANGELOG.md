@@ -20,7 +20,7 @@ and aren't listed; see `git log` for those.
 - `--anchor` in a large file follows an import the 16 KB header cut in two, or
   one past it longer than 64 lines.
 - `--anchor` in a large file no longer reads an `import` written inside a
-  template literal as a real one.
+  template literal as a real one, wherever the file's backticks pair up.
 
 ## 0.60.7 — 2026-10-08
 

@@ -1360,6 +1360,32 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("real/gadget.ts".into(), "export function Gadget() {}\n".into()),
         ("app/gadget.ts".into(), "export function Gadget() {}\n".into()),
     ]);
+    // a backtick parity can't place, or a header cut inside a template, hides no import
+    files.extend([
+        (
+            "app/rx.ts".to_string(),
+            format!(
+                "export function f() {{}}\nconst RE = /`/g\n{filler}import {{ Sprocket }} from '../lib/sprocket'\n\nSprocket()\n"
+            ),
+        ),
+        (
+            "app/schema.ts".to_string(),
+            format!(
+                "const typeDefs = gql`\n{}`\nexport function f() {{}}\nimport {{ Cog }} from '../lib/cog'\n\nCog()\n",
+                "  type Widget { id: ID }\n".repeat(800)
+            ),
+        ),
+        (
+            "lib/sprocket.ts".into(),
+            "export function Sprocket() {}\n".into(),
+        ),
+        (
+            "app/Sprocket.ts".into(),
+            "export function Sprocket() {}\n".into(),
+        ),
+        ("lib/cog.ts".into(), "export function Cog() {}\n".into()),
+        ("app/Cog.ts".into(), "export function Cog() {}\n".into()),
+    ]);
     files.extend((0..40).map(|i| {
         (
             format!("lib/stars/m{i}.js"),
@@ -1391,6 +1417,8 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("lateTarget", "app/late.ts:257", "lib/fr.ts"),
         ("Two199", "app/straddle.ts:684", "lib/two.ts"),
         ("Gadget", "app/gen.ts:259", "real/gadget.ts"),
+        ("Sprocket", "app/rx.ts:255", "lib/sprocket.ts"),
+        ("Cog", "app/schema.ts:806", "lib/cog.ts"),
     ];
     let wrong: Vec<String> = cases
         .iter()
