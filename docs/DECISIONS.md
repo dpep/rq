@@ -4117,3 +4117,13 @@ before its fix:
   old truth this change measured packages #1 221 → 220; on the corrected one,
   main 220, this 221 (1 up, 0 down), calls and imports 349 / 900 both, unanchored
   5,159 / 6,147 both, 0 of 6,821 changed, regress 54 of 57 both.
+- **A template literal's text isn't a statement.** Past a large source's cut, an
+  `import` at column 0 inside a backtick string (codegen writing a module) was read as
+  a real one; beside a real import of the same name it took the boost, and proximity
+  put the wrong file first. The walk now tracks backtick parity over the lines it
+  skips (unescaped backticks; a comment's backticks are markdown, unless the comment
+  is itself template text). Large-source scan against a whole parse: 11 false
+  bindings dropped (next's codemods, `build/utils.ts`, the types plugin,
+  `next-rs-api.test.ts`), 0 real ones lost. Parity can't see a template nested inside
+  another's `${…}` across lines: `build/utils.ts` still yields three such bindings. Recall
+  against the previous commit: every set unchanged (0 of 1,585 anchored, 0 of 6,821).

@@ -308,17 +308,36 @@ fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
             None => lines[start..cut].fill(""),
         }
     }
+    // inside a template literal, an `import` at column 0 is text
+    let mut quoted = false;
     while i < lines.len() {
         // the statement runs to its specifier, or to the end of a local list
-        match ends.of(i).filter(|_| opens_statement(lines[i])) {
+        match ends.of(i).filter(|_| !quoted && opens_statement(lines[i])) {
             Some(end) => i = end + 1,
             None => {
+                // a comment's backticks are markdown, unless the comment is itself text
+                let comment = ["//", "/*", "*"]
+                    .iter()
+                    .any(|c| lines[i].trim_start().starts_with(c));
+                quoted ^= (quoted || !comment) && backticks(lines[i]) % 2 == 1;
                 lines[i] = "";
                 i += 1;
             }
         }
     }
     lines.join("\n").into()
+}
+
+/// The unescaped backticks on `line`.
+fn backticks(line: &str) -> usize {
+    let mut escaped = false;
+    line.chars()
+        .filter(|&c| {
+            let tick = c == '`' && !escaped;
+            escaped = c == '\\' && !escaped;
+            tick
+        })
+        .count()
 }
 
 /// A top-level line starting a statement that can bind a module.
@@ -1575,6 +1594,23 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 680);
         assert_eq!(names.last().map(String::as_str), Some("Two199"));
+    }
+
+    #[test]
+    fn a_statement_in_a_template_literal_is_text() {
+        let body = "function filler() {\n  return 1;\n}\n".repeat(1_000);
+        let source = format!(
+            "import {{ Real }} from './real'\n{body}export function gen() {{\n  return `\n\
+             import {{ Fake }} from './fake'\n`\n}}\nimport {{ Late }} from './late'\n"
+        );
+        let names: Vec<String> = bindings("big.ts", &module_statements(&source))
+            .into_iter()
+            .filter_map(|b| match b {
+                Binding::Named { local, .. } => Some(local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["Real", "Late"]);
     }
 
     #[test]

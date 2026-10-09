@@ -1349,6 +1349,17 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
             "export function Two199() {}\n".into(),
         ),
     ]);
+    // an `import` at column 0 in a large file's template literal is text
+    files.extend([
+        (
+            "app/gen.ts".to_string(),
+            format!(
+                "import {{ Gadget }} from '../real/gadget'\n\nexport function gen() {{\n  return `\n{filler}import {{ Gadget }} from './gadget'\n`\n}}\n\nGadget()\n"
+            ),
+        ),
+        ("real/gadget.ts".into(), "export function Gadget() {}\n".into()),
+        ("app/gadget.ts".into(), "export function Gadget() {}\n".into()),
+    ]);
     files.extend((0..40).map(|i| {
         (
             format!("lib/stars/m{i}.js"),
@@ -1379,6 +1390,7 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("frob", "app/nsre.ts:3", "lib/nsx.ts"),
         ("lateTarget", "app/late.ts:257", "lib/fr.ts"),
         ("Two199", "app/straddle.ts:684", "lib/two.ts"),
+        ("Gadget", "app/gen.ts:259", "real/gadget.ts"),
     ];
     let wrong: Vec<String> = cases
         .iter()
