@@ -6,7 +6,8 @@
 //! `import a = require(…)`, `export { a } from`, CommonJS's
 //! `const { a, b: c } = require(…)`, `const ns = require(…)` and
 //! `const a = require(…).b`. A namespace binding counts only where the anchor's
-//! line spells `ns.name`. The named file is then followed through its own
+//! line spells `ns.name`, as does a named import some module re-exports as a
+//! namespace (`export * as ns from`). The named file is then followed through its own
 //! re-exports (`export { a } from`, `export * from`, `module.exports =
 //! require(…)`, an import it passes on), a bounded number of hops. A default
 //! import follows the export named `default`.
@@ -70,6 +71,7 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
         let source = read(&root.join(&from));
         // unreadable (too big) can't be ruled out
         if depth > 0
+            && want.member.is_none()
             && source
                 .as_ref()
                 .is_none_or(|s| s.contains(want.def.as_str()))
@@ -119,6 +121,9 @@ struct Want {
     /// The name of the definition: for a default, the importer's local name,
     /// the best guess at it.
     def: String,
+    /// The anchor's `ns.member`, while `export` names a namespace the module
+    /// passes on (`export * as ns from`) rather than the definition.
+    member: Option<String>,
 }
 
 impl Want {
@@ -126,6 +131,7 @@ impl Want {
         Want {
             export: name.to_string(),
             def: name.to_string(),
+            member: None,
         }
     }
 }
@@ -198,6 +204,23 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
                     Want {
                         export: imported.clone(),
                         def: def.clone(),
+                        member: want.member.clone(),
+                    },
+                ));
+            }
+            // `import { ns }` used as `ns.name`: a namespace some module re-exports
+            Binding::Named {
+                local,
+                imported,
+                spec,
+                ..
+            } if used.is_some_and(|(_, l)| spells(l, local, wanted)) => {
+                explicit.push((
+                    spec.clone(),
+                    Want {
+                        export: imported.clone(),
+                        def: imported.clone(),
+                        member: Some(wanted.to_string()),
                     },
                 ));
             }
@@ -207,11 +230,19 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
                     Want {
                         export: "default".to_string(),
                         def: want.def.clone(),
+                        member: want.member.clone(),
                     },
                 ));
             }
+            Binding::Namespace { local, spec } if local == wanted => {
+                let next = want
+                    .member
+                    .as_deref()
+                    .map_or_else(|| want.clone(), Want::named);
+                explicit.push((spec.clone(), next));
+            }
             Binding::Namespace { local, spec }
-                if local == wanted || used.is_some_and(|(_, l)| spells(l, local, wanted)) =>
+                if used.is_some_and(|(_, l)| spells(l, local, wanted)) =>
             {
                 explicit.push((spec.clone(), want.clone()));
             }
@@ -1192,6 +1223,30 @@ mod tests {
         for (name, line, want) in cases {
             assert_eq!(targets(&root, "app.ts", line, name), want, "{name}");
         }
+    }
+
+    #[test]
+    fn a_namespace_re_export_is_followed_to_its_member() {
+        let root = checkout(
+            "nsexport",
+            &[
+                (
+                    "app.ts",
+                    "import { tools } from './bar'\nimport { kit } from './kit'\n\
+                     tools.frob(); kit.frob()\n",
+                ),
+                ("bar.ts", "export * from './inner'\n"),
+                ("inner.ts", "export * as tools from './frob'\n"),
+                ("frob.ts", "export function frob() {}\n"),
+                // a plain object is no module to follow
+                ("kit.ts", "export const kit = { frob() {} }\n"),
+            ],
+        );
+        assert_eq!(targets(&root, "app.ts", 3, "frob"), one("frob.ts", "frob"));
+        assert!(
+            targets(&root, "app.ts", 1, "frob").is_empty(),
+            "only where the line spells the member"
+        );
     }
 
     #[test]

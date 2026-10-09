@@ -3927,7 +3927,7 @@ once per query, so only when `--anchor` is given.
 
 The TypeScript/JavaScript plugin resolves, from the module's top-level statements:
 - `import { a, b as c }`, `import a`, `import * as ns` (only where the anchor's line
-  spells `ns.name`), `import a = require(…)`, `export { a } from`, and CommonJS's
+  spells `ns.name`; so too `import { ns }` of an `export * as ns from`), `import a = require(…)`, `export { a } from`, and CommonJS's
   `const { a, b: c } = require(…)`, `const ns = require(…)`, `const a = require(…).b`;
 - relative specifiers by TypeScript's probing (`./x.js` naming `./x.ts`, the extensions,
   `/index`), never leaving the checkout;
@@ -4082,3 +4082,9 @@ before its fix:
   `export *`, which never passes on a default, isn't followed for one. Anchored
   calls/imports/packages #1 349/900/221 before and after; unanchored 5,159 #1 and
   6,147 top 10 both, 0 of 6,821 changed, regress 54 of 57 both: no set holds the shape.
+- **`export * as ns from` is followed to its member.** `import { tools } from './bar'`
+  used as `tools.frob()`, where a barrel writes `export * as tools from './frob'`, found
+  nothing: the import binds `tools`, not `frob`. Where the anchor's line spells
+  `local.name` for a named import, the hop carries the member until a module binds
+  that name as a namespace, and only the namespace's module is a target, not the files
+  on the way. Same recall as main, every set (see below).

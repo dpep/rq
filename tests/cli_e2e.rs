@@ -1295,6 +1295,14 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("lib/gizmo.ts", "export function Gizmo() {}\n"),
         ("app/gizmo.ts", "export function Gizmo() {}\n"),
         ("app/gz.ts", "import Gizmo from '../lib/gbar'\n\nGizmo()\n"),
+        // `export * as ns` is followed to the member the line spells
+        ("lib/nsbar.ts", "export * as tools from './nsx'\n"),
+        ("lib/nsx.ts", "export function frob() {}\n"),
+        ("app/frob.ts", "export function frob() {}\n"),
+        (
+            "app/nsre.ts",
+            "import { tools } from '../lib/nsbar'\n\ntools.frob()\n",
+        ),
         // a barrel of many stars still reaches the one defining the name
         ("lib/stars/target.js", "export function Target() {}\n"),
         ("app/target.js", "export function Target() {}\n"),
@@ -1334,6 +1342,7 @@ fn an_anchor_resolves_imports_by_the_languages_rules() {
         ("load", "app/ns.ts:4", "lib/other.ts"),
         ("Panel", "app/dflt.ts:3", "lib/comp/Panel.ts"),
         ("Gizmo", "app/gz.ts:3", "lib/gizmo.ts"),
+        ("frob", "app/nsre.ts:3", "lib/nsx.ts"),
     ];
     let wrong: Vec<String> = cases
         .iter()
