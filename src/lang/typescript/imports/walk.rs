@@ -22,8 +22,8 @@ pub(super) const MAX_KEPT: usize = 64 * PARSE_WHOLE;
 ///
 /// One lexical pass finds the statements at the top level, past strings,
 /// comments, templates, regexes and, outside TypeScript's own `.ts`, JSX
-/// text. A pass that ends out of balance misread something (a regex read as
-/// division); the source is then read again trusting each line that starts a
+/// text. A pass that ends out of balance misread something (a division read
+/// as a regex); the source is then read again trusting each line that starts a
 /// module statement at column 0, as the line walk before it did.
 pub(super) fn module_statements<'a>(file: &str, source: &'a str) -> Cow<'a, str> {
     if source.len() <= PARSE_WHOLE {
@@ -81,6 +81,9 @@ enum Lex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Bracket {
     Paren,
+    /// `if (…)`, `while (…)`, `for (…)`, `with (…)`: a statement follows its
+    /// `)`, so a `/` after it starts a regex.
+    Condition,
     Square,
     Brace,
     /// A template's `${`: its `}` returns to the template.
@@ -99,9 +102,11 @@ enum Bracket {
 enum Prev {
     Start,
     Punct(u8),
-    /// A word; `operator` if an expression follows it (`return`, `typeof`).
+    /// A word; `operator` if an expression follows it (`return`, `typeof`),
+    /// `condition` if a `(` after it holds a condition (`if`, `while`).
     Word {
         operator: bool,
+        condition: bool,
     },
     /// A literal, or a closed `)` or `]`.
     Value,
@@ -111,7 +116,7 @@ impl Prev {
     fn regex_follows(self) -> bool {
         match self {
             Prev::Start | Prev::Punct(_) => true,
-            Prev::Word { operator } => operator,
+            Prev::Word { operator, .. } => operator,
             Prev::Value => false,
         }
     }
@@ -119,7 +124,12 @@ impl Prev {
     fn ends_expression(self) -> bool {
         matches!(
             self,
-            Prev::Value | Prev::Word { operator: false } | Prev::Punct(b'}')
+            Prev::Value
+                | Prev::Word {
+                    operator: false,
+                    ..
+                }
+                | Prev::Punct(b'}')
         )
     }
 }
@@ -486,6 +496,16 @@ impl<'a> Scan<'a> {
             }
             b'(' | b'[' | b'{' => {
                 self.stack.push(match b {
+                    b'(' if matches!(
+                        self.prev,
+                        Prev::Word {
+                            condition: true,
+                            ..
+                        }
+                    ) =>
+                    {
+                        Bracket::Condition
+                    }
                     b'(' => Bracket::Paren,
                     b'[' => Bracket::Square,
                     _ => Bracket::Brace,
@@ -536,6 +556,10 @@ impl<'a> Scan<'a> {
             }
             Some(Bracket::JsxAttr) if b == b'}' => {
                 self.lex = Lex::JsxTag;
+                return i + 1;
+            }
+            Some(Bracket::Condition) if b == b')' => {
+                self.token(Prev::Punct(b), i + 1);
                 return i + 1;
             }
             Some(open) if open == want => {}
@@ -613,6 +637,7 @@ impl<'a> Scan<'a> {
             self.opens(word, i, end);
         }
         let operator = OPERATORS.iter().any(|o| o.as_bytes() == word);
+        let condition = !member && [&b"if"[..], b"while", b"for", b"with"].contains(&word);
         // a binding's `require(` is the declaration's own value, not one nested in it
         if word == b"require"
             && self.top_level()
@@ -624,7 +649,13 @@ impl<'a> Scan<'a> {
         {
             *require = true;
         }
-        self.token(Prev::Word { operator }, end);
+        self.token(
+            Prev::Word {
+                operator,
+                condition,
+            },
+            end,
+        );
         end
     }
 

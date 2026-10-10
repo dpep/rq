@@ -13,6 +13,10 @@ and aren't listed; see `git log` for those.
 - `--anchor` in a large JS/TS file whose one-pass read ended out of balance
   (and so fell back to trusting column-0 statement lines) follows each of a
   run of top-level `require` declarations, not only the last.
+- `--anchor` follows a large JS/TS file's import that sits between two
+  backticks in regexes right after an `if (…)`, `while (…)`, `for (…)` or
+  `with (…)`, as in `if (a) /\`/.test(b)`, which 0.60.9 read as division
+  (DECISIONS D63).
 
 ## 0.60.9 — 2026-10-10
 

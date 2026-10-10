@@ -4165,7 +4165,8 @@ early, and the whole import was dropped.
 
 One linear pass now tracks strings, templates (a stack for `${…}`), `//` and `/* */`
 comments, regexes (a `/` where an expression starts: after punctuation, `return`,
-`typeof` and the like, not after a name, literal, `)` or `]`), JSX text and tags (where
+`typeof` and the like, or an `if (…)`, `while (…)`, `for (…)` or `with (…)`'s `)`;
+not after a name, literal, other `)` or `]`), JSX text and tags (where
 an expression starts, in any file but a `.ts`, `.mts` or `.cts`; never TSX's `<T,>`)
 and bracket depth. It keeps each top-level module statement exactly: `import …` to its
 specifier (or the `)` of `= require(…)`), `export { … }` to its `}` or on to `from '…'`,
@@ -4178,15 +4179,11 @@ and all of them together by 1 MB, filled in order. The corpora's most is 15.8 KB
 blanked a generated barrel's late re-exports (an icon set's thousands of `export { X }
 from` lines) and put a decoy first; the bound now only stops 200k one-word `import`
 lines handing tree-sitter 1.6 MB. And
-a pass that ends out of balance (a regex read as division) reads the source again
-trusting every column-0 line that opens a statement, which is how the line walk read
-everything. That fallback is one of the scanner's two known misreads: in such a file,
-a template's or comment's column-0 import counts. The other is a regex right after a
-`)`, read as division: `if (a) /\`/.test(b)` twice, with an import between, pairs the
-backticks into a template that hides the import, and the pass stays balanced, so no
-fallback runs (0.60.8's backtick parity missed it too). Telling an `if (…)`, `while (…)`
-or `for (…)` closer from an expression's takes a bracket kind of its own, not one match
-arm, so it is a parity row (`regex-after-condition`), not a fix.
+a pass that ends out of balance (a division read as a regex, as after `i++`) reads
+the source again trusting every column-0 line that opens a statement, which is how the
+line walk read everything. That fallback is the scanner's known misread: in such a
+file, a template's or comment's column-0 import counts. (A second, a regex right after
+a condition's `)` read as division, was fixed after release; see below.)
 
 Measured against a whole tree-sitter parse of the same source, the truth the walk
 didn't produce (`src/lang/typescript/imports/parity.rs`, `make imports-scan`,
@@ -4199,8 +4196,7 @@ didn't produce (`src/lang/typescript/imports/parity.rs`, `make imports-scan`,
 - both tables are read as a `.tsx` and as a `.ts`, each by its own grammar, the
   `.ts` without the JSX hazards and with three of its own (a `<T>` assertion or
   arrow, one a JSX reading would take for an element around the statement): 14
-  wrong in each, the same fallback row (and 14 more each for `regex-after-condition`,
-  above). Before, every row and the corpus scan
+  wrong in each, the same fallback row. Before, every row and the corpus scan
   read every file as `big.tsx`, so `.ts`'s path was never the one measured;
 - random large sources from the same pieces: equal to the whole parse, the two
   fallback-forcing pieces aside;
@@ -4217,7 +4213,7 @@ interleaved runs at load ~20: the compiled `fetch.js` (800 KB) 5.2 → 2.7 ms,
 scan itself is ~2.5 ms over the 800 KB bundle; the line walk kept more lines to parse.
 
 **The rule:** the walk is the scanner's. A misread is a row in the parity table and a
-change to one match arm in `imports/walk.rs`; no line heuristic is added beside it.
+change to the scanner's arms in `imports/walk.rs`; no line heuristic is added beside it.
 
 *Followed up* (2026-10-10). **The fallback ends a declaration a column-0 line
 follows.** The fallback reset its state at every column-0 statement line, in step or
@@ -4227,3 +4223,18 @@ pass is out of step (in a string, template, comment or bracket); in step, the li
 word ends the declaration as the strict pass does. Parity row: the file-start table's
 fallback reading now follows each statement with a column-0 `let`
 (`division-after-increment`, which also forces the fallback).
+
+*Followed up* (2026-10-10). **A condition's `)` is followed by a statement.** The
+scanner read a `/` after any `)` as division, so `if (a) /\`/.test(b)` twice, with an
+import between, paired the regexes' backticks into a template that hid the import, and
+the pass stayed balanced, so no fallback ran (0.60.8's backtick parity missed it too).
+A `(` right after `if`, `while`, `for` or `with`, not as a member (`q.if(a) / 2` stays
+division), now opens a bracket kind of its own whose `)` lets a regex follow. It's a
+lexical rule with no exception: no expression can end in a condition's `)`. Parity:
+`regex-after-condition` (28 rows) and the strict reading of `regex-after-paren` are
+right, so the only rows left wrong are the fallback's; the fallback is forced by
+`division-after-increment` now that `regex-after-paren` no longer unbalances, and the
+member case is a row of its own (`division-after-member`). No corpus file holds the
+shape: the large-source scan's bindings are identical to 0.60.9's (real lost 0), and
+recall against 0.60.9 changed nothing (0 of 6,821 sources; anchored 0 up, 0 down,
+calls/imports/packages 349/900/221 both).
