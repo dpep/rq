@@ -112,11 +112,45 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
     out
 }
 
+/// A name as a module exports or binds it: a module's default export is
+/// `default`, a name no definition has.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Export {
+    Default,
+    Name(String),
+}
+
+impl From<String> for Export {
+    fn from(name: String) -> Self {
+        if name == "default" {
+            Export::Default
+        } else {
+            Export::Name(name)
+        }
+    }
+}
+
+impl Export {
+    /// As source spells it.
+    fn as_str(&self) -> &str {
+        match self {
+            Export::Default => "default",
+            Export::Name(name) => name,
+        }
+    }
+}
+
+impl std::fmt::Display for Export {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What a hop looks for in a module.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Want {
-    /// The name the module exports it as: `default` for a default export.
-    export: String,
+    /// The name the module exports it as.
+    export: Export,
     /// The name of the definition: for a default, the importer's local name,
     /// the best guess at it.
     def: String,
@@ -128,7 +162,7 @@ struct Want {
 impl Want {
     fn named(name: &str) -> Self {
         Want {
-            export: name.to_string(),
+            export: Export::from(name.to_string()),
             def: name.to_string(),
             member: None,
         }
@@ -141,23 +175,23 @@ enum Binding {
     /// `import { imported as local }`, `export { imported as local } from`,
     /// `const { imported: local } = require(…)`.
     Named {
-        local: String,
-        imported: String,
+        local: Export,
+        imported: Export,
         spec: String,
         /// The statement's lines, 0-based: where the imported name is spelled.
         rows: (usize, usize),
     },
     /// `import local from`.
-    Default { local: String, spec: String },
+    Default { local: Export, spec: String },
     /// `import * as local`, `const local = require(…)`, `import local = require(…)`.
-    Namespace { local: String, spec: String },
+    Namespace { local: Export, spec: String },
     /// `export * from`: every export but the default.
     Star { spec: String },
     /// `module.exports = require(…)`: the whole module, its default too.
     Module { spec: String },
     /// `export { name as local }`, `export default name`: the module's own
     /// binding `name`, exported as `local`.
-    Local { local: String, name: String },
+    Local { local: Export, name: Export },
 }
 
 /// Where `want` leads from these bindings: each specifier and what to look for
@@ -175,7 +209,7 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
     let wanted = bindings
         .iter()
         .find_map(|b| match b {
-            Binding::Local { local, name } if *local == want.export => Some(name.as_str()),
+            Binding::Local { local, name } if *local == want.export => Some(name),
             _ => None,
         })
         .unwrap_or(&want.export);
@@ -193,16 +227,15 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
                     && used.is_some_and(|(row, _)| (rows.0..=rows.1).contains(&row))) =>
             {
                 // a default has no name of its own to look up; keep the guess
-                let def = if imported == "default" {
-                    &want.def
-                } else {
-                    imported
+                let def = match imported {
+                    Export::Default => want.def.clone(),
+                    Export::Name(name) => name.clone(),
                 };
                 explicit.push((
                     spec.clone(),
                     Want {
                         export: imported.clone(),
-                        def: def.clone(),
+                        def,
                         member: want.member.clone(),
                     },
                 ));
@@ -213,12 +246,12 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
                 imported,
                 spec,
                 ..
-            } if used.is_some_and(|(_, l)| spells(l, local, wanted)) => {
+            } if used.is_some_and(|(_, l)| spells(l, local.as_str(), wanted.as_str())) => {
                 explicit.push((
                     spec.clone(),
                     Want {
                         export: imported.clone(),
-                        def: imported.clone(),
+                        def: imported.to_string(),
                         member: Some(wanted.to_string()),
                     },
                 ));
@@ -227,7 +260,7 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
                 explicit.push((
                     spec.clone(),
                     Want {
-                        export: "default".to_string(),
+                        export: Export::Default,
                         def: want.def.clone(),
                         member: want.member.clone(),
                     },
@@ -241,11 +274,11 @@ fn edges(bindings: &[Binding], want: &Want, used: Option<(usize, &str)>) -> Vec<
                 explicit.push((spec.clone(), next));
             }
             Binding::Namespace { local, spec }
-                if used.is_some_and(|(_, l)| spells(l, local, wanted)) =>
+                if used.is_some_and(|(_, l)| spells(l, local.as_str(), wanted.as_str())) =>
             {
                 explicit.push((spec.clone(), want.clone()));
             }
-            Binding::Star { spec } if used.is_none() && want.export != "default" => {
+            Binding::Star { spec } if used.is_none() && want.export != Export::Default => {
                 stars.push((spec.clone(), want.clone()));
             }
             Binding::Module { spec } if used.is_none() => {
@@ -343,7 +376,7 @@ fn import(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                     .and_then(|s| string(s, src)),
             ) {
                 out.push(Binding::Namespace {
-                    local: text(local, src),
+                    local: text(local, src).into(),
                     spec,
                 });
             }
@@ -364,7 +397,7 @@ fn import(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
     for part in children(clause) {
         match part.kind() {
             "identifier" => out.push(Binding::Default {
-                local: text(part, src),
+                local: text(part, src).into(),
                 spec: spec.clone(),
             }),
             "namespace_import" => {
@@ -373,7 +406,7 @@ fn import(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                     .find(|n| n.kind() == "identifier")
                 {
                     out.push(Binding::Namespace {
-                        local: text(id, src),
+                        local: text(id, src).into(),
                         spec: spec.clone(),
                     });
                 }
@@ -398,12 +431,12 @@ fn rows(node: Node) -> (usize, usize) {
 
 /// An `import_specifier` / `export_specifier`'s (name, alias): `name` or
 /// `name as alias`.
-fn names(node: Node, src: &[u8]) -> Option<(String, String)> {
+fn names(node: Node, src: &[u8]) -> Option<(Export, Export)> {
     let name = node.child_by_field_name("name")?;
-    let imported = string(name, src).unwrap_or_else(|| text(name, src));
+    let imported = Export::from(string(name, src).unwrap_or_else(|| text(name, src)));
     let local = node
         .child_by_field_name("alias")
-        .map_or_else(|| imported.clone(), |a| text(a, src));
+        .map_or_else(|| imported.clone(), |a| text(a, src).into());
     Some((imported, local))
 }
 
@@ -441,7 +474,7 @@ fn reexport(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                 named = true;
                 if let Some(id) = children(part).into_iter().find(|n| n.kind() != "string") {
                     out.push(Binding::Namespace {
-                        local: text(id, src),
+                        local: text(id, src).into(),
                         spec: spec.clone(),
                     });
                 }
@@ -461,8 +494,8 @@ fn local_exports(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
         .filter(|v| v.kind() == "identifier")
     {
         out.push(Binding::Local {
-            local: "default".to_string(),
-            name: text(value, src),
+            local: Export::Default,
+            name: text(value, src).into(),
         });
     }
     for clause in children(stmt)
@@ -520,8 +553,8 @@ fn required(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
             && let Some(prop) = value.child_by_field_name("property")
         {
             out.push(Binding::Named {
-                local: text(name, src),
-                imported: text(prop, src),
+                local: text(name, src).into(),
+                imported: text(prop, src).into(),
                 spec,
                 rows: rows(stmt),
             });
@@ -532,7 +565,7 @@ fn required(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
         };
         match name.kind() {
             "identifier" => out.push(Binding::Namespace {
-                local: text(name, src),
+                local: text(name, src).into(),
                 spec,
             }),
             "object_pattern" => {
@@ -550,8 +583,8 @@ fn required(stmt: Node, src: &[u8], out: &mut Vec<Binding>) {
                         _ => continue,
                     };
                     out.push(Binding::Named {
-                        local,
-                        imported,
+                        local: local.into(),
+                        imported: imported.into(),
                         spec: spec.clone(),
                         rows: rows(stmt),
                     });

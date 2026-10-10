@@ -697,7 +697,7 @@ mod tests {
         let names: Vec<String> = bindings("big.ts", &kept)
             .into_iter()
             .filter_map(|b| match b {
-                Binding::Named { local, .. } => Some(local),
+                Binding::Named { local, .. } => Some(local.to_string()),
                 _ => None,
             })
             .collect();
@@ -708,7 +708,7 @@ mod tests {
         bindings("big.ts", &module_statements("big.ts", source))
             .into_iter()
             .filter_map(|b| match b {
-                Binding::Named { local, .. } => Some(local),
+                Binding::Named { local, .. } => Some(local.to_string()),
                 _ => None,
             })
             .collect()
@@ -743,7 +743,7 @@ mod tests {
             bindings("bundle.js", &module_statements("bundle.js", &unminified))
                 .into_iter()
                 .filter_map(|b| match b {
-                    Binding::Namespace { local, .. } => Some(local),
+                    Binding::Namespace { local, .. } => Some(local.to_string()),
                     _ => None,
                 })
                 .collect();
