@@ -47,7 +47,7 @@ gate() {
   tmp="$(mktemp -d)"
   TMPDIR="$tmp" cargo test || { rm -rf "$tmp"; return 1; }
   local left
-  left="$(find "$tmp" -mindepth 1 -maxdepth 1 -name 'rq-*' | head -5)"
+  left="$(find "$tmp" -mindepth 1 -path "$tmp/rq-*" | head -20)"
   rm -rf "$tmp"
   if [ -n "$left" ]; then
     printf 'check: the tests left temp entries behind, e.g.\n%s\n' "$left"

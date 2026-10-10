@@ -210,7 +210,8 @@ impl Drop for Scratch {
         // A detached warm may still be writing beside the database, which
         // fails the removal (not empty); once the root is gone it can't
         // recreate it, since rq never makes the database's directory.
-        for _ in 0..100 {
+        // Bounded generously: a loaded machine can keep a child at it a while.
+        for _ in 0..600 {
             match fs::remove_dir_all(&self.root) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                     std::thread::sleep(std::time::Duration::from_millis(50));
