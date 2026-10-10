@@ -139,15 +139,12 @@ struct Cli {
     ///
     /// Pass an editor's cursor, or the file an agent is reading. Definitions in
     /// the scopes around that line come first, then ones in the same file and
-    /// nearby directories, and ones in a language that file can refer to (TS
-    /// and JS reach each other) rank above ones it can't. In TS and JS, the
-    /// definition the file's imports resolve the name to ranks first (relative
-    /// imports and the checkout's own workspace packages). Asked from inside a
-    /// test or example tree, that tree's own definitions aren't held back as
-    /// test or example code (a private one only where the anchor can reach it:
-    /// its own file in TS and JS, its directory elsewhere). It's context, not a
-    /// filter. FILE is relative to the current directory; COL is accepted and
-    /// ignored.
+    /// nearby directories. Ones the file's language can reach, and the one its
+    /// imports resolve the name to, rank above the rest; each language decides
+    /// what those are. Asked from inside a test or example tree, that tree's
+    /// own definitions aren't held back as test or example code. It's context,
+    /// not a filter: `--explain` shows which of these applied. FILE is
+    /// relative to the current directory; COL is accepted and ignored.
     #[arg(help_heading = "Narrow the search", long, value_name = "FILE:LINE[:COL]", value_parser = parse_anchor, conflicts_with = "mode")]
     anchor: Option<AnchorSpec>,
 
@@ -438,6 +435,31 @@ fn dispatch(cli: Cli) -> ExitCode {
 mod tests {
     use super::*;
     use crate::tests::support::Scratch;
+
+    #[test]
+    fn the_anchor_help_names_no_language() {
+        // What reaches what, and how far privacy goes, is each plugin's to
+        // declare; help that spells it out goes wrong when a plugin changes.
+        let cmd = Cli::command();
+        let help = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "anchor")
+            .and_then(|a| a.get_long_help())
+            .expect("--anchor has help")
+            .to_string()
+            .to_lowercase();
+        let words: Vec<&str> = help.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+        for plugin in crate::lang::registry() {
+            for name in
+                std::iter::once(plugin.language()).chain(plugin.extensions().iter().copied())
+            {
+                assert!(
+                    !words.contains(&name),
+                    "--anchor help names {name:?}: {help}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn every_help_example_parses() {

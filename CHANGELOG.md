@@ -17,6 +17,12 @@ and aren't listed; see `git log` for those.
   caller holding the pipe open (`tail -f … | rq -J`, an agent asking one name
   at a time) gets its answers.
 
+### Changed
+- `--anchor`'s help says what it weighs without spelling out each
+  language's rules, which every plugin change had to keep in step. The
+  README keeps the detail, and now says a private Rust item reaches its
+  directory, as rq treats it, not only its file.
+
 ## 0.60.8 — 2026-10-09
 
 ### Fixed

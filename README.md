@@ -108,7 +108,7 @@ workspace packages), the definition that import resolves to ranks first,
 through re-exports and barrels; TypeScript and JavaScript only for now. Asked from inside a test or example
 app (`examples/blog/`), that app's own definitions aren't held back as test or
 example code, though a private one only where its language lets the anchor call
-it (its own file in TS/JS and Rust, its package in Go).
+it (its own file in TS/JS, its directory elsewhere).
 
 ```sh
 $ rq 'valid?' -l 2
