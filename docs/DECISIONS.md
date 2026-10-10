@@ -4186,6 +4186,11 @@ didn't produce (`src/lang/typescript/imports/parity.rs`, `make imports-scan`,
 - each statement first in the file after a hashbang, a UTF-8 BOM or both, read
   strictly and by the fallback: none wrong (a BOM's bytes once joined the first
   word, hiding the first import);
+- both tables are read as a `.tsx` and as a `.ts`, each by its own grammar, the
+  `.ts` without the JSX hazards and with three of its own (a `<T>` assertion or
+  arrow, one a JSX reading would take for an element around the statement): 14
+  wrong in each, the same fallback row. Before, every row and the corpus scan
+  read every file as `big.tsx`, so `.ts`'s path was never the one measured;
 - random large sources from the same pieces: equal to the whole parse, the two
   fallback-forcing pieces aside;
 - 1,025 sources over 16 KB in next.js, react, jest, zod and excalidraw (17,746

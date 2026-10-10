@@ -5,12 +5,27 @@
 use super::walk::PARSE_WHOLE;
 use super::*;
 
-/// What the walk binds, and what a whole parse binds.
-fn walk_and_truth(source: &str) -> (Vec<Binding>, Vec<Binding>) {
+/// What the walk binds, and what a whole parse binds, of `source` read as
+/// `file` reads it: the name picks the grammar and whether `<` opens JSX.
+fn walk_and_truth(file: &str, source: &str) -> (Vec<Binding>, Vec<Binding>) {
     (
-        bindings("big.tsx", &module_statements("big.tsx", source)),
-        bindings("big.tsx", source),
+        bindings(file, &module_statements(file, source)),
+        bindings(file, source),
     )
+}
+
+/// The two readings: JSX on (`.tsx`, `.js`, …), and TypeScript's own `.ts`.
+const FILES: [&str; 2] = ["big.tsx", "big.ts"];
+
+/// Hazards in one grammar's syntax only, never read as the other's.
+fn valid_in(hazard: &str, file: &str) -> bool {
+    let tsx_only = hazard.starts_with("jsx-");
+    let ts_only = TS_HAZARDS.iter().any(|&(name, ..)| name == hazard);
+    if file.ends_with(".tsx") {
+        !ts_only
+    } else {
+        !tsx_only
+    }
 }
 
 /// Top-level code no module statement is in: `n` small functions.
@@ -150,6 +165,26 @@ const HAZARDS: [(&str, &str, &str); 26] = [
     ),
 ];
 
+/// Hazards only TypeScript proper writes: a `<` that is never a tag.
+const TS_HAZARDS: [(&str, &str, &str); 3] = [
+    (
+        "type-assertion",
+        "const n = <number>total / 2; const r = '`'",
+        "",
+    ),
+    (
+        "generic-arrow",
+        "const id = <T>(x: T) => x / 2; const r = '`'",
+        "",
+    ),
+    // as JSX, one element whose text holds the statement
+    (
+        "assertion-pair",
+        "let a = <Widget>w",
+        "let b = w // </Widget>",
+    ),
+];
+
 /// Where a statement sits against the first 16 KB, where the line walk cut.
 #[derive(Debug, Clone, Copy)]
 enum Position {
@@ -187,45 +222,62 @@ fn source(position: Position, (before, after): (&str, &str), statement: &str) ->
     }
 }
 
-/// Statement/hazard pairs the walk reads differently from a whole parse, with
-/// the positions (Header, Straddle, Late) where it does. Fixing one changes
+/// File/statement/hazard triples the walk reads differently from a whole
+/// parse, with the positions (Header, Straddle, Late) where it does. Fixing one changes
 /// its entry here; a new misread fails the test. What's left is the fallback:
 /// a pass a misread unbalanced trusts every column-0 statement line, a
 /// template's too.
 const KNOWN_WRONG: &[&str] = &[
-    "named/fallback-template/HSL",
-    "list/fallback-template/HSL",
-    "default/fallback-template/HSL",
-    "namespace/fallback-template/HSL",
-    "export-from/fallback-template/HSL",
-    "export-list/fallback-template/HSL",
-    "export-star-as/fallback-template/HSL",
-    "export-type/fallback-template/HSL",
-    "export-default/fallback-template/HSL",
-    "require-one/fallback-template/HSL",
-    "require-list/fallback-template/HSL",
-    "module-exports/fallback-template/HSL",
-    "list-comment-semi/fallback-template/HSL",
-    "list-comment-from/fallback-template/HSL",
+    "big.tsx/named/fallback-template/HSL",
+    "big.tsx/list/fallback-template/HSL",
+    "big.tsx/default/fallback-template/HSL",
+    "big.tsx/namespace/fallback-template/HSL",
+    "big.tsx/export-from/fallback-template/HSL",
+    "big.tsx/export-list/fallback-template/HSL",
+    "big.tsx/export-star-as/fallback-template/HSL",
+    "big.tsx/export-type/fallback-template/HSL",
+    "big.tsx/export-default/fallback-template/HSL",
+    "big.tsx/require-one/fallback-template/HSL",
+    "big.tsx/require-list/fallback-template/HSL",
+    "big.tsx/module-exports/fallback-template/HSL",
+    "big.tsx/list-comment-semi/fallback-template/HSL",
+    "big.tsx/list-comment-from/fallback-template/HSL",
+    "big.ts/named/fallback-template/HSL",
+    "big.ts/list/fallback-template/HSL",
+    "big.ts/default/fallback-template/HSL",
+    "big.ts/namespace/fallback-template/HSL",
+    "big.ts/export-from/fallback-template/HSL",
+    "big.ts/export-list/fallback-template/HSL",
+    "big.ts/export-star-as/fallback-template/HSL",
+    "big.ts/export-type/fallback-template/HSL",
+    "big.ts/export-default/fallback-template/HSL",
+    "big.ts/require-one/fallback-template/HSL",
+    "big.ts/require-list/fallback-template/HSL",
+    "big.ts/module-exports/fallback-template/HSL",
+    "big.ts/list-comment-semi/fallback-template/HSL",
+    "big.ts/list-comment-from/fallback-template/HSL",
 ];
 
 #[test]
 fn the_walk_reads_a_large_source_as_a_whole_parse_does() {
     let mut wrong = Vec::new();
-    for (hazard, before, after) in HAZARDS {
-        for (statement, text) in STATEMENTS {
-            let positions: String = [Position::Header, Position::Straddle, Position::Late]
-                .into_iter()
-                .filter(|&position| {
-                    let source = source(position, (before, after), text);
-                    assert!(source.len() > PARSE_WHOLE);
-                    let (walk, truth) = walk_and_truth(&source);
-                    walk != truth
-                })
-                .map(|position| format!("{position:?}").remove(0))
-                .collect();
-            if !positions.is_empty() {
-                wrong.push(format!("{statement}/{hazard}/{positions}"));
+    for file in FILES {
+        let hazards = HAZARDS.iter().chain(&TS_HAZARDS);
+        for &(hazard, before, after) in hazards.filter(|(h, ..)| valid_in(h, file)) {
+            for (statement, text) in STATEMENTS {
+                let positions: String = [Position::Header, Position::Straddle, Position::Late]
+                    .into_iter()
+                    .filter(|&position| {
+                        let source = source(position, (before, after), text);
+                        assert!(source.len() > PARSE_WHOLE);
+                        let (walk, truth) = walk_and_truth(file, &source);
+                        walk != truth
+                    })
+                    .map(|position| format!("{position:?}").remove(0))
+                    .collect();
+                if !positions.is_empty() {
+                    wrong.push(format!("{file}/{statement}/{hazard}/{positions}"));
+                }
             }
         }
     }
@@ -243,15 +295,15 @@ const STARTS: [(&str, &str); 4] = [
 #[test]
 fn a_file_start_reads_as_a_whole_parse_does() {
     let mut wrong = Vec::new();
-    for (start, prefix) in STARTS {
+    for (file, (start, prefix)) in FILES.into_iter().flat_map(|f| STARTS.map(|s| (f, s))) {
         for (statement, text) in STATEMENTS {
             // and read again by the fallback, which a misread regex forces
             for unbalance in ["", "if (ok) /[(]/.test(s)\n"] {
                 let source = format!("{prefix}{text}\n{unbalance}{}", filler(450));
                 assert!(source.len() > PARSE_WHOLE);
-                let (walk, truth) = walk_and_truth(&source);
+                let (walk, truth) = walk_and_truth(file, &source);
                 if walk != truth {
-                    wrong.push(format!("{statement}/{start}/{unbalance}"));
+                    wrong.push(format!("{file}/{statement}/{start}/{unbalance}"));
                 }
             }
         }
@@ -291,11 +343,14 @@ fn random_large_sources_read_as_a_whole_parse_does() {
         .into_iter()
         .filter(|(name, _)| !OPEN.contains(name))
         .collect();
-    let hazards: Vec<(&str, &str, &str)> = HAZARDS
-        .into_iter()
-        .filter(|(name, ..)| !OPEN.contains(name))
-        .collect();
     for case in 0..count {
+        // alternate readings, each with the hazards its grammar can hold
+        let file = FILES[case % FILES.len()];
+        let hazards: Vec<(&str, &str, &str)> = HAZARDS
+            .into_iter()
+            .chain(TS_HAZARDS)
+            .filter(|(name, ..)| !OPEN.contains(name) && valid_in(name, file))
+            .collect();
         let mut source = String::new();
         let mut parts = Vec::new();
         while source.len() <= PARSE_WHOLE * 2 {
@@ -315,8 +370,8 @@ fn random_large_sources_read_as_a_whole_parse_does() {
             source.push_str(&text);
             source.push('\n');
         }
-        let (walk, truth) = walk_and_truth(&source);
-        assert_eq!(walk, truth, "case {case}: {parts:?}");
+        let (walk, truth) = walk_and_truth(file, &source);
+        assert_eq!(walk, truth, "case {case} ({file}): {parts:?}");
     }
 }
 
@@ -380,8 +435,9 @@ fn corpus_scan() {
             continue;
         };
         scanned += 1;
+        // by its own name, so a `.ts` parses as TypeScript, as in production
         let name = file.to_string_lossy();
-        let (walk, truth) = walk_and_truth(&source);
+        let (walk, truth) = walk_and_truth(&name, &source);
         walked.extend(walk.iter().map(|b| format!("{name}\t{}", row(b))));
         whole.extend(truth.iter().map(|b| format!("{name}\t{}", row(b))));
     }
