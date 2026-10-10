@@ -232,6 +232,33 @@ fn the_walk_reads_a_large_source_as_a_whole_parse_does() {
     assert_eq!(wrong, KNOWN_WRONG);
 }
 
+/// What can precede a file's first statement at byte 0.
+const STARTS: [(&str, &str); 4] = [
+    ("plain", ""),
+    ("hashbang", "#!/usr/bin/env node\n"),
+    ("bom", "\u{FEFF}"),
+    ("bom-hashbang", "\u{FEFF}#!/usr/bin/env node\n"),
+];
+
+#[test]
+fn a_file_start_reads_as_a_whole_parse_does() {
+    let mut wrong = Vec::new();
+    for (start, prefix) in STARTS {
+        for (statement, text) in STATEMENTS {
+            // and read again by the fallback, which a misread regex forces
+            for unbalance in ["", "if (ok) /[(]/.test(s)\n"] {
+                let source = format!("{prefix}{text}\n{unbalance}{}", filler(450));
+                assert!(source.len() > PARSE_WHOLE);
+                let (walk, truth) = walk_and_truth(&source);
+                if walk != truth {
+                    wrong.push(format!("{statement}/{start}/{unbalance}"));
+                }
+            }
+        }
+    }
+    assert_eq!(wrong, Vec::<String>::new());
+}
+
 fn xorshift(seed: &mut u64) -> u64 {
     *seed ^= *seed << 13;
     *seed ^= *seed >> 7;

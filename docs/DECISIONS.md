@@ -4183,6 +4183,9 @@ didn't produce (`src/lang/typescript/imports/parity.rs`, `make imports-scan`,
 [RECALL.md](RECALL.md#the-large-source-import-walk)):
 - the table of 14 statements × 26 hazards × 3 positions: 128 statement/hazard pairs
   read wrong by the line walk, 14 by the scanner, all the fallback's row;
+- each statement first in the file after a hashbang, a UTF-8 BOM or both, read
+  strictly and by the fallback: none wrong (a BOM's bytes once joined the first
+  word, hiding the first import);
 - random large sources from the same pieces: equal to the whole parse, the two
   fallback-forcing pieces aside;
 - 1,025 sources over 16 KB in next.js, react, jest, zod and excalidraw (17,746

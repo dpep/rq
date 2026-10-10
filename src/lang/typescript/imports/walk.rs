@@ -24,12 +24,15 @@ pub(super) fn module_statements<'a>(file: &str, source: &'a str) -> Cow<'a, str>
         return source.into();
     }
     let jsx = !crate::lang::typescript::typescript_proper(file);
-    let scan = |resync| Scan::new(source.as_bytes(), jsx, resync).run();
+    // a BOM's bytes would otherwise join the first word, as `\u{FEFF}import`
+    let bom = if source.starts_with('\u{FEFF}') { 3 } else { 0 };
+    let scan = |resync| Scan::new(&source.as_bytes()[bom..], jsx, resync).run();
     let spans = scan(false).or_else(|| scan(true)).unwrap_or_default();
     let mut out = String::new();
     let mut at = 0;
     let newlines = |text: &str| "\n".repeat(text.bytes().filter(|&b| b == b'\n').count());
     for span in spans {
+        let span = span.start + bom..span.end + bom;
         let (Some(gap), Some(statement)) = (source.get(at..span.start), source.get(span.clone()))
         else {
             continue;
