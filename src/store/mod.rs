@@ -403,6 +403,12 @@ pub(crate) const FINISHING: &str = "finishing";
 /// How long a write waits out another writer before failing "locked".
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How long a bookkeeping write (a usage count, a cache a later call can
+/// rebuild) waits out another writer before it's skipped: a pass's batch
+/// commit, not a cold pass's name-index rebuild, which holds the lock for
+/// seconds while a search's caller waits on its exit.
+const BOOKKEEPING_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// How long a pass nobody waits on — `rq --index`, a warm child — waits out
 /// another writer, in ms (see [`Store::wait_out_writers`]).
 static WRITER_WAIT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1245,7 +1251,8 @@ impl Store {
 
     // ----- usage observability -----
 
-    /// Count a search in `usage_daily`.
+    /// Count a search in `usage_daily`. Observability, so a busy store skips
+    /// it rather than hold up the exit.
     pub(crate) fn record_search(&self, rec: &SearchRecord) -> Result<()> {
         let (miss, warming) = match rec.status {
             Verdict::Hit => (0, 0),
@@ -1257,7 +1264,7 @@ impl Store {
         // Local date, not UTC: an evening search on the US west coast would
         // otherwise be filed under tomorrow, which makes a per-day report
         // quietly wrong for a third of the waking day.
-        self.conn.execute(
+        self.waiting_at_most(BOOKKEEPING_WAIT, || self.conn.execute(
             "INSERT INTO usage_daily (day, source, flags, searches, misses, warming, on_complete, live)
              VALUES (date(?1, 'unixepoch', 'localtime'), ?2, ?3, 1, ?4, ?5, ?6, ?7)
              ON CONFLICT(day, source, flags) DO UPDATE SET
@@ -1275,7 +1282,7 @@ impl Store {
                 on_complete,
                 live
             ],
-        )?;
+        ))?;
         Ok(())
     }
 
@@ -1456,7 +1463,10 @@ impl Store {
             value.push('\n');
             value.push_str(f);
         }
-        self.meta_set(&format!("branch_files:{root}"), &value)
+        // a cache: a busy store leaves it for the next search to rebuild
+        self.waiting_at_most(BOOKKEEPING_WAIT, || {
+            self.meta_set(&format!("branch_files:{root}"), &value)
+        })
     }
 
     /// Mark a pass over the checkout at `root` as running in `pid`, and record
@@ -1598,12 +1608,22 @@ impl Store {
     /// a pass recorded one meanwhile. Best-effort and without waiting: a busy
     /// writer means a pass, which records its own.
     pub(crate) fn keep_span(&self, root: &str, span: usize) {
-        let _ = self.conn.busy_timeout(std::time::Duration::ZERO);
-        let _ = self.conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
-            params![format!("span:{root}"), span.to_string()],
-        );
+        let _ = self.waiting_at_most(std::time::Duration::ZERO, || {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
+                params![format!("span:{root}"), span.to_string()],
+            )
+        });
+    }
+
+    /// Run `write` waiting out another writer for at most `wait`, then go
+    /// back to [`BUSY_WAIT`]. For a search's connection, which has no
+    /// [`wait_out_writers`](Self::wait_out_writers) handler to lose.
+    fn waiting_at_most<T>(&self, wait: std::time::Duration, write: impl FnOnce() -> T) -> T {
+        let _ = self.conn.busy_timeout(wait);
+        let out = write();
         let _ = self.conn.busy_timeout(BUSY_WAIT);
+        out
     }
 
     /// The processes marked as indexing the checkout at `root` (live or not —

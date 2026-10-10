@@ -4539,13 +4539,12 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
         let _ = tx.send(line);
     });
     let answer = rx.recv_timeout(std::time::Duration::from_secs(30));
-    // Released once answered: every write the run still has to make (the
-    // indexer's join, the usage count) would otherwise wait out the busy
-    // timeout in turn.
+    // held until the run exits: what it writes besides the index is
+    // bookkeeping, which must not wait out the other writer
+    let status = child.wait().unwrap();
     conn.execute_batch("COMMIT").unwrap();
     conn.execute("DELETE FROM meta WHERE key = ?1", rusqlite::params![mark])
         .unwrap();
-    let status = child.wait().unwrap();
     let mut profile = String::new();
     child
         .stderr
@@ -4556,16 +4555,26 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
     let answer = answer.expect("an answer while the other indexer holds the lock");
     assert!(answer.contains("User"), "{answer}");
     assert_eq!(status.code(), Some(2), "{profile}");
-    // the profile's `query` row: the polling `--wait` bounds, setup aside
-    let polled = profile
-        .lines()
-        .find_map(|l| l.trim_start().strip_prefix("query "))
-        .and_then(|rest| rest.trim_start().split("ms").next()?.parse::<f64>().ok())
-        .unwrap_or_else(|| panic!("no query row: {profile}"));
+    // the polling `--wait` bounds, setup aside
+    let polled = profile_ms(&profile, "query");
     assert!(
         polled < 2500.0,
         "polled {polled}ms past a 1s wait: {profile}"
     );
+    // a search's busy timeout is 3 s
+    for bookkeeping in ["setup: branch files", "after: record usage"] {
+        let spent = profile_ms(&profile, bookkeeping);
+        assert!(spent < 1000.0, "{bookkeeping} {spent}ms: {profile}");
+    }
+}
+
+/// The milliseconds `--profile` reports for the span named `name`.
+fn profile_ms(profile: &str, name: &str) -> f64 {
+    profile
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix(name)?.strip_prefix(' '))
+        .and_then(|rest| rest.trim_start().split("ms").next()?.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no {name} row: {profile}"))
 }
 
 /// A checkout indexed only under `a/`, where a prefix match for `Widget`

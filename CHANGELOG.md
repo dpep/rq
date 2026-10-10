@@ -17,6 +17,11 @@ and aren't listed; see `git log` for those.
   backticks in regexes right after an `if (…)`, `while (…)`, `for (…)` or
   `with (…)`, as in `if (a) /\`/.test(b)`, which 0.60.9 read as division
   (DECISIONS D63).
+- A search while another rq holds the index's write lock (a cold pass's
+  closing rebuild runs for seconds) no longer waits out a 3 s timeout for
+  its usage count, or for the branch-file cache a first search in a repo
+  writes before answering: past 100 ms they're skipped, and the next search
+  rebuilds the cache.
 
 ## 0.60.9 — 2026-10-10
 
