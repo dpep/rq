@@ -24,7 +24,8 @@ and aren't listed; see `git log` for those.
 - `--anchor` reads a JS/TS file over 16 KB for its imports by one lexical pass,
   not line heuristics: it now follows a late `export default X`, a multi-line
   `require` destructuring, an import list holding a comment with `;` or
-  `from '…'`, and an import between two backticks in regexes or JSX text; and
+  `from '…'`, and an import between two backticks in JSX text or in regexes
+  (but not a regex right after a `)`, as in `if (a) /\`/`); and
   it no longer takes an import inside a block comment, a nested template or a
   continued string for a real one (DECISIONS D63).
 

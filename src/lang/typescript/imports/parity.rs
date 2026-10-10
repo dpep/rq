@@ -70,7 +70,7 @@ const STATEMENTS: [(&str, &str); 14] = [
 
 /// Text before (and, for a pair, after) a statement that a line reading can
 /// mistake for code or for text.
-const HAZARDS: [(&str, &str, &str); 26] = [
+const HAZARDS: [(&str, &str, &str); 27] = [
     ("none", "", ""),
     ("string-backtick", "const FENCE = '```'", ""),
     ("comment-backtick", "const q = 1 // don't use ` here", ""),
@@ -157,6 +157,13 @@ const HAZARDS: [(&str, &str, &str); 26] = [
     ("division-paren", "const ratio = (width) / 2 / (height)", ""),
     // read as division: the brackets in it unbalance the pass
     ("regex-after-paren", "if (ok) /[(]/.test(s)", ""),
+    // read as division too, and the backticks pair up, so the pass stays
+    // balanced and the template between them hides the statement
+    (
+        "regex-after-condition",
+        "if (a) /`/.test(b)",
+        "if (c) /`/.test(d)",
+    ),
     // and then the line walk's reading, which takes a template's line for code
     (
         "fallback-template",
@@ -224,10 +231,24 @@ fn source(position: Position, (before, after): (&str, &str), statement: &str) ->
 
 /// File/statement/hazard triples the walk reads differently from a whole
 /// parse, with the positions (Header, Straddle, Late) where it does. Fixing one changes
-/// its entry here; a new misread fails the test. What's left is the fallback:
-/// a pass a misread unbalanced trusts every column-0 statement line, a
-/// template's too.
+/// its entry here; a new misread fails the test. What's left is a regex after
+/// a `)`, read as division, and the fallback: a pass a misread unbalanced
+/// trusts every column-0 statement line, a template's too.
 const KNOWN_WRONG: &[&str] = &[
+    "big.tsx/named/regex-after-condition/HSL",
+    "big.tsx/list/regex-after-condition/HSL",
+    "big.tsx/default/regex-after-condition/HSL",
+    "big.tsx/namespace/regex-after-condition/HSL",
+    "big.tsx/export-from/regex-after-condition/HSL",
+    "big.tsx/export-list/regex-after-condition/HSL",
+    "big.tsx/export-star-as/regex-after-condition/HSL",
+    "big.tsx/export-type/regex-after-condition/HSL",
+    "big.tsx/export-default/regex-after-condition/HSL",
+    "big.tsx/require-one/regex-after-condition/HSL",
+    "big.tsx/require-list/regex-after-condition/HSL",
+    "big.tsx/module-exports/regex-after-condition/HSL",
+    "big.tsx/list-comment-semi/regex-after-condition/HSL",
+    "big.tsx/list-comment-from/regex-after-condition/HSL",
     "big.tsx/named/fallback-template/HSL",
     "big.tsx/list/fallback-template/HSL",
     "big.tsx/default/fallback-template/HSL",
@@ -242,6 +263,20 @@ const KNOWN_WRONG: &[&str] = &[
     "big.tsx/module-exports/fallback-template/HSL",
     "big.tsx/list-comment-semi/fallback-template/HSL",
     "big.tsx/list-comment-from/fallback-template/HSL",
+    "big.ts/named/regex-after-condition/HSL",
+    "big.ts/list/regex-after-condition/HSL",
+    "big.ts/default/regex-after-condition/HSL",
+    "big.ts/namespace/regex-after-condition/HSL",
+    "big.ts/export-from/regex-after-condition/HSL",
+    "big.ts/export-list/regex-after-condition/HSL",
+    "big.ts/export-star-as/regex-after-condition/HSL",
+    "big.ts/export-type/regex-after-condition/HSL",
+    "big.ts/export-default/regex-after-condition/HSL",
+    "big.ts/require-one/regex-after-condition/HSL",
+    "big.ts/require-list/regex-after-condition/HSL",
+    "big.ts/module-exports/regex-after-condition/HSL",
+    "big.ts/list-comment-semi/regex-after-condition/HSL",
+    "big.ts/list-comment-from/regex-after-condition/HSL",
     "big.ts/named/fallback-template/HSL",
     "big.ts/list/fallback-template/HSL",
     "big.ts/default/fallback-template/HSL",
@@ -324,6 +359,8 @@ const OPEN: &[&str] = &[
     // an unbalanced pass falls back to trusting column-0 lines
     "regex-after-paren",
     "fallback-template",
+    // a balanced misread: a template between two regexes taken for division
+    "regex-after-condition",
 ];
 
 /// Random large sources from the statements, hazards and filler above, each

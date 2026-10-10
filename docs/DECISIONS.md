@@ -4178,8 +4178,13 @@ over 16 KB in the JS/TS corpora keeps is 15.8 KB (excalidraw's `fonts/Xiaolai/in
 while 200k one-word `import` lines once handed tree-sitter 1.6 MB. And
 a pass that ends out of balance (a regex read as division) reads the source again
 trusting every column-0 line that opens a statement, which is how the line walk read
-everything. That fallback is the scanner's one known misread: in such a file, a
-template's or comment's column-0 import counts.
+everything. That fallback is one of the scanner's two known misreads: in such a file,
+a template's or comment's column-0 import counts. The other is a regex right after a
+`)`, read as division: `if (a) /\`/.test(b)` twice, with an import between, pairs the
+backticks into a template that hides the import, and the pass stays balanced, so no
+fallback runs (0.60.8's backtick parity missed it too). Telling an `if (…)`, `while (…)`
+or `for (…)` closer from an expression's takes a bracket kind of its own, not one match
+arm, so it is a parity row (`regex-after-condition`), not a fix.
 
 Measured against a whole tree-sitter parse of the same source, the truth the walk
 didn't produce (`src/lang/typescript/imports/parity.rs`, `make imports-scan`,
@@ -4192,7 +4197,8 @@ didn't produce (`src/lang/typescript/imports/parity.rs`, `make imports-scan`,
 - both tables are read as a `.tsx` and as a `.ts`, each by its own grammar, the
   `.ts` without the JSX hazards and with three of its own (a `<T>` assertion or
   arrow, one a JSX reading would take for an element around the statement): 14
-  wrong in each, the same fallback row. Before, every row and the corpus scan
+  wrong in each, the same fallback row (and 14 more each for `regex-after-condition`,
+  above). Before, every row and the corpus scan
   read every file as `big.tsx`, so `.ts`'s path was never the one measured;
 - random large sources from the same pieces: equal to the whole parse, the two
   fallback-forcing pieces aside;
