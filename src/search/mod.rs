@@ -226,17 +226,11 @@ impl Anchor {
         }
     }
 
-    /// Decide reach once over hits ranked as separate sets (the index's and a
-    /// live scan's): each set applied it only if it split, so when the union
-    /// splits, a reachable hit from a set that didn't takes the boost too.
+    /// Give the reach boost to every reachable hit that lacks it: hits ranked
+    /// as separate sets, of which reach split at least one
+    /// ([`Context::reach_splits`] decides; this only applies its answer).
     fn reach_over(&self, hits: &mut [Hit]) {
         let boosted = |h: &Hit| h.features.iter().any(|f| f.name == "reachable");
-        if !hits
-            .iter()
-            .any(|h| boosted(h) || self.reachable(&h.language) == 0.0)
-        {
-            return;
-        }
         for h in hits.iter_mut().filter(|h| !boosted(h)) {
             let value = self.reachable(&h.language);
             if value > 0.0 {
@@ -474,6 +468,8 @@ pub(crate) struct Matches {
     pub hits: Vec<Hit>,
     /// Matches before `--limit` truncated them, capped by `CANDIDATE_LIMIT`.
     pub total: usize,
+    /// [`Context::reach_splits`] over the candidates these were ranked from.
+    pub reach: bool,
 }
 
 /// A definition declared exactly once needs no count in the output.
@@ -712,7 +708,7 @@ fn search_query(
             t.elapsed().as_millis(),
         );
     }
-    Ok(Matches { hits, total })
+    Ok(Matches { hits, total, reach })
 }
 
 /// Where the *unqualified* name lives, when a query named a scope and nothing
@@ -830,6 +826,7 @@ pub(crate) fn live_search(
     LiveScan {
         hits,
         files: scanned,
+        reach,
     }
 }
 
@@ -837,12 +834,22 @@ pub(crate) fn live_search(
 pub(crate) struct LiveScan {
     pub hits: Vec<Hit>,
     pub files: usize,
+    /// [`Context::reach_splits`] over the rows the scan parsed.
+    pub reach: bool,
 }
 
 /// Merge two ranked lists, de-duplicating by location and name (keeping the
 /// higher score), then re-rank and truncate. Used to blend index and live-scan
-/// results, which were ranked apart, so the anchor's reach is settled over both.
-pub(crate) fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize, ctx: &Context) -> Vec<Hit> {
+/// results, which were ranked apart. `reach` is whether reach split either
+/// one's candidates — their union's answer — and when it did, every reachable
+/// hit has the boost, whichever set it came from.
+pub(crate) fn merge(
+    a: Vec<Hit>,
+    b: Vec<Hit>,
+    reach: bool,
+    limit: usize,
+    ctx: &Context,
+) -> Vec<Hit> {
     use std::collections::HashMap;
     let mut by_key: HashMap<(String, i64, String), Hit> = HashMap::new();
     for hit in a.into_iter().chain(b) {
@@ -855,7 +862,7 @@ pub(crate) fn merge(a: Vec<Hit>, b: Vec<Hit>, limit: usize, ctx: &Context) -> Ve
         }
     }
     let mut hits: Vec<Hit> = by_key.into_values().collect();
-    if let Some(anchor) = &ctx.anchor {
+    if reach && let Some(anchor) = &ctx.anchor {
         anchor.reach_over(&mut hits);
     }
     sort_and_truncate(&mut hits, limit);
@@ -1322,7 +1329,7 @@ mod tests {
         };
         let from_index = vec![mk("User", 100.0)];
         let from_live = vec![mk("User", 500.0), mk("Account", 200.0)];
-        let merged = merge(from_index, from_live, 10, &Context::default());
+        let merged = merge(from_index, from_live, false, 10, &Context::default());
         assert_eq!(merged.len(), 2, "the duplicate User is collapsed");
         assert_eq!(merged[0].name, "User");
         assert_eq!(merged[0].score, 500.0, "the higher-scored duplicate wins");
@@ -1372,15 +1379,27 @@ mod tests {
                 mk("a.rb", "ruby", 417.0, false),
             ],
             vec![mk("c.ts", "typescript", 556.0, false)],
+            true,
             10,
             &ctx,
         );
         assert_eq!(merged[0].file, "c.ts");
         assert_eq!(merged[0].score, 956.0);
+        // the index's Ruby candidate split it but ranked no hit: the decision
+        // is the candidates', not the hits' that survived
+        let merged = merge(
+            Vec::new(),
+            vec![mk("c.ts", "typescript", 556.0, false)],
+            true,
+            10,
+            &ctx,
+        );
+        assert_eq!(merged[0].score, 956.0, "{:?}", merged[0].features);
         // nothing out of reach in either set: nobody is boosted
         let merged = merge(
             vec![mk("b.ts", "typescript", 417.0, false)],
             vec![mk("c.ts", "typescript", 556.0, false)],
+            false,
             10,
             &ctx,
         );

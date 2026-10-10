@@ -3596,7 +3596,10 @@ definition out of the anchor's reach; elsewhere `--anchor` scores as without it.
 An untracked directory's live scan is ranked apart from the index's results and merged
 after, so the merge settles reach over both: when either set held an unreachable
 definition, the other set's reachable ones take the boost too. Decided per set, a TS
-definition in another indexed repo outranked the one beside the anchor.
+definition in another indexed repo outranked the one beside the anchor. "Held" means
+its candidates, on both paths: each set's ranking reports whether reach split them, and
+the merge only applies the union's answer. It once re-derived that from the merged hits,
+which a truncation or a set with no hits left could answer differently.
 
 *Reverses if:* a language family turns out to need more than one tag (a plugin that reaches
 two families), or anchored use from binding code shows the cross-language definition

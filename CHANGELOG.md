@@ -17,6 +17,10 @@ and aren't listed; see `git log` for those.
   caller holding the pipe open (`tail -f … | rq -J`, an agent asking one name
   at a time) gets its answers.
 
+- `--anchor` blending an untracked directory's live scan with indexed results
+  decides `reachable` from every candidate both considered, as an indexed
+  search alone does, not from the hits that survived to the merge.
+
 ### Changed
 - `--anchor`'s help says what it weighs without spelling out each
   language's rules, which every plugin change had to keep in step. The

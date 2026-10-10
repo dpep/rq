@@ -489,6 +489,8 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     // every time — and that reading is what gates `--show`.
     let rank_limit = limit.max(2);
     let mut total;
+    // whether the anchor's reach split the index's candidates, for the merge
+    let mut reach;
     let mut hits = loop {
         // the warm registers a repo it's indexing for the first time
         if current.is_none() {
@@ -498,6 +500,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         match scope(current).search(store, query, current, &ctx, rank_limit) {
             Ok(m) => {
                 total = m.total;
+                reach = m.reach;
                 let h = m.hits;
                 if !polling {
                     break h;
@@ -577,6 +580,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         && let Ok(m) = scope(current).search(store, query, current, &ctx, rank_limit)
     {
         total = m.total;
+        reach = m.reach;
         hits = m.hits;
     }
 
@@ -602,7 +606,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     {
         let tree = crate::index::LiveTree::new(root, identity.clone());
         let (tail, cost) = live_fallback(&tree, query, rank_limit, &ctx);
-        hits = crate::search::merge(hits, tail, rank_limit, &ctx);
+        hits = crate::search::merge(hits, tail.hits, reach || tail.reach, rank_limit, &ctx);
         total = total.max(hits.len());
         live_scan = Some(cost);
     }
@@ -1164,7 +1168,7 @@ fn live_fallback(
     query: &str,
     limit: usize,
     ctx: &crate::search::Context,
-) -> (Vec<crate::search::Hit>, LiveCost) {
+) -> (crate::search::LiveScan, LiveCost) {
     let start = std::time::Instant::now();
     let deadline = start + live_fallback_budget();
     let mut files = 0;
@@ -1185,17 +1189,17 @@ fn live_fallback(
         );
         span.note(|| format!("{} files", found.files));
         files += found.files;
-        found.hits
+        found
     };
-    let mut hits = scan(true);
-    if hits.is_empty() {
-        hits = scan(false);
+    let mut found = scan(true);
+    if found.hits.is_empty() {
+        found = scan(false);
     }
     let cost = LiveCost {
         files,
         elapsed: start.elapsed(),
     };
-    (hits, cost)
+    (found, cost)
 }
 
 /// What a live scan cost, for its `-v` note.
@@ -1425,6 +1429,7 @@ impl Scope {
                 return Ok(crate::search::Matches {
                     hits: Vec::new(),
                     total: 0,
+                    reach: false,
                 });
             }
         };
