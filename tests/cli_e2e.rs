@@ -3634,6 +3634,52 @@ fn a_batch_answers_each_line_before_stdin_closes() {
     assert_eq!(json(&first)["name"], "Widget", "{first}");
 }
 
+#[test]
+fn a_held_open_batch_sees_an_edit_made_between_its_lines() {
+    // an agent asks, edits, and asks again on the same pipe: the second
+    // answer reads the edit, as a fresh `rq` would
+    use std::io::{BufRead, Write};
+    let (dir, db) = scratch("batch-live");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let mut child = rq_cmd(&db, &dir)
+        .args(["-J", "-l", "1"])
+        .envs(NO_CHILD)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run rq");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let stdout = child.stdout.take().expect("stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let ask = |stdin: &mut std::process::ChildStdin, query: &str| {
+        writeln!(stdin, "{query}").expect("write a query");
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+    };
+    let first = ask(&mut stdin, "widget").expect("an answer while stdin is open");
+    assert_eq!(json(&first)["name"], "Widget", "{first}");
+
+    fs::write(dir.join("a.rb"), "class Widget\nend\nclass Gizmo\nend\n").unwrap();
+    // the pause an agent's edit takes, which is what tells rq to look again
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let second = ask(&mut stdin, "gizmo");
+    drop(stdin);
+    let _ = child.wait();
+    let second = second.expect("an answer while stdin is open");
+    assert_eq!(json(&second)["name"], "Gizmo", "{second}");
+}
+
 /// A half-built index nobody is filling: no warm child finishes it between
 /// one assert and the next. For tests that stage a partial index.
 const NO_CHILD: [(&str, &str); 1] = [("RQ_WARM_DETACH", "0")];

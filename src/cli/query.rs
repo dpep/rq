@@ -187,13 +187,74 @@ pub(super) fn cmd_batch(
     session.anchor = cli.anchor.as_ref().map(|a| session.anchor_at(a));
 
     // Whether the worktree moved is the repo's question, not a query's: a
-    // batch asks it once, here, where a single search asks after answering.
-    let warming_ok = session.here.as_ref().is_some_and(Here::warms);
+    // batch asks it before its first line, where a single search asks after
+    // answering, and again before a line that kept it waiting at least as
+    // long as asking took. A piped batch never waits, so it asks once; a
+    // caller holding the pipe open between edits gets each edit read, and the
+    // asking never costs more than half the batch's time.
+    let mut asked = freshen(&mut session, cli);
+
+    // The batch ran, and each line's `status` carries its query's outcome, so
+    // only a wholly fruitless batch reports failure — with the outcome the
+    // caller can act on most (see `Outcome`'s order).
+    let mut outcome = None;
+    loop {
+        let waited = std::time::Instant::now();
+        let Some(line) = lines.next() else {
+            break;
+        };
+        if waited.elapsed() >= asked {
+            asked = freshen(&mut session, cli);
+        }
+        let answered = match line {
+            BatchLine::NotUtf8(n) => report(
+                out,
+                Failure::Usage,
+                format_args!("rq: stdin line {n} isn't UTF-8; skipped"),
+            )
+            .into(),
+            BatchLine::Query(query) => cmd_search(
+                &mut session,
+                &SearchArgs {
+                    query: &query,
+                    explain: cli.explain,
+                    out,
+                    paths,
+                    kinds,
+                    langs,
+                    want: requested_limit(cli.limit),
+                    // `freshen` warms, between lines; per-query warming would
+                    // undo the point of batching.
+                    no_wait: true,
+                    wait: cli.wait,
+                    open: false,
+                    web: false,
+                    all_repos: cli.all_repos,
+                    show: false,
+                    batch: true,
+                    anchored: cli.anchor.is_some(),
+                },
+            ),
+        };
+        outcome = outcome.max(Some(answered));
+    }
+    ExitCode::from(outcome.expect("a batch has a line"))
+}
+
+/// Bring a batch's index up to its worktree: ask whether the worktree moved
+/// since it was indexed, and warm a cold or edited repo to completion before
+/// the next answer, so a page of misses never means only "not indexed yet".
+/// `--no-wait` leaves the warm to a detached child, and its misses say
+/// `warming`. Returns how long it took.
+fn freshen(session: &mut Session, cli: &Cli) -> Duration {
+    let started = std::time::Instant::now();
+    let Some(here) = session.here.as_mut().filter(|h| h.warms()) else {
+        return started.elapsed();
+    };
+    // a detached warm may have finished the repo since the last line
+    here.refresh(&session.store);
     let mut moved = false;
-    if warming_ok
-        && let Some(here) = &session.here
-        && here.coverage == Some(Coverage::Complete)
-    {
+    if here.coverage == Some(Coverage::Complete) {
         let store = &session.store;
         let head = here
             .checkout
@@ -204,65 +265,16 @@ pub(super) fn cmd_batch(
             spawn_detached_warm(&here.root);
         }
     }
-
-    // Warm to completion before answering anything, so a cold or edited repo
-    // doesn't return a page of misses that only mean "not indexed yet".
-    if !cli.no_wait
-        && warming_ok
-        && let Some(here) = &mut session.here
-        && (here.coverage != Some(Coverage::Complete) || moved)
-    {
+    if !cli.no_wait && (here.coverage != Some(Coverage::Complete) || moved) {
         let budget = cli.wait.unwrap_or_else(wait_budget);
-        crate::trace!("batch: warming the index before the first answer");
+        crate::trace!("batch: warming the index before the next answer");
         let active = &session.active_paths;
         let _ = crate::index::index_budgeted(&mut session.store, &here.root, active, budget, None);
         here.refresh(&session.store);
         // the index has just caught up with the worktree
         session.moved = Some(false);
     }
-
-    // The batch ran, and each line's `status` carries its query's outcome, so
-    // only a wholly fruitless batch reports failure — with the outcome the
-    // caller can act on most (see `Outcome`'s order).
-    let outcome = lines
-        .map(|line| {
-            let query = match line {
-                BatchLine::Query(query) => query,
-                BatchLine::NotUtf8(n) => {
-                    return report(
-                        out,
-                        Failure::Usage,
-                        format_args!("rq: stdin line {n} isn't UTF-8; skipped"),
-                    )
-                    .into();
-                }
-            };
-            cmd_search(
-                &mut session,
-                &SearchArgs {
-                    query: &query,
-                    explain: cli.explain,
-                    out,
-                    paths,
-                    kinds,
-                    langs,
-                    want: requested_limit(cli.limit),
-                    // The warm happened above, once, before the first answer.
-                    // Per-query warming would undo the point of batching.
-                    no_wait: true,
-                    wait: cli.wait,
-                    open: false,
-                    web: false,
-                    all_repos: cli.all_repos,
-                    show: false,
-                    batch: true,
-                    anchored: cli.anchor.is_some(),
-                },
-            )
-        })
-        .max()
-        .expect("a batch has a query");
-    ExitCode::from(outcome)
+    started.elapsed()
 }
 
 pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {

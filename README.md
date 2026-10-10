@@ -236,7 +236,9 @@ line number, and the batch goes on. The run exits `0` if any query matched,
 non-zero only if none did. `--json` can't frame
 several result sets, so batch needs `-J`, and `--show`/`--open`/`--web` don't
 apply. A cold repo is indexed up front, within the `--wait` budget, before the
-first answer.
+first answer. A line that arrives after the pipe sat idle (an edit made between
+questions) first takes in what changed in the worktree; lines piped together
+are answered against one look.
 
 ### Reading the source
 

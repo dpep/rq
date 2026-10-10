@@ -15,7 +15,8 @@ and aren't listed; see `git log` for those.
   answered.
 - A batch answers each line as it arrives instead of after stdin closes, so a
   caller holding the pipe open (`tail -f … | rq -J`, an agent asking one name
-  at a time) gets its answers.
+  at a time) gets its answers, and a line asked after the pipe sat idle reads
+  the worktree's edits since the line before.
 
 - `--anchor` blending an untracked directory's live scan with indexed results
   decides `reachable` from every candidate both considered, as an indexed
