@@ -70,7 +70,7 @@ const STATEMENTS: [(&str, &str); 14] = [
 
 /// Text before (and, for a pair, after) a statement that a line reading can
 /// mistake for code or for text.
-const HAZARDS: [(&str, &str, &str); 27] = [
+const HAZARDS: [(&str, &str, &str); 28] = [
     ("none", "", ""),
     ("string-backtick", "const FENCE = '```'", ""),
     ("comment-backtick", "const q = 1 // don't use ` here", ""),
@@ -164,6 +164,8 @@ const HAZARDS: [(&str, &str, &str); 27] = [
         "if (a) /`/.test(b)",
         "if (c) /`/.test(d)",
     ),
+    // read as a regex, which hides the `(`: the pass ends unbalanced
+    ("division-after-increment", "let n = i++ / 2 + (\n  1)", ""),
     // and then the line walk's reading, which takes a template's line for code
     (
         "fallback-template",
@@ -332,8 +334,9 @@ fn a_file_start_reads_as_a_whole_parse_does() {
     let mut wrong = Vec::new();
     for (file, (start, prefix)) in FILES.into_iter().flat_map(|f| STARTS.map(|s| (f, s))) {
         for (statement, text) in STATEMENTS {
-            // and read again by the fallback, which a misread regex forces
-            for unbalance in ["", "if (ok) /[(]/.test(s)\n"] {
+            // and read again by the fallback, which a misread regex forces;
+            // a column-0 line after the statement must not drop it
+            for unbalance in ["", "let n = i++ / 2 + (\n  1)\n"] {
                 let source = format!("{prefix}{text}\n{unbalance}{}", filler(450));
                 assert!(source.len() > PARSE_WHOLE);
                 let (walk, truth) = walk_and_truth(file, &source);
@@ -358,6 +361,7 @@ fn xorshift(seed: &mut u64) -> u64 {
 const OPEN: &[&str] = &[
     // an unbalanced pass falls back to trusting column-0 lines
     "regex-after-paren",
+    "division-after-increment",
     "fallback-template",
     // a balanced misread: a template between two regexes taken for division
     "regex-after-condition",

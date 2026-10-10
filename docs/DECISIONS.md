@@ -4218,3 +4218,12 @@ scan itself is ~2.5 ms over the 800 KB bundle; the line walk kept more lines to 
 
 **The rule:** the walk is the scanner's. A misread is a row in the parity table and a
 change to one match arm in `imports/walk.rs`; no line heuristic is added beside it.
+
+*Followed up* (2026-10-10). **The fallback ends a declaration a column-0 line
+follows.** The fallback reset its state at every column-0 statement line, in step or
+not, so a `const a = require(…)` still open, waiting for the next token to end it, was
+dropped: of a run of `require` lines only the last bound. It now resets only when the
+pass is out of step (in a string, template, comment or bracket); in step, the line's
+word ends the declaration as the strict pass does. Parity row: the file-start table's
+fallback reading now follows each statement with a column-0 `let`
+(`division-after-increment`, which also forces the fallback).

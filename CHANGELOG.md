@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- `--anchor` in a large JS/TS file whose one-pass read ended out of balance
+  (and so fell back to trusting column-0 statement lines) follows each of a
+  run of top-level `require` declarations, not only the last.
+
 ## 0.60.9 — 2026-10-10
 
 ### Fixed

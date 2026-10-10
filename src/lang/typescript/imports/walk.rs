@@ -210,7 +210,9 @@ impl<'a> Scan<'a> {
             i = src.iter().position(|&b| b == b'\n').unwrap_or(src.len());
         }
         while i < src.len() {
-            if self.resync && (i == 0 || src[i - 1] == b'\n') && self.opens_line(i) {
+            // only out of step: in step, the word ends a declaration still open
+            let in_step = self.lex == Lex::Code && self.top_level();
+            if self.resync && !in_step && (i == 0 || src[i - 1] == b'\n') && self.opens_line(i) {
                 self.lex = Lex::Code;
                 self.stack.clear();
                 self.open = None;
