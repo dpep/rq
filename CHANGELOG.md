@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.11 — 2026-10-10
 
 ### Changed
 - `rq --drop` refuses with exit 75 (`busy`) while another rq — an
