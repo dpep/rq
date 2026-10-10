@@ -4172,7 +4172,10 @@ specifier (or the `)` of `= require(…)`), `export { … }` to its `}` or on to
 `export * …` and `export type { … }` likewise, `export default name` alone, and a
 `const`/`let`/`var` or `module.exports =` declaration whose own value calls `require(`,
 to its `;` or the newline that ends it. Everything else is blanked to its newlines, so
-rows hold. There is no header and no cut. Each statement is still bounded by 16 KB, and
+rows hold. There is no header and no cut. Each statement is still bounded by 16 KB,
+and all of them together by 64 KB, filled in order: the most any of the 1,151 sources
+over 16 KB in the JS/TS corpora keeps is 15.8 KB (excalidraw's `fonts/Xiaolai/index.ts`),
+while 200k one-word `import` lines once handed tree-sitter 1.6 MB. And
 a pass that ends out of balance (a regex read as division) reads the source again
 trusting every column-0 line that opens a statement, which is how the line walk read
 everything. That fallback is the scanner's one known misread: in such a file, a

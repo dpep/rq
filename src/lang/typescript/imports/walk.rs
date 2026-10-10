@@ -11,6 +11,11 @@ use std::ops::Range;
 /// minified bundle's one line is never parsed whole.
 pub(super) const PARSE_WHOLE: usize = 16 * 1024;
 
+/// What a large source's statements may hand the parser in all, in order:
+/// 4× the most a real module in the recall corpora keeps (under 16 KB), so
+/// none meets it, while 200k one-word `import` lines don't parse 1.6 MB.
+pub(super) const MAX_KEPT: usize = 4 * PARSE_WHOLE;
+
 /// The module statements of a large `source`, everything else blanked to its
 /// newlines so a statement keeps its line. A small source is returned whole.
 ///
@@ -30,6 +35,7 @@ pub(super) fn module_statements<'a>(file: &str, source: &'a str) -> Cow<'a, str>
     let spans = scan(false).or_else(|| scan(true)).unwrap_or_default();
     let mut out = String::new();
     let mut at = 0;
+    let mut budget = MAX_KEPT;
     let newlines = |text: &str| "\n".repeat(text.bytes().filter(|&b| b == b'\n').count());
     for span in spans {
         let span = span.start + bom..span.end + bom;
@@ -37,6 +43,11 @@ pub(super) fn module_statements<'a>(file: &str, source: &'a str) -> Cow<'a, str>
         else {
             continue;
         };
+        // with the `;` below; the statements past the budget are blanked
+        let Some(left) = budget.checked_sub(statement.len() + 1) else {
+            break;
+        };
+        budget = left;
         out.push_str(&newlines(gap));
         out.push_str(statement);
         if !statement.ends_with(';') {
@@ -751,6 +762,20 @@ mod tests {
                 })
                 .collect();
         assert_eq!(names, ["dep"], "a require past the header still binds");
+    }
+
+    #[test]
+    fn what_a_large_source_hands_the_parser_is_bounded_in_all() {
+        // each statement is small; their sum is what's bounded
+        let source = format!(
+            "import {{ First }} from './first'\n{}",
+            "import\n".repeat(200_000)
+        );
+        let kept = module_statements("many.ts", &source);
+        assert_eq!(kept.lines().count(), source.lines().count(), "lines kept");
+        let text = kept.bytes().filter(|&b| b != b'\n').count();
+        assert!(text <= MAX_KEPT, "{text}");
+        assert!(kept.starts_with("import { First }"), "the first is kept");
     }
 
     #[test]
