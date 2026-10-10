@@ -3636,50 +3636,110 @@ fn a_batch_answers_each_line_before_stdin_closes() {
     assert_eq!(json(&first)["name"], "Widget", "{first}");
 }
 
+/// A batch (`rq -J -l 1`) with stdin held open: send a line, and each answer
+/// arrives on the receiver as it's printed.
+struct HeldBatch {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    rows: std::sync::mpsc::Receiver<String>,
+}
+
+impl HeldBatch {
+    fn start(db: &Path, dir: &Path) -> Self {
+        use std::io::BufRead;
+        let mut child = rq_cmd(db, dir)
+            .args(["-J", "-l", "1"])
+            .envs(NO_CHILD)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("run rq");
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().expect("stdout piped");
+        let (tx, rows) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        HeldBatch { child, stdin, rows }
+    }
+
+    /// The answer to `query`, while stdin is still open.
+    fn ask(&mut self, query: &str) -> serde_json::Value {
+        use std::io::Write;
+        let stdin = self.stdin.as_mut().expect("stdin open");
+        writeln!(stdin, "{query}").expect("write a query");
+        let row = self
+            .rows
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("an answer while stdin is open");
+        json(&row)
+    }
+}
+
+impl Drop for HeldBatch {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        let _ = self.child.wait();
+    }
+}
+
 #[test]
 fn a_held_open_batch_sees_an_edit_made_between_its_lines() {
     // an agent asks, edits, and asks again on the same pipe: the second
     // answer reads the edit, as a fresh `rq` would
-    use std::io::{BufRead, Write};
     let (dir, db) = scratch("batch-live");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
     git_init_commit(&dir);
     rq(&db, &dir, &["--index"]);
 
-    let mut child = rq_cmd(&db, &dir)
-        .args(["-J", "-l", "1"])
-        .envs(NO_CHILD)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("run rq");
-    let mut stdin = child.stdin.take().expect("stdin piped");
-    let stdout = child.stdout.take().expect("stdout piped");
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let ask = |stdin: &mut std::process::ChildStdin, query: &str| {
-        writeln!(stdin, "{query}").expect("write a query");
-        rx.recv_timeout(std::time::Duration::from_secs(10))
-    };
-    let first = ask(&mut stdin, "widget").expect("an answer while stdin is open");
-    assert_eq!(json(&first)["name"], "Widget", "{first}");
+    let mut batch = HeldBatch::start(&db, &dir);
+    let first = batch.ask("widget");
+    assert_eq!(first["name"], "Widget", "{first}");
 
     fs::write(dir.join("a.rb"), "class Widget\nend\nclass Gizmo\nend\n").unwrap();
     // the pause an agent's edit takes, which is what tells rq to look again
     std::thread::sleep(std::time::Duration::from_secs(1));
-    let second = ask(&mut stdin, "gizmo");
-    drop(stdin);
-    let _ = child.wait();
-    let second = second.expect("an answer while stdin is open");
-    assert_eq!(json(&second)["name"], "Gizmo", "{second}");
+    let second = batch.ask("gizmo");
+    assert_eq!(second["name"], "Gizmo", "{second}");
+}
+
+#[test]
+fn a_held_open_batch_that_warmed_sees_an_edit_after_a_short_idle() {
+    // the idle that asks again is paced by the worktree check, not by the
+    // warm before it, which on a cold repo outlasts the idle
+    let (dir, db) = scratch("batch-warmed");
+    let body = "  def run; end\n".repeat(20);
+    for i in 0..3_000 {
+        fs::write(
+            dir.join(format!("w{i:04}.rb")),
+            format!("class Widget{i}\n{body}end\n"),
+        )
+        .unwrap();
+    }
+    git_init_commit(&dir);
+
+    let mut batch = HeldBatch::start(&db, &dir);
+    let asked = std::time::Instant::now();
+    let first = batch.ask("widget0");
+    let warm = asked.elapsed();
+    assert_eq!(first["name"], "Widget0", "{first}");
+
+    fs::write(
+        dir.join("w0000.rb"),
+        "class Widget0\nend\nclass Gizmo\nend\n",
+    )
+    .unwrap();
+    let idle = std::time::Duration::from_millis(150);
+    assert!(warm > 2 * idle, "the warm outlasts the idle: {warm:?}");
+    std::thread::sleep(idle);
+    let second = batch.ask("gizmo");
+    assert_eq!(second["name"], "Gizmo", "{second}");
 }
 
 /// A half-built index nobody is filling: no warm child finishes it between
