@@ -1,6 +1,6 @@
 [package]
 name = "reference-query"
-version = "0.60.9"
+version = "0.60.10"
 edition = "2024"
 # the newest std API in use (`isolate_lowest_one`); clippy flags anything newer
 rust-version = "1.97"

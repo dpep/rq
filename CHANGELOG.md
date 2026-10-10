@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.10 — 2026-10-10
 
 ### Fixed
 - `--anchor` in a large JS/TS file whose one-pass read ended out of balance
