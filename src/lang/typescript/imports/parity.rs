@@ -70,7 +70,7 @@ const STATEMENTS: [(&str, &str); 14] = [
 
 /// Text before (and, for a pair, after) a statement that a line reading can
 /// mistake for code or for text.
-const HAZARDS: [(&str, &str, &str); 29] = [
+const HAZARDS: [(&str, &str, &str); 30] = [
     ("none", "", ""),
     ("string-backtick", "const FENCE = '```'", ""),
     ("comment-backtick", "const q = 1 // don't use ` here", ""),
@@ -164,6 +164,11 @@ const HAZARDS: [(&str, &str, &str); 29] = [
     ),
     // but a member's `)` is a value's: the statement is in the template
     ("division-after-member", "const r = q.if(a) / 2, t = `", "`"),
+    (
+        "division-after-private-member",
+        "const r = this.#if(a) / 2, t = `",
+        "`",
+    ),
     // read as a regex, which hides the `(`: the pass ends unbalanced
     ("division-after-increment", "let n = i++ / 2 + (\n  1)", ""),
     // and then the line walk's reading, which takes a template's line for code

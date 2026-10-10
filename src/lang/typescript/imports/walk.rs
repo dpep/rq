@@ -632,7 +632,8 @@ impl<'a> Scan<'a> {
     fn word(&mut self, i: usize) -> usize {
         let word = self.word_at(i);
         let end = i + word.len();
-        let member = self.prev == Prev::Punct(b'.');
+        // `this.#if(…)`: a private name is a member too
+        let member = matches!(self.prev, Prev::Punct(b'.' | b'#'));
         if self.top_level() && !member {
             self.opens(word, i, end);
         }
