@@ -104,10 +104,7 @@ impl LanguagePlugin for TypeScript {
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
-        // The two grammars disagree on `<T>`: TSX reads it as a JSX tag, TS as a
-        // type parameter. Give each file the one it means.
-        let grammar = if is_tsx(file) { tsx() } else { ts() };
-        run(TYPESCRIPT, grammar, file, source)
+        run(TYPESCRIPT, grammar(file), file, source)
     }
 }
 
@@ -144,9 +141,7 @@ impl LanguagePlugin for JavaScript {
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
-        // TSX is the JSX-aware superset — it parses plain JS, and `.js` holding
-        // JSX is routine in React projects.
-        run(JAVASCRIPT, tsx(), file, source)
+        run(JAVASCRIPT, grammar(file), file, source)
     }
 }
 
@@ -310,11 +305,21 @@ impl<'a> Scope<'a> {
     }
 }
 
-/// Whether `file` is a `.tsx` — the JSX-bearing dialect of TypeScript.
-fn is_tsx(file: &str) -> bool {
-    std::path::Path::new(file)
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("tsx"))
+/// The grammar `file` parses with. The two disagree on `<T>`: TSX reads it as
+/// a JSX tag, TS as a type parameter. TypeScript proper (`.ts`, `.mts`,
+/// `.cts`) gets TS; `.tsx` and JavaScript get TSX, which reads plain JS too,
+/// and `.js` holding JSX is routine in React projects.
+fn grammar(file: &str) -> Grammar {
+    if typescript_proper(file) { ts() } else { tsx() }
+}
+
+/// `file` is TypeScript without JSX, so a `<` is never a tag.
+fn typescript_proper(file: &str) -> bool {
+    std::path::Path::new(file).extension().is_some_and(|e| {
+        ["ts", "mts", "cts"]
+            .iter()
+            .any(|x| e.eq_ignore_ascii_case(x))
+    })
 }
 
 /// Recursively collect definitions.
@@ -967,6 +972,22 @@ mod tests {
 
     fn extract(source: &str) -> Vec<Symbol> {
         TypeScript.extract("test.ts", source)
+    }
+
+    #[test]
+    fn typescript_proper_parses_as_ts_and_the_rest_as_tsx() {
+        for (file, key) in [
+            ("a.ts", "ts"),
+            ("a.d.ts", "ts"),
+            ("a.MTS", "ts"),
+            ("a.cts", "ts"),
+            ("a.tsx", "tsx"),
+            ("a.js", "tsx"),
+            ("a.mjs", "tsx"),
+            ("a.jsx", "tsx"),
+        ] {
+            assert_eq!(grammar(file).0, key, "{file}");
+        }
     }
 
     #[test]

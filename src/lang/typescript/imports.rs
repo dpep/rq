@@ -304,15 +304,9 @@ fn spells(line: &str, ns: &str, name: &str) -> bool {
     })
 }
 
-/// Whether `file` reads as JSX: the plugin's own choice, as TSX reads JS too,
-/// but TS's `<T>` is a type argument.
-fn jsx(file: &str) -> bool {
-    !(file.ends_with(".ts") || file.ends_with(".mts") || file.ends_with(".cts"))
-}
-
 /// The module bindings of `file`'s top-level statements.
 fn bindings(file: &str, source: &str) -> Vec<Binding> {
-    let (key, grammar) = if jsx(file) { super::tsx() } else { super::ts() };
+    let (key, grammar) = super::grammar(file);
     let Some(tree) = crate::lang::parse(key, &grammar, source) else {
         return Vec::new();
     };

@@ -23,7 +23,7 @@ pub(super) fn module_statements<'a>(file: &str, source: &'a str) -> Cow<'a, str>
     if source.len() <= PARSE_WHOLE {
         return source.into();
     }
-    let jsx = super::jsx(file);
+    let jsx = !crate::lang::typescript::typescript_proper(file);
     let scan = |resync| Scan::new(source.as_bytes(), jsx, resync).run();
     let spans = scan(false).or_else(|| scan(true)).unwrap_or_default();
     let mut out = String::new();
