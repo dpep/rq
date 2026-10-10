@@ -164,7 +164,7 @@ parse of the same source, a truth it didn't produce
 ([`imports/parity.rs`](../src/lang/typescript/imports/parity.rs)):
 
 - a table of statements × hazards (strings, comments, regexes, templates, JSX
-  text) × positions against the header cut, with every row read wrong listed by
+  text) × positions around the first 16 KB, with every row read wrong listed by
   name, so a fix changes the list;
 - random large sources built from the same pieces (`RQ_FUZZ_SOURCES`,
   `RQ_FUZZ_SEED`), leaving out the pieces still read wrong;

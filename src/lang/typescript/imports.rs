@@ -97,7 +97,7 @@ pub(super) fn resolve(root: &Path, file: &str, line: usize, name: &str) -> Vec<I
             let row = line.saturating_sub(1);
             (row, source.lines().nth(row).unwrap_or(""))
         });
-        let bindings = bindings(&from, &module_statements(&source));
+        let bindings = bindings(&from, &module_statements(&from, &source));
         for (spec, next) in edges(&bindings, &want, used) {
             for found in r.locate(&from, &spec) {
                 if seen.len() < MAX_FILES
@@ -271,19 +271,19 @@ fn spells(line: &str, ns: &str, name: &str) -> bool {
     })
 }
 
+/// Whether `file` reads as JSX: the plugin's own choice, as TSX reads JS too,
+/// but TS's `<T>` is a type argument.
+fn jsx(file: &str) -> bool {
+    !(file.ends_with(".ts") || file.ends_with(".mts") || file.ends_with(".cts"))
+}
+
 /// The module bindings of `file`'s top-level statements.
 fn bindings(file: &str, source: &str) -> Vec<Binding> {
     thread_local! {
         static PARSERS: std::cell::RefCell<HashMap<&'static str, Parser>> =
             std::cell::RefCell::new(HashMap::new());
     }
-    // the plugin's own choice: TSX reads JS too, but TS's `<T>` is a type argument
-    let (key, grammar) =
-        if file.ends_with(".ts") || file.ends_with(".mts") || file.ends_with(".cts") {
-            super::ts()
-        } else {
-            super::tsx()
-        };
+    let (key, grammar) = if jsx(file) { super::tsx() } else { super::ts() };
     let tree = PARSERS.with(|cell| {
         let mut parsers = cell.borrow_mut();
         let parser = match parsers.entry(key) {

@@ -4153,3 +4153,49 @@ before its fix:
 24 KB file ties at 0.50, where a whole parse resolved it. The per-statement bound is the
 same one that keeps a minified bundle's single line from being parsed whole; lifting it
 for imports would let a bundle that starts `import{…}` through.
+
+*Followed up* (2026-10-09, sustainability pass 5). **The walk is one lexical scanner.**
+Four of the five walk fixes above, and every limit they left open, were one question
+misanswered: is this text top-level code? Seven pieces each answered part of it (the
+header cut, a 26-prefix code list, column-0 openers, statement ends by substring,
+`from` as a keyword, backtick parity, the balance check), and each fix taught one piece
+what another knew. A pass-5 review found two more silent losses of the same kind: a
+`// legacy;` or `// moved from 'old'` comment inside a late multi-line import ended it
+early, and the whole import was dropped.
+
+One linear pass now tracks strings, templates (a stack for `${…}`), `//` and `/* */`
+comments, regexes (a `/` where an expression starts: after punctuation, `return`,
+`typeof` and the like, not after a name, literal, `)` or `]`), JSX text and tags (where
+an expression starts, in any file but a `.ts`, `.mts` or `.cts`; never TSX's `<T,>`)
+and bracket depth. It keeps each top-level module statement exactly: `import …` to its
+specifier (or the `)` of `= require(…)`), `export { … }` to its `}` or on to `from '…'`,
+`export * …` and `export type { … }` likewise, `export default name` alone, and a
+`const`/`let`/`var` or `module.exports =` declaration whose own value calls `require(`,
+to its `;` or the newline that ends it. Everything else is blanked to its newlines, so
+rows hold. There is no header and no cut. Each statement is still bounded by 16 KB, and
+a pass that ends out of balance (a regex read as division) reads the source again
+trusting every column-0 line that opens a statement, which is how the line walk read
+everything. That fallback is the scanner's one known misread: in such a file, a
+template's or comment's column-0 import counts.
+
+Measured against a whole tree-sitter parse of the same source, the truth the walk
+didn't produce (`src/lang/typescript/imports/parity.rs`, `make imports-scan`,
+[RECALL.md](RECALL.md#the-large-source-import-walk)):
+- the table of 14 statements × 26 hazards × 3 positions: 128 statement/hazard pairs
+  read wrong by the line walk, 14 by the scanner, all the fallback's row;
+- random large sources from the same pieces: equal to the whole parse, the two
+  fallback-forcing pieces aside;
+- 1,025 sources over 16 KB in next.js, react, jest, zod and excalidraw (17,746
+  bindings whole): the line walk missed 53 and added 35, the scanner misses 0 and adds
+  3 (Flow files the whole parse drops statements of). Against 0.60.8: 0 real bindings
+  lost, 53 gained, 32 false dropped, 0 false added.
+
+Recall against 0.60.8, one run: unanchored 5,159 #1 and 6,147 top 10 both, 0 of 6,821
+changed, regress 54 of 57 both; anchored 0 up, 0 down, calls/imports/packages
+349/900/221 both. `setup: imports` under `--anchor` in next.js, p50 of 15
+interleaved runs at load ~20: the compiled `fetch.js` (800 KB) 5.2 → 2.7 ms,
+`base-server.ts` (120 KB) 1.6 → 1.3 ms, `next-server.ts` (70 KB) 1.1 → 0.9 ms. The
+scan itself is ~2.5 ms over the 800 KB bundle; the line walk kept more lines to parse.
+
+**The rule:** the walk is the scanner's. A misread is a row in the parity table and a
+change to one match arm in `imports/walk.rs`; no line heuristic is added beside it.

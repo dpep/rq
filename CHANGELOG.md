@@ -20,6 +20,12 @@ and aren't listed; see `git log` for those.
 - `--anchor` blending an untracked directory's live scan with indexed results
   decides `reachable` from every candidate both considered, as an indexed
   search alone does, not from the hits that survived to the merge.
+- `--anchor` reads a JS/TS file over 16 KB for its imports by one lexical pass,
+  not line heuristics: it now follows a late `export default X`, a multi-line
+  `require` destructuring, an import list holding a comment with `;` or
+  `from '…'`, and an import between two backticks in regexes or JSX text; and
+  it no longer takes an import inside a block comment, a nested template or a
+  continued string for a real one (DECISIONS D63).
 
 ### Changed
 - `--anchor`'s help says what it weighs without spelling out each

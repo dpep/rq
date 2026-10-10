@@ -1,206 +1,681 @@
-//! What of a large JS/TS source can bind a module (D63).
+//! What of a large JS/TS source can bind a module: its top-level `import`,
+//! `export … from`, `export { … }`, `export default name`, `require`
+//! declaration and `module.exports = require(…)` statements, found by one
+//! lexical pass (D63).
 
-/// Larger sources parse only their module header and later module statements
-/// (see [`module_statements`]): a whole 200 KB module costs tens of
-/// milliseconds per query.
+use std::borrow::Cow;
+use std::ops::Range;
+
+/// Larger sources parse only their module statements: a whole 200 KB module
+/// costs tens of milliseconds per query. It also bounds each statement, so a
+/// minified bundle's one line is never parsed whole.
 pub(super) const PARSE_WHOLE: usize = 16 * 1024;
 
-/// What of a large `source` can bind a module: a header of at most
-/// [`PARSE_WHOLE`] bytes, up to the first line of code at column 0 (a function,
-/// class, type or exported declaration; a `const` may be a `require` and
-/// doesn't end it), and on to the end of a statement the cap cut in two, then
-/// any later line that starts a top-level `import`, `export … from`,
-/// `module.exports = require(…)` or one-line `require` declaration. Each
-/// statement is no bigger than the header. Bundles have no cut, or a cut a
-/// megabyte in; the cap keeps them from being parsed whole. A small source is
-/// parsed whole. Skipped lines are left blank, so a statement keeps its line.
-pub(super) fn module_statements(source: &str) -> std::borrow::Cow<'_, str> {
+/// The module statements of a large `source`, everything else blanked to its
+/// newlines so a statement keeps its line. A small source is returned whole.
+///
+/// One lexical pass finds the statements at the top level, past strings,
+/// comments, templates, regexes and, outside TypeScript's own `.ts`, JSX
+/// text. A pass that ends out of balance misread something (a regex read as
+/// division); the source is then read again trusting each line that starts a
+/// module statement at column 0, as the line walk before it did.
+pub(super) fn module_statements<'a>(file: &str, source: &'a str) -> Cow<'a, str> {
     if source.len() <= PARSE_WHOLE {
         return source.into();
     }
-    let mut lines: Vec<&str> = source.lines().collect();
-    let mut bytes = 0;
-    let cut = lines
-        .iter()
-        .position(|l| {
-            bytes += l.len() + 1;
-            bytes > PARSE_WHOLE || is_code(l)
-        })
-        .unwrap_or(lines.len());
-    let ends = Ends::new(&lines);
-    let mut i = cut;
-    let capped = (0..cut)
-        .rev()
-        .find(|&j| opens_statement(lines[j]))
-        .filter(|_| bytes > PARSE_WHOLE);
-    if let Some(start) = capped {
-        match ends.of(start) {
-            Some(end) if end >= cut => i = end + 1,
-            Some(_) => {}
-            // a fragment would parse as garbage swallowing what follows it
-            None => lines[start..cut].fill(""),
+    let jsx = super::jsx(file);
+    let scan = |resync| Scan::new(source.as_bytes(), jsx, resync).run();
+    let spans = scan(false).or_else(|| scan(true)).unwrap_or_default();
+    let mut out = String::new();
+    let mut at = 0;
+    let newlines = |text: &str| "\n".repeat(text.bytes().filter(|&b| b == b'\n').count());
+    for span in spans {
+        let (Some(gap), Some(statement)) = (source.get(at..span.start), source.get(span.clone()))
+        else {
+            continue;
+        };
+        out.push_str(&newlines(gap));
+        out.push_str(statement);
+        if !statement.ends_with(';') {
+            out.push(';');
         }
+        at = span.end;
     }
-    // inside a template literal, an `import` at column 0 is text
-    let quoted = in_template(&lines);
-    while i < lines.len() {
-        // the statement runs to its specifier, or to the end of a local list
-        match ends
-            .of(i)
-            .filter(|_| !quoted[i] && opens_statement(lines[i]))
-        {
-            Some(end) => i = end + 1,
-            None => {
-                lines[i] = "";
-                i += 1;
-            }
-        }
-    }
-    lines.join("\n").into()
+    out.push_str(&newlines(source.get(at..).unwrap_or_default()));
+    out.into()
 }
 
-/// Which lines start inside a template literal, by backtick parity counted
-/// from the top. A count that ends unbalanced misread a backtick (a regex, JSX
-/// text) somewhere, so it marks no line rather than every line after that one.
-fn in_template(lines: &[&str]) -> Vec<bool> {
-    let mut quoted = false;
-    let mut starts: Vec<bool> = lines
-        .iter()
-        .map(|line| {
-            let start = quoted;
-            quoted = template_after(line, quoted);
-            start
-        })
-        .collect();
-    if quoted {
-        starts.fill(false);
-    }
-    starts
+/// Where a byte sits, lexically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lex {
+    Code,
+    Quote(u8),
+    Template,
+    LineComment,
+    BlockComment,
+    Regex {
+        class: bool,
+    },
+    /// Inside a JSX tag's `<…>`.
+    JsxTag,
+    /// Between an element's tags.
+    JsxText,
 }
 
-/// Whether a template literal is open after `line`, given whether one was
-/// before it. Outside one, a string's and a comment's backticks are text.
-fn template_after(line: &str, mut quoted: bool) -> bool {
-    if !quoted && ["/*", "*"].iter().any(|c| line.trim_start().starts_with(c)) {
-        return false;
+/// A bracket open in code, and what its close returns to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bracket {
+    Paren,
+    Square,
+    Brace,
+    /// A template's `${`: its `}` returns to the template.
+    Subst,
+    /// A JSX element, from its `<` to its closing tag.
+    Element,
+    /// A `{` in JSX text, returning to the text.
+    JsxChild,
+    /// A `{` in a JSX tag, returning to the tag.
+    JsxAttr,
+}
+
+/// The token before the current one: whether a `/` starts a regex, and
+/// whether a newline ends a statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prev {
+    Start,
+    Punct(u8),
+    /// A word; `operator` if an expression follows it (`return`, `typeof`).
+    Word {
+        operator: bool,
+    },
+    /// A literal, or a closed `)` or `]`.
+    Value,
+}
+
+impl Prev {
+    fn regex_follows(self) -> bool {
+        match self {
+            Prev::Start | Prev::Punct(_) => true,
+            Prev::Word { operator } => operator,
+            Prev::Value => false,
+        }
     }
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                chars.next();
+
+    fn ends_expression(self) -> bool {
+        matches!(
+            self,
+            Prev::Value | Prev::Word { operator: false } | Prev::Punct(b'}')
+        )
+    }
+}
+
+/// What a statement is, which decides where it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// `import …`: at its specifier, or the `)` closing `= require(…)`.
+    Import,
+    /// `export { … }`: at its `}`, unless a `from` follows.
+    ExportList,
+    /// `export … from '…'`, `export * …`: at its specifier.
+    ExportFrom,
+    /// `const`/`let`/`var`, `module.exports =`: where a newline ends it; kept
+    /// only if its value calls `require(` at the top level.
+    Declaration { require: bool },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Statement {
+    start: usize,
+    kind: Kind,
+}
+
+/// One pass over a source, collecting its top-level module statements.
+struct Scan<'a> {
+    src: &'a [u8],
+    /// A `<` where an expression starts opens a JSX element.
+    jsx: bool,
+    lex: Lex,
+    stack: Vec<Bracket>,
+    prev: Prev,
+    /// Where the previous token ended.
+    prev_end: usize,
+    /// A newline since the previous token.
+    newline: bool,
+    /// Each line a statement's opening word starts at column 0 is code.
+    resync: bool,
+    /// A close with nothing, or the wrong thing, open.
+    unbalanced: bool,
+    open: Option<Statement>,
+    spans: Vec<Range<usize>>,
+}
+
+const OPERATORS: [&str; 14] = [
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "throw",
+    "case",
+    "do",
+    "else",
+    "yield",
+    "await",
+];
+
+fn ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80
+}
+
+impl<'a> Scan<'a> {
+    fn new(src: &'a [u8], jsx: bool, resync: bool) -> Self {
+        Scan {
+            src,
+            jsx,
+            lex: Lex::Code,
+            stack: Vec::new(),
+            prev: Prev::Start,
+            prev_end: 0,
+            newline: false,
+            resync,
+            unbalanced: false,
+            open: None,
+            spans: Vec::new(),
+        }
+    }
+
+    /// The statements' spans, or `None` if the pass ended out of balance.
+    fn run(mut self) -> Option<Vec<Range<usize>>> {
+        let src = self.src;
+        let mut i = 0;
+        if src.starts_with(b"#!") {
+            i = src.iter().position(|&b| b == b'\n').unwrap_or(src.len());
+        }
+        while i < src.len() {
+            if self.resync && (i == 0 || src[i - 1] == b'\n') && self.opens_line(i) {
+                self.lex = Lex::Code;
+                self.stack.clear();
+                self.open = None;
+                self.prev = Prev::Start;
             }
-            '`' => quoted = !quoted,
-            _ if quoted => {}
-            '\'' | '"' => {
-                while let Some(d) = chars.next() {
-                    match d {
-                        '\\' => {
-                            chars.next();
-                        }
-                        _ if d == c => break,
-                        _ => {}
+            let b = src[i];
+            i = match self.lex {
+                Lex::Code => self.code(i),
+                Lex::Quote(q) => match b {
+                    b'\\' => i + 2,
+                    // a string can't span lines: a misread one ends here
+                    b'\n' => {
+                        self.lex = Lex::Code;
+                        i
+                    }
+                    _ if b == q => self.close_literal(i, true),
+                    _ => i + 1,
+                },
+                Lex::Template => match b {
+                    b'\\' => i + 2,
+                    b'`' => self.close_literal(i, false),
+                    b'$' if src.get(i + 1) == Some(&b'{') => {
+                        self.stack.push(Bracket::Subst);
+                        self.lex = Lex::Code;
+                        self.prev = Prev::Punct(b'{');
+                        i + 2
+                    }
+                    _ => i + 1,
+                },
+                Lex::LineComment => {
+                    if b == b'\n' {
+                        self.lex = Lex::Code;
+                        self.newline = true;
+                    }
+                    i + 1
+                }
+                Lex::BlockComment => {
+                    if b == b'\n' {
+                        self.newline = true;
+                    }
+                    if src[i..].starts_with(b"*/") {
+                        self.lex = Lex::Code;
+                        i + 2
+                    } else {
+                        i + 1
                     }
                 }
+                Lex::Regex { class } => match b {
+                    b'\\' => i + 2,
+                    b'\n' => {
+                        self.lex = Lex::Code;
+                        i
+                    }
+                    b'[' => {
+                        self.lex = Lex::Regex { class: true };
+                        i + 1
+                    }
+                    b']' => {
+                        self.lex = Lex::Regex { class: false };
+                        i + 1
+                    }
+                    b'/' if !class => self.close_literal(i, false),
+                    _ => i + 1,
+                },
+                Lex::JsxTag => match b {
+                    b'"' | b'\'' => {
+                        // an attribute string: no escapes, and it may span lines
+                        i + 1
+                            + src[i + 1..]
+                                .iter()
+                                .position(|&c| c == b)
+                                .map_or(src.len(), |p| p + 1)
+                    }
+                    b'{' => {
+                        self.stack.push(Bracket::JsxAttr);
+                        self.lex = Lex::Code;
+                        self.token(Prev::Punct(b), i + 1);
+                        i + 1
+                    }
+                    b'/' if src.get(i + 1) == Some(&b'>') => self.close_element(i + 2),
+                    b'>' => {
+                        self.lex = Lex::JsxText;
+                        i + 1
+                    }
+                    _ => i + 1,
+                },
+                Lex::JsxText => match b {
+                    b'{' => {
+                        self.stack.push(Bracket::JsxChild);
+                        self.lex = Lex::Code;
+                        self.token(Prev::Punct(b), i + 1);
+                        i + 1
+                    }
+                    b'<' if src.get(i + 1) == Some(&b'/') => {
+                        let end = src[i..]
+                            .iter()
+                            .position(|&c| c == b'>')
+                            .map_or(src.len(), |p| i + p + 1);
+                        self.close_element(end)
+                    }
+                    b'<' => {
+                        self.stack.push(Bracket::Element);
+                        self.lex = Lex::JsxTag;
+                        i + 1
+                    }
+                    _ => i + 1,
+                },
+            };
+        }
+        if let Some(Statement {
+            kind: Kind::Declaration { .. },
+            ..
+        }) = self.open
+        {
+            self.end(self.prev_end);
+        }
+        let clean = !self.unbalanced
+            && self.stack.is_empty()
+            && matches!(self.lex, Lex::Code | Lex::LineComment);
+        (clean || self.resync).then_some(self.spans)
+    }
+
+    /// A line at `i` that starts a module statement at column 0.
+    fn opens_line(&self, i: usize) -> bool {
+        [
+            &b"import"[..],
+            b"export",
+            b"const",
+            b"let",
+            b"var",
+            b"module",
+        ]
+        .contains(&self.word_at(i))
+    }
+
+    /// A `<` before `i`, where an expression starts, opens an element: `<>`
+    /// or a tag name, but not TSX's `<T,>` or `<T extends U>` type parameters.
+    fn opens_element(&self, i: usize) -> bool {
+        let name = self.word_at(i);
+        if name.is_empty() {
+            return self.src.get(i) == Some(&b'>');
+        }
+        let next = self.skip(i + name.len());
+        !name[0].is_ascii_digit()
+            && self.src.get(next) != Some(&b',')
+            && self.word_at(next) != b"extends"
+    }
+
+    /// An element's close (its `/>` or closing tag) ending at `end`: back to
+    /// its parent's text, or to code.
+    fn close_element(&mut self, end: usize) -> usize {
+        if self.stack.pop() != Some(Bracket::Element) {
+            self.unbalanced = true;
+        }
+        if self.stack.last() == Some(&Bracket::Element) {
+            self.lex = Lex::JsxText;
+        } else {
+            self.lex = Lex::Code;
+            self.token(Prev::Value, end);
+        }
+        end
+    }
+
+    fn top_level(&self) -> bool {
+        self.stack.is_empty()
+    }
+
+    /// A string, template or regex closing at `i`. A string at the top level
+    /// is an import's specifier.
+    fn close_literal(&mut self, i: usize, string: bool) -> usize {
+        self.lex = Lex::Code;
+        self.token(Prev::Value, i + 1);
+        if string
+            && self.top_level()
+            && let Some(Statement {
+                kind: Kind::Import | Kind::ExportFrom,
+                ..
+            }) = self.open
+        {
+            self.end(i + 1);
+        }
+        i + 1
+    }
+
+    /// The token just read: of kind `prev`, ending at `end`.
+    fn token(&mut self, prev: Prev, end: usize) {
+        self.prev = prev;
+        self.prev_end = end;
+        self.newline = false;
+    }
+
+    /// Before a token starting with `b`: a newline after a complete
+    /// expression ends a declaration, unless `b` continues it.
+    fn before(&mut self, b: u8) {
+        if self.newline
+            && self.top_level()
+            && self.prev.ends_expression()
+            && !b".,?:=+-*/%&|^<>([`".contains(&b)
+            && let Some(Statement {
+                kind: Kind::Declaration { .. },
+                ..
+            }) = self.open
+        {
+            self.end(self.prev_end);
+        }
+    }
+
+    /// The open statement ends at `end`; kept if small and binding.
+    fn end(&mut self, end: usize) {
+        let Some(s) = self.open.take() else {
+            return;
+        };
+        if !matches!(s.kind, Kind::Declaration { require: false }) {
+            self.keep(s.start..end);
+        }
+    }
+
+    /// A statement's span, with a `;` that follows it on a later line, as a
+    /// parse reads it, if no bigger than [`PARSE_WHOLE`].
+    fn keep(&mut self, span: Range<usize>) {
+        let semi = self.skip(span.end);
+        let end = if self.src.get(semi) == Some(&b';') {
+            semi + 1
+        } else {
+            span.end
+        };
+        if end > span.start && end - span.start <= PARSE_WHOLE {
+            self.spans.push(span.start..end);
+        }
+    }
+
+    /// One token of code at `i`; returns where the next starts.
+    fn code(&mut self, i: usize) -> usize {
+        let src = self.src;
+        let b = src[i];
+        if b.is_ascii_whitespace() {
+            if b == b'\n' {
+                self.newline = true;
             }
-            '/' if chars.as_str().starts_with('/') => break,
+            return i + 1;
+        }
+        match b {
+            b'/' if src.get(i + 1) == Some(&b'/') => {
+                self.lex = Lex::LineComment;
+                return i + 2;
+            }
+            b'/' if src.get(i + 1) == Some(&b'*') => {
+                self.lex = Lex::BlockComment;
+                return i + 2;
+            }
             _ => {}
         }
-    }
-    quoted
-}
-
-/// A top-level line starting a statement that can bind a module.
-fn opens_statement(line: &str) -> bool {
-    line.starts_with("import ")
-        || (line.starts_with("export ") && !is_code(line))
-        || line.starts_with("module.exports = require(")
-        || (["const ", "let ", "var "]
-            .iter()
-            .any(|k| line.starts_with(k))
-            && line.contains("require("))
-}
-
-/// Where each line's statement ends, found for every line in one pass.
-struct Ends {
-    /// The first line at or after each that holds a specifier, ends with `;`
-    /// or closes a list.
-    next: Vec<Option<usize>>,
-    /// Bytes before each line.
-    offset: Vec<usize>,
-}
-
-impl Ends {
-    fn new(lines: &[&str]) -> Self {
-        let mut next = vec![None; lines.len()];
-        let mut after = None;
-        for (j, l) in lines.iter().enumerate().rev() {
-            // a local list closes at column 0, as a formatter writes it
-            if names_module(l)
-                || l.contains("require(")
-                || l.trim_end().ends_with(';')
-                || l.starts_with('}')
-            {
-                after = Some(j);
+        self.before(b);
+        match b {
+            b'/' if self.prev.regex_follows() => {
+                self.lex = Lex::Regex { class: false };
+                i + 1
             }
-            next[j] = after;
+            b'\'' | b'"' => {
+                self.lex = Lex::Quote(b);
+                i + 1
+            }
+            b'`' => {
+                self.lex = Lex::Template;
+                i + 1
+            }
+            b'<' if self.jsx && self.prev.regex_follows() && self.opens_element(i + 1) => {
+                self.stack.push(Bracket::Element);
+                self.lex = Lex::JsxTag;
+                i + 1
+            }
+            b'(' | b'[' | b'{' => {
+                self.stack.push(match b {
+                    b'(' => Bracket::Paren,
+                    b'[' => Bracket::Square,
+                    _ => Bracket::Brace,
+                });
+                self.token(Prev::Punct(b), i + 1);
+                i + 1
+            }
+            b')' | b']' | b'}' => self.close(i),
+            b';' => {
+                self.token(Prev::Punct(b), i + 1);
+                if self.top_level() {
+                    self.end(i + 1);
+                }
+                i + 1
+            }
+            _ if ident(b) && !b.is_ascii_digit() => self.word(i),
+            _ if b.is_ascii_digit() => {
+                let end = i + src[i..]
+                    .iter()
+                    .position(|&c| !(ident(c) || c == b'.'))
+                    .unwrap_or(src.len() - i);
+                self.token(Prev::Value, end);
+                end
+            }
+            _ => {
+                self.token(Prev::Punct(b), i + 1);
+                i + 1
+            }
         }
-        let offset = std::iter::once(0)
-            .chain(lines.iter().scan(0, |sum, l| {
-                *sum += l.len() + 1;
-                Some(*sum)
-            }))
-            .collect();
-        Ends { next, offset }
     }
 
-    /// The last line of the statement opening at `start`, no bigger than the
-    /// header.
-    fn of(&self, start: usize) -> Option<usize> {
-        self.next[start].filter(|&e| self.offset[e + 1] - self.offset[start] <= PARSE_WHOLE)
+    /// A `)`, `]` or `}` at `i`.
+    fn close(&mut self, i: usize) -> usize {
+        let b = self.src[i];
+        let want = match b {
+            b')' => Bracket::Paren,
+            b']' => Bracket::Square,
+            _ => Bracket::Brace,
+        };
+        match self.stack.pop() {
+            Some(Bracket::Subst) if b == b'}' => {
+                self.lex = Lex::Template;
+                return i + 1;
+            }
+            Some(Bracket::JsxChild) if b == b'}' => {
+                self.lex = Lex::JsxText;
+                return i + 1;
+            }
+            Some(Bracket::JsxAttr) if b == b'}' => {
+                self.lex = Lex::JsxTag;
+                return i + 1;
+            }
+            Some(open) if open == want => {}
+            other => {
+                // put back what this close doesn't match
+                self.stack.extend(other);
+                self.unbalanced = true;
+            }
+        }
+        self.token(
+            if b == b'}' {
+                Prev::Punct(b)
+            } else {
+                Prev::Value
+            },
+            i + 1,
+        );
+        if self.top_level()
+            && let Some(s) = self.open
+        {
+            match (s.kind, b) {
+                (Kind::Import, b')') => self.end(i + 1),
+                (Kind::ExportList, b'}') => {
+                    if self.word_at(self.skip(i + 1)) == b"from" {
+                        self.open = Some(Statement {
+                            kind: Kind::ExportFrom,
+                            ..s
+                        });
+                    } else {
+                        self.end(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i + 1
     }
-}
 
-/// `line` holds a `from '…'` specifier: not a name like `fromThing`.
-fn names_module(line: &str) -> bool {
-    line.match_indices("from")
-        .any(|(i, _)| line[i + 4..].trim_start().starts_with(['\'', '"']))
-}
+    /// The word starting at `i`, if one does.
+    fn word_at(&self, i: usize) -> &'a [u8] {
+        let src = self.src;
+        let rest = src.get(i..).unwrap_or_default();
+        &rest[..rest.iter().position(|&c| !ident(c)).unwrap_or(rest.len())]
+    }
 
-/// A top-level line that starts code rather than a module statement.
-fn is_code(line: &str) -> bool {
-    const CODE: [&str; 26] = [
-        "function ",
-        "function*",
-        "async ",
-        "class ",
-        "abstract ",
-        "interface ",
-        "enum ",
-        "declare ",
-        "namespace ",
-        "if ",
-        "if(",
-        "for ",
-        "while ",
-        "try ",
-        "switch ",
-        "export function",
-        "export async",
-        "export class",
-        "export abstract",
-        "export default",
-        "export const ",
-        "export let ",
-        "export var ",
-        "export enum",
-        "export interface",
-        "export declare",
-    ];
-    CODE.iter().any(|c| line.starts_with(c))
-        || ((line.starts_with("type ") || line.starts_with("export type "))
-            && !line.contains(" from")
-            && !line.contains('{'))
+    /// The next byte at or after `i` that isn't whitespace or a comment.
+    fn skip(&self, mut i: usize) -> usize {
+        let src = self.src;
+        while i < src.len() {
+            if src[i].is_ascii_whitespace() {
+                i += 1;
+            } else if src[i..].starts_with(b"//") {
+                i += src[i..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .unwrap_or(src.len() - i);
+            } else if src[i..].starts_with(b"/*") {
+                i += src[i + 2..]
+                    .windows(2)
+                    .position(|w| w == b"*/")
+                    .map_or(src.len() - i, |p| p + 4);
+            } else {
+                break;
+            }
+        }
+        i
+    }
+
+    /// A word at `i`: maybe a statement opening at the top level.
+    fn word(&mut self, i: usize) -> usize {
+        let word = self.word_at(i);
+        let end = i + word.len();
+        let member = self.prev == Prev::Punct(b'.');
+        if self.top_level() && !member {
+            self.opens(word, i, end);
+        }
+        let operator = OPERATORS.iter().any(|o| o.as_bytes() == word);
+        // a binding's `require(` is the declaration's own value, not one nested in it
+        if word == b"require"
+            && self.top_level()
+            && self.src.get(self.skip(end)) == Some(&b'(')
+            && let Some(Statement {
+                kind: Kind::Declaration { require },
+                ..
+            }) = &mut self.open
+        {
+            *require = true;
+        }
+        self.token(Prev::Word { operator }, end);
+        end
+    }
+
+    /// `word` at `start..end`, at the top level: open the statement it starts.
+    fn opens(&mut self, word: &[u8], start: usize, end: usize) {
+        let next = self.skip(end);
+        let after = self.word_at(next);
+        let kind = match word {
+            b"import" if !matches!(self.src.get(next), Some(b'(' | b'.')) => Kind::Import,
+            b"export" => match self.src.get(next) {
+                Some(b'{') => Kind::ExportList,
+                Some(b'*') => Kind::ExportFrom,
+                _ if after == b"type" => match self.src.get(self.skip(next + 4)) {
+                    Some(b'{') => Kind::ExportList,
+                    Some(b'*') => Kind::ExportFrom,
+                    _ => return,
+                },
+                _ if after == b"default" => {
+                    self.export_default(start, next + after.len());
+                    return;
+                }
+                _ => return,
+            },
+            b"const" | b"var" => Kind::Declaration { require: false },
+            b"let" if self.src.get(end).is_some_and(u8::is_ascii_whitespace) => {
+                Kind::Declaration { require: false }
+            }
+            b"module" if self.src[end..].starts_with(b".exports") => {
+                Kind::Declaration { require: false }
+            }
+            _ => return,
+        };
+        // a statement still open ends where the one after it starts
+        self.end(self.prev_end);
+        self.open = Some(Statement { start, kind });
+    }
+
+    /// `export default name` alone on its line: kept whole.
+    fn export_default(&mut self, start: usize, after: usize) {
+        const DECLARES: [&[u8]; 6] = [
+            b"function",
+            b"class",
+            b"async",
+            b"abstract",
+            b"interface",
+            b"enum",
+        ];
+        let at = self.skip_spaces(after);
+        let name = self.word_at(at);
+        if name.is_empty() || name[0].is_ascii_digit() || DECLARES.contains(&name) {
+            return;
+        }
+        let end = at + name.len();
+        let rest = self.skip_spaces(end);
+        if matches!(self.src.get(rest), None | Some(b'\n' | b'\r' | b';'))
+            || self.src[rest..].starts_with(b"//")
+        {
+            self.end(self.prev_end);
+            self.keep(start..end);
+        }
+    }
+
+    fn skip_spaces(&self, mut i: usize) -> usize {
+        while matches!(self.src.get(i), Some(b' ' | b'\t')) {
+            i += 1;
+        }
+        i
+    }
 }
 
 #[cfg(test)]
@@ -217,7 +692,7 @@ mod tests {
              import {{ After }} from './after'\n"
         );
         assert!(late.len() > PARSE_WHOLE);
-        let kept = module_statements(&late);
+        let kept = module_statements("big.ts", &late);
         assert!(!kept.contains("filler"), "code is skipped");
         let names: Vec<String> = bindings("big.ts", &kept)
             .into_iter()
@@ -229,69 +704,8 @@ mod tests {
         assert_eq!(names, ["Early", "req", "Late", "After"]);
     }
 
-    #[test]
-    fn a_late_statement_runs_to_its_specifier() {
-        let body = "function filler() {\n  return 1;\n}\n".repeat(1_000);
-        // names holding "from" don't end the statement
-        let late = format!(
-            "{body}import {{\n  fromThing,\n  transformFrom,\n  from,\n  Target,\n}} from './fr'\n"
-        );
-        assert!(late.len() > PARSE_WHOLE);
-        let names: Vec<String> = bindings("big.ts", &module_statements(&late))
-            .into_iter()
-            .filter_map(|b| match b {
-                Binding::Named { local, .. } => Some(local),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(names, ["fromThing", "transformFrom", "from", "Target"]);
-
-        // a long type alias isn't kept as a fragment that swallows the next
-        let fields = "  a: number\n".repeat(70);
-        let late = format!(
-            "{body}export type Shape = {{\n{fields}}}\n\nexport {{\n  After,\n}} from './after'\n"
-        );
-        let names: Vec<String> = bindings("big.ts", &module_statements(&late))
-            .into_iter()
-            .filter_map(|b| match b {
-                Binding::Named { local, .. } => Some(local),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(names, ["After"]);
-    }
-
-    #[test]
-    fn the_header_runs_to_the_end_of_a_statement_it_started() {
-        let singles: String = (0..480)
-            .map(|i| format!("import {{ One{i:03} }} from './one'\n"))
-            .collect();
-        let list: String = (0..200).map(|i| format!("  Two{i:03},\n")).collect();
-        let source = format!("{singles}import {{\n{list}}} from './two'\n\nTwo199()\n");
-        assert!(singles.len() < PARSE_WHOLE && singles.len() + list.len() > PARSE_WHOLE);
-        let names: Vec<String> = bindings("big.ts", &module_statements(&source))
-            .into_iter()
-            .filter_map(|b| match b {
-                Binding::Named { local, .. } => Some(local),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(names.len(), 680);
-        assert_eq!(names.last().map(String::as_str), Some("Two199"));
-    }
-
-    #[test]
-    fn a_statement_in_a_template_literal_is_text() {
-        let body = "function filler() {\n  return 1;\n}\n".repeat(1_000);
-        let source = format!(
-            "import {{ Real }} from './real'\n{body}export function gen() {{\n  return `\n\
-             import {{ Fake }} from './fake'\n`\n}}\nimport {{ Late }} from './late'\n"
-        );
-        assert_eq!(named_locals(&source), ["Real", "Late"]);
-    }
-
     fn named_locals(source: &str) -> Vec<String> {
-        bindings("big.ts", &module_statements(source))
+        bindings("big.ts", &module_statements("big.ts", source))
             .into_iter()
             .filter_map(|b| match b {
                 Binding::Named { local, .. } => Some(local),
@@ -301,30 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stray_backtick_never_hides_a_later_import() {
-        let body = "function filler() {\n  return 1;\n}\n".repeat(500);
-        let template = "export function gen() {\n  return `\nimport { Fake } from './fake'\n`\n}\n";
-        // a string's or comment's backtick is skipped; one the count can't
-        // place (a regex, JSX text) leaves it unbalanced, and parity unused
-        let cases: [(&str, &[&str]); 4] = [
-            ("const FENCE = '```'", &["Early", "Late"]),
-            ("const q = 1 // don't use ` here", &["Early", "Late"]),
-            ("const RE = /`/g", &["Early", "Fake", "Late"]),
-            (
-                "export const C = () => <p>press ` to open</p>",
-                &["Early", "Fake", "Late"],
-            ),
-        ];
-        for (stray, want) in cases {
-            let source = format!(
-                "import {{ Early }} from './early'\n{body}{stray}\n{body}{template}import {{ Late }} from './late'\n"
-            );
-            assert_eq!(named_locals(&source), want, "after {stray}");
-        }
-    }
-
-    #[test]
-    fn a_header_cut_inside_a_template_keeps_its_parity() {
+    fn a_template_across_the_first_16_kb_hides_nothing() {
         let schema = "  type Widget { id: ID }\n".repeat(1_000);
         let body = "function filler() {\n  return 1;\n}\n".repeat(100);
         let source = format!(
@@ -343,22 +734,29 @@ mod tests {
         );
         for source in [&minified, &unminified] {
             assert!(source.len() > PARSE_WHOLE);
-            let kept = module_statements(source);
-            assert_eq!(
-                kept.split('\n').count(),
-                source.lines().count(),
-                "lines kept"
-            );
+            let kept = module_statements("bundle.js", source);
+            assert_eq!(kept.lines().count(), source.lines().count(), "lines kept");
             let text: usize = kept.lines().map(str::len).sum();
             assert!(text <= PARSE_WHOLE, "{text}");
         }
-        let names: Vec<String> = bindings("bundle.js", &module_statements(&unminified))
-            .into_iter()
-            .filter_map(|b| match b {
-                Binding::Namespace { local, .. } => Some(local),
-                _ => None,
-            })
-            .collect();
+        let names: Vec<String> =
+            bindings("bundle.js", &module_statements("bundle.js", &unminified))
+                .into_iter()
+                .filter_map(|b| match b {
+                    Binding::Namespace { local, .. } => Some(local),
+                    _ => None,
+                })
+                .collect();
         assert_eq!(names, ["dep"], "a require past the header still binds");
+    }
+
+    #[test]
+    fn a_statement_over_16_kb_is_skipped() {
+        // the bound that keeps a bundle's one line from being parsed whole
+        let names: String = (0..2_000).map(|i| format!("  Name{i:04},\n")).collect();
+        let body = "function filler() {\n  return 1;\n}\n".repeat(500);
+        let source =
+            format!("{body}import {{\n{names}}} from './many'\nimport {{ Late }} from './late'\n");
+        assert_eq!(named_locals(&source), ["Late"]);
     }
 }

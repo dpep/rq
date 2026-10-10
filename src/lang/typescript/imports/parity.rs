@@ -8,7 +8,7 @@ use super::*;
 /// What the walk binds, and what a whole parse binds.
 fn walk_and_truth(source: &str) -> (Vec<Binding>, Vec<Binding>) {
     (
-        bindings("big.tsx", &module_statements(source)),
+        bindings("big.tsx", &module_statements("big.tsx", source)),
         bindings("big.tsx", source),
     )
 }
@@ -55,7 +55,7 @@ const STATEMENTS: [(&str, &str); 14] = [
 
 /// Text before (and, for a pair, after) a statement that a line reading can
 /// mistake for code or for text.
-const HAZARDS: [(&str, &str, &str); 17] = [
+const HAZARDS: [(&str, &str, &str); 26] = [
     ("none", "", ""),
     ("string-backtick", "const FENCE = '```'", ""),
     ("comment-backtick", "const q = 1 // don't use ` here", ""),
@@ -117,16 +117,47 @@ const HAZARDS: [(&str, &str, &str); 17] = [
         "declare module 'ambient' {\n  import { Ambient } from './ambient'\n}",
         "",
     ),
+    ("tsx-generic", "const id = <T,>(x: T) => x", ""),
+    (
+        "jsx-url",
+        "export const U = () => <a href=\"x\">http://{host}</a>",
+        "",
+    ),
+    (
+        "jsx-nested",
+        "export const N = () => (\n  <ul>\n    {items.map((i) => <li key={i}>it's `{i}`</li>)}\n  </ul>\n)",
+        "",
+    ),
+    ("import-alias", "import Foo = Bar.Baz", ""),
+    (
+        "import-attributes",
+        "import data from './data.json' with { type: 'json' }",
+        "",
+    ),
+    (
+        "minified",
+        "import{a as b}from\"./min\";export{c as d};var e=require(\"./e\"),f=1",
+        "",
+    ),
+    ("division-paren", "const ratio = (width) / 2 / (height)", ""),
+    // read as division: the brackets in it unbalance the pass
+    ("regex-after-paren", "if (ok) /[(]/.test(s)", ""),
+    // and then the line walk's reading, which takes a template's line for code
+    (
+        "fallback-template",
+        "if (ok) /[(]/.test(s)",
+        "export function gen() {\n  return `\nimport { Fake } from './fake'\n`\n}",
+    ),
 ];
 
-/// Where a statement sits against the 16 KB header cut.
+/// Where a statement sits against the first 16 KB, where the line walk cut.
 #[derive(Debug, Clone, Copy)]
 enum Position {
-    /// In the header, before any code.
+    /// Before any code.
     Header,
-    /// Started inside the header, ended past its cap.
+    /// Started within the first 16 KB, ended past them.
     Straddle,
-    /// Past the cut, after code.
+    /// Past the first 16 KB, after code.
     Late,
 }
 
@@ -158,142 +189,24 @@ fn source(position: Position, (before, after): (&str, &str), statement: &str) ->
 
 /// Statement/hazard pairs the walk reads differently from a whole parse, with
 /// the positions (Header, Straddle, Late) where it does. Fixing one changes
-/// its entry here; a new misread fails the test. The line walk's causes:
-/// `export default X` is code to it; a multi-line `require` past the cut is
-/// missed; a `;` or `from '…'` in a comment ends a statement; two misread
-/// backticks (a regex, JSX text, `/* ` */`) balance and hide what's between;
-/// an import in a block comment or a `${…}`-nested template is kept; a header
-/// cut inside a template holding `//` leaves it open; and a hazard that is
-/// code ends the header, putting a later statement past the cut.
+/// its entry here; a new misread fails the test. What's left is the fallback:
+/// a pass a misread unbalanced trusts every column-0 statement line, a
+/// template's too.
 const KNOWN_WRONG: &[&str] = &[
-    "export-default/none/HSL",
-    "require-list/none/SL",
-    "list-comment-semi/none/SL",
-    "list-comment-from/none/SL",
-    "export-default/string-backtick/HSL",
-    "require-list/string-backtick/SL",
-    "list-comment-semi/string-backtick/SL",
-    "list-comment-from/string-backtick/SL",
-    "export-default/comment-backtick/HSL",
-    "require-list/comment-backtick/SL",
-    "list-comment-semi/comment-backtick/SL",
-    "list-comment-from/comment-backtick/SL",
-    "export-default/regex-backtick/HSL",
-    "require-list/regex-backtick/SL",
-    "list-comment-semi/regex-backtick/SL",
-    "list-comment-from/regex-backtick/SL",
-    "named/regex-pair/SL",
-    "list/regex-pair/SL",
-    "default/regex-pair/SL",
-    "namespace/regex-pair/SL",
-    "export-from/regex-pair/SL",
-    "export-list/regex-pair/SL",
-    "export-star-as/regex-pair/SL",
-    "export-type/regex-pair/SL",
-    "export-default/regex-pair/HSL",
-    "require-one/regex-pair/SL",
-    "require-list/regex-pair/SL",
-    "module-exports/regex-pair/SL",
-    "list-comment-semi/regex-pair/SL",
-    "list-comment-from/regex-pair/SL",
-    "named/block-comment-pair/SL",
-    "list/block-comment-pair/SL",
-    "default/block-comment-pair/SL",
-    "namespace/block-comment-pair/SL",
-    "export-from/block-comment-pair/SL",
-    "export-list/block-comment-pair/SL",
-    "export-star-as/block-comment-pair/SL",
-    "export-type/block-comment-pair/SL",
-    "export-default/block-comment-pair/HSL",
-    "require-one/block-comment-pair/SL",
-    "require-list/block-comment-pair/SL",
-    "module-exports/block-comment-pair/SL",
-    "list-comment-semi/block-comment-pair/SL",
-    "list-comment-from/block-comment-pair/SL",
-    "export-default/jsx-text/HSL",
-    "require-list/jsx-text/HSL",
-    "list-comment-semi/jsx-text/HSL",
-    "list-comment-from/jsx-text/HSL",
-    "named/jsx-pair/HSL",
-    "list/jsx-pair/HSL",
-    "default/jsx-pair/HSL",
-    "namespace/jsx-pair/HSL",
-    "export-from/jsx-pair/HSL",
-    "export-list/jsx-pair/HSL",
-    "export-star-as/jsx-pair/HSL",
-    "export-type/jsx-pair/HSL",
-    "export-default/jsx-pair/HSL",
-    "require-one/jsx-pair/HSL",
-    "require-list/jsx-pair/HSL",
-    "module-exports/jsx-pair/HSL",
-    "list-comment-semi/jsx-pair/HSL",
-    "list-comment-from/jsx-pair/HSL",
-    "export-default/template-import/HSL",
-    "require-list/template-import/HSL",
-    "list-comment-semi/template-import/HSL",
-    "list-comment-from/template-import/HSL",
-    "named/template-slashes/S",
-    "list/template-slashes/S",
-    "default/template-slashes/S",
-    "namespace/template-slashes/S",
-    "export-from/template-slashes/S",
-    "export-list/template-slashes/S",
-    "export-star-as/template-slashes/S",
-    "export-type/template-slashes/S",
-    "export-default/template-slashes/HSL",
-    "require-one/template-slashes/S",
-    "require-list/template-slashes/SL",
-    "module-exports/template-slashes/S",
-    "list-comment-semi/template-slashes/SL",
-    "list-comment-from/template-slashes/SL",
-    "named/nested-template/SL",
-    "list/nested-template/SL",
-    "default/nested-template/SL",
-    "namespace/nested-template/SL",
-    "export-from/nested-template/SL",
-    "export-list/nested-template/SL",
-    "export-star-as/nested-template/SL",
-    "export-type/nested-template/SL",
-    "export-default/nested-template/HSL",
-    "require-one/nested-template/SL",
-    "require-list/nested-template/SL",
-    "module-exports/nested-template/SL",
-    "list-comment-semi/nested-template/SL",
-    "list-comment-from/nested-template/SL",
-    "named/block-comment-import/SL",
-    "list/block-comment-import/SL",
-    "default/block-comment-import/SL",
-    "namespace/block-comment-import/SL",
-    "export-from/block-comment-import/SL",
-    "export-list/block-comment-import/SL",
-    "export-star-as/block-comment-import/SL",
-    "export-type/block-comment-import/SL",
-    "export-default/block-comment-import/HSL",
-    "require-one/block-comment-import/SL",
-    "require-list/block-comment-import/SL",
-    "module-exports/block-comment-import/SL",
-    "list-comment-semi/block-comment-import/SL",
-    "list-comment-from/block-comment-import/SL",
-    "export-default/continued-string/HSL",
-    "require-list/continued-string/SL",
-    "list-comment-semi/continued-string/SL",
-    "list-comment-from/continued-string/SL",
-    "export-default/type-alias/HSL",
-    "require-list/type-alias/SL",
-    "list-comment-semi/type-alias/SL",
-    "list-comment-from/type-alias/SL",
-    "export-default/division/HSL",
-    "require-list/division/SL",
-    "list-comment-semi/division/SL",
-    "list-comment-from/division/SL",
-    "export-default/jsx-apostrophe/HSL",
-    "require-list/jsx-apostrophe/HSL",
-    "list-comment-semi/jsx-apostrophe/HSL",
-    "list-comment-from/jsx-apostrophe/HSL",
-    "export-default/declare-module/HSL",
-    "require-list/declare-module/HSL",
-    "list-comment-semi/declare-module/HSL",
-    "list-comment-from/declare-module/HSL",
+    "named/fallback-template/HSL",
+    "list/fallback-template/HSL",
+    "default/fallback-template/HSL",
+    "namespace/fallback-template/HSL",
+    "export-from/fallback-template/HSL",
+    "export-list/fallback-template/HSL",
+    "export-star-as/fallback-template/HSL",
+    "export-type/fallback-template/HSL",
+    "export-default/fallback-template/HSL",
+    "require-one/fallback-template/HSL",
+    "require-list/fallback-template/HSL",
+    "module-exports/fallback-template/HSL",
+    "list-comment-semi/fallback-template/HSL",
+    "list-comment-from/fallback-template/HSL",
 ];
 
 #[test]
@@ -329,19 +242,9 @@ fn xorshift(seed: &mut u64) -> u64 {
 /// Statements and hazards the walk misreads somewhere in a random source; the
 /// property test leaves them out until it reads them right.
 const OPEN: &[&str] = &[
-    "export-default",
-    "require-list",
-    "list-comment-semi",
-    "list-comment-from",
-    "regex-backtick",
-    "regex-pair",
-    "block-comment-pair",
-    "jsx-text",
-    "jsx-pair",
-    "template-slashes",
-    "nested-template",
-    "block-comment-import",
-    "continued-string",
+    // an unbalanced pass falls back to trusting column-0 lines
+    "regex-after-paren",
+    "fallback-template",
 ];
 
 /// Random large sources from the statements, hazards and filler above, each
@@ -407,7 +310,7 @@ fn row(b: &Binding) -> String {
     }
 }
 
-/// Every source over the cut under `RQ_IMPORTS_CORPUS` (`:`-separated
+/// Every source over 16 KB under `RQ_IMPORTS_CORPUS` (`:`-separated
 /// checkouts), walked and parsed whole. Prints what the walk misses and adds
 /// against the whole parse; with `RQ_IMPORTS_BASE`, a previous run's
 /// `RQ_IMPORTS_OUT`, also what changed since that run. See docs/RECALL.md.
