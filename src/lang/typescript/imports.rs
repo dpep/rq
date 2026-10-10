@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::core::ImportTarget;
 
@@ -312,24 +312,8 @@ fn jsx(file: &str) -> bool {
 
 /// The module bindings of `file`'s top-level statements.
 fn bindings(file: &str, source: &str) -> Vec<Binding> {
-    thread_local! {
-        static PARSERS: std::cell::RefCell<HashMap<&'static str, Parser>> =
-            std::cell::RefCell::new(HashMap::new());
-    }
     let (key, grammar) = if jsx(file) { super::tsx() } else { super::ts() };
-    let tree = PARSERS.with(|cell| {
-        let mut parsers = cell.borrow_mut();
-        let parser = match parsers.entry(key) {
-            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let mut p = Parser::new();
-                p.set_language(&grammar).ok()?;
-                v.insert(p)
-            }
-        };
-        parser.parse(source, None)
-    });
-    let Some(tree) = tree else {
+    let Some(tree) = crate::lang::parse(key, &grammar, source) else {
         return Vec::new();
     };
     let src = source.as_bytes();

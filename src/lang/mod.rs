@@ -4,7 +4,7 @@
 //! model. The core stays language-agnostic; adding a language is a new plugin,
 //! not a core change.
 
-use tree_sitter::{Language, Node, Parser};
+use tree_sitter::{Language, Node, Parser, Tree};
 
 use crate::core::{ImportTarget, Kind, PrivateScope, Symbol};
 
@@ -77,21 +77,8 @@ impl Ctx<'_> {
         walk: impl FnOnce(&Ctx, Node),
     ) -> bool {
         let src = &self.src[start..end];
-        // A parser of its own: the file's parser stays borrowed for the walk.
-        // Released before walking, so a fragment inside a fragment can parse.
-        let tree = FRAGMENT_PARSERS.with(|cell| {
-            let mut parsers = cell.borrow_mut();
-            let parser = match parsers.entry(self.language) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    let mut p = Parser::new();
-                    p.set_language(grammar).ok()?;
-                    v.insert(p)
-                }
-            };
-            parser.parse(src, None)
-        });
-        let Some(tree) = tree.filter(|t| !t.root_node().has_error()) else {
+        let Some(tree) = parse(self.language, grammar, src).filter(|t| !t.root_node().has_error())
+        else {
             return false;
         };
         let ctx = Ctx {
@@ -114,19 +101,39 @@ pub(crate) fn qualify(parent: Option<&str>, name: &str, sep: &str) -> String {
 }
 
 thread_local! {
-    /// One parser per language per thread. `set_language` (grammar table
+    /// One parser per grammar per thread. `set_language` (grammar table
     /// loading) is the expensive step of parser setup, and the indexer calls
     /// `extract` once per file — reuse makes that a one-time cost per worker.
     static PARSERS: std::cell::RefCell<std::collections::HashMap<&'static str, Parser>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
-    static FRAGMENT_PARSERS: std::cell::RefCell<std::collections::HashMap<&'static str, Parser>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Parse `source` with `grammar`, on this thread's parser for `key`. The key
+/// names the grammar: distinct per grammar, identical wherever it's used. The
+/// parser is released before the tree is returned, so a walk of it may parse
+/// again (a fragment inside a fragment).
+pub(crate) fn parse(
+    key: &'static str,
+    grammar: &Language,
+    source: impl AsRef<[u8]>,
+) -> Option<Tree> {
+    PARSERS.with(|cell| {
+        let mut parsers = cell.borrow_mut();
+        let parser = match parsers.entry(key) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let mut p = Parser::new();
+                p.set_language(grammar).ok()?;
+                v.insert(p)
+            }
+        };
+        parser.parse(source, None)
+    })
 }
 
 /// Parse `source` with `grammar` and hand the tree's root (plus a [`Ctx`]) to
 /// the plugin's `walk`. All the per-file plumbing lives here; a plugin is just
-/// its walk. (The parser cache is borrowed across the walk, so a walk must
-/// never recurse into another `extract` — none does.)
+/// its walk.
 pub(crate) fn extract_with(
     language: &'static str,
     grammar: Language,
@@ -149,31 +156,18 @@ pub(crate) fn extract_with_key(
     source: &str,
     walk: impl FnOnce(&Ctx, Node, &mut Vec<Symbol>),
 ) -> Vec<Symbol> {
-    PARSERS.with(|cell| {
-        let mut parsers = cell.borrow_mut();
-        let parser = match parsers.entry(key) {
-            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let mut p = Parser::new();
-                if p.set_language(&grammar).is_err() {
-                    return Vec::new();
-                }
-                v.insert(p)
-            }
-        };
-        let Some(tree) = parser.parse(source, None) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        let ctx = Ctx {
-            src: source.as_bytes(),
-            file,
-            language,
-            row_offset: 0,
-        };
-        walk(&ctx, tree.root_node(), &mut out);
-        out
-    })
+    let Some(tree) = parse(key, &grammar, source) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let ctx = Ctx {
+        src: source.as_bytes(),
+        file,
+        language,
+        row_offset: 0,
+    };
+    walk(&ctx, tree.root_node(), &mut out);
+    out
 }
 
 /// Extracts definitions from a single source file.
