@@ -1144,6 +1144,9 @@ fn expand(root: &Path, pattern: &str, out: &mut Vec<String>) {
 }
 
 #[cfg(test)]
+mod parity;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::tests::support::Scratch;

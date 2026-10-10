@@ -11,6 +11,7 @@
 #   make bench      - search-latency benchmark over REPO (default: .)
 #   make recall     - fuzzy-ranking recall on pinned Ruby + Rust corpora (BASE=<ref>)
 #   make fuzz       - name index vs scorer on many names and every recall query (N=, SEED=)
+#   make imports-scan - the large-source import walk vs a whole parse on the JS/TS corpora
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
 #   make fmt        - cargo fmt
 #   make clean      - cargo clean
@@ -23,7 +24,7 @@ CARGO ?= cargo
 BIN   := rq
 
 .DEFAULT_GOAL := help
-.PHONY: help build release install uninstall test check dogfood bench recall fuzz lint fmt clean
+.PHONY: help build release install uninstall test check dogfood bench recall fuzz imports-scan lint fmt clean
 
 help:
 	@echo "rq targets:"
@@ -37,6 +38,7 @@ help:
 	@echo "  make bench      search-latency benchmark (REPO=. by default)"
 	@echo "  make recall     fuzzy-ranking recall on pinned corpora (BASE=<ref>, ARGS=<flags>)"
 	@echo "  make fuzz       name index vs scorer on random names (N=<names>, SEED=<n>)"
+	@echo "  make imports-scan  import walk vs whole parse on the JS/TS corpora (OUT=, BASE=)"
 	@echo "  make lint       cargo fmt --check && cargo clippy"
 	@echo "  make fmt        cargo fmt"
 	@echo "  make clean      cargo clean"
@@ -113,6 +115,17 @@ fuzz:
 	@echo "fuzz: $(N) names, SEED=$(SEED), every recall query"
 	@RQ_FUZZ_NAMES=$(N) RQ_FUZZ_SEED=$(SEED) RQ_FUZZ_STRIDE=1 $(CARGO) test --release --lib \
 		the_index_takes_exactly_what_score_accepts
+
+# The large-source import walk against a whole parse, over every source above
+# 16 KB in the JS/TS recall corpora (docs/RECALL.md). OUT= keeps this run's
+# bindings; BASE= a previous OUT reports what moved since.
+CORPORA := $(HOME)/.cache/rq-recall
+IMPORTS_CORPUS ?= $(subst $(eval) ,:,$(strip $(filter-out %.ready,$(wildcard \
+	$(addprefix $(CORPORA)/,next.js-* react-* jest-* zod-* excalidraw-*)))))
+imports-scan:
+	@RQ_IMPORTS_CORPUS="$(IMPORTS_CORPUS)" $(if $(OUT),RQ_IMPORTS_OUT=$(OUT)) \
+		$(if $(BASE),RQ_IMPORTS_BASE=$(BASE)) $(CARGO) test --release --lib \
+		corpus_scan -- --ignored --nocapture
 
 lint:
 	$(CARGO) fmt --check

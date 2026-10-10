@@ -156,6 +156,33 @@ change can lose. A name the package exports more than once, or not at all (a
 virtual module like `next/root-params`), is skipped. `derive_imports.py
 --packages` regenerates it.
 
+## The large-source import walk
+
+A JS/TS source over 16 KB is read for its module statements only (D63), so its
+bindings can differ from a whole parse's. Three tests hold the walk to the whole
+parse of the same source, a truth it didn't produce
+([`imports/parity.rs`](../src/lang/typescript/imports/parity.rs)):
+
+- a table of statements × hazards (strings, comments, regexes, templates, JSX
+  text) × positions against the header cut, with every row read wrong listed by
+  name, so a fix changes the list;
+- random large sources built from the same pieces (`RQ_FUZZ_SOURCES`,
+  `RQ_FUZZ_SEED`), leaving out the pieces still read wrong;
+- `make imports-scan`, an ignored test over every source above 16 KB in the
+  JS/TS recall corpora (fetched by `make recall … --anchored`): what the walk
+  misses and adds against the whole parse.
+
+Run the scan by hand for any change to the walk, and cite it in the decision:
+
+```sh
+make imports-scan OUT=/tmp/base.txt            # on the base commit
+make imports-scan BASE=/tmp/base.txt           # on the change
+```
+
+With `BASE`, it adds what moved since the base run: real bindings lost (whole
+parse has them, the base walk found them, this one doesn't; must be 0), gained,
+false ones dropped and false ones added.
+
 ## Reproducibility
 
 - **Pinned corpora.** Each corpus is pinned at a commit in
