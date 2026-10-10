@@ -4257,6 +4257,13 @@ count. An explicit `rq --index` now marks its pass over a complete checkout too,
 refresh is visible; it still counts the tree only for an incomplete one, and `--status`
 and search read marks only for incomplete checkouts, so nothing else sees the change.
 
+*The other side.* The check and the delete aren't one transaction, and a drop from an
+older rq has no check, so a pass can still lose its checkout part-way. Its fill then fails
+on a foreign key, or finds the checkout at its root gone or replaced: `--index` reports
+that as `busy` too — the checkout was dropped, run it again — rather than a database
+error. A foreign-key failure alone counts, since a checkout registered again since (a
+search's warm) can reuse the id.
+
 *Considered.* A new code rather than 74: nothing is wrong with the index, and a script
 should retry rather than repair. No `--force`: the remedy for a busy checkout is to stop
 the holder, whose pid the message names; a crashed one's mark already doesn't block, and

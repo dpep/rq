@@ -15,6 +15,9 @@ and aren't listed; see `git log` for those.
   instead of racing it; the index is left as it was. A leftover mark from a
   process that has exited doesn't block. Scripts that drop right after starting
   an index should wait for it, or retry on 75.
+- `rq --index` whose checkout is dropped part-way (a drop that started first,
+  or an older rq's) exits 75 saying so, instead of 74 "FOREIGN KEY constraint
+  failed"; run it again to rebuild.
 
 ## 0.60.10 — 2026-10-10
 

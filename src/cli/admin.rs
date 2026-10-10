@@ -81,6 +81,15 @@ pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) 
             }
             ExitCode::SUCCESS
         }
+        Err(e) if e.is::<crate::index::Dropped>() => fail(
+            out,
+            Failure::Busy,
+            format_args!(
+                "rq --index: {} was dropped (rq --drop) while this index ran; \
+                 run rq --index again to rebuild it",
+                root_key(&root)
+            ),
+        ),
         Err(e) => fail(out, Failure::Index, format_args!("rq --index: {e}")),
     }
 }

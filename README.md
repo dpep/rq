@@ -204,7 +204,7 @@ retry:
 | `no_remote`, `launch` | 69 | Nothing to hand off to: `-w` on a repo with no git host, or an editor or browser that won't start. |
 | `internal` | 70 | rq couldn't render its own output — a bug. |
 | `database`, `index` | 74 | The index can't be opened, read or written. |
-| `busy` | 75 | Another rq is at work on what this one would change: `--drop` of a checkout a live `--index` or background warm is filling. The message names its pid; retry once it finishes. |
+| `busy` | 75 | Another rq is at work on what this one would change: `--drop` of a checkout a live `--index` or background warm is filling (the message names its pid; retry once it finishes), or an `--index` whose checkout a drop removed part-way (run it again). |
 
 Every code means one thing, so a script can branch on the number: `1` is
 absent, `2` is ask again, and anything else is an error, which `kind` names.

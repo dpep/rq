@@ -865,6 +865,41 @@ fn run_index(
         cancel,
         demanded_flag,
     )
+    .map_err(|e| vanished(store, &root_display.to_string_lossy(), checkout, e))
+}
+
+/// A pass's checkout was dropped (`rq --drop`) while it was filling it.
+#[derive(Debug)]
+pub(crate) struct Dropped;
+
+impl std::fmt::Display for Dropped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the checkout was dropped while this pass was indexing it")
+    }
+}
+
+impl std::error::Error for Dropped {}
+
+/// `error` from filling `checkout`, or [`Dropped`] when the checkout at `root`
+/// is no longer the one the pass was writing to, or the write failed on a
+/// foreign key: a row the pass wrote under was deleted, which says nothing
+/// about the store. A checkout registered again since may reuse the id.
+fn vanished(
+    store: &Store,
+    root: &str,
+    checkout: Checkout,
+    error: Box<dyn std::error::Error>,
+) -> Box<dyn std::error::Error> {
+    let foreign_key = error.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+        e.sqlite_error()
+            .is_some_and(|e| e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY)
+    });
+    let replaced = store.checkout(root).is_ok_and(|now| now != Some(checkout));
+    if foreign_key || replaced {
+        Box::new(Dropped)
+    } else {
+        error
+    }
 }
 
 /// [`run_index`] past registering the checkout: fill it.
@@ -2391,6 +2426,68 @@ fn mtime_of(meta: &std::fs::Metadata) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::tests::support::Scratch;
+
+    #[test]
+    fn a_pass_whose_checkout_is_dropped_under_it_says_so() {
+        // a drop that started first, or an older rq's, deletes the checkout;
+        // the pass's next write fails, and that is the drop, not the store
+        let dir = Scratch::new("dropped-under");
+        std::fs::write(dir.join("w.rb"), "class Widget\nend\n").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        index_under(&mut store, &dir, &[]).unwrap();
+        let root = dir.canonicalize().unwrap();
+        let key = root.to_string_lossy().into_owned();
+        let stale = store.checkout(&key).unwrap().unwrap();
+        std::fs::write(dir.join("v.rb"), "class Gadget\nend\n").unwrap();
+        store.forget_checkout(&key).unwrap();
+
+        let filled = fill_checkout(
+            &mut store,
+            &dir,
+            &root,
+            stale,
+            crate::profile::span("test"),
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
+        let failed = filled.map(|_| ()).unwrap_err();
+        assert!(
+            !failed.is::<Dropped>(),
+            "the fill itself can't tell: {failed}"
+        );
+        let e = vanished(&store, &key, stale, failed);
+        assert!(e.is::<Dropped>(), "{e}");
+
+        // registered again since (a search's warm), maybe under the same id
+        let fresh = store.register_checkout(&"local:/x", None, &key).unwrap();
+        let foreign_key = fill_checkout(
+            &mut store,
+            &dir,
+            &root,
+            Checkout {
+                id: fresh.id + 1,
+                ..fresh
+            },
+            crate::profile::span("test"),
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+        )
+        .map(|_| ())
+        .unwrap_err();
+        let e = vanished(&store, &key, fresh, foreign_key);
+        assert!(e.is::<Dropped>(), "a failed foreign key is the drop's: {e}");
+        // any other failure of the checkout still there stands
+        let e = vanished(&store, &key, fresh, "disk full".into());
+        assert!(!e.is::<Dropped>(), "{e}");
+    }
 
     #[test]
     fn an_explicit_index_of_a_complete_checkout_marks_its_pass() {

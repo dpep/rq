@@ -95,8 +95,9 @@ pub(super) enum Failure {
     Launch,
     /// `--index` failed part-way.
     Index,
-    /// Another rq process holds what this one would change: a `--drop` of a
-    /// checkout being indexed.
+    /// Another rq process holds what this one would change, or changed it
+    /// first: a `--drop` of a checkout being indexed, an `--index` whose
+    /// checkout a drop removed.
     Busy,
     /// rq couldn't render its own output.
     Internal,
