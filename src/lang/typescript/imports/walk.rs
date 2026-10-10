@@ -11,10 +11,11 @@ use std::ops::Range;
 /// minified bundle's one line is never parsed whole.
 pub(super) const PARSE_WHOLE: usize = 16 * 1024;
 
-/// What a large source's statements may hand the parser in all, in order:
-/// 4× the most a real module in the recall corpora keeps (under 16 KB), so
-/// none meets it, while 200k one-word `import` lines don't parse 1.6 MB.
-pub(super) const MAX_KEPT: usize = 4 * PARSE_WHOLE;
+/// What a large source's statements may hand the parser in all, in order. A
+/// generated barrel (an icon set's thousands of re-exports) keeps hundreds of
+/// KB, so the bound sits above any of those; it only stops a pathological
+/// source, such as millions of one-word `import` lines, from parsing whole.
+pub(super) const MAX_KEPT: usize = 64 * PARSE_WHOLE;
 
 /// The module statements of a large `source`, everything else blanked to its
 /// newlines so a statement keeps its line. A small source is returned whole.
@@ -776,6 +777,19 @@ mod tests {
         let text = kept.bytes().filter(|&b| b != b'\n').count();
         assert!(text <= MAX_KEPT, "{text}");
         assert!(kept.starts_with("import { First }"), "the first is kept");
+    }
+
+    #[test]
+    fn a_generated_barrels_last_reexport_is_kept() {
+        let source: String = (0..9_000)
+            .map(|i| format!("export {{ Icon{i:04} }} from './icons/Icon{i:04}'\n"))
+            .collect();
+        let kept = module_statements("index.ts", &source);
+        assert!(
+            source.len() > 4 * PARSE_WHOLE,
+            "a barrel past the old bound"
+        );
+        assert!(kept.contains("Icon8999"), "the last re-export is kept");
     }
 
     #[test]
