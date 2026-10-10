@@ -4539,9 +4539,12 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
         let _ = tx.send(line);
     });
     let answer = rx.recv_timeout(std::time::Duration::from_secs(30));
+    let answered = std::time::Instant::now();
     // held until the run exits: what it writes besides the index is
-    // bookkeeping, which must not wait out the other writer
+    // bookkeeping, and its own warm stops at the answer, so neither may wait
+    // out the other writer
     let status = child.wait().unwrap();
+    let exiting = answered.elapsed();
     conn.execute_batch("COMMIT").unwrap();
     conn.execute("DELETE FROM meta WHERE key = ?1", rusqlite::params![mark])
         .unwrap();
@@ -4562,6 +4565,10 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
         "polled {polled}ms past a 1s wait: {profile}"
     );
     // a search's busy timeout is 3 s
+    assert!(
+        exiting < std::time::Duration::from_secs(2),
+        "exited {exiting:?} after answering: {profile}"
+    );
     for bookkeeping in ["setup: branch files", "after: record usage"] {
         let spent = profile_ms(&profile, bookkeeping);
         assert!(spent < 1000.0, "{bookkeeping} {spent}ms: {profile}");

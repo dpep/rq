@@ -437,6 +437,9 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         let demanded = std::sync::Arc::clone(&demanded);
         std::thread::spawn(move || {
             if let Ok(mut idx) = open_store() {
+                // answered, the search stops the warm, and with it any wait
+                // on another writer
+                let _ = idx.stop_waiting_when(&INTERRUPTED);
                 // path-prioritize toward the query so the relevant file indexes
                 // first; the abort flag (`INTERRUPTED`) lets a Ctrl-C, a wait
                 // timeout, or an early answer stop the pass without losing

@@ -129,7 +129,9 @@ pub(crate) struct Store {
 impl Drop for Store {
     fn drop(&mut self) {
         // SQLite's recommended pre-close hygiene: refreshes planner statistics
-        // for the query shapes this connection actually ran. Cheap, best-effort.
+        // for the query shapes this connection actually ran. Cheap, best-effort,
+        // and a write, so it mustn't hold up the exit behind another writer.
+        let _ = self.conn.busy_timeout(BOOKKEEPING_WAIT);
         let _ = self.conn.execute_batch("PRAGMA optimize;");
     }
 }
@@ -417,19 +419,25 @@ static ON_LONG_WAIT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
 /// How long a pass waits on another writer before saying so.
 const WAIT_NOTICE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The busy handler [`Store::wait_out_writers`] installs: each wait for the
-/// lock is bounded on its own, and past [`WAIT_NOTICE`] the hook hears of it.
-fn pass_busy(attempt: i32) -> bool {
-    use std::time::{Duration, Instant};
+/// How long this thread's current wait for the lock has run, `attempt`
+/// being SQLite's count of busy calls for it.
+fn busy_waited(attempt: i32) -> std::time::Duration {
+    use std::time::Instant;
     thread_local!(static SINCE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) });
-    let since = SINCE.with(|s| {
+    SINCE.with(|s| {
         if attempt == 0 || s.get().is_none() {
             s.set(Some(Instant::now()));
         }
-        s.get().expect("set above")
-    });
+        s.get().expect("set above").elapsed()
+    })
+}
+
+/// The busy handler [`Store::wait_out_writers`] installs: each wait for the
+/// lock is bounded on its own, and past [`WAIT_NOTICE`] the hook hears of it.
+fn pass_busy(attempt: i32) -> bool {
+    use std::time::Duration;
     let wait = Duration::from_millis(WRITER_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed));
-    let waited = since.elapsed();
+    let waited = busy_waited(attempt);
     if waited >= wait {
         return false;
     }
@@ -441,6 +449,24 @@ fn pass_busy(attempt: i32) -> bool {
     std::thread::sleep((wait - waited).min(Duration::from_millis(20)));
     true
 }
+/// What ends a [`Store::stop_waiting_when`] connection's waits early.
+static STOP_WAITING: std::sync::OnceLock<&'static std::sync::atomic::AtomicBool> =
+    std::sync::OnceLock::new();
+
+/// The busy handler [`Store::stop_waiting_when`] installs: [`BUSY_WAIT`], as
+/// a search's own writes wait, unless the flag is set first.
+fn stoppable_busy(attempt: i32) -> bool {
+    let stopped = STOP_WAITING
+        .get()
+        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
+    let waited = busy_waited(attempt);
+    if stopped || waited >= BUSY_WAIT {
+        return false;
+    }
+    std::thread::sleep((BUSY_WAIT - waited).min(std::time::Duration::from_millis(10)));
+    true
+}
+
 /// ...and how long an opener waits out another's schema upgrade.
 const UPGRADE_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -1602,6 +1628,18 @@ impl Store {
             let _ = ON_LONG_WAIT.set(hook);
         }
         self.conn.busy_handler(Some(pass_busy))
+    }
+
+    /// Let this connection's writes wait out another writer as a search's do,
+    /// but not once `stop` is set: for the warm a search runs beside its
+    /// answer, which stops with it, so a write still waiting then would only
+    /// hold up the exit. What it didn't write, a later pass does.
+    pub(crate) fn stop_waiting_when(
+        &self,
+        stop: &'static std::sync::atomic::AtomicBool,
+    ) -> Result<()> {
+        let _ = STOP_WAITING.set(stop);
+        self.conn.busy_handler(Some(stoppable_busy))
     }
 
     /// Keep a span counted outside a pass (an older rq's partial index), unless

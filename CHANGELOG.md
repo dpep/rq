@@ -19,9 +19,12 @@ and aren't listed; see `git log` for those.
   (DECISIONS D63).
 - A search while another rq holds the index's write lock (a cold pass's
   closing rebuild runs for seconds) no longer waits out a 3 s timeout for
-  its usage count, or for the branch-file cache a first search in a repo
-  writes before answering: past 100 ms they're skipped, and the next search
-  rebuilds the cache.
+  each write that isn't its answer: the branch-file cache a first search in
+  a repo writes before answering, the usage count and the statistics refresh
+  on close are skipped past 100 ms (the next search rebuilds the cache), and
+  its own warm stops waiting when it has answered. Under a held lock, a
+  `--wait 1s` search answered in 4.2 s and exited at 12.9 s; now 1.1 s and
+  1.5 s.
 
 ## 0.60.9 — 2026-10-10
 
