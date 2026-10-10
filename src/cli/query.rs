@@ -253,7 +253,7 @@ pub(super) fn cmd_batch(
 /// since it was indexed, and warm a cold or edited repo to completion before
 /// the next answer, so a page of misses never means only "not indexed yet".
 /// `--no-wait` leaves the warm to a detached child, and its misses say
-/// `warming`. Returns how long it took.
+/// `warming`. Returns how long the worktree check took, which paces the next.
 fn freshen(session: &mut Session, cli: &Cli) -> Duration {
     let started = std::time::Instant::now();
     let Some(here) = session.here.as_mut().filter(|h| h.warms()) else {
@@ -273,6 +273,8 @@ fn freshen(session: &mut Session, cli: &Cli) -> Duration {
             spawn_detached_warm(&here.root);
         }
     }
+    // the check's own cost paces the next one; a warm's would hide edits for as long
+    let checked = started.elapsed();
     if !cli.no_wait && (here.coverage != Some(Coverage::Complete) || moved) {
         let budget = cli.wait.unwrap_or_else(wait_budget);
         crate::trace!("batch: warming the index before the next answer");
@@ -282,7 +284,7 @@ fn freshen(session: &mut Session, cli: &Cli) -> Duration {
         // the index has just caught up with the worktree
         session.moved = Some(false);
     }
-    started.elapsed()
+    checked
 }
 
 pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
