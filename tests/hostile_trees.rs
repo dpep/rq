@@ -439,12 +439,23 @@ fn outside_git() {
 
 /// A warm lists files with git; an explicit index walks the disk. Whatever
 /// each finds, both hold the same files: the walk decides (D62). Outside git
-/// nothing warms.
-#[test]
-fn a_warm_and_an_index_hold_the_same_files() {
-    let failed: Vec<String> = [State::GitMain, State::GitFeature, State::GitUnborn]
-        .into_iter()
-        .flat_map(set_failures)
-        .collect();
+/// nothing warms. One test per state, so they run in parallel.
+fn assert_same_files(state: State) {
+    let failed = set_failures(state);
     assert!(failed.is_empty(), "\n{}", failed.join("\n"));
+}
+
+#[test]
+fn a_warm_and_an_index_hold_the_same_files_on_main() {
+    assert_same_files(State::GitMain);
+}
+
+#[test]
+fn a_warm_and_an_index_hold_the_same_files_on_a_feature_branch() {
+    assert_same_files(State::GitFeature);
+}
+
+#[test]
+fn a_warm_and_an_index_hold_the_same_files_before_a_first_commit() {
+    assert_same_files(State::GitUnborn);
 }

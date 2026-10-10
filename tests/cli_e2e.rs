@@ -4405,40 +4405,59 @@ fn hold_as_another_indexer(db: &Path, dir: &Path) -> (rusqlite::Connection, Stri
 
 #[test]
 fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes() {
+    // Unbounded, an interactive search follows the other indexer until it
+    // finishes or stalls (INDEXER_STALL, 5s): the test holds its write lock
+    // and writes nothing. `--wait 1s` must end the polling well short of that.
+    use std::io::{BufRead, Read};
     let (dir, db) = prefix_and_exact("wait-tty");
     rq(&db, &dir, &["--index", "app"]);
     let (conn, mark) = hold_as_another_indexer(&db, &dir);
 
-    let start = std::time::Instant::now();
     let mut child = rq_cmd(&db, &dir)
-        .args(["User", "--wait", "1s"])
+        .args(["User", "--wait", "1s", "--profile"])
         .env("RQ_ASSUME_INTERACTIVE", "1")
         // a warm child would wait out the held writer too; a detached one
-        // does that after the search has exited, which is what's timed here
+        // does that after the search has exited
         .envs(NO_CHILD)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("run rq");
-    let status = loop {
-        if let Some(s) = child.try_wait().unwrap() {
-            break Some(s);
-        }
-        if start.elapsed() > std::time::Duration::from_secs(20) {
-            break None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-    let waited = start.elapsed();
+    let stdout = child.stdout.take().expect("stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let answer = rx.recv_timeout(std::time::Duration::from_secs(30));
+    // Released once answered: every write the run still has to make (the
+    // indexer's join, the usage count) would otherwise wait out the busy
+    // timeout in turn.
     conn.execute_batch("COMMIT").unwrap();
     conn.execute("DELETE FROM meta WHERE key = ?1", rusqlite::params![mark])
         .unwrap();
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    // the writer's busy timeout bounds the join after the answer, not the wait
-    assert_eq!(status.and_then(|s| s.code()), Some(2), "after {waited:?}");
+    let status = child.wait().unwrap();
+    let mut profile = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr piped")
+        .read_to_string(&mut profile)
+        .unwrap();
+    let answer = answer.expect("an answer while the other indexer holds the lock");
+    assert!(answer.contains("User"), "{answer}");
+    assert_eq!(status.code(), Some(2), "{profile}");
+    // the profile's `query` row: the polling `--wait` bounds, setup aside
+    let polled = profile
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("query "))
+        .and_then(|rest| rest.trim_start().split("ms").next()?.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no query row: {profile}"));
+    assert!(
+        polled < 2500.0,
+        "polled {polled}ms past a 1s wait: {profile}"
+    );
 }
 
 /// A checkout indexed only under `a/`, where a prefix match for `Widget`
