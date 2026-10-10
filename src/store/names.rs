@@ -572,6 +572,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::core::{Kind, RepoIdentity, Symbol};
+    use crate::tests::support::Scratch;
 
     #[test]
     fn a_chunk_round_trips_its_keys() {
@@ -840,8 +841,8 @@ mod tests {
 
     #[test]
     fn a_rebuild_blocked_by_another_writer_reads_the_repo_from_its_rows() {
-        let path = std::env::temp_dir().join(format!("rq-busy-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let dir = Scratch::new("busy");
+        let path = dir.join("rq.db");
         let mut store = Store::open(&path).unwrap();
         let r = repo(&store, "/tmp/a");
         write(&mut store, r, "a.rs", &["WidgetFactory"]);
@@ -868,10 +869,6 @@ mod tests {
             current(&store.conn, r.repo).unwrap(),
             "rebuilt once it could"
         );
-        drop((store, writer));
-        for ext in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
-        }
     }
 
     #[test]

@@ -1,16 +1,14 @@
 //! End-to-end: walk a directory of Ruby, persist symbols, read coverage back.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::index::index_path;
 use crate::store::{Coverage, Store};
+use crate::tests::support::Scratch;
 
-/// A unique temp directory for this test process (no tempfile dependency).
-fn scratch_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rq-it-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch_dir() -> Scratch {
+    Scratch::new("it")
 }
 
 #[test]
@@ -36,11 +34,9 @@ fn indexes_a_directory_of_ruby_end_to_end() {
     assert_eq!(overview.len(), 1);
     assert_eq!(overview[0].symbols, 3);
     assert_eq!(overview[0].status, Coverage::Complete);
-
-    fs::remove_dir_all(&dir).ok();
 }
 
-fn git(dir: &PathBuf, args: &[&str]) -> String {
+fn git(dir: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -58,9 +54,7 @@ fn git(dir: &PathBuf, args: &[&str]) -> String {
 /// reindexes (the capture reads only the commits since the last one).
 #[test]
 fn commit_times_capture_survives_incremental_reindex() {
-    let dir = std::env::temp_dir().join(format!("rq-it-git-{}", std::process::id()));
-    fs::remove_dir_all(&dir).ok();
-    fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("it-git");
     git(&dir, &["init", "-q"]);
     git(&dir, &["config", "user.email", "t@example.com"]);
     git(&dir, &["config", "user.name", "t"]);
@@ -106,6 +100,4 @@ fn commit_times_capture_survives_incremental_reindex() {
         store.git_ts_head(repo_id).unwrap().as_deref(),
         Some(git(&dir, &["rev-parse", "HEAD"]).as_str())
     );
-
-    fs::remove_dir_all(&dir).ok();
 }

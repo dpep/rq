@@ -4,18 +4,15 @@
 //! deleted files.
 
 use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::index;
 use crate::search::{self, Context};
 use crate::store::{Coverage, Store};
+use crate::tests::support::Scratch;
 
-fn scratch_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rq-budget-{tag}-{}", std::process::id()));
-    fs::remove_dir_all(&dir).ok();
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch_dir(tag: &str) -> Scratch {
+    Scratch::new(&format!("budget-{tag}"))
 }
 
 fn finds(store: &Store, query: &str) -> bool {
@@ -48,8 +45,6 @@ fn a_zero_budget_still_indexes_the_active_files() {
         store.coverage_overview().unwrap()[0].status,
         Coverage::Warming
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -82,8 +77,6 @@ fn a_full_sweep_completes_and_tracks_added_and_deleted_files() {
         "deleted file's symbols are forgotten"
     );
     assert!(finds(&store, "Widget"), "surviving files remain");
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -117,8 +110,6 @@ fn indexing_prunes_a_stale_checkout_but_keeps_the_live_one() {
     );
     assert!(!roots.is_empty(), "the live checkout remains");
     assert!(finds(&store, "Widget"), "symbols are untouched by pruning");
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -137,8 +128,6 @@ fn an_empty_source_tree_never_reports_complete() {
         Coverage::Warming
     );
     assert!(!finds(&store, "anything"));
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -184,8 +173,6 @@ fn a_cancelled_pass_stops_early_and_stays_warming() {
         !demanded.load(std::sync::atomic::Ordering::Acquire),
         "nor says it read every file holding the name"
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -199,7 +186,7 @@ fn a_warm_says_when_every_file_holding_the_name_is_read() {
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
             .arg("-C")
-            .arg(&dir)
+            .arg(&*dir)
             .args(args)
             .output()
             .unwrap();
@@ -219,8 +206,6 @@ fn a_warm_says_when_every_file_holding_the_name_is_read() {
     )
     .unwrap();
     assert!(demanded.load(std::sync::atomic::Ordering::Acquire));
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -282,5 +267,4 @@ fn warm_and_full_index_skip_the_same_hidden_files() {
         assert!(!finds(store, "Gadget"));
         assert!(!finds(store, "gizmo"));
     }
-    fs::remove_dir_all(&dir).ok();
 }

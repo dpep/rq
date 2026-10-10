@@ -234,11 +234,17 @@ fn sweep_side_stores(path: &Path, version: i64) {
                 .is_some_and(|age| age > SIDE_STORE_IDLE)
         };
         if v == version || (v < version && idle()) {
-            for suffix in ["", "-wal", "-shm", ".lock"] {
-                let _ = std::fs::remove_file(with_suffix(&side, suffix));
+            for file in db_files(&side) {
+                let _ = std::fs::remove_file(file);
             }
         }
     }
+}
+
+/// Every file a database at `path` is: the database, SQLite's two beside it,
+/// and the advisory lock [`Lock`] takes. Removing a database removes these.
+pub(crate) fn db_files(path: &Path) -> [PathBuf; 4] {
+    ["", "-wal", "-shm", ".lock"].map(|suffix| with_suffix(path, suffix))
 }
 
 /// Side stores beside `path` for schema `versions`: probed by name, since a
@@ -336,26 +342,17 @@ impl Drop for Lock {
 mod tests {
     use super::*;
     use crate::store::schema::{self, Step};
+    use crate::tests::support::Scratch;
 
     /// A directory of its own: set-aside copies and side stores are siblings.
-    struct Dir(PathBuf);
+    struct Dir(Scratch);
 
     impl Dir {
         fn new(label: &str) -> Dir {
-            let dir =
-                std::env::temp_dir().join(format!("rq-recover-{label}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Dir(dir)
+            Dir(Scratch::new(&format!("recover-{label}")))
         }
         fn db(&self) -> PathBuf {
             self.0.join("rq.db")
-        }
-    }
-
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
@@ -537,8 +534,8 @@ mod tests {
         let side = side_path(&dir.db(), schema::VERSION);
         assert!(side.try_exists().unwrap());
         // ...then the path was rebuilt at this rq's own schema
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(with_suffix(&dir.db(), suffix));
+        for file in db_files(&dir.db()) {
+            let _ = std::fs::remove_file(file);
         }
         drop(Store::open(&dir.db()).unwrap());
         assert!(!side.try_exists().unwrap());
@@ -553,8 +550,8 @@ mod tests {
     fn concurrent_openers_of_a_broken_database_rebuild_it_once() {
         let dir = Dir::new("concurrent");
         for round in 0..5 {
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(with_suffix(&dir.db(), suffix));
+            for file in db_files(&dir.db()) {
+                let _ = std::fs::remove_file(file);
             }
             std::fs::write(dir.db(), "garbage ".repeat(1000)).unwrap();
             let start = std::sync::Arc::new(std::sync::Barrier::new(8));

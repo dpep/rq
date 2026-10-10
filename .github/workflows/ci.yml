@@ -36,6 +36,10 @@ jobs:
       - name: test
         run: cargo test
 
+      # every temp entry a test makes goes with it (script/check.sh does the same)
+      - name: no temp leftovers
+        run: test -z "$(find "${TMPDIR:-/tmp}" -mindepth 1 -maxdepth 1 -name 'rq-*' -print -quit)"
+
       - name: docs
         run: cargo doc --no-deps --document-private-items
         env:

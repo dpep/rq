@@ -2,8 +2,6 @@
 //! file and assert the ordering — the named definition wins, with the right
 //! kind and qualification.
 
-use std::fs;
-
 use crate::search::{self, Context};
 use crate::tests::support::{indexed, indexed_files, top};
 
@@ -32,7 +30,7 @@ fn members(
 
 #[test]
 fn ruby_class_methods_are_singletons() {
-    let (store, dir) = indexed("rb", "widget.rb", WIDGET_RB);
+    let (store, _dir) = indexed("rb", "widget.rb", WIDGET_RB);
     let widget = || Some("Widget".to_string());
     let public = || Some("public".to_string());
     let private = || Some("private".to_string());
@@ -65,13 +63,11 @@ fn ruby_class_methods_are_singletons() {
     assert_eq!(members(&store, "build_part"), [(widget(), true, private())]);
     assert_eq!(members(&store, "measure"), [(widget(), false, private())]);
     assert_eq!(members(&store, "tick"), [(widget(), false, public())]);
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn go_definitions_rank_and_classify() {
-    let (store, dir) = indexed("go", "widget.go", WIDGET_GO);
+    let (store, _dir) = indexed("go", "widget.go", WIDGET_GO);
 
     let widget = top(&store, "Widget");
     assert_eq!(widget.name, "Widget");
@@ -112,13 +108,11 @@ fn go_definitions_rank_and_classify() {
         (embedded.kind.as_str(), embedded.name.as_str()),
         ("field", "Widget")
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn python_definitions_rank_and_classify() {
-    let (store, dir) = indexed("py", "account.py", ACCOUNT_PY);
+    let (store, _dir) = indexed("py", "account.py", ACCOUNT_PY);
 
     let account = top(&store, "Account");
     assert_eq!(account.name, "Account");
@@ -192,13 +186,11 @@ fn python_definitions_rank_and_classify() {
             .hits
             .is_empty()
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn typescript_definitions_rank_and_classify() {
-    let (store, dir) = indexed("ts", "widget.ts", WIDGET_TS);
+    let (store, _dir) = indexed("ts", "widget.ts", WIDGET_TS);
 
     let widget = top(&store, "Widget");
     assert_eq!(widget.name, "Widget");
@@ -282,13 +274,11 @@ fn typescript_definitions_rank_and_classify() {
             .hits
             .is_empty()
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn typescript_declarations_rank_below_implementations() {
-    let (store, dir) = indexed_files(
+    let (store, _dir) = indexed_files(
         "ts-ambient",
         &[("widget.ts", WIDGET_TS), ("widget-kit.d.ts", WIDGET_KIT_TS)],
     );
@@ -323,13 +313,11 @@ fn typescript_declarations_rank_below_implementations() {
     let debug = top(&store, "WIDGET_DEBUG");
     assert_eq!((debug.kind.as_str(), debug.parent), ("constant", None));
     assert_eq!(top(&store, "trackWidget").kind, "function");
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn javascript_definitions_rank_and_classify() {
-    let (store, dir) = indexed("jsx", "account.jsx", ACCOUNT_JSX);
+    let (store, _dir) = indexed("jsx", "account.jsx", ACCOUNT_JSX);
 
     let account = top(&store, "Account");
     assert_eq!(account.name, "Account");
@@ -358,14 +346,12 @@ fn javascript_definitions_rank_and_classify() {
         (default.name.as_str(), default.kind.as_str()),
         ("defaultAccount", "constant")
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn commonjs_assignments_rank_above_test_doubles() {
     // a test double assigned the same way is test code, and ranks below
-    let (store, dir) = indexed_files(
+    let (store, _dir) = indexed_files(
         "cjs",
         &[
             ("widget-store.js", WIDGET_STORE_JS),
@@ -399,6 +385,4 @@ fn commonjs_assignments_rank_above_test_doubles() {
         (ctor.kind.as_str(), ctor.line, ctor.visibility.as_deref()),
         ("function", 9, Some("public"))
     );
-
-    fs::remove_dir_all(&dir).ok();
 }

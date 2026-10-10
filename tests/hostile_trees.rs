@@ -374,13 +374,10 @@ fn set_failures(state: State) -> Vec<String> {
             rq_bounded(db, &dir, args, &[("RQ_WARM_DETACH", "0")], None, LIMIT).map(|_| indexed(db))
         };
         let warming = dir.db();
-        let indexing = std::path::PathBuf::from(format!("{}-index.db", dir.display()));
+        let indexing = dir.db_named("index.db");
         let index = run(&indexing, &["--index"]);
         let warm = run(&warming, &["--warm"]);
         let warm_then_index = run(&warming, &["--index"]);
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = fs::remove_file(format!("{}{suffix}", indexing.display()));
-        }
         match (index, warm, warm_then_index) {
             (Some(index), Some(warm), Some(after)) => {
                 if index != warm || index != after {

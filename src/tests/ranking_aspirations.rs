@@ -9,6 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use crate::index;
 use crate::search::{self, Context};
 use crate::store::Store;
+use crate::tests::support::Scratch;
 
 /// Index a copy of `src/` whose files all share one (old) mtime, so the recency
 /// boost is uniform and cancels out. This test asserts *match-quality* ranking;
@@ -17,12 +18,10 @@ use crate::store::Store;
 /// thin prefix-tail margin.
 fn indexed_src() -> Store {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let dir = std::env::temp_dir().join(format!("rq-aspirations-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
+    let dir = Scratch::new("aspirations");
     copy_with_uniform_mtime(&src, &dir);
     let mut store = Store::open_in_memory().unwrap();
     index::index_path(&mut store, &dir).unwrap();
-    let _ = fs::remove_dir_all(&dir);
     store
 }
 

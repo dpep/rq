@@ -7,16 +7,14 @@
 //! there was the last reason `index` had to be public.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use crate::index;
+use crate::tests::support::Scratch;
 
-fn scratch(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rq-{}-{label}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(label: &str) -> Scratch {
+    Scratch::new(label)
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -116,7 +114,6 @@ fn an_unborn_head_is_a_state_of_its_own() {
     );
     assert_eq!(index::head_state(&dir), index::git_head(&dir));
     assert_ne!(index::head_state(&dir), unborn, "the first commit moves it");
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

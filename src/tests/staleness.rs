@@ -7,11 +7,10 @@ use std::path::PathBuf;
 use crate::index::{self, Refresh};
 use crate::search;
 use crate::store::Store;
+use crate::tests::support::Scratch;
 
-fn scratch_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rq-stale-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch_dir() -> Scratch {
+    Scratch::new("stale")
 }
 
 #[test]
@@ -72,8 +71,6 @@ fn refresh_picks_up_edits_and_deletes() {
             .is_empty(),
         "reconciled away by indexing"
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 /// A same-second edit is still picked up: mtimes are stored at nanosecond
@@ -81,9 +78,7 @@ fn refresh_picks_up_edits_and_deletes() {
 /// and the incremental skip can't mistake the later one for "unchanged".
 #[test]
 fn racy_mtime_edit_is_reindexed() {
-    let dir = std::env::temp_dir().join(format!("rq-racy-{}", std::process::id()));
-    fs::remove_dir_all(&dir).ok();
-    fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("racy");
     let path = dir.join("a.rb");
 
     // pin both writes into the *same second*, 1 ms apart — under second
@@ -109,17 +104,13 @@ fn racy_mtime_edit_is_reindexed() {
 
     let hits = search::search(&store, "Beta", None, None, &search::Context::default(), 5).unwrap();
     assert_eq!(hits.first().map(|h| h.name.as_str()), Some("Beta"));
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 /// A touch without an edit is unchanged, and its new mtime is remembered so
 /// later checks can skip the read; a real edit after it is still picked up.
 #[test]
 fn refresh_remembers_a_touch_and_still_sees_the_next_edit() {
-    let dir = std::env::temp_dir().join(format!("rq-touch-{}", std::process::id()));
-    fs::remove_dir_all(&dir).ok();
-    fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("touch");
     let path = dir.join("a.rb");
     let pin = |at: std::time::SystemTime| {
         fs::File::options()
@@ -159,15 +150,11 @@ fn refresh_remembers_a_touch_and_still_sees_the_next_edit() {
         index::refresh_file(&mut store, repo, &dir, "a.rb").unwrap(),
         Refresh::Updated
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn refresh_leaves_a_file_an_ignore_rule_now_excludes() {
-    let dir = std::env::temp_dir().join(format!("rq-stale-ignored-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("stale-ignored");
     let file = dir.join("a.rb");
     fs::write(&file, "class Foo\nend\n").unwrap();
     let mut store = Store::open_in_memory().unwrap();
@@ -201,5 +188,4 @@ fn refresh_leaves_a_file_an_ignore_rule_now_excludes() {
         found("Foo"),
         "left for a sweep to drop, never forgotten by a search"
     );
-    fs::remove_dir_all(&dir).unwrap();
 }

@@ -2,15 +2,12 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
 
+use crate::tests::support::Scratch;
 use crate::{index, search};
 
-fn scratch_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rq-live-{}-{label}", std::process::id()));
-    fs::remove_dir_all(&dir).ok();
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch_dir(label: &str) -> Scratch {
+    Scratch::new(&format!("live-{label}"))
 }
 
 #[test]
@@ -41,8 +38,6 @@ fn live_search_finds_symbols_without_an_index() {
         scan.hits.iter().all(|h| h.source == search::Source::Live),
         "every result says it came from a live scan"
     );
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -76,8 +71,6 @@ fn live_search_skips_already_indexed_files() {
     )
     .hits;
     assert_eq!(beta.first().map(|h| h.name.as_str()), Some("Beta"));
-
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -126,6 +119,4 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
     )
     .hits;
     assert_eq!(full.first().map(|h| h.name.as_str()), Some("Alpha"));
-
-    fs::remove_dir_all(&dir).ok();
 }

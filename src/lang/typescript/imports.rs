@@ -1146,12 +1146,12 @@ fn expand(root: &Path, pattern: &str, out: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::support::Scratch;
     use std::fs;
 
     /// A checkout holding `files` (path, contents), under a fresh temp dir.
-    fn checkout(label: &str, files: &[(&str, &str)]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rq-imports-{}-{label}", std::process::id()));
-        fs::remove_dir_all(&dir).ok();
+    fn checkout(label: &str, files: &[(&str, &str)]) -> Scratch {
+        let dir = Scratch::new(&format!("imports-{label}"));
         for (path, body) in files {
             let p = dir.join(path);
             fs::create_dir_all(p.parent().unwrap()).unwrap();

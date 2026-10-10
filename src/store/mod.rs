@@ -1914,6 +1914,7 @@ fn prefix_upper_bound(prefix: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::{Kind, RepoIdentity};
+    use crate::tests::support::Scratch;
     use std::collections::BTreeMap;
 
     /// Each table's columns in docs/ARCHITECTURE.md's schema block.
@@ -2079,10 +2080,8 @@ mod tests {
         // A deferred batch reads first, so a writer that commits while it waits
         // for the lock invalidates its snapshot: SQLite then fails it with
         // SQLITE_BUSY at once, busy_timeout or not.
-        let path = std::env::temp_dir().join(format!("rq-busy-store-{}.db", std::process::id()));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
+        let dir = Scratch::new("busy-store");
+        let path = dir.join("rq.db");
         let mut store = Store::open(&path).unwrap();
         let repo = store.test_checkout(&RepoIdentity::Local("/tmp/busy".into()));
         let other = Store::open(&path).unwrap();
@@ -2105,9 +2104,6 @@ mod tests {
         let written = store.replace_files(repo, &[file]).unwrap();
         holder.join().unwrap();
         assert_eq!((written.files, written.symbols), (1, 1));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
     }
 
     #[test]
@@ -2130,10 +2126,8 @@ mod tests {
 
     #[test]
     fn one_of_several_racing_warmers_claims_the_lock() {
-        let path = std::env::temp_dir().join(format!("rq-warm-lock-{}.db", std::process::id()));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
+        let dir = Scratch::new("warm-lock");
+        let path = dir.join("rq.db");
         drop(Store::open(&path).unwrap());
         let start = std::sync::Arc::new(std::sync::Barrier::new(8));
         let claims: Vec<_> = (0..8u32)
@@ -2157,19 +2151,14 @@ mod tests {
         let mut store = Store::open(&path).unwrap();
         assert!(store.claim_warm_lock("repo", 99, |_, _| false).unwrap());
         assert!(!store.claim_warm_lock("repo", 100, |_, _| true).unwrap());
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
     }
 
     #[test]
     fn a_pass_mark_waits_out_a_concurrent_writer() {
         // read-then-write in a deferred transaction can't wait for the lock:
         // SQLite fails the upgrade with SQLITE_BUSY, busy_timeout or not
-        let path = std::env::temp_dir().join(format!("rq-busy-pass-{}.db", std::process::id()));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
+        let dir = Scratch::new("busy-pass");
+        let path = dir.join("rq.db");
         let mut store = Store::open(&path).unwrap();
         let other = Store::open(&path).unwrap();
         other
@@ -2184,9 +2173,6 @@ mod tests {
         holder.join().unwrap();
         marked.unwrap();
         assert_eq!(store.passes("/repo").unwrap(), (vec![7], Some(3)));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
     }
 
     #[test]
@@ -2276,12 +2262,9 @@ mod tests {
 
     #[test]
     fn a_burst_of_openers_shares_a_fresh_database() {
-        let path = std::env::temp_dir().join(format!("rq-burst-{}.db", std::process::id()));
-        let clean = || {
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-            }
-        };
+        let dir = Scratch::new("burst");
+        let path = dir.join("rq.db");
+        let clean = || remove(&path);
         for _ in 0..10 {
             clean();
             let start = std::sync::Arc::new(std::sync::Barrier::new(16));
@@ -2307,7 +2290,7 @@ mod tests {
     /// with SQL, and `user_version` set to `version`.
     #[test]
     fn an_opener_waits_out_another_openers_upgrade() {
-        let path = legacy("upgrade-wait", 22, "");
+        let (_dir, path) = legacy("upgrade-wait", 22, "");
         // stands in for an upgrade outlasting the usual busy timeout
         let holder = Connection::open(&path).unwrap();
         holder
@@ -2320,19 +2303,17 @@ mod tests {
         std::thread::sleep(BUSY_WAIT + std::time::Duration::from_millis(500));
         holder.execute_batch("COMMIT").unwrap();
         opener.join().unwrap().expect("waits, then upgrades");
-        remove(&path);
     }
 
-    fn legacy(label: &str, version: i64, rows: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("rq-{label}-{}.db", std::process::id()));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
+    /// A database at schema `version` holding `rows`, in a dir of its own.
+    fn legacy(label: &str, version: i64, rows: &str) -> (Scratch, std::path::PathBuf) {
+        let dir = Scratch::new(label);
+        let path = dir.join("rq.db");
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(schema::SCHEMA_V22).unwrap();
         conn.execute_batch(rows).unwrap();
         conn.pragma_update(None, "user_version", version).unwrap();
-        path
+        (dir, path)
     }
 
     /// Open `path` as the rq whose schema was `version` would: the ladder's
@@ -2352,8 +2333,8 @@ mod tests {
     }
 
     fn remove(path: &std::path::Path) {
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        for file in recover::db_files(path) {
+            let _ = std::fs::remove_file(file);
         }
     }
 
@@ -2395,7 +2376,7 @@ mod tests {
         // a pre-v5 database: no repo-scoped indexes, the (since-dropped)
         // display_name column and learning tables still present, and none of
         // the columns/tables later migrations add
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate",
             4,
             "DROP INDEX idx_symbols_repo_name; \
@@ -2452,7 +2433,6 @@ mod tests {
             .unwrap();
         assert_eq!(usage, 1);
         drop(store);
-        remove(&path);
     }
 
     #[test]
@@ -2468,7 +2448,7 @@ mod tests {
                 .unwrap()
         };
         // a v15 database gains the column
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate-v16",
             15,
             "ALTER TABLE usage_daily DROP COLUMN live;",
@@ -2481,7 +2461,6 @@ mod tests {
         let store = Store::open(&path).expect("the step re-runs as a no-op");
         assert_eq!(live_columns(&store), 1);
         drop(store);
-        remove(&path);
     }
 
     #[test]
@@ -2489,7 +2468,7 @@ mod tests {
         // v14 queued the constant languages' files; v19 queues every file, to
         // read its header, so an upgrade from either side re-parses them all
         for from in [13, 18] {
-            let path = legacy(
+            let (_dir, path) = legacy(
                 &format!("migrate-v19-{from}"),
                 from,
                 &two_repos(&[("a.go", "go"), ("b.rb", "ruby")]),
@@ -2503,13 +2482,12 @@ mod tests {
             assert_eq!(status("/mixed"), Coverage::Warming);
             assert_eq!(status("/ruby"), Coverage::Warming);
             drop(store);
-            remove(&path);
         }
     }
 
     #[test]
     fn v20_queues_only_the_languages_whose_extraction_changed() {
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate-v20",
             19,
             &two_repos(&[("a.py", "python"), ("b.rb", "ruby")]),
@@ -2521,12 +2499,11 @@ mod tests {
         assert_eq!(status("/mixed"), Coverage::Warming);
         assert_eq!(status("/ruby"), Coverage::Complete);
         drop(store);
-        remove(&path);
     }
 
     #[test]
     fn v21_queues_python_and_typescript_and_keeps_stubs() {
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate-v21",
             20,
             &format!(
@@ -2554,12 +2531,11 @@ mod tests {
             .unwrap();
         assert!(stub);
         drop(store);
-        remove(&path);
     }
 
     #[test]
     fn v22_queues_every_language_that_emits_fields_but_ruby() {
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate-v22",
             21,
             &two_repos(&[
@@ -2580,12 +2556,11 @@ mod tests {
             Coverage::Warming
         );
         drop(store);
-        remove(&path);
     }
 
     #[test]
     fn v24_queues_every_language_that_emits_singleton_but_go() {
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate-v24",
             22,
             &two_repos(&[
@@ -2611,26 +2586,24 @@ mod tests {
             Coverage::Warming
         );
         drop(store);
-        remove(&path);
     }
 
     #[test]
     fn a_go_only_checkout_stays_complete_through_v24() {
-        let path = legacy("migrate-v24-go", 22, &two_repos(&[("b.go", "go")]));
+        let (_dir, path) = legacy("migrate-v24-go", 22, &two_repos(&[("b.go", "go")]));
         let store = Store::open(&path).unwrap();
         assert_eq!(
             store.coverage_status("/mixed").unwrap().unwrap(),
             Coverage::Complete
         );
         drop(store);
-        remove(&path);
     }
 
     #[test]
     fn v25_and_v26_queue_only_typescript_and_javascript() {
         // each step alone, from a database read in full at the version before it
         for from in [24, 25] {
-            let path = legacy(
+            let (_dir, path) = legacy(
                 &format!("migrate-v{}", from + 1),
                 22,
                 &two_repos(&[
@@ -2667,14 +2640,13 @@ mod tests {
                 Coverage::Complete
             );
             drop(store);
-            remove(&path);
         }
     }
 
     #[test]
     fn v23_maps_each_repo_to_its_newest_checkout_when_none_is_on_disk() {
         // one repo, two checkouts (the older one stale), one repo with none
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate-v23",
             22,
             "INSERT INTO repositories (id, identity, created_at, updated_at) \
@@ -2733,12 +2705,11 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].root, "/new");
         drop(store);
-        remove(&path);
     }
 
     #[test]
     fn v23_maps_each_repo_to_a_checkout_still_on_disk() {
-        let dir = std::env::temp_dir().join(format!("rq-v23-roots-{}", std::process::id()));
+        let dir = Scratch::new("v23-roots");
         let (verified, newer) = (dir.join("verified"), dir.join("newer"));
         for d in [&verified, &newer] {
             std::fs::create_dir_all(d).unwrap();
@@ -2746,7 +2717,7 @@ mod tests {
         let (verified, newer) = (verified.display(), newer.display());
         // repo 1: a live root verified last, a newer live one, a newest gone
         // one; repo 2: a live root and a newer gone one; repo 3: no checkout
-        let path = legacy(
+        let (_dir, path) = legacy(
             "migrate-v23-live",
             22,
             &format!(
@@ -2777,8 +2748,6 @@ mod tests {
         assert_eq!(store.repository_id("r3").unwrap(), None, "held by nothing");
         assert_eq!(count(&store, "name_index"), 0);
         drop(store);
-        remove(&path);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2791,7 +2760,7 @@ mod tests {
                 ""
             };
             // v17's FTS objects, as it created them
-            let path = legacy(
+            let (_dir, path) = legacy(
                 &format!("migrate-v18-{from}"),
                 from,
                 &format!(
@@ -2847,7 +2816,6 @@ mod tests {
                 );
             }
             drop(store);
-            remove(&path);
         }
     }
 

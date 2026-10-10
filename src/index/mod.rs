@@ -2357,14 +2357,13 @@ fn mtime_of(meta: &std::fs::Metadata) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::support::Scratch;
 
     #[test]
     fn a_file_whose_version_went_mid_pass_is_parsed_and_written_anyway() {
         // A worker skipped the parse because the repo held this version when
         // the pass began; the checkout holding it has since let go of it.
-        let dir = std::env::temp_dir().join(format!("rq-vanished-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = Scratch::new("vanished");
         std::fs::write(dir.join("w.rb"), "class Widget\nend\n").unwrap();
         let mut store = Store::open_in_memory().unwrap();
         let checkout = store.test_checkout(&RepoIdentity::local("/x"));
@@ -2380,13 +2379,11 @@ mod tests {
         assert_eq!((written.files_indexed, written.symbols), (1, 1));
         let rows = store.symbols_in_file(checkout.id, "w.rb").unwrap();
         assert_eq!(rows[0].name, "Widget");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_oversized_file_reads_as_empty() {
-        let dir = std::env::temp_dir().join(format!("rq-oversized-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = Scratch::new("oversized");
         let path = dir.join("huge.rb");
         // text past the binary sniff, then a sparse tail: no disk to fill
         std::fs::write(&path, "class A\nend\n".repeat(1024)).unwrap();
@@ -2428,14 +2425,14 @@ mod tests {
     fn a_filesystem_walk_stops_descending_at_its_deadline() {
         // the walk thread checks the deadline between files, so without this a
         // tree of empty or unreadable dirs could hold it far past its budget
-        let dir = std::env::temp_dir().join(format!("rq-walk-deadline-{}", std::process::id()));
+        let dir = Scratch::new("walk-deadline");
         std::fs::create_dir_all(dir.join("a/b")).unwrap();
         std::fs::write(dir.join("a/b/x.rb"), "class X\nend\n").unwrap();
-        let files =
-            |deadline| fs_walk_candidates(vec![dir.clone()], deadline, Unwalked::default()).count();
+        let files = |deadline| {
+            fs_walk_candidates(vec![dir.to_path_buf()], deadline, Unwalked::default()).count()
+        };
         assert_eq!(files(None), 1);
         assert_eq!(files(Some(Instant::now())), 0);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2533,8 +2530,7 @@ mod tests {
 
     #[test]
     fn the_walk_reaches_a_key_under_the_disks_spelling() {
-        let root = std::env::temp_dir().join(format!("rq-respell-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = Scratch::new("respell");
         let nfd = "cafe\u{301}";
         for dir in ["src", nfd, "kept"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
@@ -2556,7 +2552,6 @@ mod tests {
         );
         assert_eq!(reached.get("kept/a.rb"), None, "ignored under any spelling");
         assert_eq!(reached.get("gone/a.rb"), None);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -2580,8 +2575,7 @@ mod tests {
     #[test]
     fn on_disk_holds_regular_files_only_and_knows_an_error_is_not_absence() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("rq-on-disk-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("on-disk");
         std::fs::create_dir_all(dir.join("locked")).unwrap();
         std::fs::write(dir.join("a.rb"), "").unwrap();
         std::fs::write(dir.join("locked/b.rb"), "").unwrap();
@@ -2649,8 +2643,7 @@ mod tests {
 
     #[test]
     fn detects_git_work_tree_natively() {
-        let dir = std::env::temp_dir().join(format!("rq-reporoot-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("reporoot");
         std::fs::create_dir_all(dir.join("sub")).unwrap();
 
         assert!(!is_git_repo(&dir), "no .git yet");
@@ -2661,8 +2654,6 @@ mod tests {
             repo_root(&dir.join("sub")).unwrap(),
             dir.canonicalize().unwrap()
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

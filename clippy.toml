@@ -3,10 +3,14 @@
 # git's own small files through index::read_git_file. `File::open` +
 # `read_to_end` is not covered: read_source is built on it.
 #
+# A test's temp dir goes through a `Scratch`, which removes it on drop:
+# hand-rolled ones leaked hundreds of entries per `cargo test`.
+#
 # `exists()` is `metadata().is_ok()`, so EACCES reads as "gone" — and acting on
 # that forgot index data.
 disallowed-methods = [
   { path = "std::fs::read", reason = "a checkout's file may be a FIFO or /dev/zero: use index::read_source" },
   { path = "std::fs::read_to_string", reason = "a checkout's file may be a FIFO or /dev/zero: use index::read_source, or index::read_git_file for git metadata" },
   { path = "std::path::Path::exists", reason = "an I/O error reads as `false`: use try_exists, and never treat an error as gone" },
+  { path = "std::env::temp_dir", reason = "a test's temp dir leaks unless something removes it: use a Scratch" },
 ]

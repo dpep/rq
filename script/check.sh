@@ -40,8 +40,19 @@ gate() {
   step "clippy"
   cargo clippy --all-targets -- -D warnings
 
+  # Under a TMPDIR of its own, so what the tests leave behind is countable:
+  # every temp entry a test makes goes with it (a Scratch), and none may stay.
   step "tests"
-  cargo test
+  local tmp
+  tmp="$(mktemp -d)"
+  TMPDIR="$tmp" cargo test || { rm -rf "$tmp"; return 1; }
+  local left
+  left="$(find "$tmp" -mindepth 1 -maxdepth 1 -name 'rq-*' | head -5)"
+  rm -rf "$tmp"
+  if [ -n "$left" ]; then
+    printf 'check: the tests left temp entries behind, e.g.\n%s\n' "$left"
+    return 1
+  fi
 
   # a broken intra-doc link is a doc comment that went false
   step "docs"

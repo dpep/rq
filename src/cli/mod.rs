@@ -437,6 +437,7 @@ fn dispatch(cli: Cli) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::support::Scratch;
 
     #[test]
     fn every_help_example_parses() {
@@ -846,8 +847,7 @@ mod tests {
 
     #[test]
     fn here_is_the_checkout_root_and_warms_only_git_or_tracked() {
-        let base = std::env::temp_dir().join(format!("rq-here-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = Scratch::new("here");
         let (repo, plain) = (base.join("repo"), base.join("plain"));
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("sub")).unwrap();
@@ -871,7 +871,6 @@ mod tests {
         let here = Here::at(&store, &plain);
         assert!(here.warms(), "an indexed one is tracked");
         assert!(here.checkout.is_some());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

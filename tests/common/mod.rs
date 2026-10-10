@@ -159,22 +159,32 @@ impl Drop for Fifo {
 
 /// A fresh temp directory, removed on drop with the database beside it — so
 /// a failing assert leaks nothing.
+///
+/// Both live under one root, `rq-{label}-{pid}-{n}`: the repo is the root's
+/// namesake subdirectory, and the database and whatever rq keeps beside it
+/// (`-wal`, `-shm`, `.lock`, a set-aside copy) go with the root. The harness
+/// never has to know the database's file list.
 pub(crate) struct Scratch {
+    root: PathBuf,
     dir: PathBuf,
 }
 
 impl Scratch {
-    /// `rq-{label}-{pid}-{n}` under the temp dir, emptied first: `n` counts
-    /// up per process, so two tests that share a label never share a dir.
+    /// `n` counts up per process, so two tests that share a label never
+    /// share a dir.
     pub(crate) fn new(label: &str) -> Scratch {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let name = format!("rq-{label}-{}-{n}", std::process::id());
-        let dir = std::env::temp_dir().join(name);
-        let scratch = Scratch { dir };
-        scratch.clean();
-        fs::create_dir_all(&scratch.dir).unwrap();
-        scratch
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the one place a test names the temp dir"
+        )]
+        let root = std::env::temp_dir().join(&name);
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join(&name);
+        fs::create_dir_all(&dir).unwrap();
+        Scratch { root, dir }
     }
 
     /// The same directory by its real path: macOS's temp dir is behind a
@@ -186,20 +196,28 @@ impl Scratch {
 
     /// A database path beside the directory, outside any repo in it.
     pub(crate) fn db(&self) -> PathBuf {
-        PathBuf::from(format!("{}.db", self.dir.display()))
+        self.root.join("rq.db")
     }
 
-    fn clean(&self) {
-        let _ = fs::remove_dir_all(&self.dir);
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = fs::remove_file(format!("{}{suffix}", self.db().display()));
-        }
+    /// Another database beside [`Scratch::db`], removed with it.
+    pub(crate) fn db_named(&self, name: &str) -> PathBuf {
+        self.root.join(name)
     }
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        self.clean();
+        // A detached warm may still be writing beside the database, which
+        // fails the removal (not empty); once the root is gone it can't
+        // recreate it, since rq never makes the database's directory.
+        for _ in 0..100 {
+            match fs::remove_dir_all(&self.root) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                _ => return,
+            }
+        }
     }
 }
 
