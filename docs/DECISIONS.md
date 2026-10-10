@@ -3016,7 +3016,7 @@ demand walk gets cheap enough that waiting for it costs nothing.
 
 - **Known gaps, left open at 0.60.2.** A sparse checkout's cone widening isn't noticed
   until `rq --index` (older than 0.60.1). `--drop` while an `rq --index` runs can fail
-  that pass on a foreign key (older). The representative a duplicate collapse keeps
+  that pass on a foreign key (older; closed by D64). The representative a duplicate collapse keeps
   depends on file insertion order, which the parallel parse makes vary run to run: two
   `rq --index` builds of the 100k corpus by one binary listed the same 5,116
   `initialize` results with one representative swapped, so the hunt's 5,116 vs 5,117
@@ -4238,3 +4238,26 @@ member case is a row of its own (`division-after-member`). No corpus file holds 
 shape: the large-source scan's bindings are identical to 0.60.9's (real lost 0), and
 recall against 0.60.9 changed nothing (0 of 6,821 sources; anchored 0 up, 0 down,
 calls/imports/packages 349/900/221 both).
+
+## D64 — `--drop` refuses while a live pass holds the checkout
+
+**Adopted**, 2026-10-10.
+
+*The problem.* `--drop` deleted a checkout while an `rq --index` was filling it; the pass's
+next write named a checkout that no longer existed and failed it with exit 74 "FOREIGN KEY
+constraint failed" (a known gap D52 left open at 0.60.2). The store stayed
+consistent; the user got a database error for what was a race between two commands.
+
+*The rule.* A drop asks who holds the checkout through the marks that already say who is
+indexing it — a pass mark, or a warm child's lock — with the same liveness test (`pid`
+alive, stamp inside the TTL) a search uses. Any live holder but itself, on the checkout
+or, for a drop by identity, on any checkout of the repo: refuse, exit 75 `busy`
+(`EX_TEMPFAIL`: retry later), naming the root and the pid. A dead pid's mark doesn't
+count. An explicit `rq --index` now marks its pass over a complete checkout too, so a
+refresh is visible; it still counts the tree only for an incomplete one, and `--status`
+and search read marks only for incomplete checkouts, so nothing else sees the change.
+
+*Considered.* A new code rather than 74: nothing is wrong with the index, and a script
+should retry rather than repair. No `--force`: the remedy for a busy checkout is to stop
+the holder, whose pid the message names; a crashed one's mark already doesn't block, and
+a `--force` that dropped under a live pass would only bring back the race.

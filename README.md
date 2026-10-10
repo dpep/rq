@@ -204,6 +204,7 @@ retry:
 | `no_remote`, `launch` | 69 | Nothing to hand off to: `-w` on a repo with no git host, or an editor or browser that won't start. |
 | `internal` | 70 | rq couldn't render its own output — a bug. |
 | `database`, `index` | 74 | The index can't be opened, read or written. |
+| `busy` | 75 | Another rq is at work on what this one would change: `--drop` of a checkout a live `--index` or background warm is filling. The message names its pid; retry once it finishes. |
 
 Every code means one thing, so a script can branch on the number: `1` is
 absent, `2` is ask again, and anything else is an error, which `kind` names.
@@ -277,7 +278,8 @@ Single-result commands emit one object.
 These commands exit `0` whenever they ran, including when there's nothing to
 report: an empty `--status`, an `--index` that found nothing new, or a `--drop`
 of a repo that isn't indexed (`"dropped": false` tells you). They exit non-zero
-only with an error code from the table above. `--usage` is the exception: with
+only with an error code from the table above — for `--drop`, `busy` (75) while
+another rq is indexing that checkout, which it leaves untouched. `--usage` is the exception: with
 nothing recorded yet it exits `1`.
 
 ### Waiting on the index

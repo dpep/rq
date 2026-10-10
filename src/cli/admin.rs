@@ -108,6 +108,9 @@ pub(super) fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     };
 
     if let Some(checkout) = here.checkout {
+        if let Some(busy) = indexing(&store, [key.clone()], out) {
+            return busy;
+        }
         let identity = store
             .identity_for_root(&key)
             .ok()
@@ -138,11 +141,42 @@ pub(super) fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
         };
         return nothing.emit(out);
     };
+    let roots = store.checkout_roots(repo_id).unwrap_or_default();
+    if let Some(busy) = indexing(&store, roots, out) {
+        return busy;
+    }
     let totals = store.repo_totals(repo_id).unwrap_or((0, 0));
     match store.drop_repository(repo_id) {
         Ok(()) => dropped(identity, None, totals).emit(out),
         Err(e) => fail(out, Failure::Database, format_args!("rq --drop: {e}")),
     }
+}
+
+/// A drop's refusal when a live pass or warm holds one of `roots`: dropping
+/// under it would pull the checkout out from under its writes. A dead pid's
+/// leftover mark doesn't count.
+fn indexing(
+    store: &Store,
+    roots: impl IntoIterator<Item = String>,
+    out: Output,
+) -> Option<ExitCode> {
+    roots.into_iter().find_map(|root| {
+        let pids = store.other_indexers(&root);
+        let first = *pids.first()?;
+        let pids = pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(fail(
+            out,
+            Failure::Busy,
+            format_args!(
+                "rq --drop: {root} is being indexed by another rq (pid {pids}); \
+                 wait for it to finish, or stop it (kill {first}), then drop again"
+            ),
+        ))
+    })
 }
 
 /// What `--drop` did. Keys sorted, as they always went out.

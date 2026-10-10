@@ -1899,6 +1899,96 @@ fn drop_removes_a_repos_index() {
 }
 
 #[test]
+fn drop_refuses_while_another_process_indexes_the_checkout() {
+    // A drop under a live pass would pull the checkout out from under its
+    // writes; it refuses instead, naming who holds it. A dead pid's leftover
+    // mark doesn't count.
+    let (dir, db) = scratch("drop-busy");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    let root = dir.canonicalize().unwrap();
+    let identity = format!("local:{}", root.display());
+    let dead = {
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        gone.wait().unwrap();
+        gone.id()
+    };
+    let live = std::process::id();
+    // a pass mark (a first index, a refresh) and a background warm's lock
+    let holds = [
+        (format!("pass:{}:{{pid}}", root.display()), "{now}"),
+        (format!("warm_lock:{}", root.display()), "{pid}:{now}"),
+    ];
+    for (key, value) in &holds {
+        let hold = |pid: u32| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let fill = |s: &str| {
+                s.replace("{pid}", &pid.to_string())
+                    .replace("{now}", &now.to_string())
+            };
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute(
+                "DELETE FROM meta WHERE key LIKE 'pass:%' OR key LIKE 'warm_lock:%'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+                [fill(key), fill(value)],
+            )
+            .unwrap();
+        };
+
+        rq(&db, &dir, &["--index"]);
+        hold(dead);
+        let (code, out) = rq(&db, &dir, &["--drop", "--json"]);
+        assert_eq!(code, 0, "{key}: a dead pid doesn't block: {out}");
+        assert_eq!(json(&out)["dropped"], true, "{key}: {out}");
+
+        rq(&db, &dir, &["--index"]);
+        hold(live);
+        for target in [None, Some(identity.as_str())] {
+            let mut args = vec!["--drop"];
+            args.extend(target);
+            let (code, out, err) = rq_both(&db, &dir, &args);
+            assert_eq!(code, 75, "{key} {target:?}: refuses as busy: {out}{err}");
+            assert!(out.is_empty(), "{key} {target:?}: {out}");
+            assert!(
+                err.contains(&format!("pid {live}")),
+                "{key}: names the pid: {err}"
+            );
+            assert!(
+                err.contains(&root.display().to_string()),
+                "{key}: names the checkout: {err}"
+            );
+
+            args.push("--json");
+            let (code, out, _) = rq_both(&db, &dir, &args);
+            let obj = json(&out);
+            assert_eq!(
+                (code, &obj["kind"], &obj["code"]),
+                (75, &"busy".into(), &75.into()),
+                "{key}: {out}"
+            );
+        }
+        let (_, status) = rq(&db, &dir, &["--status", "--json"]);
+        assert_eq!(
+            json(&status)[0]["symbols"],
+            1,
+            "{key}: nothing dropped: {status}"
+        );
+
+        // the holder finishes: the drop goes through
+        hold(dead);
+        let (code, out) = rq(&db, &dir, &["--drop", "--json"]);
+        assert_eq!(code, 0, "{key}: drops once it's done: {out}");
+        assert_eq!(json(&out)["dropped"], true, "{key}: {out}");
+    }
+}
+
+#[test]
 fn status_reads_a_first_index_in_progress_as_warming() {
     // A first pass commits files long before it writes coverage; until then
     // the repo is partially indexed, not "never" indexed.

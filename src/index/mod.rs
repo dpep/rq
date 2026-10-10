@@ -859,10 +859,13 @@ fn run_index(
     // there is to fill, so a search answering meanwhile can tell how much of
     // the tree it read and whether anyone is still reading (D52), and what the
     // pass is doing from its start, as a warm child's next pass sets up (D54).
+    // An explicit index marks its pass over a complete checkout too, so a
+    // `--drop` can see it running; only an incomplete one counts the tree.
     let root_key = root_display.to_string_lossy().into_owned();
-    let marked = coverage_mark
+    let incomplete = coverage_mark
         .as_ref()
         .is_none_or(|&(s, _)| s != Coverage::Complete);
+    let marked = incomplete || budget.is_none();
     if marked {
         let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::READING);
     }
@@ -948,7 +951,7 @@ fn run_index(
     let listed: Option<HashSet<String>> = listed.map(|l| l.into_iter().collect());
     let unlisted;
     let tracked = match &listed {
-        _ if !marked => None,
+        _ if !incomplete => None,
         Some(listed) => Some(listed),
         None => {
             unlisted = tracked_files(root);
@@ -2358,6 +2361,24 @@ fn mtime_of(meta: &std::fs::Metadata) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::tests::support::Scratch;
+
+    #[test]
+    fn an_explicit_index_of_a_complete_checkout_marks_its_pass() {
+        // so a `--drop` sees it running; taking the mark clears a dead pass's
+        let dir = Scratch::new("explicit-mark");
+        std::fs::write(dir.join("w.rb"), "class Widget\nend\n").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        index_under(&mut store, &dir, &[]).unwrap();
+        let root = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            store.coverage_status(&root).unwrap(),
+            Some(Coverage::Complete)
+        );
+        store.begin_pass(&root, 4_000_000, None).unwrap();
+
+        index_under(&mut store, &dir, &[]).unwrap();
+        assert_eq!(store.passes(&root).unwrap().0, Vec::<u32>::new());
+    }
 
     #[test]
     fn a_file_whose_version_went_mid_pass_is_parsed_and_written_anyway() {

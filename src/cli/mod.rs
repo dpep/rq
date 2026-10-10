@@ -81,7 +81,8 @@ again. Matches found so far come back as `provisional`\n  \
 66  a file named in the command doesn't exist\n  \
 69  no editor, browser or git remote to hand off to\n  \
 70  internal error (a bug)\n  \
-74  can't open, read or write the index"
+74  can't open, read or write the index\n  \
+75  busy: --drop of a checkout another rq is indexing; retry when it's done"
 )]
 struct Cli {
     /// A name, abbreviation, `Scope::name`, or `'Glob*'`. With --drop, a repo.

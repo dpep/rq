@@ -7,6 +7,15 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- `rq --drop` refuses with exit 75 (`busy`) while another rq — an
+  `rq --index` or a background warm — is indexing the checkout, naming its pid,
+  instead of racing it; the index is left as it was. A leftover mark from a
+  process that has exited doesn't block. Scripts that drop right after starting
+  an index should wait for it, or retry on 75.
+
 ## 0.60.10 — 2026-10-10
 
 ### Fixed

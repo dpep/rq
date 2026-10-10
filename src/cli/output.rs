@@ -95,6 +95,9 @@ pub(super) enum Failure {
     Launch,
     /// `--index` failed part-way.
     Index,
+    /// Another rq process holds what this one would change: a `--drop` of a
+    /// checkout being indexed.
+    Busy,
     /// rq couldn't render its own output.
     Internal,
 }
@@ -108,6 +111,7 @@ impl Failure {
             Failure::NoRemote => "no_remote",
             Failure::Launch => "launch",
             Failure::Index => "index",
+            Failure::Busy => "busy",
             Failure::Internal => "internal",
         }
     }
@@ -122,6 +126,7 @@ impl Failure {
             Failure::NoRemote | Failure::Launch => 69, // EX_UNAVAILABLE
             Failure::Internal => 70,                   // EX_SOFTWARE: a bug
             Failure::Database | Failure::Index => 74,  // EX_IOERR
+            Failure::Busy => 75,                       // EX_TEMPFAIL: retry later
         }
     }
 }

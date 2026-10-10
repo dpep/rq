@@ -1697,9 +1697,18 @@ impl Store {
     /// Whether a live process other than this one holds a pass mark or the
     /// warm lock on the checkout at `root`.
     pub(crate) fn indexed_by_others(&self, root: &str) -> bool {
+        !self.other_indexers(root).is_empty()
+    }
+
+    /// The live processes other than this one holding a pass mark or the warm
+    /// lock on the checkout at `root`.
+    pub(crate) fn other_indexers(&self, root: &str) -> Vec<u32> {
         let me = std::process::id();
-        self.passes(root)
-            .is_ok_and(|(pids, _)| pids.iter().any(|&p| p != me && pid_alive(i64::from(p))))
+        let (mut pids, _) = self.passes(root).unwrap_or_default();
+        pids.retain(|&p| p != me && pid_alive(i64::from(p)));
+        pids.sort_unstable();
+        pids.dedup();
+        pids
     }
 
     /// How many files a checkout holds — [`checkout_totals`](Self::checkout_totals)
