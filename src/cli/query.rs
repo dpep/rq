@@ -107,8 +107,12 @@ pub(super) struct SearchArgs<'a> {
 #[derive(Debug, PartialEq)]
 enum BatchLine {
     Query(String),
-    /// Its 1-based line number: there's no query to echo back.
-    NotUtf8(usize),
+    /// Its 1-based line number, and its text with each invalid byte as
+    /// U+FFFD: the nearest a row can echo back.
+    NotUtf8 {
+        line: usize,
+        text: String,
+    },
 }
 
 /// The batch's lines as they arrive, trimmed, blanks dropped. A line that
@@ -124,7 +128,10 @@ fn batch_lines(input: impl std::io::BufRead) -> impl Iterator<Item = BatchLine> 
                 let line = line.trim();
                 (!line.is_empty()).then(|| BatchLine::Query(line.to_string()))
             }
-            Err(_) => Some(BatchLine::NotUtf8(i + 1)),
+            Err(e) => Some(BatchLine::NotUtf8 {
+                line: i + 1,
+                text: String::from_utf8_lossy(e.as_bytes()).trim().to_string(),
+            }),
         })
 }
 
@@ -207,10 +214,11 @@ pub(super) fn cmd_batch(
             asked = freshen(&mut session, cli);
         }
         let answered = match line {
-            BatchLine::NotUtf8(n) => report(
+            BatchLine::NotUtf8 { line, text } => report_query(
                 out,
                 Failure::Usage,
-                format_args!("rq: stdin line {n} isn't UTF-8; skipped"),
+                Some(&text),
+                format_args!("rq: stdin line {line} isn't UTF-8; skipped"),
             )
             .into(),
             BatchLine::Query(query) => cmd_search(
@@ -1520,13 +1528,18 @@ mod tests {
 
     #[test]
     fn batch_lines_keep_going_past_a_line_that_is_not_utf8() {
-        use BatchLine::{NotUtf8, Query};
+        use BatchLine::Query;
         let q = |s: &str| Query(s.to_string());
+        let bad = |line, text: &str| BatchLine::NotUtf8 {
+            line,
+            text: text.to_string(),
+        };
         for (input, want) in [
             (&b"a\nb\n"[..], vec![q("a"), q("b")]),
             (b"a\r\n  \n\tb  ", vec![q("a"), q("b")]),
-            (b"a\n\xff\nb\n", vec![q("a"), NotUtf8(2), q("b")]),
-            (b"\n\n\xc3\n", vec![NotUtf8(3)]),
+            (b"a\n\xff\nb\n", vec![q("a"), bad(2, "\u{FFFD}"), q("b")]),
+            (b"\n\n\xc3\n", vec![bad(3, "\u{FFFD}")]),
+            (b" Wid\xffget \r\n", vec![bad(1, "Wid\u{FFFD}get")]),
             (b"caf\xc3\xa9\n", vec![q("café")]),
             (b"", vec![]),
         ] {

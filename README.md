@@ -157,7 +157,7 @@ that doesn't apply is **omitted**, never `null`.
 | `also_in` | with `declarations` | `file:line` of the other declarations. |
 | `total` | search | Matches the window was drawn from, before `--limit`. |
 | `explain` | `--explain` | Feature name → score contribution, in whole points. |
-| `query` | batch mode | The stdin line this row answers. |
+| `query` | batch mode | The stdin line this row answers; on a line that isn't UTF-8, its text with each invalid byte as `\u{FFFD}`. |
 | `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, phase, phase_secs, hint}`: files the index holds, files the tree spans (what git tracks, less a sparse checkout's files outside its cone, plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it any more, what a live pass over it is doing — `reading`, or `finishing` (rebuilding the name index and reading commit times, when `read` stands still for a while) — and for how many whole seconds (both omitted when no pass reports one, such as an older rq's), and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of` — on every result from that checkout, `live` ones too, so they compare. |
 
 ### Misses and exit codes
@@ -231,8 +231,8 @@ printf 'HashWithIndifferentAccess\nNoSuchThing\n' | rq -J -l 1
 
 Each row carries its `query`; a miss row carries its own `status`. Each line
 is answered as it arrives, so a caller can hold the pipe open and ask one name
-at a time. A line that isn't UTF-8 gets a `usage` error row, stderr names its
-line number, and the batch goes on. The run exits `0` if any query matched,
+at a time. A line that isn't UTF-8 gets a `usage` error row carrying its
+`query`, stderr names its line number, and the batch goes on. The run exits `0` if any query matched,
 non-zero only if none did. `--json` can't frame
 several result sets, so batch needs `-J`, and `--show`/`--open`/`--web` don't
 apply. A cold repo is indexed up front, within the `--wait` budget, before the

@@ -3594,6 +3594,8 @@ fn a_batch_line_that_is_not_utf8_is_reported_and_the_rest_answered() {
         rows[1]["kind"], "usage",
         "the bad line gets its row: {rows:?}"
     );
+    // keyed as every batch row is, by the line it answers
+    assert_eq!(rows[1]["query"], "\u{FFFD}", "{rows:?}");
     assert!(err.contains("line 2"), "stderr names the line: {err}");
 
     // nothing else to answer: the bad line is the batch's outcome

@@ -140,26 +140,40 @@ pub(super) fn fail(out: Output, kind: Failure, args: std::fmt::Arguments) -> Exi
 
 /// [`fail`] for a caller that carries the failure on rather than exiting.
 pub(super) fn report(out: Output, kind: Failure, args: std::fmt::Arguments) -> Failure {
+    report_query(out, kind, None, args)
+}
+
+/// [`report`] for one line of a batch, whose row carries the `query` it
+/// answers, as every batch row does.
+pub(super) fn report_query(
+    out: Output,
+    kind: Failure,
+    query: Option<&str>,
+    args: std::fmt::Arguments,
+) -> Failure {
     let message = args.to_string();
     eprintln!("{message}");
-    emit_error(out, kind, &message);
+    emit_error(out, kind, query, &message);
     kind
 }
 
 /// The structured half of an error: `{"error", "kind", "code"}` on stdout,
 /// nothing for text. `code` is the exit code the process leaves with.
-fn emit_error(out: Output, kind: Failure, message: &str) {
+fn emit_error(out: Output, kind: Failure, query: Option<&str>, message: &str) {
     // keys sorted, as they always went out
     #[derive(serde::Serialize)]
     struct Error<'a> {
         code: u8,
         error: &'a str,
         kind: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        query: Option<&'a str>,
     }
     let obj = Error {
         code: kind.exit_code(),
         error: message,
         kind: kind.as_str(),
+        query,
     };
     // Printed directly: `emit_json` reports its own failures through here.
     let rendered = match out {
@@ -184,6 +198,6 @@ pub(super) fn clap_failure(err: clap::Error) -> ExitCode {
     let _ = err.print();
     let out = requested_output(std::env::args_os().skip(1));
     let text = err.to_string();
-    emit_error(out, Failure::Usage, text.lines().next().unwrap_or(""));
+    emit_error(out, Failure::Usage, None, text.lines().next().unwrap_or(""));
     ExitCode::from(Failure::Usage.exit_code())
 }

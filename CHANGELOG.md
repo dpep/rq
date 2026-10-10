@@ -11,8 +11,8 @@ and aren't listed; see `git log` for those.
 
 ### Fixed
 - A batch line that isn't UTF-8 no longer ends the batch silently: it gets a
-  `usage` error row, stderr names its line number, and the lines after it are
-  answered.
+  `usage` error row carrying its `query` (invalid bytes as U+FFFD), stderr
+  names its line number, and the lines after it are answered.
 - A batch answers each line as it arrives instead of after stdin closes, so a
   caller holding the pipe open (`tail -f … | rq -J`, an agent asking one name
   at a time) gets its answers, and a line asked after the pipe sat idle reads
