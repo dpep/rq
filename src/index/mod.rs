@@ -828,7 +828,6 @@ fn run_index(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     demanded_flag: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    let profiling = crate::profile::enabled();
     PARSE_US.store(0, std::sync::atomic::Ordering::Relaxed);
     let setup_span = crate::profile::span("index: setup");
     let root_display = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -853,6 +852,37 @@ fn run_index(
 
     prune_missing_checkouts(store);
 
+    fill_checkout(
+        store,
+        root,
+        &root_display,
+        checkout,
+        setup_span,
+        active,
+        subdirs,
+        budget,
+        query,
+        cancel,
+        demanded_flag,
+    )
+}
+
+/// [`run_index`] past registering the checkout: fill it.
+#[allow(clippy::too_many_arguments)]
+fn fill_checkout(
+    store: &mut Store,
+    root: &Path,
+    root_display: &Path,
+    checkout: Checkout,
+    setup_span: crate::profile::Span,
+    active: &[String],
+    subdirs: &[String],
+    budget: Option<Duration>,
+    query: Option<&str>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    demanded_flag: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Stats, Box<dyn std::error::Error>> {
+    let profiling = crate::profile::enabled();
     let stored = store.file_mtimes(checkout.id)?;
     let coverage_mark = store.coverage_mark(checkout.id)?;
     // A checkout not yet complete says a pass is filling it, and how much
@@ -1156,13 +1186,13 @@ fn run_index(
         if forgotten > 0 {
             crate::trace!(
                 "reconcile {}: forgot {forgotten} file(s) not seen on disk",
-                crate::trace::abbrev(&root_display)
+                crate::trace::abbrev(root_display)
             );
         }
         if kept > 0 {
             crate::trace!(
                 "reconcile {}: kept {kept} file(s) under a dir the walk couldn't read",
-                crate::trace::abbrev(&root_display)
+                crate::trace::abbrev(root_display)
             );
         }
         // record the commit the index now reflects, so a later search can detect
@@ -1214,7 +1244,7 @@ fn run_index(
     if !recorded {
         crate::trace!(
             "coverage {}: kept the `complete` another pass recorded during this one",
-            crate::trace::abbrev(&root_display)
+            crate::trace::abbrev(root_display)
         );
     }
     if marked {
@@ -1230,7 +1260,7 @@ fn run_index(
     }
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",
-        crate::trace::abbrev(&root_display),
+        crate::trace::abbrev(root_display),
         stats.files_seen,
         stats.files_indexed,
         stats.symbols,
