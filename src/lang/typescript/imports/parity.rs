@@ -2,6 +2,7 @@
 //! same source: a truth the walk didn't produce. A row the walk reads wrong is
 //! listed by name, so a fix turns it green visibly and a regression fails.
 
+use super::walk::PARSE_WHOLE;
 use super::*;
 
 /// What the walk binds, and what a whole parse binds.
