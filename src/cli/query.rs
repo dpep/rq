@@ -103,6 +103,31 @@ pub(super) struct SearchArgs<'a> {
     pub(super) anchored: bool,
 }
 
+/// One non-blank line of a batch's stdin.
+#[derive(Debug, PartialEq)]
+enum BatchLine {
+    Query(String),
+    /// Its 1-based line number: there's no query to echo back.
+    NotUtf8(usize),
+}
+
+/// The batch's lines as they arrive, trimmed, blanks dropped. A line that
+/// isn't UTF-8 is its own item rather than the end of the stream; a read
+/// error ends it.
+fn batch_lines(input: impl std::io::BufRead) -> impl Iterator<Item = BatchLine> {
+    input
+        .split(b'\n')
+        .map_while(std::result::Result::ok)
+        .enumerate()
+        .filter_map(|(i, bytes)| match String::from_utf8(bytes) {
+            Ok(line) => {
+                let line = line.trim();
+                (!line.is_empty()).then(|| BatchLine::Query(line.to_string()))
+            }
+            Err(_) => Some(BatchLine::NotUtf8(i + 1)),
+        })
+}
+
 /// Answer a stream of queries, one per line on stdin, in a single run.
 ///
 /// Everything a query doesn't vary — the store, the repo, its identity, the
@@ -144,18 +169,13 @@ pub(super) fn cmd_batch(
         );
     }
 
-    use std::io::BufRead;
-    let queries: Vec<String> = std::io::stdin()
-        .lock()
-        .lines()
-        .map_while(std::result::Result::ok)
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
+    // Read as each line arrives, not to EOF: a caller holding the pipe open
+    // for its next question gets each answer before it asks.
+    let mut lines = batch_lines(std::io::stdin().lock()).peekable();
     // Nothing on stdin isn't a batch — it's a bare invocation that happens to
     // run without a terminal (a script, a test harness, stdin from /dev/null).
     // Treat it the way `rq` with no arguments is always treated.
-    if queries.is_empty() {
+    if lines.peek().is_none() {
         let _ = Cli::command().print_long_help();
         return ExitCode::SUCCESS;
     }
@@ -193,10 +213,7 @@ pub(super) fn cmd_batch(
         && (here.coverage != Some(Coverage::Complete) || moved)
     {
         let budget = cli.wait.unwrap_or_else(wait_budget);
-        crate::trace!(
-            "batch: warming {} queries' worth of index first",
-            queries.len()
-        );
+        crate::trace!("batch: warming the index before the first answer");
         let active = &session.active_paths;
         let _ = crate::index::index_budgeted(&mut session.store, &here.root, active, budget, None);
         here.refresh(&session.store);
@@ -207,22 +224,31 @@ pub(super) fn cmd_batch(
     // The batch ran, and each line's `status` carries its query's outcome, so
     // only a wholly fruitless batch reports failure — with the outcome the
     // caller can act on most (see `Outcome`'s order).
-    let outcome = queries
-        .iter()
-        .map(|query| {
+    let outcome = lines
+        .map(|line| {
+            let query = match line {
+                BatchLine::Query(query) => query,
+                BatchLine::NotUtf8(n) => {
+                    return report(
+                        out,
+                        Failure::Usage,
+                        format_args!("rq: stdin line {n} isn't UTF-8; skipped"),
+                    )
+                    .into();
+                }
+            };
             cmd_search(
                 &mut session,
                 &SearchArgs {
-                    query,
+                    query: &query,
                     explain: cli.explain,
                     out,
                     paths,
                     kinds,
                     langs,
                     want: requested_limit(cli.limit),
-                    // The warm happened above, once. Per-query warming would undo
-                    // the point of batching, and block-until-answered is meaningless
-                    // when the queries were all read up front.
+                    // The warm happened above, once, before the first answer.
+                    // Per-query warming would undo the point of batching.
                     no_wait: true,
                     wait: cli.wait,
                     open: false,
@@ -1469,4 +1495,25 @@ fn revalidate_top(
         }
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatchLine, batch_lines};
+
+    #[test]
+    fn batch_lines_keep_going_past_a_line_that_is_not_utf8() {
+        use BatchLine::{NotUtf8, Query};
+        let q = |s: &str| Query(s.to_string());
+        for (input, want) in [
+            (&b"a\nb\n"[..], vec![q("a"), q("b")]),
+            (b"a\r\n  \n\tb  ", vec![q("a"), q("b")]),
+            (b"a\n\xff\nb\n", vec![q("a"), NotUtf8(2), q("b")]),
+            (b"\n\n\xc3\n", vec![NotUtf8(3)]),
+            (b"caf\xc3\xa9\n", vec![q("café")]),
+            (b"", vec![]),
+        ] {
+            assert_eq!(batch_lines(input).collect::<Vec<_>>(), want, "{input:?}");
+        }
+    }
 }

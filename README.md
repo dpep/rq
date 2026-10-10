@@ -229,8 +229,11 @@ printf 'HashWithIndifferentAccess\nNoSuchThing\n' | rq -J -l 1
 {"query":"NoSuchThing","status":"no_match"}
 ```
 
-Each row carries its `query`; a miss row carries its own `status`. The run exits
-`0` if any query matched, non-zero only if every one missed. `--json` can't frame
+Each row carries its `query`; a miss row carries its own `status`. Each line
+is answered as it arrives, so a caller can hold the pipe open and ask one name
+at a time. A line that isn't UTF-8 gets a `usage` error row, stderr names its
+line number, and the batch goes on. The run exits `0` if any query matched,
+non-zero only if none did. `--json` can't frame
 several result sets, so batch needs `-J`, and `--show`/`--open`/`--web` don't
 apply. A cold repo is indexed up front, within the `--wait` budget, before the
 first answer.

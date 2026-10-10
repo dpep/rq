@@ -3550,6 +3550,90 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     assert_ne!(code, 0, "--show is refused for a batch");
 }
 
+/// A batch fed raw bytes: exit code, stdout rows, stderr.
+fn rq_stdin_bytes(db: &Path, cwd: &Path, stdin: &[u8]) -> (i32, Vec<serde_json::Value>, String) {
+    use std::io::Write;
+    let mut child = rq_cmd(db, cwd)
+        .args(["-J", "-l", "1"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run rq");
+    child
+        .stdin
+        .take()
+        .expect("stdin piped")
+        .write_all(stdin)
+        .expect("write queries");
+    let out = child.wait_with_output().expect("rq exits");
+    let rows = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("ndjson line"))
+        .collect();
+    (
+        common::code(&out),
+        rows,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn a_batch_line_that_is_not_utf8_is_reported_and_the_rest_answered() {
+    let (dir, db) = scratch("batch-bytes");
+    fs::write(dir.join("a.rb"), "class Widget\nend\nclass Gadget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    // the bad line used to end the batch silently: Gadget was never asked
+    let (code, rows, err) = rq_stdin_bytes(&db, &dir, b"widget\n\xff\r\ngadget\r\n");
+    assert_eq!(code, 0, "a batch that found something exits 0: {rows:?}");
+    let names: Vec<_> = rows.iter().filter_map(|r| r["name"].as_str()).collect();
+    assert_eq!(names, ["Widget", "Gadget"], "{rows:?}");
+    assert_eq!(
+        rows[1]["kind"], "usage",
+        "the bad line gets its row: {rows:?}"
+    );
+    assert!(err.contains("line 2"), "stderr names the line: {err}");
+
+    // nothing else to answer: the bad line is the batch's outcome
+    let (code, rows, _) = rq_stdin_bytes(&db, &dir, b"\xfe\xff\n");
+    assert_eq!((code, rows.len()), (64, 1), "{rows:?}");
+}
+
+#[test]
+fn a_batch_answers_each_line_before_stdin_closes() {
+    // `tail -f log | rq -J`, or an agent holding the pipe open for its next
+    // question: an answer that waits for EOF never comes.
+    use std::io::{BufRead, Write};
+    let (dir, db) = scratch("batch-stream");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let mut child = rq_cmd(&db, &dir)
+        .args(["-J", "-l", "1"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run rq");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    stdin.write_all(b"widget\n").expect("write a query");
+    let stdout = child.stdout.take().expect("stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let first = rx.recv_timeout(std::time::Duration::from_secs(10));
+    drop(stdin);
+    let _ = child.wait();
+    let first = first.expect("an answer while stdin is still open");
+    assert_eq!(json(&first)["name"], "Widget", "{first}");
+}
+
 /// A half-built index nobody is filling: no warm child finishes it between
 /// one assert and the next. For tests that stage a partial index.
 const NO_CHILD: [(&str, &str); 1] = [("RQ_WARM_DETACH", "0")];
