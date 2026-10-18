@@ -2828,7 +2828,7 @@ fn searching_from_a_subdirectory_uses_the_repo_root() {
     );
     let (_, status) = rq(&db, &dir, &["--status"]);
     assert_eq!(
-        status.lines().count(),
+        status.lines().filter(|l| !l.starts_with("index:")).count(),
         1,
         "one repo, not re-keyed: {status}"
     );
@@ -5338,10 +5338,11 @@ fn every_mode_answers_json() {
     // `every_mode_is_run_with_json` keeps this list whole), run with --json:
     // a mode added without structured output fails here, not in a caller's
     // parser.
-    let runs: [(&str, &[&str]); 5] = [
+    let runs: [(&str, &[&str]); 6] = [
         ("index", &["--index"]),
         ("symbols", &["--symbols", "a.rb"]),
         ("status", &["--status"]),
+        ("storage", &["--storage"]),
         ("usage", &["--usage"]),
         ("drop", &["--drop"]),
     ];

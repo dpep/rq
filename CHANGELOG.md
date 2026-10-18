@@ -7,6 +7,19 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Added
+- The index cleans up after itself. Once `rq --index` or a background warm has
+  indexed something, rq looks at most every two hours at the free pages deletes
+  left inside the index file, and when they reach 16 MB and a quarter of it, a
+  detached background process hands them back to the disk. Nothing to run. A
+  new index is laid down so this goes a chunk at a time; an index from an
+  earlier rq is rewritten once, in the background, when the disk has room for
+  the copy, which switches it.
+- `rq --storage` (`--json` too) reports the index file's size, the free space
+  inside it, and what the cleanup last did; `rq --status` shows it as a line.
+
 ## 0.60.11 — 2026-10-10
 
 ### Changed

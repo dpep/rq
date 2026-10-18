@@ -143,6 +143,7 @@ fn every_structured_answer_keeps_its_shape() {
         ),
         ("index", dir, vec!["--index", "--json"], ""),
         ("status", dir, vec!["--status", "--json"], ""),
+        ("storage", dir, vec!["--storage", "--json"], ""),
         ("search: hit", dir, vec!["Widget", "--json"], ""),
         (
             "search: hit --explain",

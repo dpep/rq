@@ -24,6 +24,8 @@ CREATE TABLE checkouts (
   root_path TEXT NOT NULL UNIQUE,
   current_branch TEXT
 );
+-- deleting a repository looks its checkouts up (one of ADDED_INDEXES)
+CREATE INDEX idx_checkouts_repo ON checkouts(repository_id);
 
 -- a version of a file: its path and content in a repo, stored once however
 -- many checkouts hold it. Extraction reads the path as well as the bytes, so
@@ -661,6 +663,14 @@ UPDATE files SET content_hash = 'stale:' || content_hash
   WHERE language IN ('typescript', 'javascript')
     AND content_hash NOT LIKE 'stale:%';
 "#;
+
+/// Indexes the schema gained without a version bump, which would set every
+/// older rq on a side store (D51) for an index: a fresh store has them, and
+/// the background cleanup adds them to one laid down before (D65).
+pub(crate) const ADDED_INDEXES: [(&str, &str); 1] = [(
+    "idx_checkouts_repo",
+    "CREATE INDEX IF NOT EXISTS idx_checkouts_repo ON checkouts(repository_id)",
+)];
 
 /// One rung of the migration ladder.
 #[derive(Clone, Copy)]

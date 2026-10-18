@@ -1,4 +1,4 @@
-//! The index's own commands: `--index`, `--drop`, `--status` and `--usage`.
+//! The index's own commands: `--index`, `--drop`, `--status`, `--storage` and `--usage`.
 
 use super::*;
 
@@ -63,7 +63,9 @@ pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) 
                         symbols: totals.map(|(_, symbols)| symbols),
                         symbols_added: stats.symbols,
                     };
-                    return exit_code(emit_json(out, &row));
+                    let emitted = emit_json(out, &row);
+                    after_pass(&mut store);
+                    return exit_code(emitted);
                 }
                 Output::Text => {
                     let scope = if subtree { " (subtree seed)" } else { "" };
@@ -79,6 +81,7 @@ pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) 
                     }
                 }
             }
+            after_pass(&mut store);
             ExitCode::SUCCESS
         }
         Err(e) if e.is::<crate::index::Dropped>() => fail(
@@ -274,14 +277,93 @@ pub(super) fn cmd_status(out: Output) -> ExitCode {
             }
         }
     }
-    if out == Output::Text
-        && let Ok(db) = db_location()
-    {
-        for line in leftovers(&db, store.file()) {
-            println!("{line}");
+    if out == Output::Text {
+        if let Ok(storage) = store.storage() {
+            println!("{}", storage_line(&storage, now_unix()));
+        }
+        if let Ok(db) = db_location() {
+            for line in leftovers(&db, store.file()) {
+                println!("{line}");
+            }
         }
     }
     ExitCode::SUCCESS
+}
+
+/// `--storage`: the index file's size, the free pages inside it, and what the
+/// background cleanup last did (D65). One object: it is one file.
+pub(super) fn cmd_storage(out: Output) -> ExitCode {
+    let store = match open_store_or_fail(out, "rq --storage") {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let storage = match store.storage() {
+        Ok(storage) => storage,
+        Err(e) => return fail(out, Failure::Database, format_args!("rq --storage: {e}")),
+    };
+    #[derive(serde::Serialize)]
+    struct Report<'a> {
+        /// The file in use: beside a newer rq's, this rq's side store.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        #[serde(flatten)]
+        storage: &'a crate::store::Storage,
+    }
+    match out {
+        Output::Json | Output::Ndjson => exit_code(emit_json(
+            out,
+            &Report {
+                file: store.file().map(|f| f.display().to_string()),
+                storage: &storage,
+            },
+        )),
+        Output::Text => {
+            if let Some(file) = store.file() {
+                println!("{}", file.display());
+            }
+            println!("{}", storage_line(&storage, now_unix()));
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// The store in a line: its size, what's free inside it, and the last
+/// cleanup — or why it left the space.
+fn storage_line(storage: &crate::store::Storage, now: i64) -> String {
+    let mb = |bytes: i64| bytes as f64 / 1e6;
+    let mut line = format!("index: {:.1} MB", mb(storage.bytes));
+    if storage.free_bytes > 0 {
+        line.push_str(&format!(", {:.1} MB of it free", mb(storage.free_bytes)));
+    }
+    let cleanup = &storage.cleanup;
+    match cleanup.skipped {
+        Some(crate::store::Held::NoRoom) => line.push_str(
+            "; the last cleanup left it: no room on disk for the one rewrite it needs \
+             (twice the live size, free)",
+        ),
+        Some(crate::store::Held::Busy) => {
+            line.push_str("; the last cleanup left it: another rq was writing, so it retries")
+        }
+        None => {}
+    }
+    if let (Some(at), Some(bytes)) = (cleanup.ran_at, cleanup.reclaimed_bytes) {
+        line.push_str(&format!(
+            "; cleaned up {} ago, {:.1} MB back to the disk",
+            ago(now - at),
+            mb(bytes)
+        ));
+    }
+    line
+}
+
+/// A duration in its largest whole unit: `40 s`, `3 min`, `2 h`, `5 d`.
+fn ago(secs: i64) -> String {
+    match secs.max(0) {
+        s if s < 60 => format!("{s} s"),
+        s if s < 3600 => format!("{} min", s / 60),
+        s if s < 86_400 => format!("{} h", s / 3600),
+        s => format!("{} d", s / 86_400),
+    }
 }
 
 /// What `--status` says about the files beside the index (DECISIONS D51): the

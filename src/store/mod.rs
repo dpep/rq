@@ -3,12 +3,15 @@
 //! The background indexer writes here; search reads. WAL mode lets those
 //! happen concurrently. See `docs/ARCHITECTURE.md` for the schema.
 
+pub(crate) mod cleanup;
 mod names;
 mod recover;
 mod schema;
+mod storage;
 
 pub(crate) use recover::{broken_copy, side_path, side_stores};
 pub(crate) use schema::VERSION;
+pub(crate) use storage::{Held, Storage};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -124,6 +127,20 @@ pub(crate) struct Checkout {
 /// A handle to the rq database.
 pub(crate) struct Store {
     conn: Connection,
+    /// How this connection's writes wait out another writer, so a write that
+    /// waits differently for a moment can give it back.
+    waits: std::cell::Cell<Waits>,
+}
+
+/// The busy handlers a [`Store`] runs under.
+#[derive(Clone, Copy)]
+enum Waits {
+    /// [`BUSY_WAIT`], as every connection starts.
+    Search,
+    /// [`Store::wait_out_writers`].
+    Pass,
+    /// [`Store::stop_waiting_when`].
+    Stoppable,
 }
 
 impl Drop for Store {
@@ -358,6 +375,14 @@ fn wal(conn: &Connection) -> Result<()> {
     }
 }
 
+/// Did another connection hold the lock past the busy timeout?
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
 /// Is the process a pid in the database names still running? A pid of 0 is a
 /// marker from before the pid was kept: its pass can't be told from a killed
 /// one. A pid on another machine sharing the database reads as dead, which
@@ -478,6 +503,12 @@ impl Store {
         recover::open(path, &schema::LADDER)
     }
 
+    /// Open the store at exactly `path`, as it is: no new file, no rebuild,
+    /// no upgrade (see [`recover::open_existing`]).
+    pub(crate) fn open_existing(path: &Path) -> Result<Store> {
+        recover::open_existing(path, &schema::LADDER)
+    }
+
     /// The file this store reads, which is not the path asked for when a newer
     /// rq owns that one.
     pub(crate) fn file(&self) -> Option<&Path> {
@@ -508,6 +539,14 @@ impl Store {
         // materializes thousands of rows (see DECISIONS D8).
         // busy_timeout first: switching to WAL takes a lock of its own.
         conn.execute_batch(&format!("PRAGMA busy_timeout={};", BUSY_WAIT.as_millis()))?;
+        // A new file keeps the map that lets its free pages go back a chunk at
+        // a time (D65); an older one switches at its cleanup's one full
+        // vacuum. Before anything writes a page: on a file with pages the
+        // pragma changes nothing.
+        let pages: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        if pages == 0 {
+            conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
+        }
         wal(&conn)?;
         conn.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; \
@@ -560,6 +599,7 @@ impl Store {
             // fresh database — SCHEMA is already at the current version
             conn.execute_batch(ladder.fresh)?;
             stamp(&conn, "created_by")?;
+            storage::created(&conn)?;
         } else {
             // cumulative migrations for existing databases
             for (v, step) in ladder.steps {
@@ -587,7 +627,11 @@ impl Store {
                 reason: format!("no {table} table"),
             });
         }
-        Ok((Store { conn }, wrote))
+        let store = Store {
+            conn,
+            waits: std::cell::Cell::new(Waits::Search),
+        };
+        Ok((store, wrote))
     }
 
     /// Insert or update a repository, returning its id.
@@ -1627,6 +1671,7 @@ impl Store {
         if let Some(hook) = on_long_wait {
             let _ = ON_LONG_WAIT.set(hook);
         }
+        self.waits.set(Waits::Pass);
         self.conn.busy_handler(Some(pass_busy))
     }
 
@@ -1639,6 +1684,7 @@ impl Store {
         stop: &'static std::sync::atomic::AtomicBool,
     ) -> Result<()> {
         let _ = STOP_WAITING.set(stop);
+        self.waits.set(Waits::Stoppable);
         self.conn.busy_handler(Some(stoppable_busy))
     }
 
@@ -1655,12 +1701,15 @@ impl Store {
     }
 
     /// Run `write` waiting out another writer for at most `wait`, then go
-    /// back to [`BUSY_WAIT`]. For a search's connection, which has no
-    /// [`wait_out_writers`](Self::wait_out_writers) handler to lose.
+    /// back to how this connection waited before, whatever `write` returned.
     fn waiting_at_most<T>(&self, wait: std::time::Duration, write: impl FnOnce() -> T) -> T {
         let _ = self.conn.busy_timeout(wait);
         let out = write();
-        let _ = self.conn.busy_timeout(BUSY_WAIT);
+        let _ = match self.waits.get() {
+            Waits::Search => self.conn.busy_timeout(BUSY_WAIT),
+            Waits::Pass => self.conn.busy_handler(Some(pass_busy)),
+            Waits::Stoppable => self.conn.busy_handler(Some(stoppable_busy)),
+        };
         out
     }
 
@@ -2082,6 +2131,42 @@ mod tests {
             actual,
             "docs/ARCHITECTURE.md's schema block has drifted from the schema"
         );
+    }
+
+    /// Deleting a row makes SQLite look up every row that references it:
+    /// through an index, or by scanning the child table once per deleted row
+    /// (trekr's `body_call` made its collection 36× slower that way).
+    #[test]
+    fn every_foreign_key_is_looked_up_through_an_index() {
+        let store = Store::open_in_memory().unwrap();
+        let keys: Vec<(String, String)> = store
+            .conn
+            .prepare(
+                "SELECT m.name, f.\"from\" FROM sqlite_master m, pragma_foreign_key_list(m.name) f \
+                 WHERE m.type = 'table' ORDER BY m.name, f.\"from\"",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(keys.len() >= 7, "{keys:?}");
+        let scanned: Vec<String> = keys
+            .iter()
+            .filter(|(table, column)| {
+                let plan: String = store
+                    .conn
+                    .query_row(
+                        &format!("EXPLAIN QUERY PLAN SELECT 1 FROM {table} WHERE {column} = 1"),
+                        [],
+                        |r| r.get(3),
+                    )
+                    .unwrap();
+                !plan.contains(" USING ")
+            })
+            .map(|(table, column)| format!("{table}({column})"))
+            .collect();
+        assert!(scanned.is_empty(), "scanned on delete: {scanned:?}");
     }
 
     #[test]
@@ -2762,7 +2847,9 @@ mod tests {
         );
         assert_eq!(left("SELECT COUNT(*) FROM symbols"), 1);
         assert_eq!(
-            left("SELECT COUNT(*) FROM meta WHERE key NOT IN ('created_by', 'schema_by')"),
+            left(
+                "SELECT COUNT(*) FROM meta WHERE key NOT IN ('created_by', 'schema_by') AND key NOT LIKE 'cleanup:%'"
+            ),
             0,
             "per-repo caches dropped"
         );
@@ -3013,7 +3100,10 @@ mod tests {
         assert_eq!((count(&store, "files"), count(&store, "symbols")), (1, 1));
         assert_eq!(store.coverage_status("/a").unwrap(), None);
         assert_eq!(
-            count(&store, "meta WHERE key NOT IN ('created_by', 'schema_by')"),
+            count(
+                &store,
+                "meta WHERE key NOT IN ('created_by', 'schema_by') AND key NOT LIKE 'cleanup:%'"
+            ),
             0,
             "its caches go with it"
         );

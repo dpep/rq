@@ -132,14 +132,6 @@ fn decode(keys: &[u8], n: usize) -> Option<Vec<&str>> {
 /// rebuilds the index at its end. `built` holds the pass's pid meanwhile.
 const SUSPENDED: i64 = -1;
 
-/// Did another connection hold the lock past the busy timeout?
-fn is_busy(e: &rusqlite::Error) -> bool {
-    matches!(
-        e.sqlite_error_code(),
-        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-    )
-}
-
 /// Is `repository_id`'s index current — built under this format, and kept
 /// since?
 pub(super) fn current(conn: &Connection, repository_id: i64) -> Result<bool> {
@@ -263,7 +255,7 @@ impl Store {
             }
             match self.rebuild_name_index(id) {
                 Ok(()) => {}
-                Err(e) if is_busy(&e) => suspended.push(id),
+                Err(e) if super::is_busy(&e) => suspended.push(id),
                 Err(e) => return Err(e),
             }
         }

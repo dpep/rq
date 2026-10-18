@@ -26,10 +26,16 @@ fn maybe_detach_warm(
     spawn_detached_warm(root);
 }
 
-/// Spawn `rq --warm <root>` fully detached: null stdio and its own process
-/// group, so it survives this process and a later Ctrl-C in the terminal
-/// can't reach it. The child nices itself and is single-flighted per checkout.
+/// Spawn `rq --warm <root>` fully detached. The child nices itself and is
+/// single-flighted per checkout.
 pub(super) fn spawn_detached_warm(root: &std::path::Path) {
+    spawn_detached("--warm", root);
+}
+
+/// Spawn `rq <mode> <path>` fully detached: null stdio and its own process
+/// group, so it survives this process and a later Ctrl-C in the terminal
+/// can't reach it.
+fn spawn_detached(mode: &str, path: &std::path::Path) {
     use std::os::unix::process::CommandExt;
     if !warm_detach_enabled() {
         return;
@@ -38,24 +44,122 @@ pub(super) fn spawn_detached_warm(root: &std::path::Path) {
         return;
     };
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--warm")
-        .arg(root)
+    cmd.arg(mode)
+        .arg(path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .process_group(0);
+    let what = mode.trim_start_matches('-');
     match cmd.spawn() {
         Ok(mut child) => {
             crate::trace!(
-                "background warm (detached): pid {} for {}",
+                "background {what} (detached): pid {} for {}",
                 child.id(),
-                crate::trace::abbrev(root)
+                crate::trace::abbrev(path)
             );
             if warm_detach_waits() {
                 let _ = child.wait();
             }
         }
-        Err(e) => crate::trace!("detached warm failed to spawn: {e}"),
+        Err(e) => crate::trace!("detached {what} failed to spawn: {e}"),
+    }
+}
+
+/// Once a pass is done: start a cleanup of the store it wrote when one is
+/// due (D65). Costs a `meta` read and, when an interval has passed, the free
+/// page count; never waits on another writer, and never on the cleanup.
+pub(super) fn after_pass(store: &mut Store) {
+    // the file this pass wrote, which beside a newer rq's is a side store
+    let Some(file) = store.file().map(std::path::Path::to_path_buf) else {
+        return;
+    };
+    if !warm_detach_enabled() {
+        return;
+    }
+    match crate::store::cleanup::start(store, now_unix()) {
+        Ok(true) => spawn_detached("--cleanup", &file),
+        Ok(false) => {}
+        Err(e) => crate::trace!("cleanup: can't tell whether one is due: {e}"),
+    }
+}
+
+/// Drop scheduling priority, and with `throttle_io` disk I/O too on macOS: a
+/// background child stays out of the foreground's way. Best-effort — a
+/// failure just means a less polite child.
+fn run_in_background(throttle_io: bool) {
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        // <sys/resource.h>; not in the libc crate. Args below:
+        // IOPOL_TYPE_DISK=0, IOPOL_SCOPE_PROCESS=0, IOPOL_THROTTLE=3.
+        fn setiopolicy_np(
+            iotype: libc::c_int,
+            scope: libc::c_int,
+            policy: libc::c_int,
+        ) -> libc::c_int;
+    }
+    // SAFETY: plain syscalls on this process with constant arguments; neither
+    // touches memory we own.
+    unsafe {
+        libc::nice(10);
+        #[cfg(target_os = "macos")]
+        if throttle_io {
+            setiopolicy_np(0, 0, 3);
+        }
+    }
+}
+
+/// `rq --cleanup STORE`: the detached child a pass starts once a cleanup is
+/// due — one pass over exactly the store that pass wrote (D65), reported
+/// only in that store's record (`--storage`) and the trace.
+pub(super) fn cmd_cleanup(path: &str) -> ExitCode {
+    // Niced, but not throttled: a compaction holds the write lock while it
+    // writes, and throttled I/O stretched a full rewrite from 1 s to 37 s,
+    // with every writer queued behind it.
+    run_in_background(false);
+    let mut store = match Store::open_existing(std::path::Path::new(path)) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::trace!("cleanup: can't open {path}: {e}");
+            return Failure::Database.into();
+        }
+    };
+    let started = std::time::Instant::now();
+    let mut hold = test_hold();
+    match crate::store::cleanup::run(&mut store, now_unix(), &mut hold) {
+        Ok(done) => crate::trace!(
+            "cleanup: {:?}, {} bytes back, indexes {:?} ({} ms)",
+            done.compacted,
+            done.reclaimed_bytes,
+            done.indexes,
+            started.elapsed().as_millis()
+        ),
+        Err(e) => {
+            crate::trace!("cleanup failed: {e}");
+            return Failure::Database.into();
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `RQ_TEST_CLEANUP_HOLD=<file>`: a cleanup that, after its first chunk,
+/// creates `<file>.held` and waits while `<file>` exists — so a test can act
+/// mid-cleanup without guessing at timing.
+fn test_hold() -> impl FnMut() {
+    let gate = std::env::var_os("RQ_TEST_CLEANUP_HOLD").map(PathBuf::from);
+    let mut held = false;
+    move || {
+        let Some(gate) = gate.as_ref().filter(|_| !held) else {
+            return;
+        };
+        held = true;
+        let mut reached = gate.clone().into_os_string();
+        reached.push(".held");
+        let _ = std::fs::write(&reached, "");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while gate.try_exists().unwrap_or(false) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
@@ -104,25 +208,7 @@ fn record_verified(store: &Store, root: &std::path::Path, head: Option<&str>, ch
 /// of the foreground's way; single-flighted per checkout so a burst of queries
 /// runs at most one warmer. Safe (and boring) to run by hand.
 pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
-    // Stay out of the way: drop scheduling priority, and throttle disk I/O on
-    // macOS. Best-effort — a failure just means a less-polite warm.
-    #[cfg(target_os = "macos")]
-    unsafe extern "C" {
-        // <sys/resource.h>; not in the libc crate. Args below:
-        // IOPOL_TYPE_DISK=0, IOPOL_SCOPE_PROCESS=0, IOPOL_THROTTLE=3.
-        fn setiopolicy_np(
-            iotype: libc::c_int,
-            scope: libc::c_int,
-            policy: libc::c_int,
-        ) -> libc::c_int;
-    }
-    // SAFETY: plain syscalls on this process with constant arguments; neither
-    // touches memory we own.
-    unsafe {
-        libc::nice(10);
-        #[cfg(target_os = "macos")]
-        setiopolicy_np(0, 0, 3);
-    }
+    run_in_background(true);
     let mut store = match open_store() {
         Ok(s) => s,
         Err(_) => return Failure::Database.into(),
@@ -177,6 +263,7 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
     // would leave the checkout part-read with nobody indexing it (D52).
     let deadline = std::time::Instant::now() + warm_sweep_cap();
     let active = crate::index::branch_changed_files(&root);
+    let mut passed = false;
     loop {
         let remaining = deadline
             .saturating_duration_since(std::time::Instant::now())
@@ -195,6 +282,7 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
                 break;
             }
         };
+        passed = true;
         if store.coverage_status(&key).ok().flatten() == Some(Coverage::Complete)
             || stats.files_indexed == 0
         {
@@ -202,6 +290,9 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
         }
     }
     let _ = store.clear_warm_lock(&key);
+    if passed {
+        after_pass(&mut store);
+    }
     ExitCode::SUCCESS
 }
 

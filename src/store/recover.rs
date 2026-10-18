@@ -150,6 +150,38 @@ fn open_as(path: &Path, ladder: &Ladder, main: bool) -> Result<Store> {
     }
 }
 
+/// Open the database at exactly `path` — never another file, never a new
+/// one, never rebuilt or upgraded: for a background pass named the store an
+/// index wrote, which may since be gone or replaced.
+pub(super) fn open_existing(path: &Path, ladder: &Ladder) -> Result<Store> {
+    // before the lock, which would leave a `.lock` beside a store that's gone
+    if !path.try_exists().unwrap_or(true) {
+        return Err(failure(
+            ffi::SQLITE_CANTOPEN,
+            format!("{} is gone", path.display()),
+        ));
+    }
+    let _open = Lock::take(path, false)?;
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version != ladder.version {
+        return Err(failure(
+            ffi::SQLITE_MISMATCH,
+            format!(
+                "{} is schema v{version}, not this rq's v{}",
+                path.display(),
+                ladder.version
+            ),
+        ));
+    }
+    match Store::init(conn, ladder) {
+        Ok((store, _)) => Ok(store),
+        Err(Refusal::Failed(e)) => Err(e),
+        Err(Refusal::Broken { reason, .. }) => Err(failure(ffi::SQLITE_CORRUPT, reason)),
+        Err(Refusal::Newer(v)) => Err(failure(ffi::SQLITE_MISMATCH, format!("schema v{v}"))),
+    }
+}
+
 /// The index this rq keeps while a newer one owns `path`.
 fn side(path: &Path, ladder: &Ladder, newer: i64) -> Result<Store> {
     let side = side_path(path, ladder.version);

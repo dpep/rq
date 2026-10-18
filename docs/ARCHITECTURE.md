@@ -129,6 +129,9 @@ checkouts (
   root_path TEXT NOT NULL UNIQUE,    -- canonical
   current_branch TEXT
 );
+-- a repository's delete looks its checkouts up: every foreign key's child
+-- column is indexed, or each deleted row scans the child table
+CREATE INDEX idx_checkouts_repo ON checkouts(repository_id);
 
 -- a file version: a path's content in a repo, stored once however many
 -- checkouts hold it. The path is part of the key because extraction reads it
@@ -240,7 +243,7 @@ usage_daily (
 -- edits (by checkout id where a pass writes them, by root where a search
 -- reads them before any pass registered the checkout); and for the database,
 -- the rq versions that created it and wrote its schema (`created_by`,
--- `schema_by`)
+-- `schema_by`) and what its background cleanup last did (`cleanup:*`, D65)
 meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 ```
 
@@ -696,6 +699,17 @@ a search's own warm reads and `rq --index` writes (recall runs, and tests that
 stage a half-built index). `RQ_WARM_DETACH=wait` spawns it as usual and waits
 for it to exit: the test harness's default, so tests run production's path
 without racing the child.
+
+The store cleans up after itself the same way (D65). Once `rq --index`, or a
+warm child that ran a pass, is done, it looks at the file's free pages at most
+every two hours, and when they are at least 16 MB and a quarter of the file it
+claims the cleanup and starts a detached, niced `rq --cleanup STORE` that hands
+them back a chunk at a time, pausing between chunks so a queued writer goes
+first. New stores are created in incremental auto-vacuum mode; an older one is
+rewritten once, which switches it, when the disk holds the copy. A live indexer
+anywhere in the store, or a writer holding the lock past a search's wait, makes
+it skip and retry sooner. It holds no mark, so neither `--drop` nor a waiting
+search ever mistakes it for an indexer. `--storage` reports the file.
 
 Git-awareness (current branch, recent commits, ownership, recently-modified
 areas) enters later as additional **ranking hints — never hard filters**.

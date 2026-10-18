@@ -40,7 +40,7 @@ use warm::*;
 // modes are exclusive: `dispatch` would run whichever it checks first
 #[command(group(
     clap::ArgGroup::new("mode")
-        .args(["symbols", "index", "status", "drop", "usage", "warm", "completions"])
+        .args(["symbols", "index", "status", "storage", "drop", "usage", "warm", "cleanup", "completions"])
         .multiple(false)
 ))]
 #[command(
@@ -73,7 +73,7 @@ answer instead of reporting a false \"no matches\"; --no-wait answers right away
 A result from an index still being built says so (`warming`: files read of\n  \
 the tree) and scales its confidence to the share read.\n\n\
 EXIT CODES:\n  \
-0   matched; for --status, --index, --drop: ran, even with nothing to show or drop\n  \
+0   matched; for --status, --storage, --index, --drop: ran, even with nothing to show or drop\n  \
 1   no match; for --usage: nothing recorded yet\n  \
 2   no answer yet: the index is still warming or indexing was interrupted; ask\n      \
 again. Matches found so far come back as `provisional`\n  \
@@ -232,6 +232,13 @@ struct Cli {
     #[arg(help_heading = "The index", long)]
     status: bool,
 
+    /// Show the index file's size, and what its background cleanup did.
+    ///
+    /// Deletes leave free pages inside the file; after indexing, rq hands
+    /// them back to the disk on its own once they're worth it.
+    #[arg(help_heading = "The index", long)]
+    storage: bool,
+
     /// Forget a checkout's index (the opposite of --index).
     ///
     /// TARGET is the checkout's path (default: this one), or a repo identity as
@@ -248,6 +255,11 @@ struct Cli {
     /// waits on it. Single-flighted per checkout; safe to run by hand.
     #[arg(long, hide = true, value_name = "PATH", num_args = 0..=1, value_hint = clap::ValueHint::AnyPath)]
     warm: Option<Option<String>>,
+
+    /// Hand the free pages of the store at STORE back to the disk — the
+    /// target an index pass starts, detached, once a cleanup is due (D65).
+    #[arg(long, hide = true, value_name = "STORE", value_hint = clap::ValueHint::FilePath)]
+    cleanup: Option<String>,
 
     // Debugging
     /// Trace rq's decisions to stderr (`RQ_LOG=1` when installed).
@@ -321,8 +333,14 @@ fn dispatch(cli: Cli) -> ExitCode {
     if let Some(path) = &cli.warm {
         return cmd_warm(path.as_deref());
     }
+    if let Some(store) = &cli.cleanup {
+        return cmd_cleanup(store);
+    }
     if cli.status {
         return cmd_status(output_format(&cli));
+    }
+    if cli.storage {
+        return cmd_storage(output_format(&cli));
     }
     if cli.usage {
         return cmd_usage(output_format(&cli));
@@ -900,10 +918,10 @@ mod tests {
     #[test]
     fn every_mode_is_run_with_json() {
         // The modes `every_mode_answers_json` and `json_shapes` run with
-        // --json. `--warm` is the detached child (no output); `--completions`
+        // --json. `--warm` and `--cleanup` are detached children (no output); `--completions`
         // prints a shell script. A new mode fails here until it's added there.
-        const RUN_WITH_JSON: [&str; 5] = ["drop", "index", "status", "symbols", "usage"];
-        const NO_OUTPUT: [&str; 2] = ["completions", "warm"];
+        const RUN_WITH_JSON: [&str; 6] = ["drop", "index", "status", "storage", "symbols", "usage"];
+        const NO_OUTPUT: [&str; 3] = ["cleanup", "completions", "warm"];
         let cmd = Cli::command();
         let group = cmd
             .get_groups()

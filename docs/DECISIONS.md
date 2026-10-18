@@ -4268,3 +4268,126 @@ search's warm) can reuse the id.
 should retry rather than repair. No `--force`: the remedy for a busy checkout is to stop
 the holder, whose pid the message names; a crashed one's mark already doesn't block, and
 a `--force` that dropped under a live pass would only bring back the race.
+
+## D65 — The store hands its free pages back after indexing, in the background
+
+**Adopted**, 2026-10-17. `src/store/cleanup.rs` (policy), `src/store/storage.rs` (the
+file), `after_pass` and `cmd_cleanup` in `src/cli/warm.rs`, `--storage` in
+`src/cli/admin.rs`; tests there and in `tests/cleanup.rs`. trekr's DEC-650, adapted.
+
+*The problem.* Deletes leave their pages free inside the file, and SQLite reuses them but
+never returns them. The real store this was written against: 82 MB, 9.2 MB free (11 %),
+in the pre-incremental mode, so only a full rewrite could give any back, and nothing
+said so. Nobody should have to know that, or that `VACUUM` exists.
+
+*What.* When `rq --index`, or a warm child that ran a pass, is done, it looks — at most
+every two hours (`INTERVAL`, `cleanup:checked` in `meta`) — at the free pages. When they
+are at least **16 MB and a quarter of the file**, it claims the store's cleanup and starts
+a detached `rq --cleanup STORE` (hidden; its own process group, niced) and exits. That
+process hands the free pages back: a chunk of 1,024 pages per write transaction with a
+150 ms pause between (longer than SQLite's longest busy backoff, 100 ms, so a queued
+writer goes first) on a store in incremental auto-vacuum mode, which every new store is;
+by one full `VACUUM` on an older store, which switches it, so that rewrite is its last.
+`rq --storage` reports the file (`--json`: `file`, `bytes`, `free_bytes`, `cleanup`), and
+`--status` adds the same as a line.
+
+*Never on a query's path.* The query's in-process warm never looks (D52: its first answer
+comes first), and a warm child that found nothing moved wrote nothing to look for. A
+pass's look is a `meta` read and, when an interval has passed, two header reads; its
+writes never wait for another writer longer than a usage count's 100 ms, and it never
+waits for the cleanup. A new store is stamped at creation, so its first look is an
+interval away (and no test store grows a detached process unless it asks to).
+
+*Claimed before it is started, and named its store.* The claim is one immediate
+transaction that never waits, so of ten passes finishing at once one starts a cleanup
+(a unit test races ten connections); a cleanup that then fails holds the claim, and costs
+one process an interval, not one per pass. The child is passed the file the pass wrote
+— beside a newer rq's store that is this rq's side store (D51), which a fresh process
+resolving `RQ_DB` would not open — and opens exactly it: no new file, no set-aside, no
+upgrade (`Store::open_existing`).
+
+*Skipped, not waited for.* A live pass mark or warm lock anywhere in the store, judged
+as D64 judges them, keeps a pass from claiming and a cleanup from starting: that
+indexer's writes reuse the very pages. A writer holding the lock past the cleanup's wait
+(a search's, 3 s) ends it where it is. Either way it records `skipped: busy` and moves
+the claim back to ten minutes short of the interval (`RETRY`). The cleanup holds no mark,
+so `--drop` is never refused for it (D64), a search never waits on it (D52), and a drop
+mid-cleanup lands between chunks (`a_drop_and_a_status_mid_cleanup_answer_as_usual`,
+held deterministically by `RQ_TEST_CLEANUP_HOLD`).
+
+*The full rewrite* copies the live pages to a temporary file (`temp_store = FILE` for
+that statement; in memory, as rq's connections keep temporary tables, it is the whole
+database) and into the log beside the store, so it runs only when both disks hold the
+live size with a quarter to spare — the temp directory found as SQLite's `os_unix.c`
+looks for it — else it records `skipped: no_room`. A pass records its run last, after the
+pages are gone, and `--storage` reads size, free pages and record in one transaction, so
+it never shows a run beside the pages it had yet to hand back (a unit test lands a whole
+pass between its reads).
+
+*Why 16 MB and a quarter.* Measured on a scratch store of nine large corpora (rails,
+discourse, ruby, graphql, dd-trace-rb, rubocop, next.js, react, jest; 91.5 MB):
+
+| what deletes | free afterwards | a pass? |
+| --- | ---: | --- |
+| the real store's ordinary churn | 9.2 of 82 MB (11 %) | no |
+| a requeue migration (every file re-extracted, as v24 did) | 0.3 of 93.5 MB | no |
+| `--drop` of discourse, the largest | 20.8 of 91.5 MB (23 %) | no |
+| a migration that rebuilds `symbols` (as v23 rebuilt tables) | 53.8 of 125.6 MB (43 %) | yes |
+
+A requeue frees each file's rows as it rewrites them, and the next file reuses them; a
+drop's pages are what the next index fills. The quarter sits above the churn by twice,
+and the floor keeps a small store from being compacted for what no disk notices. trekr's
+32 MB floor is for stores five times larger (455 MB); its quarter carries over.
+
+*Measured* (Apple M2, release, the 125.6 MB store above; queries `--no-wait Base` in
+rails every 200 ms, and an `rq --index` of rack, 23 ms alone, started 0.3 s in):
+
+| pass | time | file | queries during, p50 / max | the index waited |
+| --- | ---: | --- | ---: | ---: |
+| none (baseline) | — | — | 16–17 / 20–40 ms | 23–25 ms |
+| full rewrite, older store (3 runs) | 0.8–1.8 s | 125.6 → 71.8 MB | 305–365 / 393–681 ms | 0.45–1.5 s |
+| chunks, switched store (3 runs, 32 MB free) | 1.7–1.9 s | 104.0 → 71.8 MB | 9–37 / 55–161 ms | 21–125 ms |
+
+The full rewrite is once per store; during it a query's first answer took 160 ms (recall
+reading against the rewrite's I/O), and its usage write waited out its 100 ms and was
+skipped. Chunks leave the file the size a rewrite does (71.8 MB both).
+
+*Niced, not throttled.* The warm child also throttles its disk I/O (macOS
+`IOPOL_THROTTLE`); the cleanup does not. Throttled, the full rewrite above took 36.7 s
+holding the write lock, the rack index waited 30 s, and queries ran at 361 ms p50 for all
+of it. A compaction holds the lock while it writes, so slowing its writes slows every
+writer queued behind it.
+
+*Differences from trekr.*
+- No snapshot sweep and no blob collection: rq keeps no tree snapshots, and a file
+  version no checkout maps is deleted in the transaction that let go of it (D50), so the
+  free pages are the only waste. Hence no `reclaimable_bytes` either: it would equal
+  `free_bytes`.
+- No `--gc`, no `--vacuum`. trekr's `--gc` decides which gem checkouts are unreachable;
+  rq has no such decision (a checkout whose path is gone is pruned already), and the
+  pass covers compaction. Nothing is left that a flag would do.
+- Storage is its own mode, `--storage`, not a field of `--status --json`, which is an
+  array of checkout rows; an object there would break every caller. `--status` shows it
+  as a text line, beside the side-store lines it already prints.
+- A foreign-key guard, not a cascade guard: rq declares no `ON DELETE CASCADE`, but with
+  `foreign_keys` on every parent delete looks its children up all the same, by index or
+  by a scan per row (trekr's `body_call(blob_id)` made its collection 36× slower). A test
+  holds every child column to a plan that uses an index. It found `checkouts
+  (repository_id)` scanned — a table of one row per worktree, harmless at any real size —
+  and `idx_checkouts_repo` closes it so the guard needs no exception. It is one of
+  `ADDED_INDEXES`: on new stores, and added to older ones by the cleanup, which counts
+  as due for it alone. A version bump would have set every older rq on a side store
+  (D51) for an index.
+- Busy handlers: an rq connection runs one of three (a search's timeout, a pass's long
+  wait, a search warm's stoppable one), and a bounded write used to restore a search's
+  timeout whatever it found; it now restores the connection's own — trekr's
+  `truncate_wal` restored a fixed one. A test holds the lock past a search's wait and
+  watches a pass's write outlast it after a claim.
+- `RQ_WARM_DETACH` governs the cleanup child as it does the warm one (`0`: never
+  spawned, as recall runs want; `wait`: spawned and waited for, as tests want) rather
+  than a second knob.
+
+*Reverses if* a compaction is measured stalling an index or a query beyond a search's
+wait on a real store, or the threshold fires on ordinary churn — the share goes up
+before anything else changes; or `--status --json` becomes an object for another
+reason, when `storage` moves into it.

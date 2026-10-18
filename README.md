@@ -63,6 +63,7 @@ rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # seed the index with a subtree first (big monorepos)
 rq --drop [PATH|IDENTITY]   # remove a checkout's index, or a repo's (opposite of --index)
 rq --status                 # indexing coverage per indexed checkout
+rq --storage                # the index file's size, and its background cleanup
 rq --usage                  # searches per day, by caller and flags
 ```
 
@@ -272,11 +273,19 @@ checkout drops that checkout; `rq --drop IDENTITY` drops the repo with every
 checkout of it. `--json` reports what it removed (`repo`, `root` for a
 checkout, and `files` and `symbols` as `--status` counted them, summed over
 the checkouts for a repo) and `dropped`; `repo` is always an identity, even
-when there was nothing to drop.
+when there was nothing to drop. `rq --storage --json` describes the index
+file: `file` (the one in use — beside a newer rq's, this rq's own), `bytes`
+(its pages, as SQLite counts them) and `free_bytes` (those free inside it),
+read in one snapshot with `cleanup`, what the background cleanup last did:
+`checked_at` (when it last measured; a new index is stamped at creation),
+`ran_at` and `reclaimed_bytes` (its last pass that gave space back), and
+`skipped` (`no_room` or `busy`, why its last pass left the free pages) — each
+absent until it applies. You never need to run anything: after indexing, rq
+hands free pages back on its own once they're worth it.
 Single-result commands emit one object.
 
 These commands exit `0` whenever they ran, including when there's nothing to
-report: an empty `--status`, an `--index` that found nothing new, or a `--drop`
+report: an empty `--status` or `--storage`, an `--index` that found nothing new, or a `--drop`
 of a repo that isn't indexed (`"dropped": false` tells you). They exit non-zero
 only with an error code from the table above — for `--drop`, `busy` (75) while
 another rq is indexing that checkout, which it leaves untouched. `--usage` is the exception: with

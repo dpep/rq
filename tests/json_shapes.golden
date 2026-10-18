@@ -45,6 +45,14 @@
 [].status: string
 [].symbols: int
 
+## storage
+.: object
+.bytes: int
+.cleanup: object
+.cleanup.checked_at: int
+.file: string
+.free_bytes: int
+
 ## search: hit
 .: array
 []: object
