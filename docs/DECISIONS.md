@@ -4355,6 +4355,18 @@ The full rewrite is once per store; during it a query's first answer took 160 ms
 reading against the rewrite's I/O), and its usage write waited out its 100 ms and was
 skipped. Chunks leave the file the size a rewrite does (71.8 MB both).
 
+*One wait per process, not per write.* A query has up to three bookkeeping writes —
+the branch-files cache, the usage count, the close-time `PRAGMA optimize` — and behind
+the rewrite each waited its own 100 ms, so the process exited ~240 ms after its answer
+(the 0.60.12 hunt: answer at 8–25 ms, exit at 234–388 ms). Now the first that finds the
+store busy marks it so for the process (`BOOKKEEPING_BUSY`, `Store::bookkeeping`), and
+the rest try without waiting until one lands. A writer that outlasted one wait outlasts
+the next; one that has gone lets the next write land and the waits come back, so a
+long batch session isn't left without them. Every one of them is a write a later call
+redoes or does without. Held lock, release builds, 10 runs: exit 370 → 127 ms p50, the
+answer at 126–127 ms both, as the one wait
+left is the branch-files write ahead of it, uncached on that repo (`a_query_behind_a_long_writer_exits_with_its_answer`).
+
 *Niced, not throttled.* The warm child also throttles its disk I/O (macOS
 `IOPOL_THROTTLE`); the cleanup does not. Throttled, the full rewrite above took 36.7 s
 holding the write lock, the rack index waited 30 s, and queries ran at 361 ms p50 for all

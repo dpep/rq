@@ -4665,6 +4665,39 @@ fn an_explicit_wait_bounds_an_interactive_search_while_another_process_indexes()
     }
 }
 
+#[test]
+fn a_query_behind_a_long_writer_exits_with_its_answer() {
+    // an older store's one full rewrite holds the lock for seconds; a search
+    // answers from a read, and each of its bookkeeping writes used to wait
+    // out its own 100 ms behind it before the process could exit
+    use std::io::BufRead;
+    let (dir, db) = prefix_and_exact("bookkeeping-busy");
+    rq(&db, &dir, &["--index"]);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let mut child = rq_cmd(&db, &dir)
+        .args(["User", "--json", "--no-wait"])
+        .envs(NO_CHILD)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("run rq");
+    let mut stdout = std::io::BufReader::new(child.stdout.take().expect("stdout piped"));
+    let mut first = String::new();
+    stdout.read_line(&mut first).unwrap();
+    let answered = std::time::Instant::now();
+    let status = child.wait().unwrap();
+    let exiting = answered.elapsed();
+    conn.execute_batch("COMMIT").unwrap();
+
+    assert_eq!(status.code(), Some(0), "{first}");
+    // the usage count and the close-time optimize, 100 ms each when both waited
+    assert!(
+        exiting < std::time::Duration::from_millis(150),
+        "exited {exiting:?} after answering"
+    );
+}
+
 /// The milliseconds `--profile` reports for the span named `name`.
 fn profile_ms(profile: &str, name: &str) -> f64 {
     profile

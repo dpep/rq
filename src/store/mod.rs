@@ -148,8 +148,7 @@ impl Drop for Store {
         // SQLite's recommended pre-close hygiene: refreshes planner statistics
         // for the query shapes this connection actually ran. Cheap, best-effort,
         // and a write, so it mustn't hold up the exit behind another writer.
-        let _ = self.conn.busy_timeout(BOOKKEEPING_WAIT);
-        let _ = self.conn.execute_batch("PRAGMA optimize;");
+        let _ = self.bookkeeping(|| self.conn.execute_batch("PRAGMA optimize;"));
     }
 }
 
@@ -435,6 +434,12 @@ const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// commit, not a cold pass's name-index rebuild, which holds the lock for
 /// seconds while a search's caller waits on its exit.
 const BOOKKEEPING_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Whether this process's last bookkeeping write found the store busy. A
+/// writer that outlasted one wait outlasts the next, so the rest try without
+/// waiting until one lands; process-wide, as a query's warm has a connection
+/// of its own.
+static BOOKKEEPING_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How long a pass nobody waits on — `rq --index`, a warm child — waits out
 /// another writer, in ms (see [`Store::wait_out_writers`]).
@@ -1334,7 +1339,7 @@ impl Store {
         // Local date, not UTC: an evening search on the US west coast would
         // otherwise be filed under tomorrow, which makes a per-day report
         // quietly wrong for a third of the waking day.
-        self.waiting_at_most(BOOKKEEPING_WAIT, || self.conn.execute(
+        self.bookkeeping(|| self.conn.execute(
             "INSERT INTO usage_daily (day, source, flags, searches, misses, warming, on_complete, live)
              VALUES (date(?1, 'unixepoch', 'localtime'), ?2, ?3, 1, ?4, ?5, ?6, ?7)
              ON CONFLICT(day, source, flags) DO UPDATE SET
@@ -1534,9 +1539,7 @@ impl Store {
             value.push_str(f);
         }
         // a cache: a busy store leaves it for the next search to rebuild
-        self.waiting_at_most(BOOKKEEPING_WAIT, || {
-            self.meta_set(&format!("branch_files:{root}"), &value)
-        })
+        self.bookkeeping(|| self.meta_set(&format!("branch_files:{root}"), &value))
     }
 
     /// Mark a pass over the checkout at `root` as running in `pid`, and record
@@ -1698,6 +1701,25 @@ impl Store {
                 params![format!("span:{root}"), span.to_string()],
             )
         });
+    }
+
+    /// Run a bookkeeping `write` — one a later call redoes or does without —
+    /// waiting out another writer for [`BOOKKEEPING_WAIT`], or not at all
+    /// while [`BOOKKEEPING_BUSY`].
+    pub(super) fn bookkeeping<T>(&self, write: impl FnOnce() -> Result<T>) -> Result<T> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let wait = if BOOKKEEPING_BUSY.load(Relaxed) {
+            std::time::Duration::ZERO
+        } else {
+            BOOKKEEPING_WAIT
+        };
+        let out = self.waiting_at_most(wait, write);
+        match &out {
+            Err(e) if is_busy(e) => BOOKKEEPING_BUSY.store(true, Relaxed),
+            Ok(_) => BOOKKEEPING_BUSY.store(false, Relaxed),
+            Err(_) => {}
+        }
+        out
     }
 
     /// Run `write` waiting out another writer for at most `wait`, then go

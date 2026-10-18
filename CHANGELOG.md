@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- A query run while another rq holds the index's write lock for a while (an
+  older index's one-time background rewrite, a large first index) exits as
+  soon as it has answered, instead of about a quarter second later.
+
 ## 0.60.12 — 2026-10-17
 
 ### Added

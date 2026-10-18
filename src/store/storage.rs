@@ -4,7 +4,7 @@
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use super::{BOOKKEEPING_WAIT, Result, Store, pid_alive, schema, stamp_fresh};
+use super::{Result, Store, pid_alive, schema, stamp_fresh};
 use crate::core::now_unix;
 
 /// When a cleanup last measured the store (unix seconds). Also the claim one
@@ -130,9 +130,7 @@ impl Store {
     /// Record that a cleanup looked at `at`. Never waits long: the caller is
     /// a pass on its way out.
     pub(crate) fn cleanup_checked(&self, at: i64) -> Result<()> {
-        self.waiting_at_most(BOOKKEEPING_WAIT, || {
-            set(&self.conn, CHECKED, &at.to_string())
-        })
+        self.bookkeeping(|| set(&self.conn, CHECKED, &at.to_string()))
     }
 
     /// Take the cleanup at `at` unless another looked within `interval`
@@ -157,7 +155,7 @@ impl Store {
     /// and look again from `retry_from`'s interval. One write, never waiting
     /// long: the store is busy.
     pub(crate) fn cleanup_busy(&self, retry_from: i64) -> Result<()> {
-        self.waiting_at_most(BOOKKEEPING_WAIT, || {
+        self.bookkeeping(|| {
             let tx = self.conn.unchecked_transaction()?;
             set(&tx, CHECKED, &retry_from.to_string())?;
             set(&tx, SKIPPED, Held::Busy.as_str())?;
