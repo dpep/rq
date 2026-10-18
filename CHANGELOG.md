@@ -20,6 +20,8 @@ and aren't listed; see `git log` for those.
 - A query run while another rq holds the index's write lock for a while (an
   older index's one-time background rewrite, a large first index) exits as
   soon as it has answered, instead of about a quarter second later.
+- A background warm that starts after the index's directory was deleted (a
+  cleared cache) no longer lays down a new, empty index there.
 
 ## 0.60.12 — 2026-10-17
 

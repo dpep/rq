@@ -308,6 +308,13 @@ pub(super) fn open_store() -> Result<Store, Box<dyn std::error::Error>> {
     Ok(Store::open(&path)?)
 }
 
+/// [`open_store`] for a detached child, which outlives the search that
+/// spawned it: never the database's directory, so a store removed under it
+/// (a cleared cache, a test's temp dir) stays gone.
+pub(super) fn open_store_in_place() -> Result<Store, Box<dyn std::error::Error>> {
+    Ok(Store::open(&db_location()?)?)
+}
+
 /// [`open_store`] for a command, or the exit code of the error it reported
 /// as `{mode}: …` (a structured caller gets it as JSON).
 pub(super) fn open_store_or_fail(out: Output, mode: &str) -> std::result::Result<Store, ExitCode> {

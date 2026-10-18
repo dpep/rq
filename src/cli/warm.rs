@@ -212,9 +212,12 @@ fn record_verified(store: &Store, root: &std::path::Path, head: Option<&str>, ch
 /// runs at most one warmer. Safe (and boring) to run by hand.
 pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
     run_in_background(true);
-    let mut store = match open_store() {
+    let mut store = match open_store_in_place() {
         Ok(s) => s,
-        Err(_) => return Failure::Database.into(),
+        Err(e) => {
+            crate::trace!("warm: can't open the store: {e}");
+            return Failure::Database.into();
+        }
     };
     let _ = store.wait_out_writers(writer_wait(), None);
     let start = path

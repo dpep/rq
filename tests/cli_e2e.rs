@@ -822,6 +822,24 @@ fn spawned_warm(db: &Path, cwd: &Path, env: &[(&str, &str)]) -> bool {
     String::from_utf8_lossy(&out.stderr).contains("background warm (detached)")
 }
 
+/// A detached warm outlives its search, and may start after the store's
+/// directory is removed (a test's temp dir, a cleared cache): it warms the
+/// store its search opened, and never lays down a new one.
+#[test]
+fn a_warm_child_never_recreates_a_removed_store() {
+    let (dir, _) = scratch("warm-gone");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    let gone = dir.join("removed");
+    let db = gone.join("rq.db");
+    let out = rq_cmd(&db, &dir)
+        .env_remove("RQ_WARM_DETACH")
+        .arg("--warm")
+        .output()
+        .expect("run rq --warm");
+    assert!(!out.status.success(), "nothing to warm");
+    assert!(!gone.try_exists().unwrap(), "no new store");
+}
+
 /// Run `rq --warm` to completion, as the detached child would.
 fn warm_now(db: &Path, cwd: &Path) {
     rq_cmd(db, cwd)

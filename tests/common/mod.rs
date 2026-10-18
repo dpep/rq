@@ -209,7 +209,8 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         // A detached warm may still be writing beside the database, which
         // fails the removal (not empty); once the root is gone it can't
-        // recreate it, since rq never makes the database's directory.
+        // recreate it, since a detached child never makes the database's
+        // directory.
         // Bounded generously: a loaded machine can keep a child at it a while.
         for _ in 0..600 {
             match fs::remove_dir_all(&self.root) {
