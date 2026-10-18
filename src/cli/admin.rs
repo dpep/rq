@@ -102,6 +102,10 @@ pub(super) fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
+    // as `--index` waits: a cleanup's one full rewrite (D65), or a cold
+    // pass's name-index rebuild, holds the lock past a search's wait
+    let on_long_wait = show_progress(out, stderr_interactive()).then_some(say_waiting as fn());
+    let _ = store.wait_out_writers(writer_wait(), on_long_wait);
 
     // Resolve what to drop: TARGET as a path (→ repo root, like --index) drops
     // that checkout; failing that, TARGET as a repo identity drops the repo

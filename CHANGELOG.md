@@ -20,6 +20,11 @@ and aren't listed; see `git log` for those.
 - `rq --storage` (`--json` too) reports the index file's size, the free space
   inside it, and what the cleanup last did; `rq --status` shows it as a line.
 
+### Changed
+- `rq --drop` waits out another rq writing the index, as `rq --index` does (up
+  to 30 s, saying so at a terminal), instead of failing with exit 74 "database
+  is locked" after 3 s.
+
 ## 0.60.11 — 2026-10-10
 
 ### Changed

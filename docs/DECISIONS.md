@@ -4313,7 +4313,10 @@ indexer's writes reuse the very pages. A writer holding the lock past the cleanu
 the claim back to ten minutes short of the interval (`RETRY`). The cleanup holds no mark,
 so `--drop` is never refused for it (D64), a search never waits on it (D52), and a drop
 mid-cleanup lands between chunks (`a_drop_and_a_status_mid_cleanup_answer_as_usual`,
-held deterministically by `RQ_TEST_CLEANUP_HOLD`).
+held deterministically by `RQ_TEST_CLEANUP_HOLD`). Behind an older store's one full
+rewrite, which on a large store outlasts a search's 3 s wait, a drop now waits as
+`--index` does (`RQ_WRITER_WAIT_MS`, 30 s, saying so at a terminal) rather than failing
+74 "database is locked" (`a_drop_waits_out_a_long_writer`).
 
 *The full rewrite* copies the live pages to a temporary file (`temp_store = FILE` for
 that statement; in memory, as rq's connections keep temporary tables, it is the whole

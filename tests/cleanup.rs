@@ -183,3 +183,22 @@ fn a_drop_and_a_status_mid_cleanup_answer_as_usual() {
     assert!(after["cleanup"]["ran_at"].is_i64(), "{after}");
     assert_eq!(rq(&db, &dir.join("a"), &["Widgeta"]).0, 0);
 }
+
+/// An older store's one full rewrite holds the write lock for as long as it
+/// takes, which on a large store outlasts a search's 3 s wait: a drop waits
+/// it out, as `--index` does, rather than failing "locked".
+#[test]
+fn a_drop_waits_out_a_long_writer() {
+    let dir = repos("long-writer", &["a"]);
+    let db = dir.db();
+    assert_eq!(rq(&db, &dir.join("a"), &["--index"]).0, 0);
+    let writer = rusqlite::Connection::open(&db).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(3500));
+        writer.execute_batch("ROLLBACK").unwrap();
+    });
+    let (code, out) = rq(&db, &dir.join("a"), &["--drop", "--json"]);
+    holder.join().unwrap();
+    assert_eq!(code, 0, "{out}");
+}
