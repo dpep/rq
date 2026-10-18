@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.60.13 — 2026-10-18
 
 ### Changed
 - `rq --storage`'s `cleanup.checked_at` is when the cleanup last measured the
