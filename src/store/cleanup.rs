@@ -57,8 +57,8 @@ pub(crate) fn start(store: &mut Store, now: i64) -> Result<bool> {
 /// add or waste worth a pass. A look that finds nothing to do is recorded,
 /// so the next is an interval away.
 fn due(store: &Store, now: i64) -> Result<bool> {
-    let checked = store.cleanup()?.checked_at;
-    if checked.is_some_and(|at| now - at < INTERVAL) || store.indexing_anywhere()? {
+    let next = store.cleanup()?.next_look(INTERVAL);
+    if next.is_some_and(|next| now < next) || store.indexing_anywhere()? {
         return Ok(false);
     }
     if !store.missing_indexes()?.is_empty() || worth(store.free_bytes()?, store.db_bytes()?) {
@@ -105,8 +105,10 @@ pub(crate) fn run(store: &mut Store, now: i64, between_chunks: &mut dyn FnMut())
             ..Done::default()
         }),
         done => done,
-    }?;
-    match record(store, now, &done) {
+    };
+    let recorded = record(store, now, &done);
+    let done = done?;
+    match recorded {
         // a writer still holding the lock leaves the record as it was
         Err(e) if super::is_busy(&e) => {}
         recorded => recorded?,
@@ -146,10 +148,14 @@ fn pass(store: &mut Store, between_chunks: &mut dyn FnMut()) -> Result<Done> {
 /// What `--storage` says of a pass: a run, when it gave something back, and
 /// why it left the free pages, when it did. The run last, so a reader that
 /// sees it sees the pages already gone.
-fn record(store: &Store, now: i64, done: &Done) -> Result<()> {
+fn record(store: &Store, now: i64, done: &Result<Done>) -> Result<()> {
+    let done = match done {
+        Err(e) => return store.cleanup_failed(&e.to_string()),
+        Ok(done) => done,
+    };
     if done.compacted == Compacted::Busy {
-        // most of the claim back: the next pass asks again in `RETRY`
-        return store.cleanup_busy(now - INTERVAL + RETRY);
+        // the next pass asks again in `RETRY`, not a whole interval
+        return store.cleanup_busy(now + RETRY);
     }
     store.cleanup_held(match done.compacted {
         Compacted::NoRoom => Some(Held::NoRoom),
@@ -392,6 +398,40 @@ mod tests {
             (Compacted::NotWorth, 0)
         );
         assert_eq!(store.cleanup().unwrap().ran_at, None);
+    }
+
+    #[test]
+    fn a_failed_pass_says_why_and_holds_its_claim() {
+        let (dir, mut store) = store("failed");
+        bloat(&dir, 20);
+        assert!(start(&mut store, NOW).unwrap());
+        let full = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            Some("database or disk\nis full".into()),
+        );
+        record(&store, NOW, &Err(full)).unwrap();
+        let cleanup = store.cleanup().unwrap();
+        assert_eq!(
+            (
+                cleanup.checked_at,
+                cleanup.skipped,
+                cleanup.error.as_deref()
+            ),
+            (
+                Some(NOW),
+                Some(Held::Failed),
+                Some("database or disk is full")
+            )
+        );
+        assert!(!start(&mut store, NOW + INTERVAL - 1).unwrap(), "claimed");
+        assert!(start(&mut store, NOW + INTERVAL).unwrap());
+        run(&mut store, NOW + INTERVAL, &mut quietly()).unwrap();
+        let cleanup = store.cleanup().unwrap();
+        assert_eq!(
+            (cleanup.skipped, cleanup.error),
+            (None, None),
+            "a pass that works clears it"
+        );
     }
 
     #[test]

@@ -4301,7 +4301,8 @@ interval away (and no test store grows a detached process unless it asks to).
 *Claimed before it is started, and named its store.* The claim is one immediate
 transaction that never waits, so of ten passes finishing at once one starts a cleanup
 (a unit test races ten connections); a cleanup that then fails holds the claim, and costs
-one process an interval, not one per pass. The child is passed the file the pass wrote
+one process an interval, not one per pass. It records `skipped: failed` and the error,
+so `--storage` says why the free pages are still there. The child is passed the file the pass wrote
 — beside a newer rq's store that is this rq's side store (D51), which a fresh process
 resolving `RQ_DB` would not open — and opens exactly it: no new file, no set-aside, no
 upgrade (`Store::open_existing`).
@@ -4309,8 +4310,9 @@ upgrade (`Store::open_existing`).
 *Skipped, not waited for.* A live pass mark or warm lock anywhere in the store, judged
 as D64 judges them, keeps a pass from claiming and a cleanup from starting: that
 indexer's writes reuse the very pages. A writer holding the lock past the cleanup's wait
-(a search's, 3 s) ends it where it is. Either way it records `skipped: busy` and moves
-the claim back to ten minutes short of the interval (`RETRY`). The cleanup holds no mark,
+(a search's, 3 s) ends it where it is. Either way it records `skipped: busy` and a
+`retry_at` ten minutes on (`RETRY`), which the next look goes by instead of the
+interval; `checked_at` stays when it last measured. The cleanup holds no mark,
 so `--drop` is never refused for it (D64), a search never waits on it (D52), and a drop
 mid-cleanup lands between chunks (`a_drop_and_a_status_mid_cleanup_answer_as_usual`,
 held deterministically by `RQ_TEST_CLEANUP_HOLD`). Behind an older store's one full

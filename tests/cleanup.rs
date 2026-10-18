@@ -202,3 +202,41 @@ fn a_drop_waits_out_a_long_writer() {
     holder.join().unwrap();
     assert_eq!(code, 0, "{out}");
 }
+
+/// A cleanup that finds another rq indexing leaves the pages and asks again
+/// soon: `checked_at` stays when it last measured, and the retry is its own.
+#[test]
+fn a_busy_cleanup_keeps_its_measure_and_says_when_it_retries() {
+    let dir = repos("busy", &["a"]);
+    let db = dir.db();
+    assert_eq!(rq(&db, &dir.join("a"), &["--index"]).0, 0);
+    bloat(&db);
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    };
+    let measured = now() - 100;
+    // the claim's measure, and a live pass (this test's pid) elsewhere
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES
+               ('cleanup:checked', ?1), ('pass:/elsewhere:' || ?2, strftime('%s', 'now'))",
+            rusqlite::params![measured.to_string(), std::process::id()],
+        )
+        .unwrap();
+
+    let (code, out, err) = rq_both(&db, &dir, &["--cleanup", db.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}{err}");
+    let cleanup = &storage(&db, &dir)["cleanup"];
+    assert_eq!(cleanup["skipped"], "busy", "{cleanup}");
+    assert_eq!(cleanup["checked_at"], measured, "{cleanup}");
+    let retry = cleanup["retry_at"].as_i64().expect("a retry time");
+    let soon = retry - now();
+    assert!(
+        (60..=3600).contains(&soon),
+        "retries in {soon} s: {cleanup}"
+    );
+}

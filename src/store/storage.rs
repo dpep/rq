@@ -10,9 +10,13 @@ use crate::core::now_unix;
 /// When a cleanup last measured the store (unix seconds). Also the claim one
 /// pass holds: of several passes finishing at once, one moves it.
 const CHECKED: &str = "cleanup:checked";
+/// When a pass that found the store busy asks again, sooner than an interval
+/// from [`CHECKED`]; gone with the next look.
+const RETRY: &str = "cleanup:retry";
 /// The last pass that gave something back: `<at> <bytes>`.
 const RAN: &str = "cleanup:ran";
-/// Why the last pass left free pages it meant to hand back.
+/// Why the last pass left free pages it meant to hand back: a [`Held`],
+/// and after a failure, the error.
 const SKIPPED: &str = "cleanup:skipped";
 
 /// What the background cleanup last did. Each field absent until it applies.
@@ -21,6 +25,9 @@ pub(crate) struct Cleanup {
     /// When it last measured the store; a new store is stamped at creation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<i64>,
+    /// When it looks again, after a pass that found the store busy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<i64>,
     /// Its last pass that returned space to the disk, and how much.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ran_at: Option<i64>,
@@ -29,6 +36,17 @@ pub(crate) struct Cleanup {
     /// Why its last pass left free pages it meant to hand back.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped: Option<Held>,
+    /// What failed, when its last pass did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Cleanup {
+    /// When the next look is due: the retry a busy pass asked for, else an
+    /// `interval` after the last.
+    pub(crate) fn next_look(&self, interval: i64) -> Option<i64> {
+        self.retry_at.or(self.checked_at.map(|at| at + interval))
+    }
 }
 
 /// Why a pass left the file's free pages where they were.
@@ -39,6 +57,8 @@ pub(crate) enum Held {
     NoRoom,
     /// Another rq was indexing, or held the write lock past the wait.
     Busy,
+    /// An error ended it, such as a disk filling mid-rewrite.
+    Failed,
 }
 
 impl Held {
@@ -46,11 +66,12 @@ impl Held {
         match self {
             Held::NoRoom => "no_room",
             Held::Busy => "busy",
+            Held::Failed => "failed",
         }
     }
 
     fn parse(s: &str) -> Option<Held> {
-        [Held::NoRoom, Held::Busy]
+        [Held::NoRoom, Held::Busy, Held::Failed]
             .into_iter()
             .find(|h| h.as_str() == s)
     }
@@ -86,6 +107,18 @@ fn get(conn: &Connection, key: &str) -> Result<Option<String>> {
         .optional()
 }
 
+fn unset(conn: &Connection, key: &str) -> Result<()> {
+    conn.execute("DELETE FROM meta WHERE key = ?1", [key])
+        .map(drop)
+}
+
+/// Record a look at `at`: the next is an interval from it, whatever retry a
+/// busy pass asked for.
+fn looked(conn: &Connection, at: i64) -> Result<()> {
+    set(conn, CHECKED, &at.to_string())?;
+    unset(conn, RETRY)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Run between [`Store::storage`]'s reads: a test's write landing there.
@@ -96,17 +129,22 @@ thread_local! {
 impl Store {
     /// What the background cleanup last did.
     pub(crate) fn cleanup(&self) -> Result<Cleanup> {
-        let checked_at = get(&self.conn, CHECKED)?.and_then(|v| v.parse().ok());
+        let time =
+            |key| Ok::<_, rusqlite::Error>(get(&self.conn, key)?.and_then(|v| v.parse().ok()));
+        let skipped = get(&self.conn, SKIPPED)?.unwrap_or_default();
+        let (held, error) = skipped.split_once(' ').unwrap_or((&skipped, ""));
         let ran = get(&self.conn, RAN)?;
         let mut ran = ran
             .iter()
             .flat_map(|v| v.split(" "))
             .map(|n| n.parse::<i64>().ok());
         Ok(Cleanup {
-            checked_at,
+            checked_at: time(CHECKED)?,
+            retry_at: time(RETRY)?,
             ran_at: ran.next().flatten(),
             reclaimed_bytes: ran.next().flatten(),
-            skipped: get(&self.conn, SKIPPED)?.as_deref().and_then(Held::parse),
+            skipped: Held::parse(held),
+            error: (!error.is_empty()).then(|| error.to_string()),
         })
     }
 
@@ -130,36 +168,57 @@ impl Store {
     /// Record that a cleanup looked at `at`. Never waits long: the caller is
     /// a pass on its way out.
     pub(crate) fn cleanup_checked(&self, at: i64) -> Result<()> {
-        self.bookkeeping(|| set(&self.conn, CHECKED, &at.to_string()))
+        self.bookkeeping(|| {
+            let tx = self.conn.unchecked_transaction()?;
+            looked(&tx, at)?;
+            tx.commit()
+        })
     }
 
-    /// Take the cleanup at `at` unless another looked within `interval`
-    /// seconds: one immediate transaction, so of several asking at once one
-    /// is told yes. Never waits for the lock — busy is an error, and the
-    /// next pass asks again.
+    /// Take the cleanup at `at` unless its next look isn't due yet (see
+    /// [`Cleanup::next_look`]): one immediate transaction, so of several
+    /// asking at once one is told yes. Never waits for the lock — busy is an
+    /// error, and the next pass asks again.
     pub(crate) fn claim_cleanup(&mut self, at: i64, interval: i64) -> Result<bool> {
         self.waiting_at_most(std::time::Duration::ZERO, || {
             let tx =
                 rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
-            let checked: Option<i64> = get(&tx, CHECKED)?.and_then(|v| v.parse().ok());
-            if checked.is_some_and(|checked| at - checked < interval) {
+            if self
+                .cleanup()?
+                .next_look(interval)
+                .is_some_and(|next| at < next)
+            {
                 return Ok(false);
             }
-            set(&tx, CHECKED, &at.to_string())?;
+            looked(&tx, at)?;
             tx.commit()?;
             Ok(true)
         })
     }
 
     /// Record a pass that left the free pages because the store was busy,
-    /// and look again from `retry_from`'s interval. One write, never waiting
-    /// long: the store is busy.
-    pub(crate) fn cleanup_busy(&self, retry_from: i64) -> Result<()> {
+    /// and look again at `retry_at`. One write, never waiting long: the
+    /// store is busy.
+    pub(crate) fn cleanup_busy(&self, retry_at: i64) -> Result<()> {
         self.bookkeeping(|| {
             let tx = self.conn.unchecked_transaction()?;
-            set(&tx, CHECKED, &retry_from.to_string())?;
+            set(&tx, RETRY, &retry_at.to_string())?;
             set(&tx, SKIPPED, Held::Busy.as_str())?;
             tx.commit()
+        })
+    }
+
+    /// Record a pass that `error` ended. Its claim stands, so the next look
+    /// is an interval away, not the next pass's.
+    pub(crate) fn cleanup_failed(&self, error: &str) -> Result<()> {
+        // one line, as the record is one value
+        let error = error.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.bookkeeping(|| {
+            set(
+                &self.conn,
+                SKIPPED,
+                &format!("{} {error}", Held::Failed.as_str()),
+            )
         })
     }
 
@@ -172,10 +231,7 @@ impl Store {
     pub(crate) fn cleanup_held(&self, held: Option<Held>) -> Result<()> {
         match held {
             Some(held) => set(&self.conn, SKIPPED, held.as_str()),
-            None => self
-                .conn
-                .execute("DELETE FROM meta WHERE key = ?1", [SKIPPED])
-                .map(drop),
+            None => unset(&self.conn, SKIPPED),
         }
     }
 

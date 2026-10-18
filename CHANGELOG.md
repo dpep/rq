@@ -9,6 +9,13 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Changed
+- `rq --storage`'s `cleanup.checked_at` is when the cleanup last measured the
+  index, as documented: after another rq kept it from running, it used to hold
+  the time it would look again, minus two hours. That time is now its own
+  field, `retry_at`. A cleanup that fails records `skipped: "failed"` and the
+  `error`.
+
 ### Fixed
 - A query run while another rq holds the index's write lock for a while (an
   older index's one-time background rewrite, a large first index) exits as

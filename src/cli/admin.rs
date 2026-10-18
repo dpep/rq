@@ -348,6 +348,10 @@ fn storage_line(storage: &crate::store::Storage, now: i64) -> String {
         Some(crate::store::Held::Busy) => {
             line.push_str("; the last cleanup left it: another rq was writing, so it retries")
         }
+        Some(crate::store::Held::Failed) => line.push_str(&format!(
+            "; the last cleanup failed: {}",
+            cleanup.error.as_deref().unwrap_or("unknown error")
+        )),
         None => {}
     }
     if let (Some(at), Some(bytes)) = (cleanup.ran_at, cleanup.reclaimed_bytes) {

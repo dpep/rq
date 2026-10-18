@@ -278,9 +278,10 @@ file: `file` (the one in use — beside a newer rq's, this rq's own), `bytes`
 (its pages, as SQLite counts them) and `free_bytes` (those free inside it),
 read in one snapshot with `cleanup`, what the background cleanup last did:
 `checked_at` (when it last measured; a new index is stamped at creation),
-`ran_at` and `reclaimed_bytes` (its last pass that gave space back), and
-`skipped` (`no_room` or `busy`, why its last pass left the free pages) — each
-absent until it applies. You never need to run anything: after indexing, rq
+`ran_at` and `reclaimed_bytes` (its last pass that gave space back),
+`skipped` (`no_room`, `busy` or `failed`, why its last pass left the free
+pages), `retry_at` (after `busy`, when it looks again) and `error` (after
+`failed`, what went wrong) — each absent until it applies. You never need to run anything: after indexing, rq
 hands free pages back on its own once they're worth it.
 Single-result commands emit one object.
 
