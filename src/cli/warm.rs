@@ -88,6 +88,9 @@ pub(super) fn after_pass(store: &mut Store) {
 /// background child stays out of the foreground's way. Best-effort — a
 /// failure just means a less polite child.
 fn run_in_background(throttle_io: bool) {
+    // only macOS can throttle a process's disk I/O
+    #[cfg(not(target_os = "macos"))]
+    let _ = throttle_io;
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
         // <sys/resource.h>; not in the libc crate. Args below:
