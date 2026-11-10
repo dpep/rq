@@ -104,8 +104,11 @@ fn open_as(path: &Path, ladder: &Ladder, main: bool) -> Result<Store> {
         let before = identity(path);
         let refusal = {
             // Shared while opening: setting a file aside takes it exclusively,
-            // so nothing opens the old file between its parts moving.
-            let _open = Lock::take(path, false)?;
+            // so nothing opens the old file between its parts moving. A file
+            // not laid down yet is taken exclusively too: a burst of openers
+            // would each write it, queued against one busy timeout.
+            let fresh = std::fs::metadata(path).map_or(true, |m| m.len() == 0);
+            let _open = Lock::take(path, fresh)?;
             match Store::init(Connection::open(path)?, ladder) {
                 Ok((store, wrote_schema)) => {
                     if main && wrote_schema {
@@ -324,8 +327,8 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// An advisory lock on `<db>.lock`: shared while opening, exclusive while
-/// setting the database aside. Released on drop, or by the kernel when a
-/// holder dies.
+/// laying a new database down or setting one aside. Released on drop, or by
+/// the kernel when a holder dies.
 struct Lock(Option<File>);
 
 impl Lock {

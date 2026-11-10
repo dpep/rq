@@ -2745,7 +2745,10 @@ nothing needs it: the schema version decides compatibility, and the rq that owns
 schema is the one worth naming.
 
 *Concurrency.* An advisory lock on `<db>.lock` is held shared while opening and exclusive
-while setting a file aside. An opener that finds the file broken takes the exclusive lock,
+while setting a file aside. A file not laid down yet (missing or empty) is opened under the
+exclusive lock too: every opener of a burst sees it empty, and each would otherwise write
+its own first page (D65's `auto_vacuum`), the commits queued behind one another against a
+single busy timeout, so on a slow disk the last opener failed "database is locked". An opener that finds the file broken takes the exclusive lock,
 then compares the file's (device, inode) with what it saw before opening: if it changed,
 another process already set it aside, and this one opens the new file. So exactly one
 process moves it and says so, and none can move a fresh database another has started

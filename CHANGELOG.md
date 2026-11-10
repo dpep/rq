@@ -7,6 +7,13 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- Several rq processes opening a new index at once (a burst of first searches,
+  parallel agents on a fresh cache) no longer fail with "database is locked"
+  when the disk is slow: one lays the index down and the others wait for it.
+
 ## 0.60.13 — 2026-10-18
 
 ### Changed
