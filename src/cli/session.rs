@@ -42,6 +42,42 @@ impl Here {
     }
 }
 
+/// The directory a search's PATHs share, canonical, if it names any. A PATH
+/// may lie in another checkout (`rq NAME /other/repo`), which is then
+/// searched as from inside it. A PATH that isn't there names no tree at all.
+fn named_dir(
+    out: Output,
+    cwd: &std::path::Path,
+    paths: &[String],
+) -> std::result::Result<Option<PathBuf>, ExitCode> {
+    let mut shared: Option<PathBuf> = None;
+    for p in paths {
+        let abs = cwd.join(p);
+        let Ok(abs) = abs.canonicalize() else {
+            return Err(fail(
+                out,
+                Failure::NotFound,
+                format_args!("rq: {p}: no such file or directory"),
+            ));
+        };
+        // a file's checkout is its directory's
+        let dir = if abs.is_dir() {
+            abs
+        } else {
+            abs.parent().map_or(abs.clone(), PathBuf::from)
+        };
+        shared = Some(match shared {
+            None => dir,
+            Some(s) => s
+                .ancestors()
+                .find(|a| dir.starts_with(a))
+                .unwrap_or(&s)
+                .to_path_buf(),
+        });
+    }
+    Ok(shared)
+}
+
 /// [`Here::root`] for a command at `start`, and whether it's a git work tree.
 pub(super) fn checkout_root(start: &std::path::Path) -> (PathBuf, bool) {
     match crate::index::repo_root(start) {
@@ -80,14 +116,27 @@ pub(super) struct Session {
 }
 
 impl Session {
-    /// Resolve the search context, or the exit code to fail with.
-    pub(super) fn open(out: Output) -> std::result::Result<Session, ExitCode> {
+    /// Resolve the search context for a search under `paths`, or the exit
+    /// code to fail with.
+    pub(super) fn open(out: Output, paths: &[String]) -> std::result::Result<Session, ExitCode> {
+        let cwd = std::env::current_dir().ok();
+        let named = match &cwd {
+            Some(c) => named_dir(out, c, paths)?,
+            None => None,
+        };
         let open_span = crate::profile::span("store open");
         let store = open_store_or_fail(out, "rq")?;
         drop(open_span);
         let git_span = crate::profile::span("setup: git root");
-        let cwd = std::env::current_dir().ok();
-        let here = cwd.as_deref().map(|c| Here::at(&store, c));
+        // PATHs inside the cwd's checkout narrow it; elsewhere — or from a
+        // dir that's no checkout at all — they pick their own
+        let here = cwd
+            .as_deref()
+            .map(|c| Here::at(&store, c))
+            .map(|h| match named {
+                Some(dir) if !(h.warms() && dir.starts_with(&h.root)) => Here::at(&store, &dir),
+                _ => h,
+            });
         drop(git_span);
 
         // Files you're changing on this feature branch (and their directory

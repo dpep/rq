@@ -187,7 +187,7 @@ pub(super) fn cmd_batch(
         return ExitCode::SUCCESS;
     }
 
-    let mut session = match Session::open(out) {
+    let mut session = match Session::open(out, paths) {
         Ok(s) => s,
         Err(code) => return code,
     };
@@ -352,8 +352,10 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let checkout_here = |store: &Store| root.and_then(|r| checkout_at(store, r));
     let mut current = checkout_here(store);
     // Default: scope results to the current checkout so a search never leaks
-    // another tree's definitions. `--all-repos` searches everything.
-    let scope = |current| Scope::new(all_repos, warming_ok, current);
+    // another tree's definitions. `--all-repos` searches everything, as does
+    // a dir rq doesn't track — unless a PATH named it, making it the search.
+    let one_tree = warming_ok || !args.paths.is_empty();
+    let scope = |current| Scope::new(all_repos, one_tree, current);
     let ctx = crate::search::Context {
         active: crate::search::ActiveFiles::new(active_paths.clone()),
         anchor: anchor.as_ref().map(|a| a.for_query(query)),
@@ -1421,20 +1423,21 @@ fn attach_confidence(hits: &mut [crate::search::Hit]) {
 /// The checkouts a search may answer from.
 #[derive(Clone, Copy)]
 enum Scope {
-    /// `--all-repos`, or a directory that isn't a repo rq tracks.
+    /// `--all-repos`, or a directory that isn't a repo rq tracks, asked from.
     All,
     Checkout(Checkout),
     /// A checkout the index hasn't registered yet — its first query, before
-    /// the warm has written anything. Nothing is in scope, not every repo.
+    /// the warm has written anything — or an untracked dir a PATH named.
+    /// Nothing is in scope, not every repo.
     Nothing,
 }
 
 impl Scope {
-    fn new(all_repos: bool, in_repo: bool, current: Option<Checkout>) -> Scope {
+    fn new(all_repos: bool, one_tree: bool, current: Option<Checkout>) -> Scope {
         match current {
             _ if all_repos => Scope::All,
             Some(c) => Scope::Checkout(c),
-            None if in_repo => Scope::Nothing,
+            None if one_tree => Scope::Nothing,
             None => Scope::All,
         }
     }

@@ -103,7 +103,8 @@ each means one thing:
 
 - `64` `usage` — fix the command (an unknown `-k`, a bad `--wait`, `--json` on
   piped queries); don't retry it unchanged.
-- `66` `not_found` — the file you named (`--symbols`) doesn't exist.
+- `66` `not_found` — the file or directory you named (`--symbols`, a search's
+  path) doesn't exist.
 - `69` `no_remote`/`launch` — nothing to hand off to (`-w` with no git host).
 - `70` `internal` — a bug in rq.
 - `74` `database`/`index` — the index can't be opened, read or written.
@@ -143,7 +144,9 @@ each means one thing:
   or type, so ask with the owner to land on one: `rq Hit.also_in`,
   `rq User::email`, `rq -k field name`.
 - **Directory.** `rq save app/models` (rg-style trailing path, repeatable) or
-  `--path`.
+  `--path`. A path in another checkout searches that checkout, as from inside
+  it (`rq save /other/repo/src`, indexing it on first use); one in a non-git
+  dir rq doesn't track live-scans just that dir.
 - **Count.** `-l 1` for just the best hit, larger to survey, `-l 0` for every
   match.
 - **Repo.** Results come from the current repo by default; `-a`/`--all-repos`

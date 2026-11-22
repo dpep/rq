@@ -4411,3 +4411,29 @@ writer queued behind it.
 wait on a real store, or the threshold fires on ordinary churn — the share goes up
 before anything else changes; or `--status --json` becomes an object for another
 reason, when `storage` moves into it.
+
+## D66 — A search's PATH picks the checkout it lies in
+
+*The problem.* PATHs were filters on the cwd's checkout, so `rq X /other/repo` (how an
+agent searches another checkout, a worktree under `/tmp`, or a registry's sources) reached
+a checkout nothing searched and answered "no matches". From a non-git dir it searched every
+indexed repo instead, where another checkout's exact match also suppressed the live scan
+of the dir named.
+
+*The rule.* The PATHs' shared directory is where the search is asked from — unless it lies
+inside the cwd's checkout (a git work tree or a tracked dir), which it then narrows as
+before. `rq X /other/repo/src` is `rq X src` asked from `/other/repo`: the same scope,
+warm and verdicts, the checkout indexed on first use like any first search there. An
+untracked non-git dir a PATH names is the whole search (`Scope::Nothing` plus its live
+scan), never every repo: a PATH says where to look. A PATH that doesn't exist names no tree,
+so it's `not_found` (66) — it used to filter everything out and read as a definitive miss.
+
+*Considered.*
+- Indexing an untracked non-git dir a PATH names. Rejected: tracking stays opt-in
+  (`--index`), and the bounded live scan answers a registry crate or a vendored tree.
+- PATHs in two checkouts as a usage error. Not added: their shared directory is searched
+  like any untracked one, which is what a non-git cwd with several PATHs already did.
+- Printing a foreign checkout's files absolutely in text output. Not done: text is
+  root-relative everywhere, `-a` included; `--json` carries `root`.
+
+*Reverses if* PATHs spanning checkouts turn out common enough to want each searched.

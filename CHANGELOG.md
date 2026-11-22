@@ -7,6 +7,17 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Changed
+- A search's PATH in another checkout now searches that checkout, as from
+  inside it, indexing it on first use: `rq Widget /other/repo/src` answers
+  where it used to report no matches. A PATH in a non-git directory rq doesn't
+  track live-scans just that directory, instead of answering from other
+  indexed repos.
+- A search PATH that doesn't exist is an error (`not_found`, exit 66) rather
+  than a silent miss — scripts that passed a missing directory now get 66.
+
 ## 0.60.14 — 2026-11-09
 
 ### Fixed

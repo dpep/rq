@@ -2183,15 +2183,100 @@ fn path_filter_accepts_absolute_and_relative_paths() {
         );
     }
 
-    // a path outside the repo normalizes to nothing, not everything
-    let (_, out) = rq(
+    // a path that isn't there names no tree to search: fix the path (66)
+    let (code, out) = rq(
         &db,
         &dir,
         &["widget", "--path", "/nonexistent/elsewhere", "--ndjson"],
     );
+    assert_eq!(code, 66, "missing path is an error: {out}");
     assert!(
         !out.contains("\"file\":"),
         "outside path yields no hits: {out}"
+    );
+}
+
+#[test]
+fn a_path_in_another_checkout_searches_that_checkout() {
+    // `rq NAME /other/repo` is `cd /other/repo && rq NAME`: the PATH, not the
+    // cwd, picks the checkout, which a cold search indexes as it would there.
+    let (dir_a, db) = scratch("elsewhere-a");
+    let dir_b = Scratch::new("e2e-elsewhere-b");
+    fs::create_dir_all(dir_b.join("lib")).unwrap();
+    fs::write(dir_a.join("a.rb"), "class Gadget\nend\n").unwrap();
+    fs::write(dir_b.join("lib/b.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir_b.join("c.rb"), "class WidgetHelper\nend\n").unwrap();
+    git_init_commit(&dir_a);
+    git_init_commit(&dir_b);
+    rq(&db, &dir_a, &["--index"]);
+    let root_b = dir_b.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let (code, out) = rq(&db, &dir_a, &["Widget", dir_b.to_str().unwrap(), "--json"]);
+    assert_eq!(code, 0, "finds the other checkout's Widget: {out}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).expect("json array");
+    assert_eq!(rows[0]["file"], "lib/b.rb", "{out}");
+    assert_eq!(rows[0]["root"].as_str(), Some(root_b.as_str()), "{out}");
+
+    // a subdirectory of it filters within it, as from inside it
+    let lib = dir_b.join("lib");
+    let (code, out) = rq(
+        &db,
+        &dir_a,
+        &["Widget", "-p", lib.to_str().unwrap(), "--ndjson"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("lib/b.rb") && !out.contains("c.rb"), "{out}");
+
+    // from a dir that's no checkout, too
+    let plain = Scratch::new("e2e-elsewhere-plain");
+    let (code, out) = rq(&db, &plain, &["Widget", dir_b.to_str().unwrap(), "-J"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("lib/b.rb"), "{out}");
+
+    // and the cwd's own checkout isn't searched
+    let (code, out) = rq(
+        &db,
+        &dir_a,
+        &["Gadget", dir_b.to_str().unwrap(), "--ndjson"],
+    );
+    assert_eq!(code, 1, "Gadget is only in the cwd's checkout: {out}");
+}
+
+#[test]
+fn a_path_in_an_untracked_dir_searches_only_that_dir() {
+    // A non-git dir rq doesn't track is live-scanned, never indexed. Named as
+    // a PATH, it is the whole search: another checkout's exact match can't
+    // stand in for it, nor hide the live scan's answer.
+    let (dir_a, db) = scratch("untracked-a");
+    let dir_b = Scratch::new("e2e-untracked-b");
+    let plain = Scratch::new("e2e-untracked-plain");
+    fs::create_dir_all(plain.join("src")).unwrap();
+    fs::write(dir_a.join("a.rb"), "class Gadget\nend\n").unwrap();
+    fs::write(
+        dir_b.join("b.rb"),
+        "class XmlVersion\nend\ndef gizmo\nend\n",
+    )
+    .unwrap();
+    fs::write(plain.join("src/v.rb"), "class XmlVersion\nend\n").unwrap();
+    git_init_commit(&dir_a);
+    git_init_commit(&dir_b);
+    rq(&db, &dir_b, &["--index"]);
+    let src = plain.join("src");
+    let src = src.to_str().unwrap();
+
+    let (code, out) = rq(&db, &dir_a, &["XmlVersion", src, "--ndjson"]);
+    assert_eq!(code, 0, "live-scans the named dir: {out}");
+    assert!(out.contains("v.rb"), "{out}");
+    assert!(
+        !out.contains("b.rb"),
+        "must not leak an indexed checkout: {out}"
+    );
+
+    let (code, out) = rq(&db, &dir_a, &["gizmo", src, "--ndjson"]);
+    assert_eq!(code, 1, "nothing in the named dir answers it: {out}");
+    assert!(
+        !out.contains("b.rb"),
+        "must not leak an indexed checkout: {out}"
     );
 }
 

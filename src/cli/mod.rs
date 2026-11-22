@@ -99,7 +99,7 @@ struct Cli {
     dirs: Vec<String>,
 
     // Narrow the search
-    /// Search only under this repo-relative directory (repeatable).
+    /// Search only under this directory (repeatable; like PATH).
     #[arg(
         help_heading = "Narrow the search",
         short = 'p',
@@ -414,7 +414,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                 paths.extend(cli.dirs.clone());
                 target
             };
-            let mut session = match Session::open(out) {
+            let mut session = match Session::open(out, &paths) {
                 Ok(s) => s,
                 Err(code) => return code,
             };
