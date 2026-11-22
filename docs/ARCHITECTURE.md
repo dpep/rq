@@ -626,7 +626,7 @@ The index is **never assumed complete**.
   or path match before then is no answer: when the wait ends without one, the
   search reports `warming` (exit 2) with its matches as `provisional`. The wait
   continues while *anyone* is indexing the checkout — this search's warm, or
-  another process's pass (marked in `meta`, `pass:<root>:<pid>` stamped and
+  another process's pass (marked in `meta` by `src/store/marks.rs`, `pass:<root>:<pid>` stamped and
   renewed each minute, or holding the warm lock; either past its 10-minute TTL is
   a crashed process's) — so one warm ending isn't taken for the index being done.
   Following other processes stops once nobody has committed to the index for 5 s

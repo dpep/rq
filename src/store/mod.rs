@@ -404,23 +404,12 @@ pub(crate) fn pid_alive(pid: i64) -> bool {
 /// and a new warmer takes over. A pass renews its mark as it writes.
 pub(crate) const WARM_LOCK_TTL_SECS: i64 = 600;
 
-/// Whether a warm lock's holder, `pid` stamped at `ts`, still has it.
-pub(crate) fn warm_lock_held(pid: u32, ts: i64) -> bool {
-    pid_alive(i64::from(pid)) && now_unix() - ts < WARM_LOCK_TTL_SECS
-}
-
 /// How often a pass renews its mark, well inside the TTL.
 pub(crate) const PASS_RENEWAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Whole seconds since `since` (unix seconds), never negative.
 pub(crate) fn phase_secs(since: i64) -> i64 {
     (now_unix() - since).max(0)
-}
-
-/// Whether a pass mark's stamp is inside the TTL.
-fn stamp_fresh(at: &str) -> bool {
-    at.parse::<i64>()
-        .is_ok_and(|at| now_unix() - at < WARM_LOCK_TTL_SECS)
 }
 
 /// A pass's phases, as `warming.phase` names them.
@@ -1109,9 +1098,7 @@ impl Store {
             .map(|mut row| {
                 if row.status != Coverage::Complete {
                     let (pids, span) = self.passes(&row.root).unwrap_or_default();
-                    if row.status == Coverage::Unindexed
-                        && pids.iter().any(|&p| pid_alive(i64::from(p)))
-                    {
+                    if row.status == Coverage::Unindexed && !pids.is_empty() {
                         row.status = Coverage::Warming;
                     }
                     row.of = span.map(|s| s.max(row.files));
@@ -1282,13 +1269,7 @@ impl Store {
         for key in checkout_meta_keys(checkout.id, root_path) {
             tx.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
         }
-        for kind in ["pass", "phase"] {
-            let marks = format!("{kind}:{root_path}:");
-            tx.execute(
-                "DELETE FROM meta WHERE substr(key, 1, ?2) = ?1",
-                params![marks, marks.len() as i64],
-            )?;
-        }
+        marks::forget_marks(&tx, root_path)?;
         tx.execute("DELETE FROM checkouts WHERE id = ?1", params![checkout.id])?;
         drop_if_unchecked_out(&tx, checkout.repo)?;
         tx.commit()
@@ -1434,48 +1415,6 @@ impl Store {
         self.meta_set(&format!("git_ts_head:{checkout}"), head)
     }
 
-    /// Claim the detached-warm lock for this process unless `held` says the
-    /// current holder (pid, claimed-at) still has it. Read and write share one
-    /// write transaction, so of two warmers racing for it only one wins.
-    pub(crate) fn claim_warm_lock(
-        &mut self,
-        root: &str,
-        pid: u32,
-        held: impl Fn(u32, i64) -> bool,
-    ) -> Result<bool> {
-        let key = format!("warm_lock:{root}");
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let holder: Option<String> = tx
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let holder = holder.and_then(|v| {
-            let (pid, ts) = v.split_once(':')?;
-            Some((pid.parse().ok()?, ts.parse().ok()?))
-        });
-        if holder.is_some_and(|(p, ts)| p != pid && held(p, ts)) {
-            return Ok(false);
-        }
-        tx.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-            params![key, format!("{pid}:{}", now_unix())],
-        )?;
-        tx.commit()?;
-        Ok(true)
-    }
-
-    /// Release the detached-warm lock.
-    pub(crate) fn clear_warm_lock(&self, root: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            params![format!("warm_lock:{root}")],
-        )?;
-        Ok(())
-    }
-
     /// When a warm child last found the worktree unchanged since indexing, and
     /// the git-state stamp it saw: `(stamp, checked_at)`.
     pub(crate) fn warm_verified(&self, root: &str) -> Result<Option<(String, i64)>> {
@@ -1543,115 +1482,6 @@ impl Store {
         self.bookkeeping(|| self.meta_set(&format!("branch_files:{root}"), &value))
     }
 
-    /// Mark a pass over the checkout at `root` as running in `pid`, and record
-    /// how many source files the tree spans when the pass enumerated them. A
-    /// mark whose process is gone, or that went unrenewed past the TTL, is a
-    /// crashed pass's leftover, cleared here so the marks never outgrow the
-    /// live writers.
-    pub(crate) fn begin_pass(&mut self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
-        // it reads before it writes: deferred, a busy writer fails it at once
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // another pid's mark, or phase, left by a pass that died or (a mark)
-        // went unrenewed; a phase counts only beside a live mark or lock
-        let mut stale: Vec<(String, u32)> = Vec::new();
-        for (kind, renewed) in [("pass", true), ("phase", false)] {
-            let prefix = format!("{kind}:{root}:");
-            let rows = tx
-                .prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?2) = ?1")?
-                .query_map(params![prefix, prefix.len() as i64], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>>>()?;
-            stale.extend(rows.into_iter().filter_map(|(k, at)| {
-                let p = k[prefix.len()..].parse::<u32>().ok()?;
-                let gone = !pid_alive(i64::from(p)) || renewed && !stamp_fresh(&at);
-                (p != pid && gone).then_some((k, p))
-            }));
-        }
-        for (key, p) in stale {
-            tx.execute(
-                "DELETE FROM meta WHERE key IN (?1, ?2)",
-                params![key, format!("phase:{root}:{p}")],
-            )?;
-        }
-        tx.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-            params![format!("pass:{root}:{pid}"), now_unix().to_string()],
-        )?;
-        tx.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-            params![
-                format!("phase:{root}:{pid}"),
-                format!("{READING}:{}", now_unix())
-            ],
-        )?;
-        if let Some(span) = span {
-            tx.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-                params![format!("span:{root}"), span.to_string()],
-            )?;
-        }
-        tx.commit()
-    }
-
-    /// Restamp `pid`'s mark from [`begin_pass`](Self::begin_pass), so a pass
-    /// that runs past the TTL isn't read as a crashed one.
-    pub(crate) fn renew_pass(&self, root: &str, pid: u32) -> Result<()> {
-        self.conn.execute(
-            "UPDATE meta SET value = ?2 WHERE key = ?1",
-            params![format!("pass:{root}:{pid}"), now_unix().to_string()],
-        )?;
-        Ok(())
-    }
-
-    /// Record what `pid`'s pass over the checkout at `root` is doing:
-    /// [`READING`] from its start, [`FINISHING`] once past its reads, when
-    /// what remains (the name index, commit times) holds `read` still.
-    pub(crate) fn set_pass_phase(&self, root: &str, pid: u32, phase: &'static str) -> Result<()> {
-        self.meta_set(
-            &format!("phase:{root}:{pid}"),
-            &format!("{phase}:{}", now_unix()),
-        )
-    }
-
-    /// What the passes indexing the checkout at `root` are doing, and since
-    /// when (unix seconds): `reading` while any is, as `read` then moves.
-    /// `None` when no live pass records one — an older rq's records none.
-    pub(crate) fn pass_phase(&self, root: &str) -> Option<(&'static str, i64)> {
-        let (pids, _) = self.passes(root).ok()?;
-        pids.into_iter()
-            .filter(|&p| pid_alive(i64::from(p)))
-            .filter_map(|p| self.meta_get(&format!("phase:{root}:{p}")).ok().flatten())
-            .filter_map(|v| {
-                let (phase, since) = v.split_once(':')?;
-                let phase = [READING, FINISHING].into_iter().find(|&p| p == phase)?;
-                Some((phase, since.parse().ok()?))
-            })
-            .max_by_key(|&(phase, since)| (phase == READING, since))
-    }
-
-    /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass), and record
-    /// the tree's span as the pass leaves it, or forget it (a complete
-    /// checkout discloses none).
-    pub(crate) fn end_pass(&self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM meta WHERE key IN (?1, ?2)",
-            params![format!("pass:{root}:{pid}"), format!("phase:{root}:{pid}")],
-        )?;
-        match span {
-            Some(span) => self.meta_set(&format!("span:{root}"), &span.to_string()),
-            None => {
-                self.conn.execute(
-                    "DELETE FROM meta WHERE key = ?1",
-                    params![format!("span:{root}")],
-                )?;
-                Ok(())
-            }
-        }
-    }
-
     /// A number that changes whenever another connection commits to the
     /// database — how a waiting search tells an indexer at work from one
     /// that has stopped writing.
@@ -1699,7 +1529,7 @@ impl Store {
         let _ = self.waiting_at_most(std::time::Duration::ZERO, || {
             self.conn.execute(
                 "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
-                params![format!("span:{root}"), span.to_string()],
+                params![marks::span_key(root), span.to_string()],
             )
         });
     }
@@ -1734,53 +1564,6 @@ impl Store {
             Waits::Stoppable => self.conn.busy_handler(Some(stoppable_busy)),
         };
         out
-    }
-
-    /// The processes marked as indexing the checkout at `root` (live or not —
-    /// the caller asks), and the files its tree spanned when last enumerated.
-    /// A warm child counts from its lock, which it holds across the passes it
-    /// runs, not only during one. A mark or lock past its TTL is a crashed
-    /// process's, whose pid may be reused, and doesn't count.
-    pub(crate) fn passes(&self, root: &str) -> Result<(Vec<u32>, Option<i64>)> {
-        let prefix = format!("pass:{root}:");
-        let mut pids: Vec<u32> = self
-            .conn
-            .prepare_cached("SELECT key, value FROM meta WHERE substr(key, 1, ?2) = ?1")?
-            .query_map(params![prefix, prefix.len() as i64], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .filter_map(|row| {
-                let (k, at) = row.ok()?;
-                stamp_fresh(&at).then(|| k[prefix.len()..].parse().ok())?
-            })
-            .collect();
-        if let Some(pid) = self.meta_get(&format!("warm_lock:{root}"))?.and_then(|v| {
-            let (pid, at) = v.split_once(':')?;
-            stamp_fresh(at).then(|| pid.parse().ok())?
-        }) {
-            pids.push(pid);
-        }
-        let span = self
-            .meta_get(&format!("span:{root}"))?
-            .and_then(|v| v.parse().ok());
-        Ok((pids, span))
-    }
-
-    /// Whether a live process other than this one holds a pass mark or the
-    /// warm lock on the checkout at `root`.
-    pub(crate) fn indexed_by_others(&self, root: &str) -> bool {
-        !self.other_indexers(root).is_empty()
-    }
-
-    /// The live processes other than this one holding a pass mark or the warm
-    /// lock on the checkout at `root`.
-    pub(crate) fn other_indexers(&self, root: &str) -> Vec<u32> {
-        let me = std::process::id();
-        let (mut pids, _) = self.passes(root).unwrap_or_default();
-        pids.retain(|&p| p != me && pid_alive(i64::from(p)));
-        pids.sort_unstable();
-        pids.dedup();
-        pids
     }
 
     /// How many files a checkout holds — [`checkout_totals`](Self::checkout_totals)
@@ -1952,11 +1735,11 @@ fn drop_if_unchecked_out(conn: &Connection, repository_id: i64) -> Result<()> {
 /// the checkout.
 fn checkout_meta_keys(id: i64, root: &str) -> [String; 7] {
     [
-        format!("span:{root}"),
+        marks::span_key(root),
         format!("head:{id}"),
         format!("edited:{id}"),
         format!("git_ts_head:{id}"),
-        format!("warm_lock:{root}"),
+        marks::warm_lock_key(root),
         format!("warm_verified:{root}"),
         format!("branch_files:{root}"),
     ]
@@ -2279,160 +2062,6 @@ mod tests {
         let written = store.replace_files(repo, &[file]).unwrap();
         holder.join().unwrap();
         assert_eq!((written.files, written.symbols), (1, 1));
-    }
-
-    #[test]
-    fn a_warm_lock_is_held_only_by_a_live_pid_inside_the_ttl() {
-        let me = std::process::id();
-        let fresh = now_unix();
-        let stale = fresh - WARM_LOCK_TTL_SECS;
-        // pid 1 is another user's: kill() says EPERM, which is still alive
-        let cases = [
-            (me, fresh, true),
-            (1, fresh, true),
-            (me, stale, false),
-            (0, fresh, false),
-            (u32::MAX, fresh, false),
-        ];
-        for (pid, ts, held) in cases {
-            assert_eq!(warm_lock_held(pid, ts), held, "pid {pid} at {ts}");
-        }
-    }
-
-    #[test]
-    fn one_of_several_racing_warmers_claims_the_lock() {
-        let dir = Scratch::new("warm-lock");
-        let path = dir.join("rq.db");
-        drop(Store::open(&path).unwrap());
-        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
-        let claims: Vec<_> = (0..8u32)
-            .map(|pid| {
-                let (path, start) = (path.clone(), std::sync::Arc::clone(&start));
-                std::thread::spawn(move || {
-                    let mut store = Store::open(&path).unwrap();
-                    start.wait();
-                    // every holder counts as live: only an empty lock is claimable
-                    store.claim_warm_lock("repo", pid + 1, |_, _| true).unwrap()
-                })
-            })
-            .collect();
-        let won = claims
-            .into_iter()
-            .filter_map(|h| h.join().unwrap().then_some(()))
-            .count();
-        assert_eq!(won, 1);
-
-        // a holder the caller judges gone (dead pid, stale stamp) is taken over
-        let mut store = Store::open(&path).unwrap();
-        assert!(store.claim_warm_lock("repo", 99, |_, _| false).unwrap());
-        assert!(!store.claim_warm_lock("repo", 100, |_, _| true).unwrap());
-    }
-
-    #[test]
-    fn a_pass_mark_waits_out_a_concurrent_writer() {
-        // read-then-write in a deferred transaction can't wait for the lock:
-        // SQLite fails the upgrade with SQLITE_BUSY, busy_timeout or not
-        let dir = Scratch::new("busy-pass");
-        let path = dir.join("rq.db");
-        let mut store = Store::open(&path).unwrap();
-        let other = Store::open(&path).unwrap();
-        other
-            .conn
-            .execute_batch("BEGIN IMMEDIATE; INSERT INTO meta VALUES ('k', 'v');")
-            .unwrap();
-        let holder = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            other.conn.execute_batch("COMMIT").unwrap();
-        });
-        let marked = store.begin_pass("/repo", 7, Some(3));
-        holder.join().unwrap();
-        marked.unwrap();
-        assert_eq!(store.passes("/repo").unwrap(), (vec![7], Some(3)));
-    }
-
-    #[test]
-    fn a_pass_clears_the_marks_of_passes_that_died() {
-        let mut store = Store::open_in_memory().unwrap();
-        let dead = 4_000_000; // above any pid the OS hands out
-        store.begin_pass("/repo", dead, Some(10)).unwrap();
-        store.begin_pass("/repo", 7, None).unwrap();
-        let (pids, span) = store.passes("/repo").unwrap();
-        assert_eq!(pids, vec![7], "the dead pass's mark is gone");
-        assert_eq!(
-            span,
-            Some(10),
-            "a pass that didn't count keeps the last span"
-        );
-
-        store.end_pass("/repo", 7, Some(12)).unwrap();
-        store.claim_warm_lock("/repo", 8, |_, _| false).unwrap();
-        assert_eq!(
-            store.passes("/repo").unwrap(),
-            (vec![8], Some(12)),
-            "a warm child counts, and the pass's recount stands"
-        );
-
-        store.end_pass("/repo", 8, None).unwrap();
-        assert_eq!(store.passes("/repo").unwrap().1, None, "complete: no span");
-
-        // a live pid on a lock past its TTL is a reused pid, not a warmer
-        store
-            .meta_set("warm_lock:/old", &format!("{}:0", std::process::id()))
-            .unwrap();
-        assert!(store.passes("/old").unwrap().0.is_empty());
-    }
-
-    #[test]
-    fn a_pass_says_whether_it_is_reading_or_finishing() {
-        let mut store = Store::open_in_memory().unwrap();
-        let me = std::process::id();
-        let dead = 4_000_000; // above any pid the OS hands out
-        store.begin_pass("/repo", dead, None).unwrap();
-        store.set_pass_phase("/repo", dead, FINISHING).unwrap();
-        assert_eq!(store.pass_phase("/repo"), None, "a dead pass says nothing");
-
-        store.begin_pass("/repo", me, None).unwrap();
-        assert!(
-            store
-                .meta_get(&format!("phase:/repo:{dead}"))
-                .unwrap()
-                .is_none(),
-            "cleared with the dead pass's mark"
-        );
-        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some(READING));
-        store.set_pass_phase("/repo", me, FINISHING).unwrap();
-        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some(FINISHING));
-        store.end_pass("/repo", me, None).unwrap();
-        assert_eq!(store.pass_phase("/repo"), None);
-        assert!(
-            store
-                .meta_get(&format!("phase:/repo:{me}"))
-                .unwrap()
-                .is_none(),
-            "a finished pass leaves no phase behind"
-        );
-    }
-
-    #[test]
-    fn a_pass_mark_unrenewed_past_its_ttl_is_a_crashed_passs() {
-        // a crashed pass whose pid was reused by a live process
-        let mut store = Store::open_in_memory().unwrap();
-        let me = std::process::id();
-        let stale = now_unix() - WARM_LOCK_TTL_SECS - 1;
-        store
-            .meta_set(&format!("pass:/repo:{me}"), &stale.to_string())
-            .unwrap();
-        assert!(store.passes("/repo").unwrap().0.is_empty());
-        assert!(!store.indexed_by_others("/repo"));
-
-        // a running pass renews its mark, and a stale one is cleared
-        store.renew_pass("/repo", me).unwrap();
-        assert_eq!(store.passes("/repo").unwrap().0, vec![me]);
-        store
-            .meta_set(&format!("pass:/repo:{me}"), &stale.to_string())
-            .unwrap();
-        store.begin_pass("/repo", 7, None).unwrap();
-        assert_eq!(store.passes("/repo").unwrap().0, vec![7]);
     }
 
     #[test]

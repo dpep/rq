@@ -2790,7 +2790,7 @@ simpler shape.
 ## D52 — An answer from a half-built index says so, and a guess waits
 
 **Adopted**, 2026-09-30. `settled`, `disclose_warming` and the poll in `src/cli/query.rs`;
-`begin_pass`/`passes` in `src/store/mod.rs`; e2e tests `a_prefix_match_from_a_partial_index_*`,
+`begin_pass`/`passes` in `src/store/marks.rs`; e2e tests `a_prefix_match_from_a_partial_index_*`,
 `an_exact_match_from_a_partial_index_*`, `a_search_waits_on_another_process_*`.
 
 *The problem.* A user on a ~93k-file Ruby monorepo, after an upgrade rebuild or `--drop`:
@@ -3102,7 +3102,7 @@ per pass.
 
 ## D54 — A pass says what it is doing: `warming.phase`
 
-**Adopted**, 2026-10-01. `set_pass_phase`/`pass_phase` in `src/store/mod.rs`, the
+**Adopted**, 2026-10-01. `set_pass_phase`/`pass_phase` in `src/store/marks.rs`, the
 two phase writes in `run_index` (`src/index/mod.rs`), `warming_state` and
 `finishing_note` in `src/cli/query.rs`; e2e test `a_pass_past_its_reads_says_it_is_finishing`.
 

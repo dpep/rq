@@ -2504,7 +2504,7 @@ mod tests {
         store.begin_pass(&root, 4_000_000, None).unwrap();
 
         index_under(&mut store, &dir, &[]).unwrap();
-        assert_eq!(store.passes(&root).unwrap().0, Vec::<u32>::new());
+        assert_eq!(store.marked_pids(&root), Vec::<u32>::new());
     }
 
     #[test]

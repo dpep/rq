@@ -231,7 +231,7 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
     // Single-flight: if another live rq is already warming this checkout, bow out.
     // A dead pid or a stale stamp is a crashed warmer — take over. A claim that
     // can't be made at all means another writer is busy; the next search retries.
-    match store.claim_warm_lock(&key, std::process::id(), crate::store::warm_lock_held) {
+    match store.claim_warm_lock(&key, std::process::id()) {
         Ok(true) => {}
         Ok(false) => {
             crate::trace!(

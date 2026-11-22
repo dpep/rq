@@ -4,7 +4,7 @@
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use super::{Result, Store, pid_alive, schema, stamp_fresh};
+use super::{Result, Store, schema};
 use crate::core::now_unix;
 
 /// When a cleanup last measured the store (unix seconds). Also the claim one
@@ -332,34 +332,5 @@ impl Store {
             }
         }
         Ok(missing)
-    }
-
-    /// Whether a live rq other than this one is indexing any checkout: a
-    /// pass mark or a warm lock, judged as `--drop` and search judge them.
-    /// Its writes would reuse the free pages a cleanup would hand back.
-    pub(crate) fn indexing_anywhere(&self) -> Result<bool> {
-        let me = std::process::id();
-        let mut rows = self.conn.prepare(
-            "SELECT key, value FROM meta WHERE substr(key, 1, 5) = 'pass:' \
-             OR substr(key, 1, 10) = 'warm_lock:'",
-        )?;
-        let marks = rows
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-            .collect::<Result<Vec<_>>>()?;
-        Ok(marks.iter().any(|(key, value)| {
-            // `pass:<root>:<pid>` = stamp; `warm_lock:<root>` = `<pid>:<stamp>`
-            let (pid, at) = match key.strip_prefix("pass:") {
-                Some(rest) => (
-                    rest.rsplit_once(':').map(|(_, pid)| pid),
-                    Some(value.as_str()),
-                ),
-                None => match value.split_once(':') {
-                    Some((pid, at)) => (Some(pid), Some(at)),
-                    None => (None, None),
-                },
-            };
-            let pid = pid.and_then(|p| p.parse::<u32>().ok());
-            pid.is_some_and(|p| p != me && pid_alive(i64::from(p))) && at.is_some_and(stamp_fresh)
-        }))
     }
 }
