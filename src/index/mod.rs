@@ -1023,10 +1023,14 @@ fn fill_checkout(
             unlisted.as_ref()
         }
     };
-    if marked {
+    // the rest of the pass writes through its mark, which goes when it does
+    let mut mark = None;
+    let store = if marked {
         let span = tracked.map(|t| span_of(t, stored.keys().map(String::as_str)));
-        store.begin_pass(&root_key, std::process::id(), span)?;
-    }
+        &mut **mark.insert(store.mark_pass(&root_key, span)?)
+    } else {
+        store
+    };
 
     // Active (branch) files first: always parsed and written, so the working set
     // stays fresh even when a tight budget cuts the walk short.
@@ -1282,7 +1286,7 @@ fn fill_checkout(
             crate::trace::abbrev(root_display)
         );
     }
-    if marked {
+    if let Some(mark) = mark {
         // recount: this pass may have read files git doesn't track
         let span = (status != Coverage::Complete && recorded)
             .then_some(tracked)
@@ -1291,7 +1295,7 @@ fn fill_checkout(
                 let read = seen.iter().filter(|f| !stored.contains_key(*f));
                 span_of(t, stored.keys().chain(read).map(String::as_str))
             });
-        store.end_pass(&root_key, std::process::id(), span)?;
+        mark.end(span)?;
     }
     crate::trace!(
         "index {} (budget {budget:?}): {} seen, {} indexed, {} symbols → {status}",
@@ -2501,7 +2505,7 @@ mod tests {
             store.coverage_status(&root).unwrap(),
             Some(Coverage::Complete)
         );
-        store.begin_pass(&root, 4_000_000, None).unwrap();
+        store.crashed_pass(&root, 4_000_000);
 
         index_under(&mut store, &dir, &[]).unwrap();
         assert_eq!(store.marked_pids(&root), Vec::<u32>::new());

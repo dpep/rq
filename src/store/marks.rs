@@ -118,12 +118,77 @@ pub(super) fn forget_marks(conn: &Connection, root: &str) -> Result<()> {
     delete_under(conn, &marks_on(PHASE, root))
 }
 
+/// This process's pass mark on a checkout, held while the pass runs, and the
+/// store it marks, borrowed for the pass to write through. [`end`](Self::end)
+/// records how the pass left the tree; dropped without it — a pass that
+/// failed — the mark goes anyway, so a long-lived process doesn't hold the
+/// checkout for the TTL after its pass is gone.
+#[must_use = "dropping it ends the mark"]
+pub(crate) struct PassMark<'s> {
+    store: &'s mut Store,
+    root: String,
+    ended: bool,
+}
+
+impl PassMark<'_> {
+    /// End the pass, recording the tree's span as it leaves it (see
+    /// [`Store::end_pass`]).
+    pub(crate) fn end(mut self, span: Option<usize>) -> Result<()> {
+        self.store.end_pass(&self.root, std::process::id(), span)?;
+        self.ended = true;
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for PassMark<'_> {
+    type Target = Store;
+    fn deref(&self) -> &Store {
+        self.store
+    }
+}
+
+impl std::ops::DerefMut for PassMark<'_> {
+    fn deref_mut(&mut self) -> &mut Store {
+        self.store
+    }
+}
+
+impl Drop for PassMark<'_> {
+    fn drop(&mut self) {
+        if self.ended {
+            return;
+        }
+        // best-effort and without waiting: a writer holding the lock past this
+        // leaves the mark to the pid's next pass, its exit, or the TTL
+        let pid = std::process::id();
+        let store = &*self.store;
+        let _ = store.waiting_at_most(std::time::Duration::ZERO, || {
+            store.conn.execute(
+                "DELETE FROM meta WHERE key IN (?1, ?2)",
+                params![pass_key(&self.root, pid), phase_key(&self.root, pid)],
+            )
+        });
+    }
+}
+
 impl Store {
+    /// Mark a pass of this process's over the checkout at `root`, as
+    /// [`begin_pass`](Self::begin_pass) does, until the mark is ended or
+    /// dropped.
+    pub(crate) fn mark_pass(&mut self, root: &str, span: Option<usize>) -> Result<PassMark<'_>> {
+        self.begin_pass(root, std::process::id(), span)?;
+        Ok(PassMark {
+            store: self,
+            root: root.to_string(),
+            ended: false,
+        })
+    }
+
     /// Mark a pass over the checkout at `root` as running in `pid`, and record
     /// how many source files the tree spans when the pass enumerated them. A
     /// mark another pid no longer holds is a crashed pass's leftover, cleared
     /// here with its phase so the marks never outgrow the live writers.
-    pub(crate) fn begin_pass(&mut self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
+    pub(super) fn begin_pass(&mut self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
         // it reads before it writes: deferred, a busy writer fails it at once
         let tx = self
             .conn
@@ -196,7 +261,7 @@ impl Store {
     /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass), and record
     /// the tree's span as the pass leaves it, or forget it (a complete
     /// checkout discloses none).
-    pub(crate) fn end_pass(&self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
+    pub(super) fn end_pass(&self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
         self.conn.execute(
             "DELETE FROM meta WHERE key IN (?1, ?2)",
             params![pass_key(root, pid), phase_key(root, pid)],
@@ -291,6 +356,12 @@ impl Store {
         Ok(())
     }
 
+    /// Leave the mark a pass in `pid` that crashed would.
+    #[cfg(test)]
+    pub(crate) fn crashed_pass(&mut self, root: &str, pid: u32) {
+        self.begin_pass(root, pid, None).unwrap();
+    }
+
     /// Every pid with a pass mark on `root`, held or not.
     #[cfg(test)]
     pub(crate) fn marked_pids(&self, root: &str) -> Vec<u32> {
@@ -308,7 +379,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use super::Holder;
+    use super::{Holder, phase_key};
     use crate::tests::support::Scratch;
 
     /// Above any pid the OS hands out.
@@ -510,6 +581,46 @@ mod tests {
         store.meta_set(&format!("pass:/repo:{me}"), &stale).unwrap();
         store.begin_pass("/repo", other(), None).unwrap();
         assert_eq!(store.marked_pids("/repo"), vec![other()]);
+    }
+
+    #[test]
+    fn a_pass_that_fails_leaves_no_mark() {
+        // a long-lived process (a `--batch`) outlives its failed pass, so its
+        // pid can't be what retires the mark
+        let dir = Scratch::new("failed-pass");
+        std::fs::write(dir.join("w.rb"), "class Widget\nend\n").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail BEFORE INSERT ON files \
+                 BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+            )
+            .unwrap();
+        // a warm child's pass: its lock outlives the pass, and stays
+        let root = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+        let me = std::process::id();
+        assert!(store.claim_warm_lock(&root, me).unwrap());
+        assert!(crate::index::index_under(&mut store, &dir, &[]).is_err());
+        assert!(store.marked_pids(&root).is_empty(), "no pass mark");
+        let phase = phase_key(&root, me);
+        assert!(store.meta_get(&phase).unwrap().is_none(), "no phase");
+        assert_eq!(store.passes(&root).unwrap().0, vec![me], "the lock holds");
+    }
+
+    #[test]
+    fn a_mark_dropped_behind_a_writer_is_left_rather_than_waited_for() {
+        let dir = Scratch::new("mark-busy");
+        let path = dir.join("rq.db");
+        let mut store = Store::open(&path).unwrap();
+        let writer = Store::open(&path).unwrap();
+        let mark = store.mark_pass("/r", None).unwrap();
+        writer.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let t = std::time::Instant::now();
+        drop(mark);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "no wait");
+        writer.conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(store.marked_pids("/r"), vec![std::process::id()]);
     }
 
     #[test]

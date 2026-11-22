@@ -14,6 +14,10 @@ and aren't listed; see `git log` for those.
   being indexed: `--drop` there refuses with 75 while an `rq --index` runs, a
   search follows that indexer instead of calling the index `interrupted`, and a
   crashed pass's leftover mark is cleared.
+- A pass that fails in a process that keeps running (an `rq --batch` session)
+  no longer leaves the checkout marked as being indexed for up to 10 minutes:
+  `--drop` no longer refuses naming that idle pid, and `--status` no longer
+  shows the checkout `warming`.
 
 ## 0.60.15 — 2026-11-21
 
