@@ -4,6 +4,7 @@
 //! happen concurrently. See `docs/ARCHITECTURE.md` for the schema.
 
 pub(crate) mod cleanup;
+mod marks;
 mod names;
 mod recover;
 mod schema;
