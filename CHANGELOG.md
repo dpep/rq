@@ -7,6 +7,14 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+- A checkout whose path has a non-ASCII character (`~/code/café`) is seen as
+  being indexed: `--drop` there refuses with 75 while an `rq --index` runs, a
+  search follows that indexer instead of calling the index `interrupted`, and a
+  crashed pass's leftover mark is cleared.
+
 ## 0.60.15 — 2026-11-21
 
 ### Changed

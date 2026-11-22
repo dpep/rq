@@ -2007,6 +2007,22 @@ fn drop_refuses_while_another_process_indexes_the_checkout() {
 }
 
 #[test]
+fn drop_refuses_while_another_process_indexes_a_non_ascii_checkout() {
+    let (dir, db) = scratch("drop-busy-café");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    let root = dir.canonicalize().unwrap();
+    rq(&db, &dir, &["--index"]);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s', 'now'))",
+        [format!("pass:{}:{}", root.display(), std::process::id())],
+    )
+    .unwrap();
+    let (code, out) = rq(&db, &dir, &["--drop", "--json"]);
+    assert_eq!(code, 75, "refuses as busy: {out}");
+}
+
+#[test]
 fn status_reads_a_first_index_in_progress_as_warming() {
     // A first pass commits files long before it writes coverage; until then
     // the repo is partially indexed, not "never" indexed.

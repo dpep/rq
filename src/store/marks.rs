@@ -18,7 +18,7 @@
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use super::{FINISHING, READING, Result, Store, WARM_LOCK_TTL_SECS, pid_alive};
+use super::{FINISHING, READING, Result, Store, WARM_LOCK_TTL_SECS, pid_alive, prefix_upper_bound};
 use crate::core::now_unix;
 
 const PASS: &str = "pass:";
@@ -92,10 +92,11 @@ fn put(conn: &Connection, key: &str, value: &str) -> Result<()> {
     .map(drop)
 }
 
-/// Every `meta` row whose key starts with `prefix`.
+/// Every `meta` row whose key starts with `prefix`: a range on the key, which
+/// seeks the primary key and, unlike `substr`, measures nothing in characters.
 fn rows_under(conn: &Connection, prefix: &str) -> Result<Vec<(String, String)>> {
-    conn.prepare_cached("SELECT key, value FROM meta WHERE substr(key, 1, ?2) = ?1")?
-        .query_map(params![prefix, prefix.len() as i64], |r| {
+    conn.prepare_cached("SELECT key, value FROM meta WHERE key >= ?1 AND key < ?2")?
+        .query_map(params![prefix, prefix_upper_bound(prefix)], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?
         .collect()
@@ -104,8 +105,8 @@ fn rows_under(conn: &Connection, prefix: &str) -> Result<Vec<(String, String)>> 
 /// Delete every `meta` row whose key starts with `prefix`.
 fn delete_under(conn: &Connection, prefix: &str) -> Result<()> {
     conn.execute(
-        "DELETE FROM meta WHERE substr(key, 1, ?2) = ?1",
-        params![prefix, prefix.len() as i64],
+        "DELETE FROM meta WHERE key >= ?1 AND key < ?2",
+        params![prefix, prefix_upper_bound(prefix)],
     )
     .map(drop)
 }
@@ -644,25 +645,34 @@ mod tests {
         }
     }
 
-    /// Pinned as it is, not as it should be: a multi-byte root's prefix is
-    /// measured in bytes, SQLite's `substr` in characters.
+    /// A multi-byte root's marks are found, cleared and forgotten like any
+    /// other's: matched as a key range, not a length.
     #[test]
     fn a_non_ascii_root() {
         let root = "/x/café";
         let mut store = Store::open_in_memory().unwrap();
         store.begin_pass(root, DEAD, None).unwrap();
         store.begin_pass(root, other(), None).unwrap();
-        assert!(
-            store.other_indexers(root).is_empty(),
-            "a live pass goes unseen"
+        assert_eq!(store.other_indexers(root), vec![other()]);
+        assert!(store.indexing_anywhere().unwrap());
+        assert_eq!(
+            store.marked_pids(root),
+            vec![other()],
+            "the dead pass's mark is cleared"
         );
-        assert!(store.indexing_anywhere().unwrap(), "the cleanup sees it");
+        assert!(store.other_indexers("/x/caf").is_empty());
+
+        let repo = store
+            .upsert_repository(&crate::core::RepoIdentity::local(root), None)
+            .unwrap();
+        store.upsert_checkout(repo, root, None).unwrap();
+        store.forget_checkout(root).unwrap();
+        assert!(store.marked_pids(root).is_empty(), "a drop forgets them");
         assert!(
             store
-                .meta_get(&format!("pass:{root}:{DEAD}"))
+                .meta_get(&format!("phase:{root}:{}", other()))
                 .unwrap()
-                .is_some(),
-            "a dead pass's mark is never cleared"
+                .is_none()
         );
     }
 }
