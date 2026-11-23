@@ -4649,6 +4649,10 @@ samples, fetching rows is ~37% (names 25%, files 12%), the signature scan 12%, s
 17%, and ranking the names for a capped walk 10% (`fuzzy_value` per accepted name,
 computed again by `score` for each row).
 
+*Accepted as is:* the 50 ms budget is for a search in one repo. Across every repo
+(`-a`), ~100 ms on a 59-repo, 389k-symbol index is the expected cost of the wider
+question; no smaller unscoped cap or estimated `total` to buy it back.
+
 *Rejected: fetch full rows only for the top-K names by name evidence.* Non-name features
 are not bounded by the name's own evidence. `recency` (up to 120), `current_repo` (200),
 `branch` (up to 180) and the anchor boosts are added unscaled. For `-a usr`,
