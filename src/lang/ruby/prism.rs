@@ -6,6 +6,8 @@
 //! Tree-sitter walk (kept in tests as the parity oracle) gave Ruby, kept so the
 //! two extract alike from any file both can parse.
 
+use std::borrow::Cow;
+
 use ruby_prism::{CallNode, Location, Node, Visit};
 
 use super::{DslArgs, LANGUAGE, alias_visibility, dsl_args, leaf_and_parent};
@@ -202,7 +204,7 @@ impl Walk<'_> {
         let vis = if method == b"alias_method" {
             let original = arguments.iter().nth(1);
             let original = original.as_ref().and_then(literal_name).unwrap_or_default();
-            alias_visibility(&self.out, self.parent.as_deref(), singleton, original)
+            alias_visibility(&self.out, self.parent.as_deref(), singleton, &original)
         } else {
             vis
         };
@@ -213,7 +215,7 @@ impl Walk<'_> {
         };
         for arg in arguments.iter().take(names) {
             if let Some(name) = literal_name(&arg).filter(|n| !n.is_empty()) {
-                self.method(name, &call.location(), vis, singleton);
+                self.method(&name, &call.location(), vis, singleton);
             }
         }
     }
@@ -274,7 +276,7 @@ impl Walk<'_> {
             let ours =
                 s.kind == Kind::Method && s.singleton == singleton && s.parent == self.parent;
             if ours
-                && (i >= wrapped || (self.scopes[i] == scope && names.contains(&s.name.as_str())))
+                && (i >= wrapped || (self.scopes[i] == scope && names.iter().any(|n| *n == s.name)))
             {
                 s.visibility = Some(vis);
             }
@@ -288,38 +290,50 @@ fn text<'pr>(loc: &Location<'pr>) -> &'pr str {
     std::str::from_utf8(loc.as_slice()).unwrap_or_default()
 }
 
-/// The name a literal `:symbol` or quoted string argument carries, as its
-/// source spells it. Not a `:"quoted"` symbol, a heredoc, a `?c` character,
-/// or adjacent strings run together.
-fn literal_name<'pr>(node: &Node<'pr>) -> Option<&'pr str> {
+/// The name a literal `:symbol` or quoted string argument carries: a
+/// string's content (`%q(x)` names `x`). Not a `:"quoted"` symbol, a heredoc,
+/// a `?c` character, or an interpolated string, whose name can't be known
+/// statically.
+fn literal_name<'pr>(node: &Node<'pr>) -> Option<Cow<'pr, str>> {
     if let Some(symbol) = node.as_symbol_node() {
         let t = text(&symbol.location());
         return (t.starts_with(':') && !t.starts_with(":\"") && !t.starts_with(":'"))
-            .then(|| t.trim_start_matches(':'));
+            .then(|| Cow::Borrowed(t.trim_start_matches(':')));
     }
-    let opening = match node.as_string_node() {
-        Some(s) => s.opening_loc(),
-        None => node.as_interpolated_string_node()?.opening_loc(),
-    };
-    let opening = text(&opening?);
+    let string = node.as_string_node()?;
+    // no opening: a piece of adjacent strings run together
+    let opening = text(&string.opening_loc()?);
     if opening.starts_with("<<") || opening == "?" {
         return None;
     }
-    Some(text(&node.location()).trim_matches(|c| c == '"' || c == '\''))
+    content(&string.content_loc(), string.unescaped())
+}
+
+/// A literal's value: its source text, unless an escape changed it.
+fn content<'pr>(raw: &Location<'pr>, unescaped: &[u8]) -> Option<Cow<'pr, str>> {
+    let raw = text(raw);
+    if raw.as_bytes() == unescaped {
+        return Some(Cow::Borrowed(raw));
+    }
+    std::str::from_utf8(unescaped)
+        .ok()
+        .map(|s| Cow::Owned(s.to_string()))
 }
 
 /// Every literal name an access call's argument holds, through array literals
 /// (`[:a, :b]`, `%i[a b]`, `%w[a b]`) and splats of them (`*%i[a b]`).
-fn literal_names<'pr>(node: &Node<'pr>, names: &mut Vec<&'pr str>) {
+fn literal_names<'pr>(node: &Node<'pr>, names: &mut Vec<Cow<'pr, str>>) {
     if let Some(array) = node.as_array_node() {
         let words = array
             .opening_loc()
             .is_some_and(|o| o.as_slice().starts_with(b"%"));
         for element in &array.elements() {
-            if words {
-                names.push(text(&element.location()));
-            } else {
+            if !words {
                 literal_names(&element, names);
+            } else if let Some(word) = element.as_string_node() {
+                names.extend(content(&word.content_loc(), word.unescaped()));
+            } else if element.as_interpolated_string_node().is_none() {
+                names.push(Cow::Borrowed(text(&element.location())));
             }
         }
     } else if let Some(splat) = node.as_splat_node() {

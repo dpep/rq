@@ -59,15 +59,54 @@ enum Intended {
     /// `ÜBER = 1` assigns a constant: Ruby's constants start with any
     /// uppercase letter, the grammar's with an ASCII one.
     NonAsciiConstant,
+    /// A string names a method by its content: `%q(x)` and `"a\tb"` name
+    /// `x` and `a<tab>b`, where the oracle kept the source spelling.
+    StringContent,
+    /// A name built by interpolation (`"get_#{x}"`) can't be known
+    /// statically, so it's skipped, as any computed name is.
+    InterpolatedName,
 }
 
 impl Intended {
-    const ALL: [Intended; 1] = [Intended::NonAsciiConstant];
+    const ALL: [Intended; 3] = [
+        Intended::NonAsciiConstant,
+        Intended::StringContent,
+        Intended::InterpolatedName,
+    ];
 
     /// Why a row only prism extracted is right.
-    fn prism_only(row: &Row) -> Option<Intended> {
+    fn prism_only(row: &Row, _source: &str) -> Option<Intended> {
         (row.kind == Kind::Constant.as_str() && row.name.starts_with(|c: char| !c.is_ascii()))
             .then_some(Intended::NonAsciiConstant)
+    }
+
+    /// Why a row only the oracle extracted is wrong.
+    fn oracle_only(row: &Row) -> Option<Intended> {
+        (row.kind == Kind::Method.as_str() && row.name.contains("#{"))
+            .then_some(Intended::InterpolatedName)
+    }
+
+    /// Why prism names the oracle's definition otherwise.
+    fn renamed(oracle: &Row, ours: &Row) -> Option<Intended> {
+        let (was, is) = (oracle.name.as_str(), ours.name.as_str());
+        // `%q(x)` kept whole, or an escape kept as its backslash
+        let source_spelling = (was.starts_with('%') && was.contains(is)) || was.contains('\\');
+        (oracle.kind == Kind::Method.as_str() && source_spelling).then_some(Intended::StringContent)
+    }
+
+    /// Why prism gives the oracle's definition another visibility: an access
+    /// call named it by a literal the oracle misread.
+    fn revisited(ours: &Row, source: &str) -> Option<Intended> {
+        let name = &ours.name;
+        let spelled = |open: &str, close: &str| {
+            ["%q", "%Q", "%"]
+                .iter()
+                .any(|p| source.contains(&format!("{p}{open}{name}{close}")))
+        };
+        [("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"), ("|", "|")]
+            .iter()
+            .any(|(open, close)| spelled(open, close))
+            .then_some(Intended::StringContent)
     }
 }
 
@@ -80,19 +119,55 @@ struct Diff {
     unexplained: Vec<String>,
 }
 
+impl Diff {
+    fn note(&mut self, why: Option<Intended>, row: String) {
+        match why {
+            Some(why) => self.explained.push((why, row)),
+            None => self.unexplained.push(row),
+        }
+    }
+}
+
 fn diff(file: &str, source: &str) -> Diff {
     let rows = |symbols: Vec<Symbol>| -> BTreeSet<Row> { symbols.iter().map(Row::of).collect() };
     let ours = rows(prism::extract(file, source));
     let oracle = rows(tree_sitter::extract(file, source));
+    let mut ours_only: Vec<Row> = ours.difference(&oracle).cloned().collect();
     let mut out = Diff::default();
-    for row in ours.difference(&oracle) {
-        match Intended::prism_only(row) {
-            Some(why) => out.explained.push((why, format!("prism       {row}"))),
-            None => out.unexplained.push(format!("prism       {row}")),
-        }
+    let blank_name = |r: &Row| Row {
+        name: String::new(),
+        ..r.clone()
+    };
+    let blank_vis = |r: &Row| Row {
+        visibility: None,
+        ..r.clone()
+    };
+    for o in oracle.difference(&ours) {
+        // the same definition on both sides, named or made visible otherwise
+        // several definitions can share a place (`attr_reader :a, :b`): pair
+        // with the one a rule explains, if any
+        let renamed = ours_only
+            .iter()
+            .position(|p| blank_name(p) == blank_name(o) && Intended::renamed(o, p).is_some())
+            .or_else(|| {
+                ours_only
+                    .iter()
+                    .position(|p| blank_name(p) == blank_name(o))
+            });
+        let revisited = ours_only.iter().position(|p| blank_vis(p) == blank_vis(o));
+        let (why, pair) = match (renamed, revisited) {
+            (Some(i), _) => (Intended::renamed(o, &ours_only[i]), i),
+            (None, Some(i)) => (Intended::revisited(&ours_only[i], source), i),
+            (None, None) => {
+                out.note(Intended::oracle_only(o), format!("tree-sitter {o}"));
+                continue;
+            }
+        };
+        let p = ours_only.remove(pair);
+        out.note(why, format!("tree-sitter {o}\n  prism       {p}"));
     }
-    for row in oracle.difference(&ours) {
-        out.unexplained.push(format!("tree-sitter {row}"));
+    for p in &ours_only {
+        out.note(Intended::prism_only(p, source), format!("prism       {p}"));
     }
     out
 }

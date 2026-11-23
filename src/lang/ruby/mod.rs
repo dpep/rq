@@ -508,6 +508,31 @@ end
     }
 
     #[test]
+    fn a_string_names_a_method_by_its_content_and_an_interpolated_one_is_skipped() {
+        let src = r#"
+class Widget
+  attr_reader %q(plain), %Q(double), "tab\tless"
+  define_method("dyn_#{kind}") { }
+  attr_accessor "a#{b}", "ok"
+  def hidden; end
+  def secret; end
+  private %w[hidden], %q(secret)
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("plain", false, "public"),
+            ("double", false, "public"),
+            ("tab\tless", false, "public"),
+            ("ok", false, "public"),
+            ("hidden", false, "private"),
+            ("secret", false, "private"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
     fn a_constant_may_start_with_any_uppercase_letter() {
         // Ruby's rule, which the Tree-sitter grammar read as ASCII only
         let syms = extract("class Größe\n  ÜBER = 1\nend\n");
