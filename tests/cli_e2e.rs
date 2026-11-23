@@ -4939,7 +4939,7 @@ fn a_prefix_match_from_a_partial_index_is_provisional_not_an_answer() {
     assert_eq!(code, 2);
     assert!(out.contains("UserFieldsController"), "{out}");
     assert!(err.contains("1 of 2 files read"), "{err}");
-    assert!(err.contains("indexing stopped part-way"), "{err}");
+    assert!(err.contains("nothing is indexing this checkout"), "{err}");
 
     // --show has nothing settled to show, and says only that
     let (code, _, err) = rq_full(&db, &dir, &["User", "--show", "--no-wait"], &NO_CHILD, None);
@@ -4970,7 +4970,7 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
 
     // nothing continues it here (no detached warm): text says what JSON does
     let (_, _, err) = rq_full(&db, &dir, &["User", "--no-wait"], &NO_CHILD, None);
-    assert!(err.contains("indexing stopped part-way"), "{err}");
+    assert!(err.contains("nothing is indexing this checkout"), "{err}");
     assert!(!err.contains("still indexing"), "{err}");
     // and --status says it as the hit does
     let (_, out) = rq(&db, &dir, &["--status", "--json"]);
@@ -4978,7 +4978,7 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
     let (_, out) = rq(&db, &dir, &["--status"]);
     let row = out.lines().next().unwrap();
     assert!(
-        row.contains("stopped part-way") && row.contains("rq --index"),
+        row.contains("nothing is indexing it") && row.contains("rq --index"),
         "{out}"
     );
 

@@ -1105,7 +1105,7 @@ fn warming_state(
     let interrupted = !continuing && !store.indexed_by_others(root);
     let index = index_command(root, here);
     let hint = if interrupted {
-        format!("indexing stopped part-way: `{index}` finishes it")
+        format!("{}: `{index}` finishes it", nothing_indexing(here))
     } else {
         format!(
             "rq is still indexing {}: ask again for a fuller answer, or run `{index}` to finish it now",
@@ -1167,7 +1167,8 @@ fn warming_note(hit: &crate::search::Hit, here: Option<&str>) -> Option<String> 
     Some(if w.interrupted {
         let root = hit.root.as_deref().unwrap_or_default();
         format!(
-            "rq: indexing stopped part-way ({read}) — another definition may not be indexed yet; `{}` finishes it",
+            "rq: {} ({read}) — another definition may not be indexed yet; `{}` finishes it",
+            nothing_indexing(Some(root) == here),
             index_command(root, Some(root) == here)
         )
     } else {
@@ -1177,6 +1178,16 @@ fn warming_note(hit: &crate::search::Hit, here: Option<&str>) -> Option<String> 
             which_checkout(root, Some(root) == here)
         )
     })
+}
+
+/// What a partial index nothing is filling says of itself; "that" is
+/// another checkout, whose root the `rq --index` beside it names.
+fn nothing_indexing(here: bool) -> &'static str {
+    if here {
+        "nothing is indexing this checkout"
+    } else {
+        "nothing is indexing that checkout"
+    }
 }
 
 /// "this checkout", or the one at `root` when the search runs elsewhere.
@@ -1240,7 +1251,7 @@ fn emit_provisional(
         Output::Text => {
             render_hits(args, hits, false)?;
             let state = if warming.is_some_and(|w| w.interrupted) {
-                "indexing stopped part-way"
+                nothing_indexing(Some(by) == here)
             } else {
                 "still indexing"
             };
@@ -1438,7 +1449,7 @@ fn no_match_code(
         }
         Output::Text if incomplete => {
             let (state, read) = match warming {
-                Some(w) if w.interrupted => ("indexing stopped part-way", read_so_far(w)),
+                Some(w) if w.interrupted => (nothing_indexing(true), read_so_far(w)),
                 Some(w) => ("still indexing", read_so_far(w)),
                 None => ("still indexing", String::new()),
             };

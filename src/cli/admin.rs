@@ -244,8 +244,8 @@ pub(super) fn cmd_status(store: &Store, out: Output) -> ExitCode {
             row.of = tree_span(store, &row.root, checkout.id).map(|s| s.max(row.files));
         }
     }
-    // A partial index nothing is filling stopped part-way, as a hit from it
-    // says (`warming.interrupted`); omitted on a complete one.
+    // Whether nothing is filling a partial index, as a hit from it says
+    // (`warming.interrupted`); omitted on a complete one.
     #[derive(serde::Serialize)]
     struct Row<'a> {
         #[serde(flatten)]
@@ -288,7 +288,7 @@ pub(super) fn cmd_status(store: &Store, out: Output) -> ExitCode {
                 let finishing = finishing_note(r.phase, r.phase_secs);
                 let stopped = if *interrupted == Some(true) {
                     format!(
-                        "  (stopped part-way: `{}` finishes it)",
+                        "  (nothing is indexing it: `{}` finishes it)",
                         index_command(&r.root, false)
                     )
                 } else {

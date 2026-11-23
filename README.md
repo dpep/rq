@@ -162,7 +162,7 @@ that doesn't apply is **omitted**, never `null`.
 | `total` | search | Matches the window was drawn from, before `--limit`. |
 | `explain` | `--explain` | Feature name → score contribution, in whole points. |
 | `query` | batch mode | The stdin line this row answers; on a line that isn't UTF-8, its text with each invalid byte as `\u{FFFD}`. |
-| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, phase, phase_secs, hint}`: files the index holds, files the tree spans (what git tracks, less a sparse checkout's files outside its cone, plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it any more, what a live pass over it is doing — `reading`, or `finishing` (rebuilding the name index and reading commit times, when `read` stands still for a while) — and for how many whole seconds (both omitted when no pass reports one, such as an older rq's), and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of` — on every result from that checkout, `live` ones too, so they compare. |
+| `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, phase, phase_secs, hint}`: files the index holds, files the tree spans (what git tracks, less a sparse checkout's files outside its cone, plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it, what a live pass over it is doing — `reading`, or `finishing` (rebuilding the name index and reading commit times, when `read` stands still for a while) — and for how many whole seconds (both omitted when no pass reports one, such as an older rq's), and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of` — on every result from that checkout, `live` ones too, so they compare. |
 
 ### Misses and exit codes
 
@@ -280,9 +280,10 @@ other worktrees after an upgrade, until a search there indexes it. A checkout
 deleted from disk is forgotten, and doesn't appear. `files` and `symbols` count
 what the checkout holds so far, and a partial checkout's `of` the files its tree
 spans, as a result's `warming` counts them, with its `phase` and `phase_secs`,
-and `interrupted`: `true` when nothing is filling it any more (an indexer
-killed part-way; the text row says `rq --index …` finishes it), `false` while
-a pass is. A dropped checkout is gone from `--status` until a query or `--index`
+and `interrupted`: `true` when nothing is filling it (an indexer killed
+part-way, an `rq --index <subdir>`, an upgrade's re-read no search has started;
+the text row names the `rq --index` that finishes it), `false` while a pass
+is. A dropped checkout is gone from `--status` until a query or `--index`
 starts rebuilding it, and then reads `warming`. `rq --index --json` emits what
 this run parsed (`files_added`, `symbols_added` — a file whose content a
 sibling checkout already stored is parsed by neither, so a new worktree often
@@ -398,8 +399,7 @@ takes longer than half a second, and Ctrl-C stops it. It's a one-time cost — t
 index persists and self-heals as you search, re-reading edited files and
 reconciling added and removed ones. An upgrade that changes what rq extracts
 re-reads the affected files the same way, on the next search; until then
-`--status` shows the checkout `warming` at every file read (`88 of 88`) and
-"stopped part-way".
+`--status` shows the checkout `warming`.
 
 A minified source — 16 KB or more, lines averaging over 200 bytes and over 10
 of `;,(){}` each — is held without definitions instead of parsed: its names are

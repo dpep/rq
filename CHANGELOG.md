@@ -13,10 +13,10 @@ and aren't listed; see `git log` for those.
 - `RQ_CALLER=<name>` names the tool calling rq in `rq --usage`, ahead of rq's
   own guess (`claude-code`, `human`, `piped`). The VS Code extension sets
   `RQ_CALLER=vscode`; set it in any script or tool that calls rq.
-- `rq --status` tells a partial index nothing is filling (an indexer killed
-  part-way) from one still being indexed: the row says "stopped part-way:
-  `rq --index …` finishes it", and its JSON carries `interrupted`
-  (`true`/`false`, absent once complete), as a hit's `warming` does.
+- `rq --status` tells a partial index nothing is filling from one still
+  being indexed: the row says "nothing is indexing it: `rq --index …`
+  finishes it", and its JSON carries `interrupted` (`true`/`false`, absent
+  once complete), as a hit's `warming` does.
 
 ### Changed
 - Queries piped on stdin are answered as NDJSON without `-J`
@@ -42,8 +42,7 @@ and aren't listed; see `git log` for those.
   (`"reason": "minified"` under `--json`). After upgrading, rq re-reads every
   Ruby, Rust, Python and Go file, and any file with no definitions, once: the
   next search in a checkout starts it, and nothing else is needed. Until then,
-  `--status` shows the checkout `warming` at every file read (`88 of 88`) and
-  "stopped part-way".
+  `--status` shows the checkout `warming`.
 - A first search in a repo not yet indexed exits sooner: once it has answered,
   it leaves reading commit history to the background pass that finishes the
   index. That pass records commit times for every file, and a later pass fills
@@ -79,6 +78,9 @@ and aren't listed; see `git log` for those.
 - `RQ_JOBS` that isn't a thread count (`abc`, `-1`) warns on stderr and runs
   one parse thread per core; a count over 4 per core (`RQ_JOBS=100000`, which
   crashed) is capped there, with a warning.
+- A result or miss from a partial index nothing is indexing says "nothing is
+  indexing this checkout" (stderr, and `warming.hint`) instead of "indexing
+  stopped part-way", which an `rq --index <subdir>` never was.
 - `script/rq-open` offers fzf only result lines: picking the signature
   printed beneath one opened the repo root.
 - `rq --symbols DIR` says the path is a directory and exits 64 (usage)
