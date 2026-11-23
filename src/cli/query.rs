@@ -677,7 +677,8 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
                 if let Some(h) = indexer {
                     let _ = h.join();
                 }
-                return report(out, Failure::Database, format_args!("rq: {e}")).into();
+                let query = args.batch.then_some(args.echo);
+                return report_query(out, Failure::Database, query, format_args!("rq: {e}")).into();
             }
         }
         std::thread::sleep(POLL_INTERVAL);
