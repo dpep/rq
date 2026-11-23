@@ -447,7 +447,7 @@ pub(super) fn cmd_usage(store: &Store, out: Output) -> ExitCode {
             let warming: i64 = rows.iter().map(|r| r.warming).sum();
             let complete: i64 = rows.iter().map(|r| r.on_complete).sum();
             let live: i64 = rows.iter().map(|r| r.live).sum();
-            let plural = if searches == 1 { "search" } else { "searches" };
+            let plural = if searches == 1 { "call" } else { "calls" };
             // rare, and only outside a repo: named when it happened at all
             let live = if live > 0 {
                 format!(" · {live} from a live scan")

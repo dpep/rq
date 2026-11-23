@@ -246,7 +246,7 @@ struct Cli {
     #[arg(help_heading = "The index", long)]
     drop: bool,
 
-    /// Show searches per day, by caller and flags.
+    /// Show calls per day, by caller, command and flags.
     #[arg(help_heading = "The index", long)]
     usage: bool,
 
@@ -304,6 +304,12 @@ pub fn run() -> ExitCode {
 fn dispatch(cli: Cli) -> ExitCode {
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "rq", &mut std::io::stdout());
+        // counted only in an index that exists: printing a script creates none
+        if let Ok(path) = db_location()
+            && let Ok(store) = Store::open_existing(&path)
+        {
+            record_mode(&store, "completions", Output::Text, &[]);
+        }
         return ExitCode::SUCCESS;
     }
     if let Err(message) = db_location() {
@@ -317,7 +323,10 @@ fn dispatch(cli: Cli) -> ExitCode {
         // index PATH (else cwd); with --path, seed only those subtrees
         let out = output_format(&cli);
         let path = path.as_deref().map(PathBuf::from);
-        return with_store(out, "index", |store| cmd_index(store, path, &cli.path, out));
+        let extra = [(!cli.path.is_empty(), "path")];
+        return with_store(out, "index", &extra, |store| {
+            cmd_index(store, path, &cli.path, out)
+        });
     }
     if let Some(path) = &cli.warm {
         return cmd_warm(path.as_deref());
@@ -327,19 +336,19 @@ fn dispatch(cli: Cli) -> ExitCode {
     }
     if cli.status {
         let out = output_format(&cli);
-        return with_store(out, "status", |store| cmd_status(store, out));
+        return with_store(out, "status", &[], |store| cmd_status(store, out));
     }
     if cli.storage {
         let out = output_format(&cli);
-        return with_store(out, "storage", |store| cmd_storage(store, out));
+        return with_store(out, "storage", &[], |store| cmd_storage(store, out));
     }
     if cli.usage {
         let out = output_format(&cli);
-        return with_store(out, "usage", |store| cmd_usage(store, out));
+        return with_store(out, "usage", &[], |store| cmd_usage(store, out));
     }
     if cli.drop {
         let out = output_format(&cli);
-        return with_store(out, "drop", |store| cmd_drop(store, cli.target, out));
+        return with_store(out, "drop", &[], |store| cmd_drop(store, cli.target, out));
     }
     let out = output_format(&cli);
     // Kind-only browsing (`rq '' -k trait`) is listing, not navigation, and a
@@ -387,7 +396,8 @@ fn dispatch(cli: Cli) -> ExitCode {
         langs.extend(matched);
     }
     if let Some(file) = &cli.symbols {
-        return with_store(out, "symbols", |store| {
+        let extra = [(!kinds.is_empty(), "kind"), (!langs.is_empty(), "lang")];
+        return with_store(out, "symbols", &extra, |store| {
             cmd_symbols(store, file, &kinds, &langs, out)
         });
     }
@@ -397,10 +407,12 @@ fn dispatch(cli: Cli) -> ExitCode {
         Some(target) => {
             // A leading kind keyword (`rq class Foo`) is shorthand for `-k`; skip
             // it when the user gave an explicit `-k`, so the two never conflict.
+            let mut kind_keyword = false;
             let query = if cli.kind.is_empty() {
                 let (kw, query, dirs) = split_kind_keyword(target, cli.dirs.clone());
                 if let Some(k) = kw {
                     kinds.extend(k.iter().map(|k| k.to_string()));
+                    kind_keyword = true;
                 }
                 paths.extend(dirs);
                 query
@@ -431,6 +443,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                     show: cli.show,
                     batch: false,
                     anchored: cli.anchor.is_some(),
+                    kind_keyword,
                 },
             ))
         }
@@ -446,15 +459,23 @@ fn dispatch(cli: Cli) -> ExitCode {
 }
 
 /// Run the command `rq --{mode}` against the index, or exit with the error
-/// that kept the index from opening.
-fn with_store(out: Output, mode: &str, run: impl FnOnce(&mut Store) -> ExitCode) -> ExitCode {
+/// that kept the index from opening. The run is counted for `--usage` once
+/// its output is out, as a search is, with the `extra` knobs it was given.
+fn with_store(
+    out: Output,
+    mode: &str,
+    extra: &[(bool, &str)],
+    run: impl FnOnce(&mut Store) -> ExitCode,
+) -> ExitCode {
     let open_span = crate::profile::span("store open");
     let mut store = match open_store_or_fail(out, &format!("rq --{mode}")) {
         Ok(s) => s,
         Err(code) => return code,
     };
     drop(open_span);
-    run(&mut store)
+    let code = run(&mut store);
+    record_mode(&store, mode, out, extra);
+    code
 }
 
 #[cfg(test)]

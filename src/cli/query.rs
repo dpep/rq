@@ -2,6 +2,35 @@
 
 use super::*;
 
+/// Count one run of `rq --{mode}` for `--usage`: a row whose flags lead with
+/// the command's name, then its output format and `extra` knobs.
+pub(super) fn record_mode(store: &Store, mode: &str, out: Output, extra: &[(bool, &str)]) {
+    let mut on = vec![mode];
+    on.extend(output_flag(out));
+    on.extend(
+        extra
+            .iter()
+            .filter(|(present, _)| *present)
+            .map(|(_, name)| *name),
+    );
+    let _ = store.record_search(&crate::store::SearchRecord {
+        source: &crate::origin::detect(),
+        flags: &on.join(","),
+        status: Verdict::Hit,
+        coverage: None,
+        live: false,
+    });
+}
+
+/// The structured format's name, for usage counts; text has none.
+fn output_flag(out: Output) -> Option<&'static str> {
+    match out {
+        Output::Json => Some("json"),
+        Output::Ndjson => Some("ndjson"),
+        Output::Text => None,
+    }
+}
+
 /// Count one search for `--usage`. Observability only: nothing reads it back
 /// into ranking.
 fn record_usage(
@@ -23,14 +52,14 @@ fn record_usage(
 /// The call's flags as a canonical, comma-joined string, for usage counts.
 /// A fixed vocabulary in a fixed order, so the same call always produces the
 /// same string and the counter table stays small — values are never included,
-/// only which knobs were reached for.
+/// only which knobs were reached for, and the query's shape as the parser
+/// reads it.
 fn flag_summary(args: &SearchArgs) -> String {
-    let mut on: Vec<&str> = Vec::new();
-    match args.out {
-        Output::Json => on.push("json"),
-        Output::Ndjson => on.push("ndjson"),
-        Output::Text => {}
-    }
+    let mut on: Vec<&str> = output_flag(args.out).into_iter().collect();
+    // `None` for a glob; a leaf shorter than the query had a scope
+    let leaf = crate::search::literal_leaf(args.query);
+    let scoped = leaf.is_some_and(|l| l.len() < args.query.len());
+    let constructor = scoped && leaf.is_some_and(|l| l.eq_ignore_ascii_case("new"));
     for (present, name) in [
         (args.explain, "explain"),
         (args.show, "show"),
@@ -38,12 +67,17 @@ fn flag_summary(args: &SearchArgs) -> String {
         (args.web, "web"),
         (args.all_repos, "all-repos"),
         (args.no_wait, "no-wait"),
+        (args.wait.is_some(), "wait"),
         (args.batch, "batch"),
         (args.anchored, "anchor"),
         (!args.paths.is_empty(), "path"),
         (!args.kinds.is_empty(), "kind"),
         (!args.langs.is_empty(), "lang"),
         (args.want != DEFAULT_LIMIT, "limit"),
+        (scoped, "scoped"),
+        (constructor, "new"),
+        (leaf.is_none(), "glob"),
+        (args.kind_keyword, "kind-keyword"),
     ] {
         if present {
             on.push(name);
@@ -101,6 +135,8 @@ pub(super) struct SearchArgs<'a> {
     pub(super) show: bool,
     /// Asked from a position (`--anchor`); the anchor itself lives on the session.
     pub(super) anchored: bool,
+    /// The query began with a kind keyword (`rq class Foo`), now in `kinds`.
+    pub(super) kind_keyword: bool,
 }
 
 /// One non-blank line of a batch's stdin.
@@ -231,9 +267,7 @@ pub(super) fn cmd_batch(
                     kinds,
                     langs,
                     want: requested_limit(cli.limit),
-                    // `freshen` warms, between lines; per-query warming would
-                    // undo the point of batching.
-                    no_wait: true,
+                    no_wait: cli.no_wait,
                     wait: cli.wait,
                     open: false,
                     web: false,
@@ -241,6 +275,7 @@ pub(super) fn cmd_batch(
                     show: false,
                     batch: true,
                     anchored: cli.anchor.is_some(),
+                    kind_keyword: false,
                 },
             ),
         };
@@ -303,7 +338,9 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     // `--wait DUR` overrides the wait budget for this call; `--wait 0` (or
     // `--no-wait`) means don't block or warm in-process at all.
     let wait_budget = wait.unwrap_or_else(wait_budget);
-    let no_wait = no_wait || wait_budget.is_zero();
+    // A batch's `freshen` warms, between lines; per-query warming would undo
+    // the point of batching.
+    let no_wait = no_wait || args.batch || wait_budget.is_zero();
     // post-filters (--path, --kind, --lang) need headroom before the cutoff so a
     // filtered-in result isn't lost to the top-N truncation
     let limit = if args.paths.is_empty() && args.kinds.is_empty() && args.langs.is_empty() {

@@ -305,7 +305,10 @@ Decisions worth calling out:
   a ceiling.
 - **Counted after the answer.** A search's usage write runs once its results
   are printed, so a slow write never delays them (DECISIONS D13). `--show`,
-  `--open` and `--web` count before they fork, since `--open` `exec`s.
+  `--open` and `--web` count before they fork, since `--open` `exec`s. A
+  command (`--symbols`, `--status`, …) counts after it has run, as a row whose
+  flags lead with its name; `--completions` counts only in an index that
+  already exists, so printing a script never creates one.
 
 ## Indexing model
 

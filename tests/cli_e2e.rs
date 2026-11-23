@@ -2553,14 +2553,15 @@ fn an_unknown_kind_or_lang_is_an_error_not_a_miss() {
 fn usage_counts_searches_by_caller_and_flags() {
     let (dir, db) = scratch("usage");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
-    rq(&db, &dir, &["--index"]);
 
-    // nothing recorded yet is an answer, as an empty --status is
-    let (code, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
-    assert_eq!((code, out.as_str()), (0, ""));
-    // and says so on stderr: stdout stays data
-    let (_, out, err) = rq_both(&db, &dir, &["--usage"]);
-    assert_eq!((out.as_str(), err.trim()), ("", "no usage recorded yet"));
+    // nothing recorded yet is an answer, as an empty --status is, and says
+    // so on stderr: stdout stays data
+    let (code, out, err) = rq_both(&db, &dir, &["--usage"]);
+    assert_eq!(
+        (code, out.as_str(), err.trim()),
+        (0, "", "no usage recorded yet")
+    );
+    rq(&db, &dir, &["--index"]);
 
     rq(&db, &dir, &["Widget", "--ndjson"]);
     rq(&db, &dir, &["Widget", "--json", "--all-repos"]);
@@ -2614,6 +2615,45 @@ fn usage_counts_searches_by_caller_and_flags() {
     rq_full(&db, &dir, &["Widget", "--ndjson"], &named, None);
     let (_, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
     assert!(out.contains("\"source\":\"widget-tool\""), "{out}");
+}
+
+#[test]
+fn usage_counts_each_command_and_the_query_shape() {
+    let (dir, db) = scratch("usage-modes");
+    fs::write(dir.join("a.rb"), "class Widget\n  def size; end\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    rq(&db, &dir, &["--symbols", "a.rb", "-k", "method", "-J"]);
+    rq(&db, &dir, &["--status", "--json"]);
+    rq(&db, &dir, &["--completions", "bash"]);
+    rq(&db, &dir, &["Widget#size", "--wait", "1s"]);
+    rq(&db, &dir, &["Widget.new"]);
+    rq(&db, &dir, &["Wid*"]);
+    rq(&db, &dir, &["class", "Widget"]);
+    rq_stdin(&db, &dir, &["-J"], "Widget\n");
+
+    let (_, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    let flags: Vec<String> = out
+        .lines()
+        .map(|l| json(l)["flags"].as_str().unwrap_or_default().to_string())
+        .collect();
+    for want in [
+        "index",
+        "symbols,ndjson,kind",
+        "status,json",
+        "completions",
+        "wait,scoped",
+        "scoped,new",
+        "glob",
+        "kind,kind-keyword",
+        // a batch warms between its lines; its queries didn't ask --no-wait
+        "ndjson,batch",
+    ] {
+        assert!(
+            flags.iter().any(|f| f == want),
+            "no {want:?} row: {flags:?}"
+        );
+    }
 }
 
 #[test]

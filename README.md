@@ -64,7 +64,7 @@ rq --index --path DIR       # seed the index with a subtree first (big monorepos
 rq --drop [PATH|IDENTITY]   # remove a checkout's index, or a repo's (opposite of --index)
 rq --status                 # indexing coverage per indexed checkout
 rq --storage                # the index file's size, and its background cleanup
-rq --usage                  # searches per day, by caller and flags
+rq --usage                  # calls per day, by caller, command and flags
 ```
 
 ## Opening results
@@ -286,7 +286,9 @@ hands free pages back on its own once they're worth it.
 Single-result commands emit one object.
 
 `rq --usage` counts calls per day by caller and flags, in the local index and
-nowhere else. A tool that calls rq names itself with `RQ_CALLER=<name>`;
+nowhere else. A command's row leads with its name (`symbols,ndjson`); a
+search's flags also name its query's shape (`scoped`, `new`, `glob`,
+`kind-keyword`), and `searches` counts calls either way. A tool that calls rq names itself with `RQ_CALLER=<name>`;
 otherwise rq tells an agent (`claude-code`, `cursor`, `ci`), a terminal
 (`human`) and anything else (`piped`) apart.
 

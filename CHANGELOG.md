@@ -14,6 +14,11 @@ and aren't listed; see `git log` for those.
   own guess (`claude-code`, `human`, `piped`).
 
 ### Changed
+- `rq --usage` counts every command (`symbols`, `status`, `index`, `drop`,
+  `storage`, `usage`, `completions`) as a row whose `flags` lead with its
+  name, and a search's `wait` and query shape (`scoped`, `new`, `glob`,
+  `kind-keyword`). A batch's queries no longer count as `no-wait` unless
+  asked. Field names are unchanged; `searches` counts calls.
 - `rq --usage` exits `0` when nothing is recorded yet, as `--status` does when
   nothing is indexed. A script that read exit 1 as "empty" should check for no
   rows instead.
