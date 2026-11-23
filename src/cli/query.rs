@@ -1017,6 +1017,20 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     // after results are out but still before the process exits.
     crate::profile::mark("first answer");
 
+    // Results are out; stop the in-process warm (it persists as it goes, so a
+    // cut pass keeps everything parsed) and join it — then hand whatever's left
+    // to a detached child, which finishes coverage with a budget no foreground
+    // query could afford. The shell only ever waits on the answer. Stopped
+    // before the bookkeeping below, which would otherwise queue behind the
+    // warm's writes while it kept parsing.
+    if block {
+        INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    if let Some(h) = indexer {
+        let _span = crate::profile::span("after: stop warm");
+        let _ = h.join();
+    }
+
     // Before the warm child is spawned below, whose own writes it would
     // otherwise queue behind.
     if !counted_early {
@@ -1035,16 +1049,6 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         refresh.store(store);
     }
 
-    // Results are out; stop the in-process warm (it persists as it goes, so a
-    // cut pass keeps everything parsed) and join it — then hand whatever's left
-    // to a detached child, which finishes coverage with a budget no foreground
-    // query could afford. The shell only ever waits on the answer.
-    if block {
-        INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    if let Some(h) = indexer {
-        let _ = h.join();
-    }
     let _ = settle_warm(store, staleness, moved, true, was_warming, warming_ok, root);
 
     // "no answer yet" (2), whether nothing matched or nothing settled
