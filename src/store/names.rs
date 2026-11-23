@@ -451,29 +451,42 @@ impl Store {
             in_checkout(only)
         ))?;
         let checkout = checkout_arg(only, prefer);
-        let mut fetch = |keys: &[(i64, String, String)]| -> Result<(Vec<(i64, SymbolRow)>, bool)> {
-            let (mut rows, mut held) = (Vec::new(), Held::new(only));
-            for (r, lower, _) in keys {
+        // Each name's rows, read at most once: a capped recall walks the names
+        // a second time, best first, and reuses what the first walk read.
+        let mut read: Vec<Option<Vec<(i64, SymbolRow)>>> = vec![None; keys.len()];
+        let mut fetch = |order: &mut dyn Iterator<Item = usize>| -> Result<(Vec<usize>, bool)> {
+            let (mut taken, mut held) = (Vec::new(), Held::new(only));
+            for i in order {
                 if held.count() >= limit {
-                    return Ok((rows, true));
+                    return Ok((taken, true));
                 }
-                for row in stmt.query_map(params![r, lower, checkout], row_to_candidate)? {
-                    let row = row?;
+                if read[i].is_none() {
+                    let (r, lower, _) = &keys[i];
+                    read[i] = Some(
+                        stmt.query_map(params![r, lower, checkout], row_to_candidate)?
+                            .collect::<Result<_>>()?,
+                    );
+                }
+                for row in read[i].iter().flatten() {
                     held.add(&row.1);
-                    rows.push(row);
                 }
+                taken.push(i);
             }
-            Ok((rows, false))
+            Ok((taken, false))
         };
-        let (mut rows, over) = fetch(&keys)?;
+        let (mut taken, over) = fetch(&mut (0..keys.len()))?;
         if over {
             // best first, rather than in whatever order the names were met
-            let mut ranked: Vec<(f64, (i64, String, String))> =
-                keys.into_iter().map(|k| (probe.rank(&k.2), k)).collect();
-            ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            let keys: Vec<_> = ranked.into_iter().map(|(_, k)| k).collect();
-            rows = fetch(&keys)?.0;
+            let mut ranked: Vec<(f64, usize)> = (0..keys.len())
+                .map(|i| (probe.rank(&keys[i].2), i))
+                .collect();
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| keys[a.1].cmp(&keys[b.1])));
+            taken = fetch(&mut ranked.into_iter().map(|(_, i)| i))?.0;
         }
+        let mut rows: Vec<(i64, SymbolRow)> = taken
+            .into_iter()
+            .flat_map(|i| read[i].take().unwrap_or_default())
+            .collect();
         if only.is_some() {
             rows.truncate(limit);
         }

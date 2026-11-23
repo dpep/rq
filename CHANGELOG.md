@@ -14,6 +14,9 @@ and aren't listed; see `git log` for those.
 - A fuzzy search on a repo's first index stops re-searching once only the
   index's end can answer it: less CPU while it waits, the same answer, no
   later.
+- A short fuzzy query across every repo (`rq -a usr`) does less work: when its
+  matches overflow the candidate cap, each name's definitions are read from
+  the index once rather than twice.
 
 ### Fixed
 
