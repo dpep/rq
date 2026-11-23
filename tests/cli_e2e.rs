@@ -4907,24 +4907,30 @@ fn a_query_behind_a_long_writer_exits_with_its_answer() {
     conn.execute_batch("BEGIN IMMEDIATE").unwrap();
 
     let mut child = rq_cmd(&db, &dir)
-        .args(["User", "--json", "--no-wait"])
+        .args(["User", "--no-wait", "--profile"])
         .envs(NO_CHILD)
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("run rq");
     let mut stdout = std::io::BufReader::new(child.stdout.take().expect("stdout piped"));
     let mut first = String::new();
     stdout.read_line(&mut first).unwrap();
     let answered = std::time::Instant::now();
-    let status = child.wait().unwrap();
+    let out = child.wait_with_output().unwrap();
     let exiting = answered.elapsed();
     conn.execute_batch("COMMIT").unwrap();
+    let profile = String::from_utf8_lossy(&out.stderr);
 
-    assert_eq!(status.code(), Some(0), "{first}");
-    // the usage count and the close-time optimize, 100 ms each when both waited
+    assert_eq!(out.status.code(), Some(0), "{first}");
+    // the one wait goes before the answer; the usage write after it tries
+    // without, where a wait is a sleep of at least 100 ms
+    let usage = profile_ms(&profile, "after: record usage");
+    assert!(usage < 50.0, "the usage write waited {usage}ms: {profile}");
+    // a write that waits out the writer takes seconds
     assert!(
-        exiting < std::time::Duration::from_millis(150),
-        "exited {exiting:?} after answering"
+        exiting < std::time::Duration::from_secs(1),
+        "exited {exiting:?} after answering: {profile}"
     );
 }
 
