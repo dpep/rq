@@ -290,9 +290,10 @@ Decisions worth calling out:
   CommonJS export of a local (`exports.x = x`) gives it, and v27 TS/JS
   for minified bundles, held without definitions (D67), and v28 every
   file without definitions plus Ruby, Rust, Python and Go for that rule's
-  correction: users
-  upgrade and the symbols appear, with no `--drop`. Old
-  symbols stay readable until each file is rewritten.
+  final form. Users upgrade and the symbols appear, with no `--drop`. Old
+  symbols stay readable until each file is rewritten; meanwhile the checkout
+  reads `warming` with `read` equal to `of`, since a stale file still counts as
+  held.
 - **`coverage`** lets search know its own confidence and decide whether to
   append a live-scan tail. It is per checkout: a new worktree of an indexed
   repo is `warming` until its own pass completes.
@@ -310,7 +311,9 @@ Decisions worth calling out:
   `--open` and `--web` count before they fork, since `--open` `exec`s. A
   command (`--symbols`, `--status`, …) counts after it has run, as a row whose
   flags lead with its name; `--completions` counts only in an index that
-  already exists, so printing a script never creates one.
+  already exists, so printing a script never creates one. `source` is the
+  caller: `RQ_CALLER` when set, else a guess from the environment
+  (`src/origin.rs`).
 
 ## Indexing model
 
@@ -342,6 +345,11 @@ search only reads.
   disk and reads them, and a warm, which can't list them cheaply, re-reads the
   ones the index holds while they're still on disk rather than reconciling
   them away (D53).
+- **Minified sources are held, not parsed** — `parse_file` holds a source of
+  16 KB or more whose lines average over 200 bytes and over 10 of `;,(){}`
+  each: path, hash and `generated` flag recorded, no definitions (D67). It
+  reads bytes and lines, so it runs ahead of every plugin, and `--symbols`
+  reports such a file's miss with `reason: minified`.
 - **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
   fans out across CPUs; the parsed files are written in **one** transaction (one
   `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.

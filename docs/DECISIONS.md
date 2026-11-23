@@ -146,7 +146,7 @@ not SMT, so it is a pessimistic stand-in — and even that measured flat (8→16
 inside the spread), so the downside is bounded. Against that, `available_parallelism`
 reports the cgroup/affinity budget inside a container, where a physical-core probe
 returns the *host's* count and would oversubscribe a 2-CPU CI runner by an order of
-magnitude. It is also std, so it costs no dependency. `--jobs`/`RQ_JOBS` still win over
+magnitude. It is also std, so it costs no dependency. `RQ_JOBS` still wins over
 auto, unchanged.
 
 *Reverses if:* an SMT x86 machine measures logical-count workers slower than
