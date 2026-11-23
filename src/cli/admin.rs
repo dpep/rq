@@ -426,14 +426,18 @@ pub(super) fn cmd_usage(store: &Store, out: Output) -> ExitCode {
         Output::Text => {
             // Columns of bare numbers need naming; `--status` gets away without
             // a header because its columns carry their own units.
+            let caller = rows
+                .iter()
+                .map(|r| r.source.len())
+                .fold("caller".len(), usize::max);
             println!(
-                "{:<10}  {:<16} {:>6} {:>7} {:>8}  flags",
+                "{:<10}  {:<caller$} {:>6} {:>7} {:>8}  flags",
                 "day", "caller", "found", "missed", "warming"
             );
             for r in &rows {
                 let flags = if r.flags.is_empty() { "-" } else { &r.flags };
                 println!(
-                    "{:<10}  {:<16} {:>6} {:>7} {:>8}  {}",
+                    "{:<10}  {:<caller$} {:>6} {:>7} {:>8}  {}",
                     r.day,
                     r.source,
                     r.searches - r.misses - r.warming,

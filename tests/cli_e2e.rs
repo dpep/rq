@@ -2615,6 +2615,24 @@ fn usage_counts_searches_by_caller_and_flags() {
     rq_full(&db, &dir, &["Widget", "--ndjson"], &named, None);
     let (_, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
     assert!(out.contains("\"source\":\"widget-tool\""), "{out}");
+
+    // the caller column fits its longest label, so the counts stay under
+    // their headings
+    let long = [("RQ_CALLER", "a-caller-name-of-24-char")];
+    rq_full(&db, &dir, &["Widget"], &long, None);
+    let (_, text) = rq(&db, &dir, &["--usage"]);
+    let header = text.lines().next().unwrap();
+    let row = text.lines().find(|l| l.contains(long[0].1)).unwrap();
+    // where the third column (`found`) ends
+    let found_ends = |line: &str| {
+        let word = line.split_whitespace().nth(2).unwrap();
+        let start = line
+            .match_indices(word)
+            .map(|(i, _)| i)
+            .find(|&i| line[..i].split_whitespace().count() == 2);
+        start.unwrap() + word.len()
+    };
+    assert_eq!(found_ends(row), found_ends(header), "{text}");
 }
 
 #[test]

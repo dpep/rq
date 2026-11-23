@@ -23,8 +23,9 @@ pub(crate) fn detect() -> String {
 pub(crate) fn detect_from(env: impl Fn(&str) -> Option<String>, tty: bool) -> String {
     let get = |k: &str| env(k).filter(|v| !v.is_empty() && v != "0");
 
-    // an editor or tool run by an agent is still that tool
-    if let Some(v) = get("RQ_CALLER") {
+    // an editor or tool run by an agent is still that tool; a name, not a
+    // switch, so only empty is unset
+    if let Some(v) = env("RQ_CALLER").filter(|v| !v.is_empty()) {
         return label(&v);
     }
     if get("CLAUDECODE").is_some() {
@@ -59,8 +60,13 @@ pub(crate) fn detect_from(env: impl Fn(&str) -> Option<String>, tty: bool) -> St
 }
 
 /// Normalize an env-derived fragment into a label: lowercase, `[a-z0-9.-]`,
-/// bounded. Anything that survives to empty is `unknown`.
+/// bounded, with ASCII spaces and punctuation dropped (`VS Code` → `vscode`).
+/// A non-ASCII character, which dropping would turn into some other name, or
+/// nothing left, is `unknown`.
 fn label(raw: &str) -> String {
+    if !raw.is_ascii() {
+        return "unknown".to_string();
+    }
     let cleaned: String = raw
         .trim()
         .to_ascii_lowercase()
@@ -124,6 +130,8 @@ mod tests {
             "prlink"
         );
         assert_eq!(detect_from(env(&[("RQ_CALLER", "")]), true), "human");
+        // a name, not a switch: `0` is as good a name as any
+        assert_eq!(detect_from(env(&[("RQ_CALLER", "0")]), true), "0");
     }
 
     #[test]
@@ -158,5 +166,8 @@ mod tests {
         assert_eq!(label(&long).len(), MAX_LABEL);
         assert_eq!(label("Foo Bar/../;drop"), "foobar..drop");
         assert_eq!(label("   "), "unknown");
+        // a letter the label can't hold isn't dropped into a different name
+        assert_eq!(label("ünï"), "unknown");
+        assert_eq!(label("café-tool"), "unknown");
     }
 }
