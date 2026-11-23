@@ -308,7 +308,7 @@ fn dispatch(cli: Cli) -> ExitCode {
         if let Ok(path) = db_location()
             && let Ok(store) = Store::open_existing(&path)
         {
-            record_mode(&store, "completions", Output::Text, &[]);
+            record_mode(&store, "completions", Output::Text, &[], Verdict::Hit);
         }
         return ExitCode::SUCCESS;
     }
@@ -464,7 +464,15 @@ fn with_store(
     };
     drop(open_span);
     let code = run(&mut store);
-    record_mode(&store, mode, out, extra);
+    // a command that can miss (`--symbols`) counts it as a search does
+    let verdict = if code == ExitCode::from(2) {
+        Verdict::Warming
+    } else if code == ExitCode::FAILURE || code == ExitCode::from(Failure::NotFound) {
+        Verdict::Miss
+    } else {
+        Verdict::Hit
+    };
+    record_mode(&store, mode, out, extra, verdict);
     code
 }
 

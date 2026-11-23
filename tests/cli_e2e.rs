@@ -2654,6 +2654,21 @@ fn usage_counts_each_command_and_the_query_shape() {
             "no {want:?} row: {flags:?}"
         );
     }
+
+    // an outline that found nothing, or no file, is a miss, as a search's is
+    let (hit, _) = rq(&db, &dir, &["--symbols", "a.rb"]);
+    let (none, _) = rq(&db, &dir, &["--symbols", "a.rb", "-k", "struct"]);
+    let (absent, _) = rq(&db, &dir, &["--symbols", "nosuch.rb"]);
+    assert_eq!((hit, none, absent), (0, 1, 66));
+    let (_, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    let row = |flags: &str| {
+        out.lines()
+            .map(json)
+            .find(|r| r["flags"] == flags)
+            .unwrap_or_else(|| panic!("no {flags:?} row: {out}"))
+    };
+    assert_eq!(row("symbols")["misses"], 1, "{out}");
+    assert_eq!(row("symbols,kind")["misses"], 1, "{out}");
 }
 
 #[test]

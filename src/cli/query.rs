@@ -4,7 +4,13 @@ use super::*;
 
 /// Count one run of `rq --{mode}` for `--usage`: a row whose flags lead with
 /// the command's name, then its output format and `extra` knobs.
-pub(super) fn record_mode(store: &Store, mode: &str, out: Output, extra: &[(bool, &str)]) {
+pub(super) fn record_mode(
+    store: &Store,
+    mode: &str,
+    out: Output,
+    extra: &[(bool, &str)],
+    status: Verdict,
+) {
     let mut on = vec![mode];
     on.extend(output_flag(out));
     on.extend(
@@ -16,7 +22,7 @@ pub(super) fn record_mode(store: &Store, mode: &str, out: Output, extra: &[(bool
     let _ = store.record_search(&crate::store::SearchRecord {
         source: &crate::origin::detect(),
         flags: &on.join(","),
-        status: Verdict::Hit,
+        status,
         coverage: None,
         live: false,
     });
