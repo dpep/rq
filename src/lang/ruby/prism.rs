@@ -130,6 +130,11 @@ impl Walk<'_> {
         visibility: Visibility,
         singleton: bool,
     ) {
+        // recovery from a half-typed name can leave nothing, or a span of
+        // source, where a name goes: neither is one a query spells
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return;
+        }
         self.out.push(Symbol {
             name: name.to_string(),
             kind,
@@ -154,11 +159,13 @@ impl Walk<'_> {
     /// A class or module named `path` (`Foo`, `A::B`, `::Top`), and its body
     /// visited in a fresh frame under its qualified name.
     fn namespace(&mut self, kind: Kind, path: &Node, at: &Location, body: impl FnOnce(&mut Self)) {
-        let (leaf, parent) = leaf_and_parent(text(&path.location()), self.parent.as_deref());
-        if leaf.is_empty() {
-            // a name lost to a syntax error: the body is still walked, in place
+        if !is_constant_path(path) {
+            // a name not typed yet: what recovery put in its place, and the
+            // body, are still walked, in place
+            self.visit(path);
             return body(self);
         }
+        let (leaf, parent) = leaf_and_parent(text(&path.location()), self.parent.as_deref());
         let qualified = qualify(parent.as_deref(), leaf, "::");
         self.push(leaf, kind, at, parent, Visibility::Public, false);
         let outer = self.parent.replace(qualified);
@@ -282,6 +289,17 @@ impl Walk<'_> {
             }
         }
     }
+}
+
+/// Whether `node` names a class: `Foo`, `A::B`, `::Top`, every part a
+/// constant. Recovery from a half-typed name puts anything there.
+fn is_constant_path(node: &Node) -> bool {
+    if node.as_constant_read_node().is_some() {
+        return true;
+    }
+    node.as_constant_path_node().is_some_and(|path| {
+        path.name().is_some() && path.parent().is_none_or(|p| is_constant_path(&p))
+    })
 }
 
 /// The source text at `loc`. Prism's locations fall on character boundaries

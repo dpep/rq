@@ -2,7 +2,7 @@
 # takes, and the names built at runtime that can't be read statically.
 
 class Labels
-  attr_reader %q(plain), %Q(double), "tab\tless", 'quoted'
+  attr_reader %q(plain), %Q(double), "esc\u0061ped", 'quoted'
   attr_accessor "a#{suffix}"
   define_method("dyn_#{kind}") { kind }
 
@@ -16,6 +16,7 @@ class Symbols
   define_method(:"dyn_#{kind}") { kind }
   alias_method :"copy?", :"ready?"
   alias :"spaced name" :single
+  alias :"twin?" :single
   alias :"alias_#{kind}" :single
 
   def shown; end

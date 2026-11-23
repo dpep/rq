@@ -429,6 +429,34 @@ end
         assert_eq!(find(&syms, "reopened").visibility, Some(Visibility::Public));
     }
 
+    /// Each symbol as `Parent#name`, in source order.
+    fn names(src: &str) -> Vec<String> {
+        extract(src)
+            .into_iter()
+            .map(|s| qualify(s.parent.as_deref(), &s.name, "#"))
+            .collect()
+    }
+
+    #[test]
+    fn a_half_typed_definition_names_nothing_and_hides_nothing() {
+        let cases: [(&str, &[&str]); 2] = [
+            // a class keyword with no name yet
+            (
+                "class Widget\n  def a; end\nend\n\nclass\n\ndef helper(x)\n  x\nend\n",
+                &["Widget", "Widget#a", "helper"],
+            ),
+            // a compact path cut at its `::`, whose recovery takes the next
+            // line's `def` for the missing name
+            (
+                "module Outer\n  class Inner::\n  def m; end\nend\n",
+                &["Outer"],
+            ),
+        ];
+        for (src, want) in cases {
+            assert_eq!(names(src), want, "{src}");
+        }
+    }
+
     #[test]
     fn a_file_cut_off_mid_edit_keeps_what_is_above_the_cut() {
         let src = include_str!("../../tests/fixtures/ruby/truncated.rb");
@@ -511,7 +539,7 @@ end
     fn a_string_names_a_method_by_its_content_and_an_interpolated_one_is_skipped() {
         let src = r#"
 class Widget
-  attr_reader %q(plain), %Q(double), "tab\tless"
+  attr_reader %q(plain), %Q(double), "esc\u0061ped"
   define_method("dyn_#{kind}") { }
   attr_accessor "a#{b}", "ok"
   def hidden; end
@@ -523,7 +551,7 @@ end
         let expect = [
             ("plain", false, "public"),
             ("double", false, "public"),
-            ("tab\tless", false, "public"),
+            ("escaped", false, "public"),
             ("ok", false, "public"),
             ("hidden", false, "private"),
             ("secret", false, "private"),
@@ -539,7 +567,8 @@ class Widget
   attr_reader :"ready?", :'single', %s(percent), :☠
   define_method(:"dyn_#{kind}") { }
   alias_method :"copy?", :"ready?"
-  alias :"spaced name" :single
+  alias :"quoted alias" :single
+  alias :"twin?" :single
   alias :"dyn_#{x}" :single
   def a; end
   def b; end
@@ -553,7 +582,8 @@ end
             ("percent", false, "public"),
             ("☠", false, "public"),
             ("copy?", false, "public"),
-            ("spaced name", false, "public"),
+            // a name with a space in it is none a query spells
+            ("twin?", false, "public"),
             ("a", false, "private"),
             ("b", false, "private"),
         ]

@@ -72,6 +72,9 @@ enum Intended {
     /// what follows it: parents, a class's end. Only definitions reaching the
     /// first error are excused; those wholly before it must still agree.
     OracleMisparse,
+    /// A name with a space in it (`alias :"a b" c`) is none a query spells,
+    /// and prism emits no such name.
+    SpacedName,
 }
 
 /// The delimiter pairs a `%` literal may use.
@@ -88,12 +91,13 @@ fn symbol_spelled(text: &str, name: &str) -> bool {
 }
 
 impl Intended {
-    const ALL: [Intended; 5] = [
+    const ALL: [Intended; 6] = [
         Intended::NonAsciiConstant,
         Intended::StringContent,
         Intended::InterpolatedName,
         Intended::SymbolName,
         Intended::OracleMisparse,
+        Intended::SpacedName,
     ];
 
     /// Why a row only prism extracted is right.
@@ -113,8 +117,15 @@ impl Intended {
 
     /// Why a row only the oracle extracted is wrong.
     fn oracle_only(row: &Row) -> Option<Intended> {
-        (row.kind == Kind::Method.as_str() && row.name.contains("#{"))
-            .then_some(Intended::InterpolatedName)
+        if row.kind != Kind::Method.as_str() {
+            None
+        } else if row.name.contains("#{") {
+            Some(Intended::InterpolatedName)
+        } else if row.name.contains(char::is_whitespace) {
+            Some(Intended::SpacedName)
+        } else {
+            None
+        }
     }
 
     /// Why prism names the oracle's definition otherwise.
@@ -250,8 +261,8 @@ fn prism_matches_tree_sitter_on_every_fixture_both_parse() {
         assert_eq!(diff.unexplained, Vec::<String>::new(), "{name}");
         seen.extend(diff.explained.iter().map(|(why, _)| *why));
     }
-    // the one fixture written broken; any other is a typo in a fixture
-    assert_eq!(broken, ["truncated.rb"]);
+    // the fixtures written broken; any other is a typo in a fixture
+    assert_eq!(broken, ["half_typed.rb", "truncated.rb"]);
     // a difference no fixture shows any more is no longer one to excuse
     assert_eq!(
         seen.into_iter().collect::<Vec<_>>(),
@@ -260,14 +271,31 @@ fn prism_matches_tree_sitter_on_every_fixture_both_parse() {
     );
 }
 
+/// What one side extracted that the other didn't, by kind and name: how a
+/// broken file's extraction trades against the oracle's.
+fn trade(file: &str, source: &str) -> (usize, usize) {
+    let mut count = std::collections::BTreeMap::<(&str, String), i64>::new();
+    for s in tree_sitter::extract(file, source) {
+        *count.entry((s.kind.as_str(), s.name)).or_default() += 1;
+    }
+    for s in prism::extract(file, source) {
+        *count.entry((s.kind.as_str(), s.name)).or_default() -= 1;
+    }
+    let lost = count.values().filter(|&&n| n > 0).sum::<i64>();
+    let gained = -count.values().filter(|&&n| n < 0).sum::<i64>();
+    (lost as usize, gained as usize)
+}
+
 /// Every Ruby file under `$RQ_RUBY_PARITY`, both ways: `make ruby-parity
 /// DIR=<checkout>`. Fails on a file prism parses cleanly with a difference
-/// [`Intended`] doesn't explain; a broken file's are listed apart, as expected.
+/// [`Intended`] doesn't explain. A broken file's difference is expected, and
+/// tallied: what prism lost and gained against the oracle.
 #[test]
 #[ignore = "reads a corpus named by RQ_RUBY_PARITY"]
 fn ruby_parity_corpus() {
     let root = PathBuf::from(std::env::var_os("RQ_RUBY_PARITY").expect("RQ_RUBY_PARITY=<dir>"));
-    let (mut files, mut symbols, mut broken) = (0, 0, 0);
+    let (mut files, mut symbols) = (0, 0);
+    let (mut lost, mut gained, mut losing, mut gaining) = (0, 0, 0, 0);
     let mut mismatched = Vec::new();
     let mut explained = std::collections::BTreeMap::<Intended, usize>::new();
     for path in ruby_files(&root) {
@@ -277,47 +305,36 @@ fn ruby_parity_corpus() {
         let name = path.strip_prefix(&root).unwrap().to_string_lossy();
         files += 1;
         symbols += prism::extract(&name, &source).len();
-        let clean = prism::parses_cleanly(&source);
-        let diff = diff(&name, &source);
-        if clean {
-            for (why, _) in &diff.explained {
-                *explained.entry(*why).or_default() += 1;
+        if !prism::parses_cleanly(&source) {
+            let (l, g) = trade(&name, &source);
+            if l + g > 0 {
+                println!("{name} (syntax error): -{l} +{g}");
             }
-        }
-        let shown: Vec<&String> = if clean {
-            diff.unexplained.iter().collect()
-        } else {
-            diff.explained
-                .iter()
-                .map(|(_, r)| r)
-                .chain(&diff.unexplained)
-                .collect()
-        };
-        if shown.is_empty() {
+            (lost, gained) = (lost + l, gained + g);
+            losing += usize::from(l > 0);
+            gaining += usize::from(g > 0);
             continue;
         }
-        let state = if clean {
-            "parses cleanly"
-        } else {
-            "syntax error"
-        };
-        println!("\n{name} ({state})");
-        for row in shown {
+        let diff = diff(&name, &source);
+        for (why, _) in &diff.explained {
+            *explained.entry(*why).or_default() += 1;
+        }
+        if diff.unexplained.is_empty() {
+            continue;
+        }
+        println!("\n{name} (parses cleanly)");
+        for row in &diff.unexplained {
             println!("  {row}");
         }
-        if clean {
-            mismatched.push(name.into_owned());
-        } else {
-            broken += 1;
-        }
+        mismatched.push(name.into_owned());
     }
     println!("\n{files} files, {symbols} symbols (prism)");
     for (why, n) in &explained {
         println!("  {n} intended: {why:?}");
     }
+    println!("  {} clean files differ unexplained", mismatched.len());
     println!(
-        "  {} clean files differ unexplained, {broken} broken files differ",
-        mismatched.len()
+        "  broken files, by kind and name: {lost} lost in {losing} files, {gained} gained in {gaining}"
     );
     assert!(mismatched.is_empty(), "{mismatched:?}");
 }
