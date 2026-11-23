@@ -4165,6 +4165,33 @@ fn a_structured_caller_gets_its_errors_as_json() {
 }
 
 #[test]
+fn the_readme_explain_example_is_what_rq_prints() {
+    // the README's --explain block, run against the files it names
+    let readme = include_str!("../README.md");
+    let block = readme
+        .split("```sh\n$ rq Widget --explain -l 2\n")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("README has the --explain example");
+    let (dir, db) = scratch("readme-explain");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(
+        dir.join("lib/widget.rb"),
+        "class Widget\n  def render; end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("lib/toolbar.rb"),
+        "class Toolbar\n  private\n\n  def widget; end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    let (_, out) = rq(&db, &dir, &["Widget", "--explain", "-l", "2"]);
+    assert_eq!(out, block);
+}
+
+#[test]
 fn help_and_version_are_not_usage_errors() {
     let (dir, db) = scratch("help-version");
     for args in [["--help"], ["-h"], ["--version"], ["-V"]] {

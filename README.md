@@ -66,6 +66,8 @@ rq --drop [PATH|IDENTITY]   # remove a checkout's index, or a repo's (opposite o
 rq --status                 # indexing coverage per indexed checkout
 rq --storage                # the index file's size, and its background cleanup
 rq --usage                  # calls per day, by caller, command and flags
+rq <query> -v               # trace rq's decisions (root, coverage, warming) to stderr
+rq <query> --profile        # time each phase to stderr (JSON with --json)
 ```
 
 ## Opening results
@@ -336,13 +338,13 @@ A query is matched and scored by an additive sum of named signals, and
 `--explain` shows the sum for each result:
 
 ```sh
-$ rq Store --explain -l 2
-src/store/mod.rs:84  struct Store
-    pub(crate) struct Store {
-    confidence 0.90 · score 1296 = exact 1000 + case 150 + extent 11 + kind 15 + recency 120
-src/cli/mod.rs:1873  method store · BranchRefresh
-    fn store(self, store: &Store) {
-    confidence 0.04 · score 1123 = exact 1000 + private -15 + extent 18 + recency 120
+$ rq Widget --explain -l 2
+lib/widget.rb:1  class Widget
+    class Widget
+    confidence 0.93 · score 1525 = exact 1000 + case 150 + path 29 + extent 11 + kind 15 + current_repo 200 + recency 120
+lib/toolbar.rb:4  method widget · Toolbar
+    def widget; end
+    confidence 0.00 · score 1305 = exact 1000 + private -15 + current_repo 200 + recency 120
 ```
 
 - **match quality** — exact > prefix > camel/underscore abbreviation > subsequence
@@ -380,8 +382,7 @@ A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
 it still answers at zero coverage. A `--no-wait` query live-scans a git repo
 whose first index hasn't finished the same way. A live answer is marked
-`"source": "live"` in JSON (text output doesn't mark it), `-v` notes the files it scanned and how long it took against its budget
-(`RQ_FALLBACK_BUDGET_MS`, default 250 ms), and `--usage` counts these answers
+`"source": "live"` in JSON (text output doesn't mark it), `-v` notes the files it scanned and how long it took, and `--usage` counts these answers
 apart. The index is a SQLite file at `$RQ_DB`
 (default `~/.local/share/rq/rq.db`; an empty `RQ_DB` means the default).
 `RQ_DB` must be an absolute path to a file: a relative one would resolve
