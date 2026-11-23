@@ -440,7 +440,7 @@ fn dispatch(cli: Cli) -> ExitCode {
         // No query, but a pipe on stdin: each line is one, all sharing this
         // run's store, repo resolution and warm.
         None if !std::io::stdin().is_terminal() => cmd_batch(&cli, out, &paths, &kinds, &langs),
-        // bare `rq` (or just flags like --explain with no query): show help
+        // bare `rq` at a terminal (or just flags like --explain): show help
         None => {
             let _ = Cli::command().print_long_help();
             ExitCode::SUCCESS

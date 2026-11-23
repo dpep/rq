@@ -3347,15 +3347,15 @@ fn symbols_outlines_its_file_on_a_cold_repo_too_big_for_one_pass() {
 }
 
 #[test]
-fn bare_invocation_prints_help() {
+fn a_batch_with_no_queries_prints_nothing_and_matches_nothing() {
+    // Piped stdin is a batch, whose stdout a program parses as NDJSON: help
+    // there would be the one line that isn't JSON. (`rq` at a terminal shows it.)
     let (dir, db) = scratch("help");
-    let (code, out) = rq(&db, &dir, &[]);
-    assert_eq!(code, 0, "bare rq should exit 0");
-    assert!(
-        out.contains("rq finds the code you're looking for"),
-        "help banner: {out}"
-    );
-    assert!(out.contains("Usage:"), "usage in help: {out}");
+    for stdin in [None, Some(""), Some("\n  \n\n")] {
+        let (code, out, err) = rq_full(&db, &dir, &[], &[], stdin);
+        assert_eq!((code, out.as_str()), (1, ""), "{stdin:?}");
+        assert!(err.contains("--help"), "stderr points at help: {err}");
+    }
 }
 
 #[test]

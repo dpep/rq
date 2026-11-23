@@ -62,6 +62,10 @@ and aren't listed; see `git log` for those.
 - A batch line reads exactly as the same query typed on the command line: a
   leading kind keyword (`class Base`, `method save`) filters by kind instead
   of being searched as part of the name.
+- Piped stdin with no queries on it (`rq </dev/null`, only blank lines) is an
+  empty batch: nothing on stdout, a note on stderr, exit `1`. It printed
+  `--help` and exited `0`, which an NDJSON reader choked on. `rq` alone at a
+  terminal still shows help.
 
 ## 0.60.15 — 2026-11-21
 

@@ -219,12 +219,11 @@ pub(super) fn cmd_batch(
     // Read as each line arrives, not to EOF: a caller holding the pipe open
     // for its next question gets each answer before it asks.
     let mut lines = batch_lines(std::io::stdin().lock()).peekable();
-    // Nothing on stdin isn't a batch — it's a bare invocation that happens to
-    // run without a terminal (a script, a test harness, stdin from /dev/null).
-    // Treat it the way `rq` with no arguments is always treated.
+    // An empty batch: nothing matched, and stdout — NDJSON to its reader —
+    // stays empty. Help would be the one line that isn't JSON.
     if lines.peek().is_none() {
-        let _ = Cli::command().print_long_help();
-        return ExitCode::SUCCESS;
+        eprintln!("rq: no queries on stdin — name one (`rq Widget`), or see `rq --help`");
+        return ExitCode::from(Outcome::Miss);
     }
 
     let mut session = match Session::open(out, paths) {
