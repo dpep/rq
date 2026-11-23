@@ -33,9 +33,11 @@ and aren't listed; see `git log` for those.
   `kind-keyword`). A batch's queries count as `no-wait` only when asked.
   Field names are unchanged; `searches` counts calls.
 - A minified source (16 KB or more, lines averaging over 200 bytes and over
-  10 of `;,(){}` each) is indexed without definitions instead of parsed: its
-  names are one-letter locals, and one bundle could set an index's peak memory
-  (discourse: 267 → 68 MB). `rq --symbols` on such a file says so
+  10 names each outside string and number literals) is indexed without
+  definitions instead of parsed: a bundle's names are one-letter locals, and
+  one could set an index's peak memory (discourse: 267 → 68 MB). A file whose
+  long lines are data — a JSON object, a byte array, an inlined image — is
+  parsed as usual. `rq --symbols` on a minified file says so
   (`"reason": "minified"` under `--json`). After upgrading, rq re-reads every
   Ruby, Rust, Python and Go file, and any file with no definitions, once: the
   next search in a checkout starts it, and nothing else is needed. Until then,

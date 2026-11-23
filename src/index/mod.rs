@@ -1453,10 +1453,10 @@ const MINIFIED_MIN: usize = 16 * 1024;
 /// averages 25–45 bytes a line, minified bundles hundreds to thousands (D58).
 const MINIFIED_LINE: usize = 200;
 
-/// Syntax marks (`;,(){}`) a line must average for its length to be minified
-/// code. A long string or base64 blob is long too, but nearly mark-free, and
-/// parses as one cheap token (D67).
-const MINIFIED_MARKS: usize = 10;
+/// Names a line must average, outside literals, for its length to be minified
+/// code. A long line of data — a string, a base64 blob, a numeric array, a
+/// JSON object — is long too, but made of literals, not names (D67).
+const MINIFIED_NAMES: usize = 10;
 
 /// Whether `source` is a minified bundle: held with no definitions, unparsed.
 /// Its names are one-letter locals, and its parse is the costliest in a repo.
@@ -1464,14 +1464,34 @@ pub(crate) fn minified(source: &str) -> bool {
     let bytes = source.as_bytes();
     bytes.len() >= MINIFIED_MIN && {
         let lines = line_count(bytes);
-        bytes.len() > MINIFIED_LINE * lines && {
-            let marks = bytes
-                .iter()
-                .filter(|b| matches!(b, b';' | b',' | b'(' | b')' | b'{' | b'}'))
-                .count();
-            marks > MINIFIED_MARKS * lines
+        bytes.len() > MINIFIED_LINE * lines && code_names(bytes) > MINIFIED_NAMES * lines
+    }
+}
+
+/// Identifiers and keywords outside string literals; a number (`0x1f`, `1e5`)
+/// is not a name. A quote scan, not a lexer: a quote in a regex or comment
+/// can read code as a string, which only undercounts.
+fn code_names(bytes: &[u8]) -> usize {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+    let (mut names, mut quote, mut i) = (0, None, 0);
+    while let Some(&b) = bytes.get(i) {
+        i += 1;
+        match quote {
+            Some(_) if b == b'\\' => i += 1,
+            // a template literal or raw string spans lines; '…' and "…" don't
+            Some(q) if b == q || (b == b'\n' && q != b'`') => quote = None,
+            Some(_) => {}
+            None if matches!(b, b'"' | b'\'' | b'`') => quote = Some(b),
+            None if word(b) => {
+                names += usize::from(!b.is_ascii_digit());
+                while bytes.get(i).is_some_and(|&b| word(b)) {
+                    i += 1;
+                }
+            }
+            None => {}
         }
     }
+    names
 }
 
 /// Lines in `bytes`; a bare `\r` (classic Mac endings) ends one as `\n` does.
@@ -2580,6 +2600,14 @@ mod tests {
         );
         logo.push_str("export class LogoWidget {\n  render() { return LOGO; }\n}\n");
         assert_eq!(names("logo.ts", &logo), ["LOGO", "LogoWidget", "render"]);
+        // one long line of data ahead of the code that reads it
+        let entries: Vec<String> = (0..2_000).map(|i| format!("\"k{i}\":[{i},7]")).collect();
+        let data = format!(
+            "export const DATA={{{}}};\nexport function lookupData(k){{return DATA[k]}}\n",
+            entries.join(",")
+        );
+        assert!(data.len() >= MINIFIED_MIN);
+        assert_eq!(names("data.js", &data), ["DATA", "lookupData"]);
     }
 
     #[test]
@@ -2596,6 +2624,16 @@ mod tests {
         assert!(!minified(&constants));
         let blob = format!("module Table\n  DATA = '{}'\nend\n", "Zm9v".repeat(5_000));
         assert!(!minified(&blob));
+        // long lines of literals, however dense in syntax marks
+        let bytes = format!("var asset = []byte{{{}}}\n", ["0x1f"; 5_000].join(", "));
+        assert!(!minified(&bytes));
+        let tuples: Vec<String> = (0..2_000).map(|i| format!("'{i}': ({i}, 1e5)")).collect();
+        assert!(!minified(&format!("TABLE = {{{}}}\n", tuples.join(", "))));
+        let css = format!(
+            "export const CSS = `{}`;\n",
+            ".c{color:red;margin:0}".repeat(1_000)
+        );
+        assert!(!minified(&css));
         // formatted code, whatever ends its lines
         let formatted: String = (0..800)
             .map(|i| format!("function f{i}(a) {{\n  return a;\n}}\n"))

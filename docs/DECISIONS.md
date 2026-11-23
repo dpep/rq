@@ -4513,3 +4513,60 @@ index, against a fresh full index: rails re-reads 3,293 of 3,321 files, 28.5 G
 instructions (1.2 s) vs 28.3 G fresh; discourse 11,960 of 14,399, 85.8 G (2.1 s) vs
 95.8 G fresh; next.js 6,913 of 25,906, 40.8 G (1.6 s) vs 76.5 G fresh. Requeueing only the files with no definitions is narrower in Ruby but
 leaves an upgraded Ruby or Python index holding definitions a fresh one doesn't.
+
+*Amended again 2026-11-22, before release: names, not marks.* Syntax marks still held
+long lines of *data* whose definitions 0.60.15 found: a one-line JSON `export const`
+ahead of the function that reads it, a Go `[]byte{0x1f, …}` asset, a Rust `[u8; 9000]`
+table, a Python dict of tuples, a CSS string, a file of inline SVG paths. Data is dense
+in commas and brackets too; what it lacks is names.
+
+*The final rule.* Held when the source is at least 16 KB, its lines average over 200
+bytes, and over 10 **names** each — identifier or keyword tokens outside string
+literals, a number (`0x1f`, `1e5`) not counting. Strings are found by a quote scan
+(`'`, `"`, `` ` ``; a backslash escapes; `'` and `"` end at a newline, a backtick
+doesn't), not a lexer.
+
+*Measured against a tokenizer.* acorn's tokens over all 95 JS/TS sources that pass the
+size and mean gates in the survey (3,265 sources ≥ 16 KB: the recall corpora, lodash,
+rails, two Python site-packages, the fixtures) split them with a 15× gap: data files
+have at most 3.3 names a line, bundles at least 51.8. The quote scan's error is a
+regex or comment holding a quote, which reads code as string: it only undercounts, at
+worst 108 → 13.9 names a line (hugo's `renderkatex.bundle.js`, still held). Must-hold
+files under the old rule's marks and this rule's names a line: react-dom test input
+54 / 74, `lodash.min.js` 91 / 115, `jquery.min.js` 4,335 / 5,281, `viz-3.0.1.js`
+19,642 / 24,279, next.js's `compiled/` bundles ≥ 49. Must-index: the fixtures 1.2–3.3,
+excalidraw's wasm files 5.3–5.6, `ExcalidrawLogo.tsx` 1.3, `unistring.py` 1.9.
+
+*What moves, corpus-wide.* Four real files go from held to indexed, none the other way:
+discourse's `static-fixtures.js` (0.3 names a line: the one-line data export D67 first
+reported as a cost, now indexed again), next.js's `url.js.text.js` (a bundle inside one
+string literal — `module.exports = "…"`, no definitions either way), pygments'
+`_cocoa_builtins.py` (2.6) and setuptools' `fastjsonschema_validations.py` (5.0), both
+real source with definitions. A one-line generated `.d.ts` of real declarations stays
+held: on bytes alone it reads as a bundle.
+
+Indexing next.js, hugo, django, discourse, excalidraw, jest, react, zod and rails with
+both rules, `static-fixtures.js` is the only file whose definitions appear or vanish
+(55,723 files). `make recall BASE=main`: 0 sources lost #1 or the top 10 of 6,879
+queries. discourse full `--index`, n=3 interleaved against c99a009, load 8–19: peak
+footprint 54–71 → 56–65 MB, instructions 94.5–95.3 G on both.
+
+*Considered for this fix.*
+- `;(){}` outside strings (marks without commas). Rejected: a Python dict of tuples
+  has two parens an entry, outside any string — 375 a line.
+- Marks **and** names. Rejected: the quote scan's undercount drops
+  `renderkatex.bundle.js` to 1.7 marks a line, releasing a 300 KB bundle, for no data
+  file the names gate alone gets wrong.
+- A regex- and comment-aware scan. It tracks acorn's counts closely, but `/` and `//`
+  mean JS here and floor division or a comment elsewhere, and the plain scan already
+  lands every surveyed file on the right side of 10.
+- A cap on the share of bytes in literals. Rejected: the ranges overlap — the data
+  fixtures measure 60–100%, and 15 of next.js's `compiled/` bundles over 80% (the
+  scan's undercount inflates it).
+
+*Reverses if* a corpus's navigable definitions sit beside long lines of unquoted-key
+data (`{a:1,b:2}` or Ruby `%w[…]` on one line): those keys are names, and such a file
+is held.
+
+v28's requeue already covers the change: its held set is a subset of v27's (both gate
+on the mean), so the TS/JS files with definitions v28 skips are ones neither rule holds.

@@ -346,8 +346,9 @@ search only reads.
   ones the index holds while they're still on disk rather than reconciling
   them away (D53).
 - **Minified sources are held, not parsed** — `parse_file` holds a source of
-  16 KB or more whose lines average over 200 bytes and over 10 of `;,(){}`
-  each: path, hash and `generated` flag recorded, no definitions (D67). It
+  16 KB or more whose lines average over 200 bytes and over 10 names each
+  outside string and number literals: path, hash and `generated` flag
+  recorded, no definitions (D67). It
   reads bytes and lines, so it runs ahead of every plugin, and `--symbols`
   reports such a file's miss with `reason: minified`.
 - **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
