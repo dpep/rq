@@ -399,7 +399,11 @@ search only reads.
     completed sweep surfaces within a frame. Once the warm has read every file
     holding the name (`query_names`) and a poll finds no literal match here, it stops
     re-querying until the warm ends: what's left unread holds only fuzzy and
-    path matches, which wait for a complete index anyway (D52).
+    path matches, which wait for a complete index anyway (D52). Before the
+    demand walk ends, only an exact match in the capitals typed can answer, so a
+    query whose name has none stops re-querying until it does. Either event
+    also interrupts a poll already in flight, which on a cold pass's suspended
+    name index can outlast both by seconds.
   - A miss distinguishes **definitive** (index `complete` → exit 1) from
     **indeterminate** (still `warming`, e.g. the wait budget was hit on a huge
     repo → exit 2 + a one-line stderr note), so a caller isn't misled into
