@@ -1190,6 +1190,19 @@ namespace Inner {
     }
 
     #[test]
+    fn an_astral_character_reference_in_jsx_keeps_the_file() {
+        let src = "export function SearchIcon() {\n  return <span>&#128269;</span>;\n}\n";
+        assert_eq!(
+            find(&JavaScript.extract("a.jsx", src), "SearchIcon").kind,
+            Kind::Function
+        );
+        assert_eq!(
+            find(&TypeScript.extract("a.tsx", src), "SearchIcon").kind,
+            Kind::Function
+        );
+    }
+
+    #[test]
     fn module_level_consts_are_constants() {
         let src = r#"
 export const MAX_RETRIES = 3;

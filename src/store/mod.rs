@@ -2413,9 +2413,9 @@ mod tests {
     }
 
     #[test]
-    fn v25_and_v26_queue_only_typescript_and_javascript() {
+    fn v25_v26_and_v31_queue_only_typescript_and_javascript() {
         // each step alone, from a database read in full at the version before it
-        for from in [24, 25] {
+        for from in [24, 25, 30] {
             let (_dir, path) = legacy(
                 &format!("migrate-v{}", from + 1),
                 22,
@@ -2527,7 +2527,7 @@ mod tests {
                    WHERE path IN ('a.rs', 'd.ts');",
             )
             .unwrap();
-        let store = Store::open(&path).unwrap();
+        let store = open_at(&path, 28).unwrap();
         for p in ["a.rs", "b.go", "e.js", "z.rb"] {
             assert_eq!(stat(&store, p), (None, "stale:h".to_string()), "{p}");
         }

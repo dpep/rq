@@ -4692,7 +4692,7 @@ the signature scan 11%, ranking every name for the capped walk 10%, scoring 16%
 (`fuzzy_value` is computed twice per name, once to rank and once in `score`; sharing it
 reaches into `score`'s signature, which D1 and D7 keep).
 
-## D69 — mimalloc and the tree-sitter 0.26/0.27 runtimes: measured, not adopted
+## D69 — mimalloc declined; tree-sitter 0.26 adopted, 0.27 declined
 
 **Declined**, 2026-11-23. Release builds, fresh DB per run, interleaved A/B, median of
 5–9, `/usr/bin/time -l`. The box ran other work at load 13–36, so instructions retired
@@ -4741,6 +4741,18 @@ and one requeue should carry that.
 than 0.26's (re-run the corpus diff above, then requeue JS/TS as v24 did); for mimalloc,
 peak memory stops mattering, or a profile shows a foreground path spending its time in
 malloc.
+
+### D69 addendum — 0.26 adopted for what it reads
+
+**Adopted**, 2026-11-23: tree-sitter 0.26.13, schema v31 requeuing TS/JS. The react
+diff has a cause worth paying a requeue for: 0.25 fails on a decimal character reference
+above U+FFFF in JSX or TSX text (`<span>&#128269;</span>`) and loses every definition
+in the file, which is why react's two fixture components were missing. 0.26 reads it;
+`fixtures/{javascript,typescript}/search-icon.*` hold the case for the extraction guard.
+Re-run on main with Ruby on prism: the 14 corpora identical, react the same 8-row diff as
+above. Cost unchanged (the table above). `make recall BASE=main`: 0 of 6,879 queries
+lost #1 or the top 10. 0.27 stays declined for
+`ReactFlightReplyServer.js`. The release carrying master's parse work is still awaited.
 
 ## D70 — Ruby is extracted by prism
 

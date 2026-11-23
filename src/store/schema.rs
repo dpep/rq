@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 30;
+pub(crate) const VERSION: i64 = 31;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -728,6 +728,23 @@ UPDATE files SET content_hash = 'stale:' || content_hash
   WHERE language = 'ruby' AND content_hash NOT LIKE 'stale:%';
 "#;
 
+/// Migration v30 -> v31: tree-sitter 0.26 parses an astral character
+/// reference in JSX text (`&#128269;`), which lost the whole file before, and
+/// recovers from some syntax it can't read with fewer keyword-named rows (D69).
+/// TS/JS files are queued for re-extraction as v24 queued them.
+pub(crate) const MIGRATION_V31: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND checkout_id IN (
+      SELECT cf.checkout_id FROM checkout_files cf JOIN files f ON f.id = cf.file_id
+      WHERE f.language IN ('typescript', 'javascript'));
+UPDATE checkout_files SET mtime = NULL
+  WHERE file_id IN (SELECT id FROM files WHERE language IN ('typescript', 'javascript'));
+UPDATE files SET content_hash = 'stale:' || content_hash
+  WHERE language IN ('typescript', 'javascript')
+    AND content_hash NOT LIKE 'stale:%';
+"#;
+
 /// Indexes the schema gained without a version bump, which would set every
 /// older rq on a side store (D51) for an index: a fresh store has them, and
 /// the background cleanup adds them to one laid down before (D65).
@@ -770,7 +787,7 @@ pub(crate) const LADDER: Ladder = Ladder {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 33] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 34] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -804,4 +821,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 33] = [
     (28, Step::Sql(MIGRATION_V28)),
     (29, Step::Sql(MIGRATION_V29)),
     (30, Step::Sql(MIGRATION_V30)),
+    (31, Step::Sql(MIGRATION_V31)),
 ];

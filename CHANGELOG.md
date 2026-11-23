@@ -54,6 +54,11 @@ and aren't listed; see `git log` for those.
   as every other batch row does.
 - In a directory rq doesn't index, an owner-scoped query (`Z::FetchWidget`)
   reads every file holding the name, not only those spelling out the owner.
+- A JSX or TSX file whose text holds a character reference above U+FFFF
+  (`&#128269;`) keeps its definitions; the parser lost the whole file. Code it
+  can't fully read, such as Flow annotations, yields fewer junk definitions
+  named `if` or `return`. Existing indexes re-read their TypeScript and
+  JavaScript files once, on the next search.
 
 ## 0.61.1 — 2026-11-22
 

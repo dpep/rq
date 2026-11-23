@@ -293,7 +293,8 @@ Decisions worth calling out:
   CommonJS export of a local (`exports.x = x`) gives it, and v27 TS/JS
   for minified bundles, held without definitions (D67), and v28 every
   file without definitions plus Ruby, Rust, Python and Go for that rule's
-  final form, and v30 Ruby for prism's extraction (D70). Users upgrade and the symbols appear, with no `--drop`. Old
+  final form, and v30 Ruby for prism's extraction (D70), and v31 TS/JS for
+  tree-sitter 0.26's parse (D69). Users upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten; meanwhile the checkout
   reads `warming` with `read` equal to `of`, since a stale file still counts as
   held.
