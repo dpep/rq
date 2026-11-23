@@ -10,14 +10,36 @@ pub(super) enum Output {
     Ndjson,
 }
 
+/// The output a parsed command line asks for. A batch is NDJSON unasked,
+/// errors included; `--json` stays, so its refusal answers in the form asked.
 pub(super) fn output_format(cli: &Cli) -> Output {
     if cli.ndjson {
         Output::Ndjson
     } else if cli.json {
         Output::Json
+    } else if is_batch(cli) {
+        Output::Ndjson
     } else {
         Output::Text
     }
+}
+
+/// No query and no command, with a pipe on stdin: each line is a query.
+pub(super) fn is_batch(cli: &Cli) -> bool {
+    cli.target.is_none() && !has_mode(cli) && !std::io::stdin().is_terminal()
+}
+
+/// Whether the command line names one of the exclusive modes (`--status`, …).
+pub(super) fn has_mode(cli: &Cli) -> bool {
+    cli.symbols.is_some()
+        || cli.index.is_some()
+        || cli.status
+        || cli.storage
+        || cli.drop
+        || cli.usage
+        || cli.warm.is_some()
+        || cli.cleanup.is_some()
+        || cli.completions.is_some()
 }
 
 /// Results shown when `--limit` isn't given.

@@ -439,7 +439,7 @@ fn dispatch(cli: Cli) -> ExitCode {
         }
         // No query, but a pipe on stdin: each line is one, all sharing this
         // run's store, repo resolution and warm.
-        None if !std::io::stdin().is_terminal() => cmd_batch(&cli, out, &paths, &kinds, &langs),
+        None if is_batch(&cli) => cmd_batch(&cli, out, &paths, &kinds, &langs),
         // bare `rq` at a terminal (or just flags like --explain): show help
         None => {
             let _ = Cli::command().print_long_help();
@@ -938,6 +938,23 @@ mod tests {
         let here = Here::at(&store, &plain);
         assert!(here.warms(), "an indexed one is tracked");
         assert!(here.checkout.is_some());
+    }
+
+    #[test]
+    fn every_mode_is_a_mode_and_never_a_batch() {
+        let mut cmd = Cli::command();
+        cmd.build();
+        let group = cmd.get_groups().find(|g| g.get_id() == "mode").unwrap();
+        for id in group.get_args() {
+            let arg = cmd.get_arguments().find(|a| a.get_id() == id).unwrap();
+            let mut argv = vec!["rq".to_string(), format!("--{}", arg.get_long().unwrap())];
+            if arg.get_num_args().is_some_and(|n| n.min_values() > 0) {
+                argv.push("bash".into());
+            }
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            assert!(has_mode(&cli), "{argv:?}");
+        }
+        assert!(!has_mode(&Cli::try_parse_from(["rq"]).unwrap()));
     }
 
     #[test]

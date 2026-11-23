@@ -3819,6 +3819,15 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     // --show/--open act on one result
     let (code, _) = rq_stdin(&db, &dir, &["-J", "--show"], "widget\n");
     assert_ne!(code, 0, "--show is refused for a batch");
+
+    // a bad flag value refuses the whole batch as one NDJSON error row,
+    // asked for -J or not
+    for args in [&["-k", "banana"][..], &["-x", "cobol"], &["--show"]] {
+        let (code, out) = rq_stdin(&db, &dir, args, "widget\n");
+        assert_eq!(code, 64, "{args:?}: {out}");
+        assert_eq!(out.lines().count(), 1, "{args:?}: {out}");
+        assert_eq!(json(&out)["kind"], "usage", "{args:?}: {out}");
+    }
 }
 
 /// A batch fed raw bytes, with no output flag: exit code, stdout rows, stderr.
