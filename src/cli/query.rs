@@ -590,6 +590,9 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     // meanwhile re-reads a suspended name index (D25) for nothing.
     let mut futile = false;
     let mut last_cost = Duration::ZERO;
+    // whether the demand walk had read every file holding the name when the
+    // search behind `hits` began
+    let mut name_read;
     let mut hits = loop {
         if futile
             && !warm_done.load(std::sync::atomic::Ordering::Relaxed)
@@ -616,6 +619,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         }
         // before the search, so every file holding the name is in what it read
         let read_before = demanded.load(std::sync::atomic::Ordering::Acquire);
+        name_read = read_before;
         let searched_at = std::time::Instant::now();
         match scope(current).search(store, query, current, &ctx, rank_limit) {
             Ok(m) => {
@@ -626,7 +630,9 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
                 if !polling {
                     break h;
                 }
-                let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
+                // as of the search's start: a demand walk finishing during it
+                // committed files the search may not have read
+                let unread = unread(store, read_before);
                 let shown = shown(args, cwd.as_deref(), root, &h);
                 let answered = shown
                     .first()
@@ -852,7 +858,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     // a live scan stands in for the index of a checkout rq is building
     let scanned = here.as_deref().filter(|_| warming_ok);
     disclose_warming(store, &mut hits, here.as_deref(), scanned, continuing);
-    let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
+    let unread = unread(store, name_read);
     // the checkout whose unread files could still beat the top match
     let held_back = hits
         .first()
