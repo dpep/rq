@@ -814,8 +814,16 @@ fn stream_walk(
 
         // consumer (this thread): hand each parsed file to the sink as it arrives
         while let Ok(fs) = res_rx.recv() {
+            // A cancelled pass leaves the parsed backlog to the next one: the
+            // writer drains it serially, behind workers that parse faster, and a
+            // search's exit waits on that drain.
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                parse_incomplete.store(true, Ordering::Relaxed);
+                break;
+            }
             sink(fs)?;
         }
+        drop(res_rx); // a worker parked in a full `send` errors out
         Ok(walk.join().unwrap())
     })?;
 
@@ -1127,7 +1135,7 @@ fn fill_checkout(
 
     // Fused walk → parse → write: stream candidates through the shared pipeline,
     // committing parsed files in batches as they arrive (so a budget-cut or killed
-    // pass keeps what it parsed). Only new or changed files are parsed; every
+    // pass keeps what it wrote). Only new or changed files are parsed; every
     // source file seen lands in `seen` for deletion reconcile.
     let stored_ref = &stored;
     let changed = move |rel: &str, mtime: Option<i64>| match stored_ref.get(rel) {
@@ -2727,6 +2735,42 @@ mod tests {
         assert!(may_hold_name("ΟΔΟΣ = 1", "οδος"));
         assert!(may_hold_name("ΟΔΟΣ = 1", "οδοσ"));
         assert!(!may_hold_name("class Arger\n", "ärger"));
+    }
+
+    #[test]
+    fn a_cancelled_walk_stops_handing_parsed_files_to_its_sink() {
+        let dir = Scratch::new("cancel-backlog");
+        for i in 0..200 {
+            std::fs::write(
+                dir.join(format!("m{i:03}.rb")),
+                format!("class M{i}\nend\n"),
+            )
+            .unwrap();
+        }
+        let paths: Vec<_> = (0..200).map(|i| dir.join(format!("m{i:03}.rb"))).collect();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut sunk = 0;
+        let (_, completed) = stream_walk(
+            &dir,
+            paths.into_iter(),
+            None,
+            None,
+            &[],
+            &Versions::new(),
+            HashSet::new(),
+            |_, _| true,
+            Some(&cancel),
+            |_| {
+                sunk += 1;
+                // the workers fill the backlog while the first write is slow
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(sunk, 1, "the backlog went to the sink after the cancel");
+        assert!(!completed);
     }
 
     #[test]

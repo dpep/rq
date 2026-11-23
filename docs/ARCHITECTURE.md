@@ -328,7 +328,8 @@ search only reads.
   differs only by parameters (active files, subtrees, deadline): one walk
   thread streams candidates to parse workers, whose results are written in
   batches as they arrive — never collect-then-parse, so a pass cut short
-  still keeps what it parsed.
+  still keeps what it wrote; a cancelled one leaves the parsed backlog the
+  writer hadn't reached to the next pass, so stopping is prompt.
 - **Incremental** — a cheap `mtime` match short-circuits before any read; the
   content `hash` then guards the write. One walk (`walk`: `.gitignore`,
   `.ignore`, git's excludes, hidden entries skipped, symlinks not followed)

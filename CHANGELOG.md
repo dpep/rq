@@ -21,6 +21,10 @@ and aren't listed; see `git log` for those.
   which on discourse took some cold constructor calls from about 5 s to 2 s.
   A lowercase name (`connection_pool`) stops re-searching until the files
   holding it are read, since nothing earlier could answer it.
+- A search on a repo still being indexed exits sooner after its answer: it
+  stops its own indexing before its bookkeeping writes, and drops the parsed
+  files the writer hadn't reached, which the background index redoes (cold
+  rails, exit about 350 → 185 ms).
 - Short fuzzy queries that match thousands of names (`rq usr`, `rq -a usr`)
   answer faster, about a quarter faster across every repo: definitions are
   read in batches of names rather than one statement per name, each name is

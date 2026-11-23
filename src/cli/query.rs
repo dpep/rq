@@ -1018,7 +1018,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     crate::profile::mark("first answer");
 
     // Results are out; stop the in-process warm (it persists as it goes, so a
-    // cut pass keeps everything parsed) and join it — then hand whatever's left
+    // cut pass keeps everything written) and join it — then hand whatever's left
     // to a detached child, which finishes coverage with a budget no foreground
     // query could afford. The shell only ever waits on the answer. Stopped
     // before the bookkeeping below, which would otherwise queue behind the
