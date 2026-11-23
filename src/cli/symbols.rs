@@ -148,24 +148,33 @@ pub(super) fn cmd_symbols(
         })
         .collect();
     drop(signatures_span);
+    // held unparsed, so "no symbols" alone would claim it was read
+    let minified =
+        syms.is_empty() && indexable && content.as_deref().is_some_and(crate::index::minified);
     let _span = crate::profile::span("render");
-    emit_symbols(out, &syms)
+    emit_symbols(out, &syms, minified)
 }
 
 /// Render the outline. Exit 0 if any symbols, non-zero if none — rq's exit-code
 /// convention, matching how search reports an empty result per format.
-fn emit_symbols(out: Output, syms: &[SymbolOut]) -> ExitCode {
+fn emit_symbols(out: Output, syms: &[SymbolOut], minified: bool) -> ExitCode {
     if syms.is_empty() {
         match out {
             Output::Json | Output::Ndjson => {
                 #[derive(serde::Serialize)]
                 struct NoSymbols {
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    reason: Option<&'static str>,
                     status: &'static str,
                 }
                 let obj = NoSymbols {
+                    reason: minified.then_some("minified"),
                     status: Verdict::Miss.status(),
                 };
                 let _ = emit_json(out, &obj); // exit code below carries the miss
+            }
+            Output::Text if minified => {
+                eprintln!("no symbols: held as minified (long lines of code); rq doesn't parse it")
             }
             Output::Text => eprintln!("no symbols"),
         }

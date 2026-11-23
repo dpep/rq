@@ -37,7 +37,8 @@ and aren't listed; see `git log` for those.
   names are one-letter locals, and one bundle could set an index's peak memory
   (discourse: 267 → 68 MB). A file whose long lines are strings or data (an
   inlined image, a base64 blob) is still parsed, and a bare `\r` ends a line.
-  Existing indexes re-read their Ruby,
+  `rq --symbols` on a held file says so (`"reason": "minified"` under
+  `--json`). Existing indexes re-read their Ruby,
   Rust, Python and Go files, and any file with no definitions, once in the
   background after upgrading; nothing to do.
 

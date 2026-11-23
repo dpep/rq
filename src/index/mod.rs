@@ -2389,6 +2389,10 @@ pub(crate) fn current_definitions(
     let Ok(source) = read_source(&path) else {
         return Vec::new();
     };
+    // held as the index holds it
+    if minified(&source) {
+        return Vec::new();
+    }
     let generated = is_generated(&source);
     plugin
         .extract(rel, &source)

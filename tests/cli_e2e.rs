@@ -3663,6 +3663,33 @@ fn an_outline_of_a_file_over_the_size_cap_says_so() {
 }
 
 #[test]
+fn an_outline_of_a_minified_file_says_it_was_held() {
+    let (dir, db) = scratch("minified-outline");
+    let bundle = format!("function a(n){{return n}}{}\n", "var b=a(1);".repeat(2_000));
+    fs::write(dir.join("bundle.js"), bundle).unwrap();
+    fs::write(dir.join("empty.js"), "// nothing here\n").unwrap();
+    // read live outside git, from the index inside it
+    for indexed in [false, true] {
+        if indexed {
+            git_init_commit(&dir);
+            rq(&db, &dir, &["--index"]);
+        }
+        let (code, out, _) = rq_full(&db, &dir, &["--symbols", "bundle.js", "--json"], &[], None);
+        assert_eq!(code, 1, "indexed={indexed}: {out}");
+        let obj: serde_json::Value = serde_json::from_str(out.trim()).expect("json");
+        assert_eq!(obj["status"], "no_match");
+        assert_eq!(obj["reason"], "minified", "indexed={indexed}");
+    }
+    let (_, _, err) = rq_full(&db, &dir, &["--symbols", "bundle.js"], &[], None);
+    assert!(err.contains("minified"), "{err}");
+    // a file that's merely empty of definitions gives no reason
+    let (code, out, _) = rq_full(&db, &dir, &["--symbols", "empty.js", "--json"], &[], None);
+    assert_eq!(code, 1, "{out}");
+    let obj: serde_json::Value = serde_json::from_str(out.trim()).expect("json");
+    assert!(obj.get("reason").is_none(), "{obj}");
+}
+
+#[test]
 fn a_file_rq_cannot_stat_is_not_forgotten() {
     // EACCES on its dir isn't a delete: a pass must keep what it can't see
     use std::os::unix::fs::PermissionsExt;
