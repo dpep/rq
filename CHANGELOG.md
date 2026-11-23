@@ -24,6 +24,8 @@ and aren't listed; see `git log` for those.
   it leaves reading commit history to the background pass that finishes the
   index. That pass now records commit times for every file, not only for the
   few the search had read, so recency ranks a newly indexed repo fully.
+- A short fuzzy query over a large index (`rq usr`) spends about an eighth
+  less CPU fetching the definitions its recalled names point at.
 
 ## 0.60.15 — 2026-11-21
 

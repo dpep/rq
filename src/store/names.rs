@@ -442,6 +442,9 @@ impl Store {
             .collect();
         keys.sort_unstable();
         keys.dedup_by(|a, b| (a.0, &a.1) == (b.0, &b.1));
+        // One read transaction for the fetches, not one per name. Opened past
+        // the scan, whose repair of a corrupt row is a write.
+        let _read = self.conn.unchecked_transaction()?;
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
              WHERE s.repository_id = ?1 AND s.name_lower = ?2 {}",
@@ -542,6 +545,8 @@ impl Store {
             in_checkout(only)
         ))?;
         let checkout = checkout_arg(only, prefer);
+        // as in `named_candidates`
+        let _read = self.conn.unchecked_transaction()?;
         let (mut rows, mut held) = (Vec::new(), Held::new(only));
         for (r, path) in &files {
             if held.count() >= limit {
@@ -717,6 +722,25 @@ mod tests {
         assert!(store.ensure_name_index(Some(r.repo)).unwrap().is_empty());
         assert!(current(&store.conn, r.repo).unwrap(), "rebuilt");
         assert_eq!(recalled(&store, Some(r), "gdgfac"), ["GadgetFactory"]);
+    }
+
+    #[test]
+    fn a_corrupt_file_chunk_leaves_the_index_stale_too() {
+        let mut store = Store::open_in_memory().unwrap();
+        let r = repo(&store, "/tmp/a");
+        let syms = [sym("Pool", Kind::Struct)];
+        store
+            .replace_file_symbols(r, "src/conn_pool.rs", "rust", None, "h", &syms)
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE name_sigs SET keys = substr(keys, 1, 3)", [])
+            .unwrap();
+        let rows = store
+            .filed_candidates(Some(r), None, &[], &Probe::new("connpool"), 100)
+            .unwrap();
+        assert_eq!(rows.len(), 1, "read from rows");
+        assert!(!current(&store.conn, r.repo).unwrap());
     }
 
     #[test]
