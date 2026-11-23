@@ -924,7 +924,11 @@ pub(crate) fn apply_scope_gate(query: &str, hits: &mut Vec<Hit>) {
 /// answer differently each time, which is baffling from a terminal and worse
 /// from an agent, and it means output can't be diffed to check a refactor.
 fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) -> usize {
-    hits.sort_by(|a, b| {
+    // Sorted by index, then moved once: a `Hit` is large, and sorting the
+    // thousands of a short fuzzy query in place spent its time in memmove.
+    let mut order: Vec<usize> = (0..hits.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&hits[a], &hits[b]);
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -932,6 +936,8 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) -> usize {
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| (&a.file, a.line).cmp(&(&b.file, b.line)))
     });
+    let mut slots: Vec<Option<Hit>> = hits.drain(..).map(Some).collect();
+    hits.extend(order.into_iter().filter_map(|i| slots[i].take()));
     collapse_declarations(hits);
     let total = hits.len();
     hits.truncate(limit);
