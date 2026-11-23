@@ -2677,7 +2677,10 @@ fn usage_counts_each_command_and_the_query_shape() {
     let (hit, _) = rq(&db, &dir, &["--symbols", "a.rb"]);
     let (none, _) = rq(&db, &dir, &["--symbols", "a.rb", "-k", "struct"]);
     let (absent, _) = rq(&db, &dir, &["--symbols", "nosuch.rb"]);
-    assert_eq!((hit, none, absent), (0, 1, 66));
+    // a usage error is neither: not counted, as a search's isn't
+    fs::create_dir(dir.join("sub")).unwrap();
+    let (wrong, _) = rq(&db, &dir, &["--symbols", "sub"]);
+    assert_eq!((hit, none, absent, wrong), (0, 1, 66, 64));
     let (_, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
     let row = |flags: &str| {
         out.lines()
@@ -2685,7 +2688,11 @@ fn usage_counts_each_command_and_the_query_shape() {
             .find(|r| r["flags"] == flags)
             .unwrap_or_else(|| panic!("no {flags:?} row: {out}"))
     };
-    assert_eq!(row("symbols")["misses"], 1, "{out}");
+    assert_eq!(
+        (&row("symbols")["searches"], &row("symbols")["misses"]),
+        (&2.into(), &1.into()),
+        "{out}"
+    );
     assert_eq!(row("symbols,kind")["misses"], 1, "{out}");
 }
 

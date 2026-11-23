@@ -465,15 +465,20 @@ fn with_store(
     };
     drop(open_span);
     let code = run(&mut store);
-    // a command that can miss (`--symbols`) counts it as a search does
-    let verdict = if code == ExitCode::from(2) {
-        Verdict::Warming
+    // a command that can miss (`--symbols`) counts it as a search does, and
+    // an error (a usage error, a store that failed) not at all, as a search's
+    let verdict = if code == ExitCode::SUCCESS {
+        Some(Verdict::Hit)
+    } else if code == ExitCode::from(2) {
+        Some(Verdict::Warming)
     } else if code == ExitCode::FAILURE || code == ExitCode::from(Failure::NotFound) {
-        Verdict::Miss
+        Some(Verdict::Miss)
     } else {
-        Verdict::Hit
+        None
     };
-    record_mode(&store, mode, out, extra, verdict);
+    if let Some(verdict) = verdict {
+        record_mode(&store, mode, out, extra, verdict);
+    }
     code
 }
 

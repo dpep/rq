@@ -31,7 +31,8 @@ and aren't listed; see `git log` for those.
   `storage`, `usage`, `completions`) as a row whose `flags` lead with its
   name, and a search's `wait` and query shape (`scoped`, `new`, `glob`,
   `kind-keyword`). A batch's queries count as `no-wait` only when asked.
-  Field names are unchanged; `searches` counts calls.
+  Field names are unchanged; `searches` counts calls. A call that fails (a
+  usage error, an index that won't open) isn't counted, as a search's isn't.
 - A minified source (16 KB or more, lines averaging over 200 bytes and over
   10 names each outside string and number literals) is indexed without
   definitions instead of parsed: a bundle's names are one-letter locals, and
@@ -78,8 +79,9 @@ and aren't listed; see `git log` for those.
 - `RQ_JOBS` that isn't a thread count (`abc`, `-1`) warns on stderr and runs
   one parse thread per core; a count over 4 per core (`RQ_JOBS=100000`, which
   crashed) is capped there, with a warning.
-- `rq --symbols DIR` says the path is a directory (usage error, exit 64)
-  instead of "no such file".
+- `rq --symbols DIR` says the path is a directory and exits 64 (usage)
+  instead of 66 ("no such file"). A script that read 66 there as "no file"
+  should check for 64 too.
 
 ## 0.60.15 — 2026-11-21
 
