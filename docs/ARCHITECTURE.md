@@ -396,10 +396,7 @@ search only reads.
   - The poll that watches the warming index re-queries every `POLL_INTERVAL`
     (100 ms) — coarse enough that these read transactions don't steal CPU or
     read-lock churn from the active writer, fine enough that an early answer or a
-    completed sweep surfaces within a frame. Once the warm has read every file
-    holding the name and a poll finds no literal match here, it stops
-    re-querying until the warm ends: what's left unread holds only fuzzy and
-    path matches, which wait for a complete index anyway (D52).
+    completed sweep surfaces within a frame.
   - A miss distinguishes **definitive** (index `complete` → exit 1) from
     **indeterminate** (still `warming`, e.g. the wait budget was hit on a huge
     repo → exit 2 + a one-line stderr note), so a caller isn't misled into
