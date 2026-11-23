@@ -22,6 +22,8 @@
 
 CARGO ?= cargo
 BIN   := rq
+# where cargo builds: CARGO_TARGET_DIR, as cargo reads it, else ./target
+TARGET := $(abspath $(or $(CARGO_TARGET_DIR),target))
 
 .DEFAULT_GOAL := help
 .PHONY: help build release install uninstall test check dogfood bench recall fuzz imports-scan lint fmt clean
@@ -81,11 +83,11 @@ REPO     ?= .
 # a real search there would. Indexing a large repo takes a while, every run.
 Q        ?= Store
 ARGS     ?=
-DOGFOOD_DB := $(CURDIR)/target/dogfood.db
+DOGFOOD_DB := $(TARGET)/dogfood.db
 dogfood: build
 	@rm -f "$(DOGFOOD_DB)" "$(DOGFOOD_DB)-wal" "$(DOGFOOD_DB)-shm"
-	@RQ_DB="$(DOGFOOD_DB)" ./target/debug/$(BIN) --index "$(REPO)" >/dev/null
-	@cd "$(REPO)" && RQ_DB="$(DOGFOOD_DB)" $(CURDIR)/target/debug/$(BIN) $(Q) $(ARGS)
+	@RQ_DB="$(DOGFOOD_DB)" $(TARGET)/debug/$(BIN) --index "$(REPO)" >/dev/null
+	@cd "$(REPO)" && RQ_DB="$(DOGFOOD_DB)" $(TARGET)/debug/$(BIN) $(Q) $(ARGS)
 
 # The benchmark is an #[ignore]d test inside the lib, not an example: an example
 # is a separate crate, and reaching index/search/store from one meant publishing

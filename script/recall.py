@@ -8,7 +8,7 @@ of the repos at the pinned commits, runs every query through rq, and
 reports where each source ranks: #1, top 10, or found at all. With a baseline
 it also lists the sources that lost #1 or the top 10.
 
-    script/recall.py                    # target/release/rq
+    script/recall.py                    # target/release/rq (or under $CARGO_TARGET_DIR)
     script/recall.py --base main        # diff against a build of a git ref
     script/recall.py --base-bin OLD_RQ  # ...or against a binary you built
     script/recall.py --json             # machine-readable, stable field names
@@ -31,6 +31,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# where cargo builds, honoring CARGO_TARGET_DIR as cargo does (relative to the cwd)
+TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target").resolve()
 DATA = ROOT / "script" / "recall"
 TYPES = ["exact", "case", "qualified", "abbr3", "abbr2", "first+last", "consonants", "typo", "glob"]
 # Recency decays against the wall clock, so a checkout's real dates would make
@@ -111,7 +113,7 @@ def checkout(cache, repo, url, sha):
 def build_ref(ref):
     """A release build of git `ref`, cached by commit under target/recall/."""
     sha = git("rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}", cwd=ROOT)
-    out = ROOT / "target" / "recall" / f"rq-{sha[:12]}"
+    out = TARGET / "recall" / f"rq-{sha[:12]}"
     if out.exists():
         return out, sha
     note(f"building {ref} ({sha[:12]})")
@@ -126,9 +128,9 @@ def build_ref(ref):
         # Homebrew's keg-only rustup may leave cargo off PATH (see CLAUDE.md)
         cargo = os.environ.get("CARGO") or shutil.which("cargo") or "/opt/homebrew/opt/rustup/bin/cargo"
         # a shared target dir, so successive baselines only rebuild rq itself
-        env = dict(os.environ, CARGO_TARGET_DIR=str(ROOT / "target" / "recall" / "build"))
+        env = dict(os.environ, CARGO_TARGET_DIR=str(TARGET / "recall" / "build"))
         run([cargo, "build", "--release", "--quiet", "--manifest-path", f"{src}/Cargo.toml"], env=env)
-        shutil.copy2(ROOT / "target" / "recall" / "build" / "release" / "rq", out)
+        shutil.copy2(TARGET / "recall" / "build" / "release" / "rq", out)
     return out, sha
 
 
@@ -501,8 +503,8 @@ def bench(runs, corpus, queries, reps):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(ROOT / "target" / "release" / "rq"),
-                    help="the rq under test (default: target/release/rq)")
+    ap.add_argument("--bin", default=str(TARGET / "release" / "rq"),
+                    help="the rq under test (default: $CARGO_TARGET_DIR/release/rq, else target/release/rq)")
     base = ap.add_mutually_exclusive_group()
     base.add_argument("--base", metavar="REF", help="git ref to build and diff against")
     base.add_argument("--base-bin", metavar="PATH", help="baseline rq binary to diff against")
