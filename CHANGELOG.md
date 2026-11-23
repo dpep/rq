@@ -14,6 +14,8 @@ and aren't listed; see `git log` for those.
 - A fuzzy search on a repo's first index stops re-searching once only the
   index's end can answer it: less CPU while it waits, the same answer, no
   later.
+- A first index reads commit times while it parses rather than after, so a
+  search waiting on it answers sooner (discourse, about half a second).
 - Short fuzzy queries that match thousands of names (`rq usr`, `rq -a usr`)
   answer faster, about a quarter faster across every repo: definitions are
   read in batches of names rather than one statement per name, each name is

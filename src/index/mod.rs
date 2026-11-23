@@ -1115,6 +1115,15 @@ fn fill_checkout(
 
     let deadline = budget.map(|b| Instant::now() + b);
     let cap = budget.map(|_| collect_cap());
+    // Commit times are read beside the walk when this pass can finalize the
+    // sweep — the only one that stores them, below — so `git log` isn't on its
+    // critical path. One that can't leaves them to the pass that does.
+    let fits = cap.is_none_or(|c| git_candidates.as_ref().is_some_and(|p| p.len() <= c));
+    let at_repo_root = || repo_root(root).is_some_and(|r| r == root_display);
+    let early = subdirs.is_empty() && fits && at_repo_root();
+    let commit_times = early
+        .then(|| CommitTimes::start(store, checkout.id, root))
+        .flatten();
 
     // Fused walk → parse → write: stream candidates through the shared pipeline,
     // committing parsed files in batches as they arrive (so a budget-cut or killed
@@ -1323,9 +1332,13 @@ fn fill_checkout(
     // captures: the capture dates the files stored so far, and the HEAD it
     // records says every file was dated, so a pass its budget or search cut
     // short leaves it to the pass that completes the checkout.
-    if !leave_tail && finalize && repo_root(root).is_some_and(|r| r == root_display) {
+    if !leave_tail && finalize {
         let _span = crate::profile::span("index: git metadata");
-        capture_commit_times(store, checkout.id, root);
+        match commit_times {
+            Some(capture) => capture.finish(store, checkout.id),
+            None if !early && at_repo_root() => capture_commit_times(store, checkout.id, root),
+            None => {}
+        }
     }
 
     // Never persist "complete" for an empty index: a zero-file complete is almost
