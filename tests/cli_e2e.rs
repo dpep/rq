@@ -5073,6 +5073,26 @@ fn a_cold_search_reads_the_name_spelled_with_separators() {
 }
 
 #[test]
+fn a_deeply_nested_file_does_not_take_the_index_down_with_it() {
+    // Every parser and walker recurses on nesting; generated code can nest an
+    // expression thousands deep without a bracket.
+    let (dir, db) = scratch("deep-nesting");
+    let deep = format!("{}1", "1 + ".repeat(5_000));
+    fs::write(dir.join("deep.go"), format!("package p\nvar x = {deep}\n")).unwrap();
+    fs::write(dir.join("deep.rb"), format!("x = {deep}\n")).unwrap();
+    fs::write(dir.join("widget.rb"), "class Widget\nend\n").unwrap();
+
+    let (code, _) = rq(&db, &dir, &["--index"]);
+    assert_eq!(code, 0);
+    let (code, out) = rq(&db, &dir, &["Widget", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(json(&out)[0]["name"], "Widget", "{out}");
+    // an outline parses on the caller's thread
+    let (code, _) = rq(&db, &dir, &["--symbols", "deep.go"]);
+    assert_eq!(code, 1, "nothing to outline, and no crash");
+}
+
+#[test]
 fn a_cold_constructor_search_reads_the_owners_files() {
     // `Widget.new` runs `initialize`, which a file can define without the
     // text `new`: the warm must read it before another class's answers.

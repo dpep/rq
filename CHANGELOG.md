@@ -40,6 +40,8 @@ and aren't listed; see `git log` for those.
 
 ### Fixed
 
+- A source file nesting an expression thousands deep no longer aborts rq with
+  a stack overflow while indexing or outlining it.
 - A search on a repo still being indexed reads the files that spell its name
   with separators before trusting a partial match: `rq AssertResponse` could
   answer `AssertResponseWithUnexpectedErrorController` while the file defining

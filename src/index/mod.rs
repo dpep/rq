@@ -212,6 +212,32 @@ fn collect_cap() -> usize {
         .unwrap_or(COLLECT_CAP)
 }
 
+/// A parse worker's stack. Parsers and plugin walkers recurse on nesting, and
+/// generated code can nest an expression thousands deep without a bracket; on
+/// the 2 MB default that overflowed (Go and Ruby at ~5,000 chained `1 +`), and
+/// an overflow aborts the process. Reserved, not committed: a worker touches
+/// only the pages its deepest file needs.
+const PARSE_STACK: usize = 256 << 20;
+
+fn parse_worker() -> std::thread::Builder {
+    std::thread::Builder::new()
+        .name("rq-parse".into())
+        .stack_size(PARSE_STACK)
+}
+
+/// Run `f` on a thread with a parse worker's stack: an extraction the caller's
+/// own thread would otherwise run on its default one.
+fn on_parse_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        let worker = parse_worker()
+            .spawn_scoped(s, f)
+            .expect("spawn a parse worker");
+        worker
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
 /// Parse workers a test pins; 0 = auto.
 static PARSE_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -789,21 +815,23 @@ fn stream_walk(
         for _ in 0..workers {
             let path_rx = Arc::clone(&path_rx);
             let res_tx = res_tx.clone();
-            s.spawn(move || {
-                loop {
-                    let got = { path_rx.lock().unwrap().recv() };
-                    let Ok(path) = got else { break }; // channel closed
-                    if past(deadline) || cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-                        parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
-                        break;
+            parse_worker()
+                .spawn_scoped(s, move || {
+                    loop {
+                        let got = { path_rx.lock().unwrap().recv() };
+                        let Ok(path) = got else { break }; // channel closed
+                        if past(deadline) || cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                            parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
+                            break;
+                        }
+                        if let Some(fs) = parse_file(root, &path, needles, versions)
+                            && res_tx.send(fs).is_err()
+                        {
+                            break;
+                        }
                     }
-                    if let Some(fs) = parse_file(root, &path, needles, versions)
-                        && res_tx.send(fs).is_err()
-                    {
-                        break;
-                    }
-                }
-            });
+                })
+                .expect("spawn a parse worker");
         }
         drop(res_tx); // the workers hold the live clones
         // Owned here so a failing sink drops both ends as it returns: a worker
@@ -1632,20 +1660,11 @@ fn parse_files(
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let workers = parse_jobs().min(paths.len());
-
-    if workers <= 1 {
-        let mut out = Vec::new();
-        for p in paths {
-            if past(deadline) {
-                return (out, false);
-            }
-            if let Some(parsed) = parse_file(root, p, needles, versions) {
-                out.push(parsed);
-            }
-        }
-        return (out, true);
+    if workers == 0 {
+        return (Vec::new(), true);
     }
 
+    // even one file parses on a worker: the caller's stack may be the default
     let bailed = AtomicBool::new(false);
     let chunk_size = paths.len().div_ceil(workers);
     let mut out = Vec::new();
@@ -1654,19 +1673,21 @@ fn parse_files(
             .chunks(chunk_size)
             .map(|chunk| {
                 let bailed = &bailed;
-                s.spawn(move || {
-                    let mut local = Vec::new();
-                    for p in chunk {
-                        if past(deadline) {
-                            bailed.store(true, Ordering::Relaxed);
-                            break;
+                parse_worker()
+                    .spawn_scoped(s, move || {
+                        let mut local = Vec::new();
+                        for p in chunk {
+                            if past(deadline) {
+                                bailed.store(true, Ordering::Relaxed);
+                                break;
+                            }
+                            if let Some(parsed) = parse_file(root, p, needles, versions) {
+                                local.push(parsed);
+                            }
                         }
-                        if let Some(parsed) = parse_file(root, p, needles, versions) {
-                            local.push(parsed);
-                        }
-                    }
-                    local
-                })
+                        local
+                    })
+                    .expect("spawn a parse worker")
             })
             .collect();
         for h in handles {
@@ -2486,7 +2507,7 @@ pub(crate) fn refresh_file(
         .unwrap_or_default();
     let plugin = lang::plugin_for_extension(ext);
     let symbols = match plugin {
-        Some(plugin) => plugin.extract(rel, &source),
+        Some(plugin) => on_parse_stack(|| plugin.extract(rel, &source)),
         None => Vec::new(),
     };
     // the plugin knows its language even when a file parses to zero symbols
@@ -2542,8 +2563,7 @@ pub(crate) fn current_definitions(
         return Vec::new();
     }
     let generated = is_generated(&source);
-    plugin
-        .extract(rel, &source)
+    on_parse_stack(|| plugin.extract(rel, &source))
         .into_iter()
         .map(|s| crate::store::SymbolRow::live(s, identity, &root.to_string_lossy(), generated))
         .collect()
