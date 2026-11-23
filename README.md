@@ -254,7 +254,9 @@ against one look.
 Errors are NDJSON rows too. A line that isn't UTF-8 gets a `usage` error row
 carrying its `query`, stderr names its line number, and the batch goes on. A
 bad value (`-k widget`) refuses the whole batch with one error row, as do
-`--json` and `--show`/`--open`/`--web` (exit 64). Piped stdin with no queries
+`--json` and `--show`/`--open`/`--web` (exit 64) and an index that can't be
+opened (exit 74). A refusal is the only row and carries no `query`: no line
+was answered. Piped stdin with no queries
 on it prints nothing on stdout and exits `1`.
 
 ### Reading the source

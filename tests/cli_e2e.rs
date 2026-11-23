@@ -3907,7 +3907,19 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
         assert_eq!(code, 64, "{args:?}: {out}");
         assert_eq!(out.lines().count(), 1, "{args:?}: {out}");
         assert_eq!(json(&out)["kind"], "usage", "{args:?}: {out}");
+        assert!(json(&out).get("query").is_none(), "no line answered: {out}");
     }
+
+    // an index that can't open refuses the batch the same way: one row, no
+    // line answered, so none carries a `query`
+    let blocked = dir.join("blocked");
+    fs::write(&blocked, "").unwrap();
+    let unwritable = blocked.join("rq.db");
+    let env = [("RQ_DB", unwritable.to_str().unwrap())];
+    let (code, out, _) = rq_full(&db, &dir, &[], &env, Some("widget\ngadget\n"));
+    assert_eq!((code, out.lines().count()), (74, 1), "{out}");
+    assert_eq!(json(&out)["kind"], "database", "{out}");
+    assert!(json(&out).get("query").is_none(), "{out}");
 }
 
 /// A batch fed raw bytes, with no output flag: exit code, stdout rows, stderr.
