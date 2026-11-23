@@ -62,9 +62,11 @@ gate() {
 # Keep the full run on disk. A failure here is often the first sighting of an
 # intermittent one, and the name of the test that failed is the whole evidence
 # — which a caller's `| tail` throws away exactly when it matters. `target/` is
-# gitignored, and `cargo clean -p` doesn't touch this file.
-mkdir -p target
-LOG="target/check.log"
+# gitignored, and `cargo clean -p` doesn't touch this file. It sits wherever
+# cargo builds: CARGO_TARGET_DIR (read after the cd above, as cargo reads it).
+TARGET="${CARGO_TARGET_DIR:-target}"
+mkdir -p "$TARGET"
+LOG="$TARGET/check.log"
 
 # Tee via `exec`, not `gate | tee`. A function on the LEFT of a pipe runs with
 # `set -e` suppressed, so a failing step doesn't stop the run and the status
