@@ -7,6 +7,16 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+
+- Commit times reach every file of a checkout warmed over several passes. A
+  pass that ran out of budget recorded them as captured after dating only the
+  files it had read, so on a repo too big for one pass most files never got
+  one and lost the recency signal. An index built that way keeps the gap:
+  `rq --drop` in the checkout and index it again to fill it.
+
 ## 0.61.0 — 2026-11-22
 
 ### Added

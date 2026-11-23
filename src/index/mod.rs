@@ -1315,11 +1315,11 @@ fn fill_checkout(
     // times a killed pass left missing — and only when `root` is the work-tree
     // root: a subdir index's `git log` walks the whole repo's history yet emits
     // repo-relative paths that wouldn't match our subdir-relative ones — pure
-    // waste. (A subdir index leans on mtime recency.) A pass its search cut
-    // short left the checkout incomplete, so the pass that completes it (the
-    // detached warm) captures them, off the search's exit.
-    let cut_short = cancelled && !completed;
-    if !leave_tail && !cut_short && repo_root(root).is_some_and(|r| r == root_display) {
+    // waste. (A subdir index leans on mtime recency.) Only a finalized sweep
+    // captures: the capture dates the files stored so far, and the HEAD it
+    // records says every file was dated, so a pass its budget or search cut
+    // short leaves it to the pass that completes the checkout.
+    if !leave_tail && finalize && repo_root(root).is_some_and(|r| r == root_display) {
         let _span = crate::profile::span("index: git metadata");
         capture_commit_times(store, checkout.id, root);
     }

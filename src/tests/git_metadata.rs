@@ -9,6 +9,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::index;
 use crate::tests::support::Scratch;
@@ -321,4 +322,44 @@ fn commit_times_a_pass_left_missing_are_captured_by_one_that_reads_nothing() {
     assert_eq!(stats.files_indexed, 0, "{stats:?}");
     let head = rev_parse(&dir, &["rev-parse", "HEAD"]);
     assert_eq!(store.git_ts_head(checkout.id).unwrap(), Some(head));
+}
+
+#[test]
+fn a_pass_out_of_budget_leaves_commit_times_to_the_one_that_completes() {
+    // the first pass reads only the active file; the HEAD it ran at must not
+    // be recorded as captured, or the pass that reads the rest skips dating it
+    let dir = scratch("budget-git-ts");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    git(&dir, &["init", "-q"]);
+    git(&dir, &["add", "-A"]);
+    git(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    );
+    let mut store = crate::store::Store::open_in_memory().unwrap();
+    let key = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+    let active = ["a.rb".to_string()];
+    let stats = index::index_budgeted(&mut store, &dir, &active, Duration::ZERO, None).unwrap();
+    assert_eq!(stats.files_indexed, 1, "{stats:?}");
+
+    index::index_budgeted(&mut store, &dir, &[], Duration::from_secs(5), None).unwrap();
+    let checkout = store.checkout(&key).unwrap().unwrap();
+    let head = rev_parse(&dir, &["rev-parse", "HEAD"]);
+    assert_eq!(store.git_ts_head(checkout.id).unwrap(), Some(head));
+    let probe = crate::search::Probe::new("Gadget");
+    let dated = store
+        .search_candidates("Gadget", 10, false, None, None, &probe)
+        .unwrap()
+        .iter()
+        .any(|c| c.git_ts.is_some());
+    assert!(dated, "the file the second pass read carries a commit time");
 }
