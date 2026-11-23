@@ -52,6 +52,13 @@ and aren't listed; see `git log` for those.
   no longer leaves the checkout marked as being indexed for up to 10 minutes:
   `--drop` no longer refuses naming that idle pid, and `--status` no longer
   shows the checkout `warming`.
+- A background warm woken after a long sleep (a laptop's lid closed past
+  10 minutes) no longer deletes the lock of the warm that took over meanwhile,
+  and stops rather than repeating its work: two warms no longer index one
+  checkout at once, and `--drop` still refuses while the newer one runs.
+- An `rq --index` killed while refreshing an already-indexed checkout no
+  longer leaves it marked as being indexed until the next `--index` or
+  `--drop`: the next background warm clears the mark.
 
 ## 0.60.15 — 2026-11-21
 

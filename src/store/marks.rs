@@ -109,6 +109,18 @@ impl Holder {
     }
 }
 
+/// Whoever the warm lock on `root` records, held or not; `None` for no lock
+/// or a garbled one.
+fn warm_lock_holder(conn: &Connection, root: &str) -> Result<Option<Holder>> {
+    let key = warm_lock_key(root);
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(value.and_then(|v| Holder::parse(&key, &v).map(|(_, h)| h)))
+}
+
 fn put(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
@@ -140,11 +152,43 @@ pub(super) fn forget_marks(conn: &Connection, root: &str) -> Result<()> {
     Ok(())
 }
 
+/// Clear the pass marks on `root` no process holds — crashed passes' — and
+/// every phase not beside a held one, sparing `pid`'s own: a holder arriving
+/// sweeps, so the marks never outgrow the live writers.
+fn sweep_dead_marks(conn: &Connection, root: &str, pid: u32) -> Result<()> {
+    let mut held = Vec::new();
+    let mut dead = Vec::new();
+    for (key, value) in rows_under(conn, &marks_on(PASS, root))? {
+        if let Some((r, h)) = Holder::parse(&key, &value)
+            && r == root
+            && h.pid != pid
+        {
+            if h.live() { &mut held } else { &mut dead }.push(h.pid);
+        }
+    }
+    dead.extend(
+        rows_under(conn, &marks_on(PHASE, root))?
+            .iter()
+            .filter_map(|(k, _)| root_and_pid(PHASE, k))
+            .filter(|&(r, p)| r == root && p != pid && !held.contains(&p))
+            .map(|(_, p)| p),
+    );
+    for p in dead {
+        conn.execute(
+            "DELETE FROM meta WHERE key IN (?1, ?2)",
+            params![pass_key(root, p), phase_key(root, p)],
+        )?;
+    }
+    Ok(())
+}
+
 /// This process's pass mark on a checkout, held while the pass runs, and the
 /// store it marks, borrowed for the pass to write through. [`end`](Self::end)
 /// records how the pass left the tree; dropped without it — a pass that
 /// failed — the mark goes anyway, so a long-lived process doesn't hold the
-/// checkout for the TTL after its pass is gone.
+/// checkout for the TTL after its pass is gone. The span stays: it is still
+/// the tree's count, read only while the checkout is incomplete, and without
+/// it the next search there would count the tree again.
 #[must_use = "dropping it ends the mark"]
 pub(crate) struct PassMark<'s> {
     store: &'s mut Store,
@@ -207,34 +251,14 @@ impl Store {
     }
 
     /// Mark a pass over the checkout at `root` as running in `pid`, and record
-    /// how many source files the tree spans when the pass enumerated them. A
-    /// mark another pid no longer holds is a crashed pass's leftover, cleared
-    /// here with its phase so the marks never outgrow the live writers.
+    /// how many source files the tree spans when the pass enumerated them.
+    /// Marks no process holds are swept first.
     pub(super) fn begin_pass(&mut self, root: &str, pid: u32, span: Option<usize>) -> Result<()> {
         // it reads before it writes: deferred, a busy writer fails it at once
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut stale: Vec<u32> = rows_under(&tx, &marks_on(PASS, root))?
-            .iter()
-            .filter_map(|(k, v)| Holder::parse(k, v))
-            .filter(|&(r, h)| r == root && h.pid != pid && !h.live())
-            .map(|(_, h)| h.pid)
-            .collect();
-        // a phase outlives its mark only in a pass that died between the two
-        stale.extend(
-            rows_under(&tx, &marks_on(PHASE, root))?
-                .iter()
-                .filter_map(|(k, _)| root_and_pid(PHASE, k))
-                .filter(|&(r, p)| r == root && p != pid && !pid_alive(i64::from(p)))
-                .map(|(_, p)| p),
-        );
-        for p in stale {
-            tx.execute(
-                "DELETE FROM meta WHERE key IN (?1, ?2)",
-                params![pass_key(root, p), phase_key(root, p)],
-            )?;
-        }
+        sweep_dead_marks(&tx, root, pid)?;
         let now = now_unix();
         put(&tx, &pass_key(root, pid), &now.to_string())?;
         let reading = Phase::Reading.as_str();
@@ -342,36 +366,41 @@ impl Store {
     }
 
     /// Claim the detached-warm lock for `pid` unless another live process
-    /// holds it. Read and write share one write transaction, so of two
-    /// warmers racing for it only one wins.
+    /// holds it, sweeping the marks no process holds as a pass does: a pass
+    /// on a complete checkout may take none. Read and write share one write
+    /// transaction, so of two warmers racing for it only one wins.
     pub(crate) fn claim_warm_lock(&mut self, root: &str, pid: u32) -> Result<bool> {
-        let key = warm_lock_key(root);
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let value: Option<String> = tx
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let held = value
-            .and_then(|v| Holder::parse(&key, &v).map(|(_, h)| h))
-            .is_some_and(|h| h.pid != pid && h.live());
-        if held {
+        if warm_lock_holder(&tx, root)?.is_some_and(|h| h.pid != pid && h.live()) {
             return Ok(false);
         }
-        put(&tx, &key, &format!("{pid}:{}", now_unix()))?;
+        sweep_dead_marks(&tx, root, pid)?;
+        put(&tx, &warm_lock_key(root), &format!("{pid}:{}", now_unix()))?;
         tx.commit()?;
         Ok(true)
     }
 
-    /// Release the detached-warm lock.
-    pub(crate) fn clear_warm_lock(&self, root: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            params![warm_lock_key(root)],
-        )?;
-        Ok(())
+    /// Whether `pid` still holds the detached-warm lock: a holder suspended
+    /// past the TTL (a laptop asleep) may wake to find it taken over.
+    pub(crate) fn holds_warm_lock(&self, root: &str, pid: u32) -> Result<bool> {
+        Ok(warm_lock_holder(&self.conn, root)?.is_some_and(|h| h.pid == pid))
+    }
+
+    /// Release `pid`'s detached-warm lock, and only its: one taken over while
+    /// `pid` was suspended is its successor's.
+    pub(crate) fn clear_warm_lock(&mut self, root: &str, pid: u32) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if warm_lock_holder(&tx, root)?.is_some_and(|h| h.pid == pid) {
+            tx.execute(
+                "DELETE FROM meta WHERE key = ?1",
+                params![warm_lock_key(root)],
+            )?;
+        }
+        tx.commit()
     }
 
     /// Leave the mark a pass in `pid` that crashed would.
@@ -494,6 +523,69 @@ mod tests {
         assert!(store.claim_warm_lock("repo", me).unwrap());
         assert!(!store.claim_warm_lock("repo", p).unwrap());
         assert!(store.claim_warm_lock("repo", me).unwrap(), "its own");
+    }
+
+    #[test]
+    fn a_warm_child_clears_only_its_own_lock() {
+        // woken past the TTL, a warm child finds its lock a successor's
+        let me = std::process::id();
+        let now = now_unix();
+        for root in ["/r", "/x/café", "/a:b"] {
+            let mut store = Store::open_in_memory().unwrap();
+            let key = format!("warm_lock:{root}");
+            assert!(store.claim_warm_lock(root, me).unwrap());
+            assert!(store.holds_warm_lock(root, me).unwrap());
+            // a pid this one's digits start is another process
+            for successor in [format!("{}:{now}", other()), format!("{me}0:{now}")] {
+                store.meta_set(&key, &successor).unwrap();
+                assert!(!store.holds_warm_lock(root, me).unwrap(), "{root}");
+                store.clear_warm_lock(root, me).unwrap();
+                assert_eq!(store.meta_get(&key).unwrap(), Some(successor), "{root}");
+            }
+            store.meta_set(&key, "garbled").unwrap();
+            store.clear_warm_lock(root, me).unwrap();
+            assert!(store.meta_get(&key).unwrap().is_some(), "not its to clear");
+            // its own, even past the TTL
+            store.meta_set(&key, &format!("{me}:{}", stale())).unwrap();
+            assert!(store.holds_warm_lock(root, me).unwrap());
+            store.clear_warm_lock(root, me).unwrap();
+            assert!(store.meta_get(&key).unwrap().is_none(), "{root}");
+        }
+    }
+
+    #[test]
+    fn a_warm_child_sweeps_the_marks_no_process_holds() {
+        // a pass on a complete checkout may take no mark, so the warm child
+        // is what arrives after a crashed refresh
+        let mut store = Store::open_in_memory().unwrap();
+        let (me, p) = (std::process::id(), other());
+        store.crashed_pass("/r", DEAD);
+        store.begin_pass("/r", p, None).unwrap();
+        store.begin_pass("/r:1", DEAD, None).unwrap();
+        // a phase whose pass mark is gone, its pid reused
+        let orphan = phase_key("/r", 1);
+        store.meta_set(&orphan, "reading:0").unwrap();
+        assert!(store.claim_warm_lock("/r", me).unwrap());
+        assert_eq!(store.marked_pids("/r"), vec![p], "the live pass stays");
+        assert!(store.meta_get(&phase_key("/r", DEAD)).unwrap().is_none());
+        assert!(store.meta_get(&phase_key("/r", p)).unwrap().is_some());
+        assert!(store.meta_get(&orphan).unwrap().is_none());
+        assert_eq!(store.marked_pids("/r:1"), vec![DEAD], "another root's");
+
+        // a live lock is still respected
+        store.clear_warm_lock("/r", me).unwrap();
+        store
+            .meta_set("warm_lock:/r", &format!("{p}:{}", now_unix()))
+            .unwrap();
+        assert!(!store.claim_warm_lock("/r", me).unwrap());
+    }
+
+    #[test]
+    fn a_dropped_mark_leaves_the_span() {
+        // still the tree's count, which a search would otherwise redo
+        let mut store = Store::open_in_memory().unwrap();
+        drop(store.mark_pass("/r", Some(3)).unwrap());
+        assert_eq!(store.passes("/r").unwrap(), (vec![], Some(3)));
     }
 
     #[test]

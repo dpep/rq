@@ -227,11 +227,12 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
     let here = Here::at(&store, &start);
     let root = here.root;
     let key = root_key(&root);
+    let me = std::process::id();
 
     // Single-flight: if another live rq is already warming this checkout, bow out.
     // A dead pid or a stale stamp is a crashed warmer — take over. A claim that
     // can't be made at all means another writer is busy; the next search retries.
-    match store.claim_warm_lock(&key, std::process::id()) {
+    match store.claim_warm_lock(&key, me) {
         Ok(true) => {}
         Ok(false) => {
             crate::trace!(
@@ -257,7 +258,7 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
             if let Some(c) = checkout {
                 let _ = store.maintain_name_index(c.repo);
             }
-            let _ = store.clear_warm_lock(&key);
+            let _ = store.clear_warm_lock(&key, me);
             return ExitCode::SUCCESS;
         }
     }
@@ -274,7 +275,8 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
         let remaining = deadline
             .saturating_duration_since(std::time::Instant::now())
             .min(warm_bg_budget());
-        if remaining.is_zero() {
+        // woken past the TTL to find a successor warming: the rest is its
+        if remaining.is_zero() || !store.holds_warm_lock(&key, me).unwrap_or(false) {
             break;
         }
         let stats = match crate::index::index_budgeted(&mut store, &root, &active, remaining, None)
@@ -295,7 +297,7 @@ pub(super) fn cmd_warm(path: Option<&str>) -> ExitCode {
             break;
         }
     }
-    let _ = store.clear_warm_lock(&key);
+    let _ = store.clear_warm_lock(&key, me);
     if passed {
         after_pass(&mut store);
     }
