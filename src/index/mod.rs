@@ -1385,7 +1385,13 @@ fn parse_file(
     let held = versions
         .get(&rel)
         .is_some_and(|hashes| hashes.contains(&content_hash));
-    let symbols = (!held).then(|| plugin.extract(&rel, &source));
+    let symbols = (!held).then(|| {
+        if minified(&source) {
+            Vec::new()
+        } else {
+            plugin.extract(&rel, &source)
+        }
+    });
     if let Some(started) = timing {
         // workers run concurrently, so this sums to CPU time, not wall time
         let elapsed = started.elapsed();
@@ -1403,6 +1409,23 @@ fn parse_file(
         generated: is_generated(&source),
         symbols,
     })
+}
+
+/// Smallest source [`minified`] judges: under it, a long line or two is
+/// someone's code, and parsing it is cheap anyway.
+const MINIFIED_MIN: usize = 16 * 1024;
+
+/// Mean line length past which a source is minified. Formatted code averages
+/// 25–45 bytes a line, minified bundles hundreds to thousands (D58).
+const MINIFIED_LINE: usize = 200;
+
+/// Whether `source` is a minified bundle: held with no definitions, unparsed.
+/// Its names are one-letter locals, and its parse is the costliest in a repo.
+fn minified(source: &str) -> bool {
+    source.len() >= MINIFIED_MIN && {
+        let lines = source.bytes().filter(|&b| b == b'\n').count() + 1;
+        source.len() > MINIFIED_LINE * lines
+    }
 }
 
 /// Bytes of a file's head searched for a NUL: git's and ripgrep's binary test.
@@ -2459,6 +2482,38 @@ fn mtime_of(meta: &std::fs::Metadata) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::tests::support::Scratch;
+
+    #[test]
+    fn a_minified_bundle_is_held_without_definitions() {
+        let dir = Scratch::new("minified");
+        let names = |file: &str, source: &str| -> Vec<String> {
+            std::fs::write(dir.join(file), source).unwrap();
+            let fs = parse_file(&dir, &dir.join(file), None, &Versions::new()).unwrap();
+            fs.symbols.unwrap().into_iter().map(|s| s.name).collect()
+        };
+        // one line of minified code
+        let bundle = format!("function a(n){{return n}}{}\n", "var b=a(1);".repeat(2_000));
+        assert!(names("bundle.js", &bundle).is_empty());
+        // short enough that a long line is just a long line
+        assert_eq!(
+            names("short.js", "function gadget(){return 1}\n"),
+            ["gadget"]
+        );
+        // big, with a few long string lines among ordinary ones
+        let long = "x".repeat(5_000);
+        let mut data = String::from("class Widget\n");
+        for i in 0..3 {
+            data.push_str(&format!("  TEMPLATE_{i} = \"{long}\"\n"));
+        }
+        for i in 0..400 {
+            data.push_str(&format!("  def m{i}\n    {i}\n  end\n"));
+        }
+        data.push_str("end\n");
+        assert!(data.len() >= MINIFIED_MIN);
+        let held = names("widget.rb", &data);
+        assert!(held.contains(&"Widget".to_string()), "{held:?}");
+        assert!(held.contains(&"TEMPLATE_0".to_string()), "{held:?}");
+    }
 
     #[test]
     fn a_pass_whose_checkout_is_dropped_under_it_says_so() {

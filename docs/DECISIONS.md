@@ -4437,3 +4437,36 @@ so it's `not_found` (66) — it used to filter everything out and read as a defi
   root-relative everywhere, `-a` included; `--json` carries `root`.
 
 *Reverses if* PATHs spanning checkouts turn out common enough to want each searched.
+
+## D67 — A minified source is held without definitions
+
+*The problem.* A minified bundle's names are one-letter locals, and its parse is the
+costliest in a repo. discourse's `plugins/discourse-graphviz/public/javascripts/viz-3.0.1.js`
+(2.1 MB on 17 lines) cost about a second of tree-sitter and set the index's peak memory,
+for 0 symbols. The only size gate was the 64 MB `MAX_SOURCE`.
+
+*The rule.* A source of at least 16 KB whose lines average over 200 bytes is held — its
+path, hash and `generated` flag recorded like any file's — with no definitions, unparsed.
+D58's measurement sets the line: formatted code averages 25–45 bytes a line, minified
+bundles 447–2,741. It is bytes and lines, so it sits in the index walker's `parse_file`,
+ahead of every plugin. Under 16 KB a long line is someone's code and cheap to parse; a big
+file with a few long lines (a Ruby class holding long strings) averages well under 200.
+Schema v27 requeues TS/JS files, where every surveyed hit is.
+
+*Measured.* discourse full `--index`, n=4 interleaved, load 15–18: peak footprint
+267 → 68 MB, user+sys 15.5 → 14.9 s, wall flat (4.82 / 4.78 s; the file wasn't on the
+tail). Rows lost across rails, discourse, django, lodash, jest, react and next.js: next.js's
+366 single-letter names from a minified react-dom test input under
+`turbopack/…/tests/analyzer/`, and discourse's `staticFixtures`, a 59 KB one-line data
+export in `tests/fixtures/`. `make recall BASE=main`: 0 sources lost #1 or the top 10
+of 6,879 queries; regress 54 of 57 on both.
+
+*Considered.*
+- A total-size cap. Rejected, as in D58: `lodash.js` (540 KB, formatted) is bigger than
+  most minified files.
+- A filename rule (`*.min.js`). Misses `viz-3.0.1.js` and every `dist/index.js` bundle.
+- Requeueing every language. Not done: no Ruby, Rust, Python or Go source in the surveyed
+  corpora meets the rule, and a full requeue costs a reparse of every checkout.
+
+*Reverses if* a corpus's navigable definitions live in single-line data or generated
+files over 16 KB: the one-line `export const` data file is the case it costs.
