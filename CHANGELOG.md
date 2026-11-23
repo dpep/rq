@@ -35,6 +35,8 @@ and aren't listed; see `git log` for those.
   `assert_response` sat unread.
 - The same search for a constructor call (`Widget.new`) reads the files naming
   its owner, since `initialize` needn't mention `new`.
+- Nor does it settle on a partial match from a search that began before every
+  file holding the name was read; a read finishing mid-search could let it.
 - A database error answering one line of a batch carries that line's `query`,
   as every other batch row does.
 - In a directory rq doesn't index, an owner-scoped query (`Z::FetchWidget`)
