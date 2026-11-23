@@ -316,7 +316,8 @@ fn dispatch(cli: Cli) -> ExitCode {
     if let Some(path) = &cli.index {
         // index PATH (else cwd); with --path, seed only those subtrees
         let out = output_format(&cli);
-        return cmd_index(path.as_deref().map(PathBuf::from), &cli.path, out);
+        let path = path.as_deref().map(PathBuf::from);
+        return with_store(out, "index", |store| cmd_index(store, path, &cli.path, out));
     }
     if let Some(path) = &cli.warm {
         return cmd_warm(path.as_deref());
@@ -325,17 +326,20 @@ fn dispatch(cli: Cli) -> ExitCode {
         return cmd_cleanup(store);
     }
     if cli.status {
-        return cmd_status(output_format(&cli));
+        let out = output_format(&cli);
+        return with_store(out, "status", |store| cmd_status(store, out));
     }
     if cli.storage {
-        return cmd_storage(output_format(&cli));
+        let out = output_format(&cli);
+        return with_store(out, "storage", |store| cmd_storage(store, out));
     }
     if cli.usage {
-        return cmd_usage(output_format(&cli));
+        let out = output_format(&cli);
+        return with_store(out, "usage", |store| cmd_usage(store, out));
     }
     if cli.drop {
         let out = output_format(&cli);
-        return cmd_drop(cli.target, out);
+        return with_store(out, "drop", |store| cmd_drop(store, cli.target, out));
     }
     let out = output_format(&cli);
     // Kind-only browsing (`rq '' -k trait`) is listing, not navigation, and a
@@ -383,7 +387,9 @@ fn dispatch(cli: Cli) -> ExitCode {
         langs.extend(matched);
     }
     if let Some(file) = &cli.symbols {
-        return cmd_symbols(file, &kinds, &langs, out);
+        return with_store(out, "symbols", |store| {
+            cmd_symbols(store, file, &kinds, &langs, out)
+        });
     }
     // path filters: trailing positionals (rg-style) plus any --path flags
     let mut paths = cli.path.clone();
@@ -437,6 +443,18 @@ fn dispatch(cli: Cli) -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+/// Run the command `rq --{mode}` against the index, or exit with the error
+/// that kept the index from opening.
+fn with_store(out: Output, mode: &str, run: impl FnOnce(&mut Store) -> ExitCode) -> ExitCode {
+    let open_span = crate::profile::span("store open");
+    let mut store = match open_store_or_fail(out, &format!("rq --{mode}")) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    drop(open_span);
+    run(&mut store)
 }
 
 #[cfg(test)]

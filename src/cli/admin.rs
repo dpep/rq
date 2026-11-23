@@ -2,7 +2,12 @@
 
 use super::*;
 
-pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) -> ExitCode {
+pub(super) fn cmd_index(
+    store: &mut Store,
+    path: Option<PathBuf>,
+    subdirs: &[String],
+    out: Output,
+) -> ExitCode {
     let explicit = path.is_some();
     let target = path.unwrap_or_else(|| PathBuf::from("."));
     // The repo root even from a subdirectory: `--path` scopes a subset.
@@ -20,24 +25,18 @@ pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) 
     {
         subdirs.push(rel.to_string_lossy().into_owned());
     }
-    let open_span = crate::profile::span("store open");
-    let mut store = match open_store_or_fail(out, "rq --index") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    drop(open_span);
     let on_long_wait = show_progress(out, stderr_interactive()).then_some(say_waiting as fn());
     let _ = store.wait_out_writers(writer_wait(), on_long_wait);
-    let indexed = crate::index::index_under(&mut store, &root, &subdirs);
+    let indexed = crate::index::index_under(store, &root, &subdirs);
     match indexed {
         Ok(stats) => {
             // After the index, which has just recorded this checkout's
             // identity — so this is a cache hit rather than a second `git
             // remote` fork. Not on failure: a busy writer would cost a second wait.
-            let identity = resolve_identity(&store, &root);
+            let identity = resolve_identity(store, &root);
             let subtree = !subdirs.is_empty();
             // distinguish this run's incremental work from the checkout's totals
-            let totals = checkout_at(&store, &root).and_then(|c| store.checkout_totals(c.id).ok());
+            let totals = checkout_at(store, &root).and_then(|c| store.checkout_totals(c.id).ok());
             match out {
                 Output::Json | Output::Ndjson => {
                     // keys sorted, as they always went out; totals absent when
@@ -64,7 +63,7 @@ pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) 
                         symbols_added: stats.symbols,
                     };
                     let emitted = emit_json(out, &row);
-                    after_pass(&mut store);
+                    after_pass(store);
                     return exit_code(emitted);
                 }
                 Output::Text => {
@@ -81,7 +80,7 @@ pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) 
                     }
                 }
             }
-            after_pass(&mut store);
+            after_pass(store);
             ExitCode::SUCCESS
         }
         Err(e) if e.is::<crate::index::Dropped>() => fail(
@@ -97,11 +96,7 @@ pub(super) fn cmd_index(path: Option<PathBuf>, subdirs: &[String], out: Output) 
     }
 }
 
-pub(super) fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
-    let mut store = match open_store_or_fail(out, "rq --drop") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
+pub(super) fn cmd_drop(store: &mut Store, target: Option<String>, out: Output) -> ExitCode {
     // as `--index` waits: a cleanup's one full rewrite (D65), or a cold
     // pass's name-index rebuild, holds the lock past a search's wait
     let on_long_wait = show_progress(out, stderr_interactive()).then_some(say_waiting as fn());
@@ -112,7 +107,7 @@ pub(super) fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     // with every checkout of it — so cruft shown by --status can be dropped by
     // name even if the checkout is gone.
     let path = PathBuf::from(target.clone().unwrap_or_else(|| ".".to_string()));
-    let here = Here::at(&store, &path);
+    let here = Here::at(store, &path);
     let root = here.root;
     let key = root_key(&root);
     let dropped = |repo: String, root: Option<String>, (files, symbols): (i64, i64)| Dropped {
@@ -124,7 +119,7 @@ pub(super) fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
     };
 
     if let Some(checkout) = here.checkout {
-        if let Some(busy) = indexing(&store, [key.clone()], out) {
+        if let Some(busy) = indexing(store, [key.clone()], out) {
             return busy;
         }
         let identity = store
@@ -158,7 +153,7 @@ pub(super) fn cmd_drop(target: Option<String>, out: Output) -> ExitCode {
         return nothing.emit(out);
     };
     let roots = store.checkout_roots(repo_id).unwrap_or_default();
-    if let Some(busy) = indexing(&store, roots, out) {
+    if let Some(busy) = indexing(store, roots, out) {
         return busy;
     }
     let totals = store.repo_totals(repo_id).unwrap_or((0, 0));
@@ -234,12 +229,8 @@ impl Dropped {
     }
 }
 
-pub(super) fn cmd_status(out: Output) -> ExitCode {
-    let store = match open_store_or_fail(out, "rq --status") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    crate::index::prune_missing_checkouts(&store);
+pub(super) fn cmd_status(store: &Store, out: Output) -> ExitCode {
+    crate::index::prune_missing_checkouts(store);
     let mut rows = match store.coverage_overview() {
         Ok(rows) => rows,
         Err(e) => return fail(out, Failure::Database, format_args!("rq --status: {e}")),
@@ -250,7 +241,7 @@ pub(super) fn cmd_status(out: Output) -> ExitCode {
         .filter(|r| r.status != Coverage::Complete && r.of.is_none())
     {
         if let Some(checkout) = store.checkout(&row.root).ok().flatten() {
-            row.of = tree_span(&store, &row.root, checkout.id).map(|s| s.max(row.files));
+            row.of = tree_span(store, &row.root, checkout.id).map(|s| s.max(row.files));
         }
     }
     if let Err(failed) = emit_rows(out, &rows) {
@@ -296,11 +287,7 @@ pub(super) fn cmd_status(out: Output) -> ExitCode {
 
 /// `--storage`: the index file's size, the free pages inside it, and what the
 /// background cleanup last did (D65). One object: it is one file.
-pub(super) fn cmd_storage(out: Output) -> ExitCode {
-    let store = match open_store_or_fail(out, "rq --storage") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
+pub(super) fn cmd_storage(store: &Store, out: Output) -> ExitCode {
     let storage = match store.storage() {
         Ok(storage) => storage,
         Err(e) => return fail(out, Failure::Database, format_args!("rq --storage: {e}")),
@@ -423,11 +410,7 @@ fn leftovers(db: &std::path::Path, using: Option<&std::path::Path>) -> Vec<Strin
 
 /// `--usage`: how rq has actually been called, by day, caller, and flag set.
 /// Reads `usage_daily`, which outlives the pruned raw event log.
-pub(super) fn cmd_usage(out: Output) -> ExitCode {
-    let store = match open_store_or_fail(out, "rq --usage") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
+pub(super) fn cmd_usage(store: &Store, out: Output) -> ExitCode {
     let rows = match store.usage_overview() {
         Ok(rows) => rows,
         Err(e) => return fail(out, Failure::Database, format_args!("rq --usage: {e}")),

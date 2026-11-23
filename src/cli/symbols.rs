@@ -32,19 +32,14 @@ struct SymbolOut {
 /// changed (same gate as search), then reads straight from the index. Honors
 /// --kind/--lang filters and --json/--ndjson.
 pub(super) fn cmd_symbols(
+    store: &mut Store,
     file_arg: &str,
     kinds: &[String],
     langs: &[String],
     out: Output,
 ) -> ExitCode {
-    let open_span = crate::profile::span("store open");
-    let mut store = match open_store_or_fail(out, "rq --symbols") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    drop(open_span);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let here = Here::at(&store, &cwd);
+    let here = Here::at(store, &cwd);
     let warming_ok = here.warms();
     let Here {
         root,
@@ -86,9 +81,9 @@ pub(super) fn cmd_symbols(
         // is just re-extracting it if it moved — no `git status` over the whole
         // worktree, and a new untracked file is picked up too.
         Some(checkout) if coverage == Some(Coverage::Complete) => {
-            if indexable && stored(&store, checkout) {
+            if indexable && stored(store, checkout) {
                 let _span = crate::profile::span("symbols: refresh");
-                let _ = crate::index::refresh_file(&mut store, checkout, &root, &rel);
+                let _ = crate::index::refresh_file(store, checkout, &root, &rel);
             }
         }
         // Not fully indexed yet: warm synchronously — there's no answer to get
@@ -98,19 +93,19 @@ pub(super) fn cmd_symbols(
             let budget = answer_warm_budget() + deferred_warm_budget();
             let _span = crate::profile::span("symbols: warm");
             let active = [rel.clone()];
-            let _ = crate::index::index_budgeted(&mut store, &root, &active, budget, None);
+            let _ = crate::index::index_budgeted(store, &root, &active, budget, None);
         }
         _ => {}
     }
 
     let mut query_span = crate::profile::span("symbols: query");
-    let rows = match checkout_at(&store, &root) {
-        Some(checkout) if stored(&store, checkout) => store.symbols_in_file(checkout.id, &rel),
+    let rows = match checkout_at(store, &root) {
+        Some(checkout) if stored(store, checkout) => store.symbols_in_file(checkout.id, &rel),
         // a dir rq doesn't warm, or a file it doesn't hold: read the file
         // live, as an anchor is
         _ => {
-            let identity = resolve_identity(&store, &root);
-            let mut defs = crate::index::current_definitions(&store, None, &identity, &root, &rel);
+            let identity = resolve_identity(store, &root);
+            let mut defs = crate::index::current_definitions(store, None, &identity, &root, &rel);
             defs.sort_by(|a, b| (a.line, &a.name).cmp(&(b.line, &b.name)));
             Ok(defs)
         }
