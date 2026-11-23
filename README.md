@@ -402,9 +402,10 @@ re-reads the affected files the same way, on the next search; until then
 `--status` shows the checkout `warming`.
 
 A minified source — 16 KB or more, lines averaging over 200 bytes and over 10
-of `;,(){}` each — is held without definitions instead of parsed: its names are
-one-letter locals. A file whose long lines are strings or data (an inlined
-image, a base64 blob) is parsed as usual. Indexing parses on one thread per
+names each outside string and number literals — is held without definitions
+instead of parsed: its names are one-letter locals. A file whose long lines are
+strings or data (a JSON object, a byte array, an inlined image) is parsed as
+usual. Indexing parses on one thread per
 core; `RQ_JOBS=N` sets the count (a value that isn't one warns and keeps the
 default, and over 4 per core is capped).
 
