@@ -932,7 +932,7 @@ fn fill_checkout(
         .is_none_or(|&(s, _)| s != Coverage::Complete);
     let marked = incomplete || budget.is_none();
     if marked {
-        let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::READING);
+        let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::Phase::Reading);
     }
     // Versions other checkouts already stored: a file hashing to one maps to
     // it unparsed, so a second worktree parses only what differs.
@@ -1147,7 +1147,11 @@ fn fill_checkout(
     });
     drop(fused_span);
     if marked {
-        let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::FINISHING);
+        let _ = store.set_pass_phase(
+            &root_key,
+            std::process::id(),
+            crate::store::Phase::Finishing,
+        );
     }
     // Both of these overlap the phase above rather than following it — the
     // workers parse while the consumer thread writes — so they are reported as

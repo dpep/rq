@@ -18,8 +18,33 @@
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use super::{FINISHING, READING, Result, Store, WARM_LOCK_TTL_SECS, pid_alive, prefix_upper_bound};
+use super::{Result, Store, WARM_LOCK_TTL_SECS, pid_alive, prefix_upper_bound};
 use crate::core::now_unix;
+
+/// What a pass is doing (D54): [`Reading`](Phase::Reading) from its start,
+/// [`Finishing`](Phase::Finishing) once past its reads, when what remains (the
+/// name index, commit times) holds `read` still.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    Reading,
+    Finishing,
+}
+
+impl Phase {
+    /// As a `phase:` row stores it and `warming.phase` names it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Phase::Reading => "reading",
+            Phase::Finishing => "finishing",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Phase> {
+        [Phase::Reading, Phase::Finishing]
+            .into_iter()
+            .find(|p| p.as_str() == s)
+    }
+}
 
 const PASS: &str = "pass:";
 const PHASE: &str = "phase:";
@@ -215,7 +240,8 @@ impl Store {
         }
         let now = now_unix();
         put(&tx, &pass_key(root, pid), &now.to_string())?;
-        put(&tx, &phase_key(root, pid), &format!("{READING}:{now}"))?;
+        let reading = Phase::Reading.as_str();
+        put(&tx, &phase_key(root, pid), &format!("{reading}:{now}"))?;
         if let Some(span) = span {
             put(&tx, &span_key(root), &span.to_string())?;
         }
@@ -232,15 +258,10 @@ impl Store {
         Ok(())
     }
 
-    /// Record what `pid`'s pass over the checkout at `root` is doing:
-    /// [`READING`] from its start, [`FINISHING`] once past its reads, when
-    /// what remains (the name index, commit times) holds `read` still.
-    pub(crate) fn set_pass_phase(&self, root: &str, pid: u32, phase: &'static str) -> Result<()> {
-        put(
-            &self.conn,
-            &phase_key(root, pid),
-            &format!("{phase}:{}", now_unix()),
-        )
+    /// Record what `pid`'s pass over the checkout at `root` is doing.
+    pub(crate) fn set_pass_phase(&self, root: &str, pid: u32, phase: Phase) -> Result<()> {
+        let value = format!("{}:{}", phase.as_str(), now_unix());
+        put(&self.conn, &phase_key(root, pid), &value)
     }
 
     /// What the passes indexing the checkout at `root` are doing, and since
@@ -252,10 +273,10 @@ impl Store {
             .filter_map(|p| self.meta_get(&phase_key(root, p)).ok().flatten())
             .filter_map(|v| {
                 let (phase, since) = v.split_once(':')?;
-                let phase = [READING, FINISHING].into_iter().find(|&p| p == phase)?;
-                Some((phase, since.parse().ok()?))
+                Some((Phase::parse(phase)?, since.parse().ok()?))
             })
-            .max_by_key(|&(phase, since)| (phase == READING, since))
+            .max_by_key(|&(phase, since)| (phase == Phase::Reading, since))
+            .map(|(phase, since)| (phase.as_str(), since))
     }
 
     /// Clear `pid`'s mark from [`begin_pass`](Self::begin_pass), and record
@@ -540,7 +561,9 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let me = std::process::id();
         store.begin_pass("/repo", DEAD, None).unwrap();
-        store.set_pass_phase("/repo", DEAD, FINISHING).unwrap();
+        store
+            .set_pass_phase("/repo", DEAD, Phase::Finishing)
+            .unwrap();
         assert_eq!(store.pass_phase("/repo"), None, "a dead pass says nothing");
 
         store.begin_pass("/repo", me, None).unwrap();
@@ -551,9 +574,13 @@ mod tests {
                 .is_none(),
             "cleared with the dead pass's mark"
         );
-        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some(READING));
-        store.set_pass_phase("/repo", me, FINISHING).unwrap();
-        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some(FINISHING));
+        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some("reading"));
+        store.set_pass_phase("/repo", me, Phase::Finishing).unwrap();
+        assert_eq!(store.pass_phase("/repo").map(|p| p.0), Some("finishing"));
+        let stored = store.meta_get(&format!("phase:/repo:{me}")).unwrap();
+        let (phase, since) = stored.as_deref().unwrap().split_once(':').unwrap();
+        assert_eq!(phase, "finishing", "stored as an older rq reads it");
+        assert!(since.parse::<i64>().is_ok());
         store.end_pass("/repo", me, None).unwrap();
         assert_eq!(store.pass_phase("/repo"), None);
         assert!(

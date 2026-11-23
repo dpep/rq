@@ -10,6 +10,7 @@ mod recover;
 mod schema;
 mod storage;
 
+pub(crate) use marks::Phase;
 pub(crate) use recover::{broken_copy, side_path, side_stores};
 pub(crate) use schema::VERSION;
 pub(crate) use storage::{Held, Storage};
@@ -412,9 +413,8 @@ pub(crate) fn phase_secs(since: i64) -> i64 {
     (now_unix() - since).max(0)
 }
 
-/// A pass's phases, as `warming.phase` names them.
-pub(crate) const READING: &str = "reading";
-pub(crate) const FINISHING: &str = "finishing";
+/// `warming.phase` for a pass past its reads.
+pub(crate) const FINISHING: &str = Phase::Finishing.as_str();
 
 /// How long a write waits out another writer before failing "locked".
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
