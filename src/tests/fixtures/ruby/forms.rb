@@ -62,6 +62,7 @@ module Forms
 
   class Größe
     def maß; end
+    ÜBER = 1
   end
 
   class Dynamic
