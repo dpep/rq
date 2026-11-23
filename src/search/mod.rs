@@ -767,7 +767,7 @@ pub(crate) fn literal_leaf(query: &str) -> Option<&str> {
 /// Results are treated as the current repo, so the current-repo boost applies.
 /// `skip` names already-indexed files to ignore, and `deadline` bounds the scan
 /// — both empty/`None` for an unbounded scan of a never-indexed directory. When
-/// `prefilter` is set, only files containing the query (substring) are parsed —
+/// `prefilter` is set, only files that may hold its leaf name are parsed —
 /// fast for exact/prefix/substring queries, but blind to fuzzy abbreviations, so
 /// callers retry with `prefilter = false` if a filtered scan finds nothing.
 pub(crate) fn live_search(
@@ -779,7 +779,7 @@ pub(crate) fn live_search(
     prefilter: bool,
     ctx: &Context,
 ) -> LiveScan {
-    let needle = prefilter.then_some(query);
+    let needle = prefilter.then(|| literal_leaf(query)).flatten();
     let identity = &tree.identity;
     let root_str = tree.root.to_string_lossy();
     let files = crate::index::scan(tree, skip, deadline, needle);

@@ -120,3 +120,33 @@ fn prefilter_parses_substring_matches_and_misses_fuzzy() {
     .hits;
     assert_eq!(full.first().map(|h| h.name.as_str()), Some("Alpha"));
 }
+
+#[test]
+fn a_prefiltered_scan_reads_files_holding_the_leaf_name() {
+    // The owner is how the query narrows, not text a defining file contains.
+    let dir = scratch_dir("leaf");
+    fs::write(
+        dir.join("a.rb"),
+        "module Z\n  def fetch_widget\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.rb"),
+        "module Z\n  class FetchWidgetHelper\n    Z::FetchWidget\n  end\nend\n",
+    )
+    .unwrap();
+
+    let scan = search::live_search(
+        &index::LiveTree::detect(&dir),
+        "Z::FetchWidget",
+        10,
+        &HashSet::new(),
+        None,
+        true,
+        &search::Context::default(),
+    );
+    assert_eq!(
+        scan.hits.first().map(|h| h.name.as_str()),
+        Some("fetch_widget")
+    );
+}

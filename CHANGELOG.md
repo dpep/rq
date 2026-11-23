@@ -15,6 +15,8 @@ and aren't listed; see `git log` for those.
   with separators before trusting a partial match: `rq AssertResponse` could
   answer `AssertResponseWithUnexpectedErrorController` while the file defining
   `assert_response` sat unread.
+- In a directory rq doesn't index, an owner-scoped query (`Z::FetchWidget`)
+  reads every file holding the name, not only those spelling out the owner.
 
 ## 0.61.1 — 2026-11-22
 
