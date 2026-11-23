@@ -3090,6 +3090,26 @@ demand walk gets cheap enough that waiting for it costs nothing.
   order reached one, nothing settled, and a cap left it `warming`. First answers for
   three rails constructor calls, 3 alternating cold runs each, load 6–11: 0.9–2.6 s
   before and after.
+- **A cold answer waits on the pass, not on a poll (after 0.61.1).** With F5, a fuzzy
+  first answer is the pass's end; what came on top was polling. A poll on a cold
+  pass's suspended name index reads every committed name from rows, and one begun
+  just before the demand walk or the pass ended ran on past it: discourse
+  `Guardian.new` searched for 2.7–6.4 s after the pass completed, where the finished
+  index answers in 17–28 ms, so the same query landed at ~2 s or ~5–6.5 s depending
+  on when its poll began. Now (a) either event interrupts the poll in flight and the
+  loop searches again; (b) before the demand walk ends only an exact match in the
+  capitals typed can answer, so a name without capitals doesn't poll until it does;
+  (c) the flag a poll settles on is read before its search, not after — a walk
+  finishing mid-search could settle a prefix match on files the search hadn't read;
+  (d) commit times are read beside the walk, off the pass's tail (discourse
+  `git metadata` 492 → 11 ms). Fresh DB per run, alternating, rails at load 13–20,
+  medians of 4: `Mapper.new` 3625 → 985 ms, `assertresponse` 285 → 180,
+  `connection_pool` 370 → 295, `conpool` 905 → 815, `usr` 885 → 785; discourse at
+  load 18–35, `Guardian.new` 5720 → 3280, `TopicQuery::new` 4964 → 3625, `conpool`
+  4580 → 3570, the rest within noise; answers identical across exact, fuzzy,
+  joiner, constructor and owner-scoped queries.
+  What's left is the pass (parse, ~0.6 s rails, ~1.9 s discourse) and the poll's
+  own recall on the suspended path, which is the store's to make incremental.
 
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 
