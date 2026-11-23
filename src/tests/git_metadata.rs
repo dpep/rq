@@ -214,3 +214,66 @@ fn branch_files_are_named_as_the_index_keys_them() {
     let _ = fs::remove_dir_all(&dir);
     assert_eq!(files, ["a.rb", "café.rb"]);
 }
+
+#[test]
+fn a_pass_its_search_cut_short_leaves_commit_times_to_the_warm() {
+    let dir = scratch("cut-short-git-ts");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    git(&dir, &["init", "-q"]);
+    git(&dir, &["add", "-A"]);
+    git(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    );
+    let mut store = crate::store::Store::open_in_memory().unwrap();
+    let key = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+    let budget = std::time::Duration::from_secs(5);
+    // the names whose definitions carry a commit time
+    let dated = |store: &crate::store::Store| -> Vec<String> {
+        ["Gadget", "Widget"]
+            .into_iter()
+            .filter(|&name| {
+                let probe = crate::search::Probe::new(name);
+                store
+                    .search_candidates(name, 10, false, None, None, &probe)
+                    .unwrap()
+                    .iter()
+                    .any(|c| c.git_ts.is_some())
+            })
+            .map(String::from)
+            .collect()
+    };
+
+    // the search answered before the walk began: only the active file is read
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let demanded = std::sync::atomic::AtomicBool::new(false);
+    let stats = index::index_budgeted_cancellable(
+        &mut store,
+        &dir,
+        &["a.rb".to_string()],
+        budget,
+        Some("Widget"),
+        &cancel,
+        &demanded,
+    )
+    .unwrap();
+    assert_eq!(stats.files_indexed, 1, "{stats:?}");
+    let checkout = store.checkout(&key).unwrap().unwrap();
+    assert_eq!(store.git_ts_head(checkout.id).unwrap(), None);
+    assert!(dated(&store).is_empty());
+
+    // the warm that completes the checkout records them
+    index::index_budgeted(&mut store, &dir, &[], budget, None).unwrap();
+    let head = rev_parse(&dir, &["rev-parse", "HEAD"]);
+    assert_eq!(store.git_ts_head(checkout.id).unwrap(), Some(head));
+    assert_eq!(dated(&store), ["Gadget", "Widget"]);
+}

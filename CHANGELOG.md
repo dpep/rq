@@ -19,6 +19,12 @@ and aren't listed; see `git log` for those.
   `--drop` no longer refuses naming that idle pid, and `--status` no longer
   shows the checkout `warming`.
 
+### Changed
+- A first search in a repo not yet indexed exits sooner: once it has answered,
+  it leaves reading commit history to the background pass that finishes the
+  index. That pass now records commit times for every file, not only for the
+  few the search had read, so recency ranks a newly indexed repo fully.
+
 ## 0.60.15 — 2026-11-21
 
 ### Changed
