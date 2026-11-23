@@ -62,7 +62,31 @@ pub(crate) fn index_under(
     root: &Path,
     subdirs: &[String],
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, &[], subdirs, None, None, None, None)
+    run_index(
+        store,
+        root,
+        &Pass {
+            subdirs,
+            ..Pass::default()
+        },
+    )
+}
+
+/// What one index pass is asked to do. Each `index_*` wrapper builds one.
+#[derive(Default)]
+struct Pass<'a> {
+    /// Branch files: parsed first, outside the budget.
+    active: &'a [String],
+    /// Repo-relative subtrees to walk; empty is the whole repo.
+    subdirs: &'a [String],
+    /// `None` is unbounded: an explicit index.
+    budget: Option<Duration>,
+    /// The search this pass warms for: its files are read first.
+    query: Option<&'a str>,
+    /// Set to stop the pass promptly.
+    cancel: Option<&'a std::sync::atomic::AtomicBool>,
+    /// Set by the pass once every file holding the query's leaf name is read.
+    demanded: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 /// Lowercase the alphanumeric chars of `s` — the normal form for loose,
@@ -133,7 +157,16 @@ pub(crate) fn index_budgeted(
     budget: Duration,
     query: Option<&str>,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
-    run_index(store, root, active, &[], Some(budget), query, None, None)
+    run_index(
+        store,
+        root,
+        &Pass {
+            active,
+            budget: Some(budget),
+            query,
+            ..Pass::default()
+        },
+    )
 }
 
 /// Like [`index_budgeted`], but the pass stops promptly when `cancel` is set —
@@ -154,12 +187,14 @@ pub(crate) fn index_budgeted_cancellable(
     run_index(
         store,
         root,
-        active,
-        &[],
-        Some(budget),
-        query,
-        Some(cancel),
-        Some(demanded),
+        &Pass {
+            active,
+            budget: Some(budget),
+            query,
+            cancel: Some(cancel),
+            demanded: Some(demanded),
+            ..Pass::default()
+        },
     )
 }
 
@@ -817,16 +852,10 @@ pub(crate) fn prune_missing_checkouts(store: &Store) {
 /// repo) scope the walk; `budget` bounds it (`None` = unbounded). A whole-repo
 /// sweep that finishes within budget reconciles deletions and is `complete`; a
 /// sweep cut short — or a subtree seed — is `warming`.
-#[allow(clippy::too_many_arguments)]
 fn run_index(
     store: &mut Store,
     root: &Path,
-    active: &[String],
-    subdirs: &[String],
-    budget: Option<Duration>,
-    query: Option<&str>,
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    demanded_flag: Option<&std::sync::atomic::AtomicBool>,
+    pass: &Pass,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     PARSE_US.store(0, std::sync::atomic::Ordering::Relaxed);
     let setup_span = crate::profile::span("index: setup");
@@ -835,7 +864,8 @@ fn run_index(
     // identity cached by checkout root, as the search path does. An explicit
     // index asks git: it's how a checkout relearns who it is after a remote
     // is added or changed.
-    let identity = budget
+    let identity = pass
+        .budget
         .and_then(|_| {
             store
                 .identity_for_root(&root_display.to_string_lossy())
@@ -852,20 +882,8 @@ fn run_index(
 
     prune_missing_checkouts(store);
 
-    fill_checkout(
-        store,
-        root,
-        &root_display,
-        checkout,
-        setup_span,
-        active,
-        subdirs,
-        budget,
-        query,
-        cancel,
-        demanded_flag,
-    )
-    .map_err(|e| vanished(store, &root_display.to_string_lossy(), checkout, e))
+    fill_checkout(store, root, &root_display, checkout, setup_span, pass)
+        .map_err(|e| vanished(store, &root_display.to_string_lossy(), checkout, e))
 }
 
 /// A pass's checkout was dropped (`rq --drop`) while it was filling it.
@@ -903,20 +921,22 @@ fn vanished(
 }
 
 /// [`run_index`] past registering the checkout: fill it.
-#[allow(clippy::too_many_arguments)]
 fn fill_checkout(
     store: &mut Store,
     root: &Path,
     root_display: &Path,
     checkout: Checkout,
     setup_span: crate::profile::Span,
-    active: &[String],
-    subdirs: &[String],
-    budget: Option<Duration>,
-    query: Option<&str>,
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    demanded_flag: Option<&std::sync::atomic::AtomicBool>,
+    pass: &Pass,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
+    let &Pass {
+        active,
+        subdirs,
+        budget,
+        query,
+        cancel,
+        demanded: demanded_flag,
+    } = pass;
     let profiling = crate::profile::enabled();
     let stored = store.file_mtimes(checkout.id)?;
     let coverage_mark = store.coverage_mark(checkout.id)?;
@@ -2455,12 +2475,7 @@ mod tests {
             &root,
             stale,
             crate::profile::span("test"),
-            &[],
-            &[],
-            None,
-            None,
-            None,
-            None,
+            &Pass::default(),
         );
         let failed = filled.map(|_| ()).unwrap_err();
         assert!(
@@ -2481,12 +2496,7 @@ mod tests {
                 ..fresh
             },
             crate::profile::span("test"),
-            &[],
-            &[],
-            None,
-            None,
-            None,
-            None,
+            &Pass::default(),
         )
         .map(|_| ())
         .unwrap_err();
