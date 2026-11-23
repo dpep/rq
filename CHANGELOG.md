@@ -7,7 +7,7 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
-## Unreleased
+## 0.61.0 — 2026-11-22
 
 ### Added
 - `RQ_CALLER=<name>` names the tool calling rq in `rq --usage`, ahead of rq's
