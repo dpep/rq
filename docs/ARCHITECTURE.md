@@ -414,7 +414,9 @@ search only reads.
   and kept fresh ahead of the rest of the repo. A search's warm then parses the
   files that contain the query's leaf name (a read-and-substring pass,
   uncapped, several times cheaper than parsing), because an exact or prefix
-  match — the only answer a warming search accepts — must live in one. Then
+  match — the only answer a warming search accepts — must live in one. The
+  substring test skips word joiners on both sides and ignores case
+  (`may_hold_name`), since ranking calls `parse_file` an exact `ParseFile`. Then
   everything else in walk order, files whose name resembles the query first.
   Parsed files commit at least every 50 ms, since a warming search only sees
   committed rows. See D11 for why this is two tiers rather than a priority heap.

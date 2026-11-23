@@ -5031,6 +5031,39 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
 }
 
 #[test]
+fn a_cold_search_reads_the_name_spelled_with_separators() {
+    // `FetchWidget` is an exact `fetch_widget`. The warm reads every file that
+    // could hold the name before a prefix match may answer, so it must read the
+    // one spelling it with an underscore, though the capped pass never gets there.
+    let env = [NO_CHILD[0], ("RQ_COLLECT_CAP", "1")];
+    for (i, q) in ["FetchWidget", "fetch-widget"].into_iter().enumerate() {
+        let (dir, db) = scratch(&format!("demand-joiners-{i}"));
+        fs::write(
+            dir.join("a.rb"),
+            "class FetchWidgetWithRetryController\nend\n",
+        )
+        .unwrap();
+        for i in 0..10 {
+            fs::write(
+                dir.join(format!("m{i:02}.rb")),
+                format!("class M{i}\nend\n"),
+            )
+            .unwrap();
+        }
+        fs::write(
+            dir.join("zz.rb"),
+            "module Z\n  def fetch_widget; end\nend\n",
+        )
+        .unwrap();
+        git_init_commit(&dir);
+
+        let (code, out, _) = rq_full(&db, &dir, &[q, "--json"], &env, None);
+        assert_eq!(code, 0, "{q}: {out}");
+        assert_eq!(json(&out)[0]["name"], "fetch_widget", "{q}: {out}");
+    }
+}
+
+#[test]
 fn a_search_waits_on_another_process_still_indexing() {
     // Another writer holds the index mid-build: this search's own warm can't
     // write, and ending is not the index being done. It waits, and answers

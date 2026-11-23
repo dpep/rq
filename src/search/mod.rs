@@ -10,7 +10,7 @@ mod score;
 
 pub(crate) use names::{Probe, SIG_BYTES, Signature};
 pub(crate) use score::{
-    Boosts, Feature, NAME_INDEX_FORMAT, confidence, is_literal, is_primary, joiners_eq,
+    Boosts, Feature, NAME_INDEX_FORMAT, confidence, is_joiner, is_literal, is_primary, joiners_eq,
     match_positions, match_quality, path_stem,
 };
 

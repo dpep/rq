@@ -3067,6 +3067,23 @@ demand walk gets cheap enough that waiting for it costs nothing.
   measurable and add a second path to keep in step. The user's 91 → 106 ms
   didn't reproduce; it is a single number per release from a machine we can't
   sample, and this harness's own single runs of `Test` spanned 57–61 ms.
+- **The demand walk reads every spelling ranking calls exact (after 0.61.1).** "Every
+  file containing the name" meant the leaf as typed, case aside, while ranking scores a
+  name equal once word joiners (`_ - .`) are dropped (D19). So `rq AssertResponse` on a
+  cold rails never read the file defining `assert_response`, the walk reported the name
+  read, and a prefix match settled: `AssertResponseWithUnexpectedErrorController`, exit
+  0, in 2 of 5 cold runs (the rest won the race with the walk-order pass). The
+  pre-filter (`may_hold_name`) now skips joiners on both sides; a needle of joiners
+  alone is matched as typed. It stays a superset of the old test, so no file that
+  matched stops matching. A non-ASCII needle is lowercased char by char as the store
+  lowercases names, final sigma folded; an ASCII one compares bytes, which misses only a
+  character lowercasing to ASCII (the Kelvin sign). Now 5 of 5 answer `assert_response`.
+  Growth, files holding the needle: rails (3.6k files) +1.1% summed over 15 short
+  needles (`id`, `to`, `run`… worst `run` +8%), discourse (17k) +0.6%; a needle spelled
+  the other way grows by exactly the files it was missing (`AssertResponse` 1 → 80,
+  `TopicView` 126 → 180). A demand scan that reads every file and matches none takes the
+  same time (discourse 172–251 ms against 171–251 ms, 3 alternating rounds each for two
+  needles, load 4–6), and first answers on rails moved within noise (8 queries).
 
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 

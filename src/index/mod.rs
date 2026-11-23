@@ -1415,7 +1415,7 @@ fn parse_file(
     let source = read_source(file).ok()?;
     // pre-filter: skip the expensive parse on files that can't hold the match
     if let Some(n) = needle
-        && !contains_ascii_ci(source.as_bytes(), n.as_bytes())
+        && !may_hold_name(&source, n)
     {
         return None;
     }
@@ -1777,8 +1777,9 @@ impl<'a> LiveTree<'a> {
 /// - stop once `deadline` passes;
 /// - skip any file whose repo-relative path is in `skip` (already indexed);
 /// - when `needle` is set, parse only files containing it (case-insensitive
-///   substring) — the ripgrep-style pre-filter that skips the tree-sitter parse
-///   on files that can't hold an exact/prefix/substring match. `needle` is `None`
+///   substring, joiners skipped: [`may_hold_name`]) — the ripgrep-style
+///   pre-filter that skips the tree-sitter parse on files that can't hold an
+///   exact/prefix/substring match. `needle` is `None`
 ///   for the *fuzzy* fallback: an abbreviation (`usr` → `user`) isn't a substring
 ///   of its match, so it can't be content-filtered; callers retry unfiltered when
 ///   a filtered scan comes up empty.
@@ -1828,15 +1829,43 @@ pub(crate) fn scan(
     out
 }
 
-/// Case-insensitive (ASCII) substring test — `haystack` contains `needle`.
-/// Allocation-free; used to pre-filter live-scan files before parsing.
-fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.len() > haystack.len() {
-        return false;
+/// Whether `haystack` may hold a symbol named `needle` — the content pre-filter.
+/// It contains `needle` once word joiners are skipped on both sides, ignoring
+/// case: every spelling ranking scores as exact ([`joiners_eq`]) or prefix, so
+/// a file the filter skips can't hold either. A needle of joiners alone is
+/// matched as typed. Allocation-free.
+///
+/// An ASCII needle compares bytes, which misses only a non-ASCII character
+/// that lowercases to ASCII (the Kelvin sign). Any other needle compares chars
+/// lowercased as the store lowercases names, final sigma folded to sigma.
+///
+/// [`joiners_eq`]: crate::search::joiners_eq
+pub(crate) fn may_hold_name(haystack: &str, needle: &str) -> bool {
+    use crate::search::is_joiner;
+    if needle.chars().all(is_joiner) {
+        return haystack.contains(needle);
     }
-    haystack
-        .windows(needle.len())
-        .any(|w| w.eq_ignore_ascii_case(needle))
+    if needle.is_ascii() {
+        let word = |b: &&u8| !is_joiner(char::from(**b));
+        let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+        return (0..h.len()).any(|i| {
+            let mut rest = h[i..].iter().filter(word);
+            word(&&h[i])
+                && n.iter()
+                    .filter(word)
+                    .all(|nb| rest.next().is_some_and(|hb| hb.eq_ignore_ascii_case(nb)))
+        });
+    }
+    fn folded(s: &str) -> impl Iterator<Item = char> + '_ {
+        s.chars()
+            .filter(|c| !crate::search::is_joiner(*c))
+            .flat_map(char::to_lowercase)
+            .map(|c| if c == 'ς' { 'σ' } else { c })
+    }
+    haystack.char_indices().any(|(i, c)| {
+        let mut rest = folded(&haystack[i..]);
+        !is_joiner(c) && folded(needle).all(|nc| rest.next() == Some(nc))
+    })
 }
 
 /// Result of revalidating a single file against what's on disk.
@@ -2566,6 +2595,40 @@ fn mtime_of(meta: &std::fs::Metadata) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::tests::support::Scratch;
+
+    #[test]
+    fn the_pre_filter_keeps_every_spelling_ranking_calls_exact() {
+        let src = "module Z\n  def fetch_widget; end\n  def save!; end\nend\n";
+        for needle in [
+            "fetch_widget",
+            "FetchWidget",
+            "fetch-widget",
+            "fetch.widget",
+            "FETCH_WIDG", // a prefix
+            "_fetch",
+            "save!",
+        ] {
+            assert!(may_hold_name(src, needle), "{needle}");
+        }
+        for needle in ["fetch_widgets", "fetchxwidget", "save=", "widget_fetch"] {
+            assert!(!may_hold_name(src, needle), "{needle}");
+        }
+        // joiners alone are what was typed
+        assert!(may_hold_name("a_b", "_"));
+        assert!(!may_hold_name("ab", "_"));
+        // the needle at the very end, and longer than the haystack
+        assert!(may_hold_name("x.fetch_w", "fetchw"));
+        assert!(!may_hold_name("fetc", "fetch"));
+    }
+
+    #[test]
+    fn the_pre_filter_lowercases_a_non_ascii_needle_as_the_store_does() {
+        assert!(may_hold_name("class Ärger_Bericht\n", "ärgerbericht"));
+        // `ΟΔΟΣ`.to_lowercase() ends in a final sigma, `ς`
+        assert!(may_hold_name("ΟΔΟΣ = 1", "οδος"));
+        assert!(may_hold_name("ΟΔΟΣ = 1", "οδοσ"));
+        assert!(!may_hold_name("class Arger\n", "ärger"));
+    }
 
     #[test]
     fn a_minified_bundle_is_held_without_definitions() {

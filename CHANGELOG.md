@@ -7,6 +7,15 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+
+- A search on a repo still being indexed reads the files that spell its name
+  with separators before trusting a partial match: `rq AssertResponse` could
+  answer `AssertResponseWithUnexpectedErrorController` while the file defining
+  `assert_response` sat unread.
+
 ## 0.61.1 — 2026-11-22
 
 ### Fixed
