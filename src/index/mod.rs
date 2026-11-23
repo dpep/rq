@@ -212,10 +212,11 @@ fn collect_cap() -> usize {
         .unwrap_or(COLLECT_CAP)
 }
 
-/// Parse workers the background warmer uses (`--jobs`); 0 = auto.
+/// Parse workers a test pins; 0 = auto.
 static PARSE_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Set the parse-worker count (from `--jobs`/`RQ_JOBS`); 0 restores auto.
+/// Pin the parse-worker count; 0 restores auto.
+#[cfg(test)]
 pub(crate) fn set_parse_jobs(n: usize) {
     PARSE_JOBS.store(n, std::sync::atomic::Ordering::Relaxed);
 }

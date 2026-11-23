@@ -4104,6 +4104,10 @@ fn help_and_version_are_not_usage_errors() {
     // --anchor says what it weighs beyond nearness
     assert!(help.contains("can reach"), "{help}");
     assert!(help.contains("test or example tree"), "{help}");
+    // parse threads are RQ_JOBS's alone
+    assert!(!help.contains("--jobs"), "{help}");
+    let (code, _, _) = rq_full(&db, &dir, &["Widget", "--jobs", "2"], &[], None);
+    assert_eq!(code, 64, "--jobs is no flag");
 }
 
 #[test]

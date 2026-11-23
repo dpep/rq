@@ -9,6 +9,11 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Removed
+- The `--jobs` flag. Set parse threads with `RQ_JOBS=N` instead
+  (`RQ_JOBS=2 rq --index`); a command line still passing `--jobs` now fails
+  with a usage error (exit 64).
+
 ### Fixed
 - A checkout whose path has a non-ASCII character (`~/code/café`) is seen as
   being indexed: `--drop` there refuses with 75 while an `rq --index` runs, a

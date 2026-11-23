@@ -65,7 +65,7 @@ rq save --explain              the score behind each result\n  \
 rq save --json                 JSON, for editors, scripts and agents\n  \
 rq --symbols app/w.rb          outline a file, in line order\n\n\
 SHORT FLAGS (easy to misread):\n  \
--j is --json, not --jobs (long-only)   -l is --limit, not --lang (that's -x)\n\n\
+-l is --limit, not --lang (that's -x)\n\n\
 THE INDEX:\n  \
 One SQLite file for all repos, at $RQ_DB (an absolute path; default\n  \
 ~/.local/share/rq/rq.db). On a cold repo, a search keeps indexing until it can\n  \
@@ -275,17 +275,6 @@ struct Cli {
     #[arg(help_heading = "Debugging", long)]
     profile: bool,
 
-    /// Set parse threads for indexing; 0 = auto (or `RQ_JOBS`).
-    ///
-    /// Long-only, since `-j` is --json.
-    #[arg(
-        help_heading = "Debugging",
-        long,
-        value_name = "N",
-        default_value_t = 0
-    )]
-    jobs: usize,
-
     /// Print a shell completion script.
     #[arg(help_heading = "Debugging", long, value_name = "SHELL")]
     completions: Option<Shell>,
@@ -306,7 +295,6 @@ pub fn run() -> ExitCode {
     };
     crate::trace::enable_from(cli.verbose);
     crate::profile::enable_from(cli.profile);
-    crate::index::set_parse_jobs(cli.jobs);
     let json_out = output_format(&cli) != Output::Text;
     let code = dispatch(cli);
     crate::profile::emit(json_out);
