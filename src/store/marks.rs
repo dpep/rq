@@ -269,6 +269,12 @@ impl Store {
         tx.commit()
     }
 
+    /// Record how many source files the tree at `root` spans, as a pass's
+    /// enumeration counted them.
+    pub(crate) fn set_span(&self, root: &str, span: usize) -> Result<()> {
+        put(&self.conn, &span_key(root), &span.to_string())
+    }
+
     /// Restamp `pid`'s mark from [`begin_pass`](Self::begin_pass), so a pass
     /// that runs past the TTL isn't read as a crashed one.
     pub(crate) fn renew_pass(&self, root: &str, pid: u32) -> Result<()> {

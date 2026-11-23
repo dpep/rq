@@ -987,9 +987,14 @@ fn fill_checkout(
         .as_ref()
         .is_none_or(|&(s, _)| s != Coverage::Complete);
     let marked = incomplete || budget.is_none();
-    if marked {
-        let _ = store.set_pass_phase(&root_key, std::process::id(), crate::store::Phase::Reading);
-    }
+    // the rest of the pass writes through its mark, which goes when it does;
+    // taken before enumerating, so a `--drop` sees the pass from its start
+    let mut mark = None;
+    let store = if marked {
+        &mut **mark.insert(store.mark_pass(&root_key, None)?)
+    } else {
+        store
+    };
     // Versions other checkouts already stored: a file hashing to one maps to
     // it unparsed, so a second worktree parses only what differs.
     let versions = store.versions(checkout.repo)?;
@@ -1079,14 +1084,13 @@ fn fill_checkout(
             unlisted.as_ref()
         }
     };
-    // the rest of the pass writes through its mark, which goes when it does
-    let mut mark = None;
-    let store = if marked {
-        let span = tracked.map(|t| span_of(t, stored.keys().map(String::as_str)));
-        &mut **mark.insert(store.mark_pass(&root_key, span)?)
-    } else {
-        store
-    };
+    // until now a search read the span the last pass left
+    if let Some(tracked) = tracked {
+        store.set_span(
+            &root_key,
+            span_of(tracked, stored.keys().map(String::as_str)),
+        )?;
+    }
 
     // Active (branch) files first: always parsed and written, so the working set
     // stays fresh even when a tight budget cuts the walk short.

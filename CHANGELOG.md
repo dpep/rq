@@ -16,6 +16,9 @@ and aren't listed; see `git log` for those.
   files it had read, so on a repo too big for one pass most files never got
   one and lost the recency signal. An index built that way keeps the gap:
   `rq --drop` in the checkout and index it again to fill it.
+- `--drop` refuses as `busy` from the moment an `rq --index` starts, not only
+  once it has listed the tree; a drop in between went ahead and failed the
+  index instead.
 
 ## 0.61.0 — 2026-11-22
 
