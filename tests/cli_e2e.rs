@@ -5852,3 +5852,68 @@ fn every_mode_answers_json() {
             .unwrap_or_else(|e| panic!("--{mode} --json: {e}: {out:?} {err}"));
     }
 }
+
+#[test]
+fn rq_open_offers_the_picker_only_result_lines() {
+    // A signature line picked in fzf would open the bare repo root.
+    let (dir, db) = scratch("rq-open");
+    fs::write(
+        dir.join("a.rb"),
+        "class Base\nend\nmodule Persistence\n  def save; end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    // stubs: fzf echoes what it's offered on stderr and picks the second
+    // line; code prints where it was sent
+    let stubs = dir.join("stubs");
+    fs::create_dir(&stubs).unwrap();
+    for (name, body) in [
+        ("fzf", "tee /dev/stderr | sed -n 2p"),
+        ("code", "echo \"$2\""),
+    ] {
+        let path = stubs.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(&path, perms).unwrap();
+    }
+    let rq_dir = Path::new(env!("CARGO_BIN_EXE_rq")).parent().unwrap();
+    let path = format!(
+        "{}:{}:{}",
+        stubs.display(),
+        rq_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    // the harness's environment, on the script instead of the binary
+    let harness = rq_cmd(&db, &dir);
+    let mut cmd = std::process::Command::new("bash");
+    for (key, value) in harness.get_envs() {
+        match value {
+            Some(v) => cmd.env(key, v),
+            None => cmd.env_remove(key),
+        };
+    }
+    let run = cmd
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("script/rq-open"))
+        .arg("e")
+        .env("PATH", path)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let opened = String::from_utf8_lossy(&run.stdout).trim().to_string();
+
+    let offered = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        offered.lines().count() > 1 && offered.lines().all(|l| l.starts_with("a.rb:")),
+        "{offered}"
+    );
+    let picked = offered.lines().nth(1).unwrap();
+    let loc = picked.split_whitespace().next().unwrap();
+    assert!(
+        opened.ends_with(&format!("/{loc}")),
+        "{opened:?} for {picked:?}"
+    );
+}

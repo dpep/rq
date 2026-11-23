@@ -79,6 +79,8 @@ and aren't listed; see `git log` for those.
 - `RQ_JOBS` that isn't a thread count (`abc`, `-1`) warns on stderr and runs
   one parse thread per core; a count over 4 per core (`RQ_JOBS=100000`, which
   crashed) is capped there, with a warning.
+- `script/rq-open` offers fzf only result lines: picking the signature
+  printed beneath one opened the repo root.
 - `rq --symbols DIR` says the path is a directory and exits 64 (usage)
   instead of 66 ("no such file"). A script that read 66 there as "no file"
   should check for 64 too.

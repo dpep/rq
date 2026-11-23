@@ -20,7 +20,8 @@ if [ -z "$query" ]; then
   exit 1
 fi
 
-results="$(rq "$query" || true)"
+# result lines only: rq indents each one's signature beneath it
+results="$(rq "$query" | grep -v '^[[:space:]]' || true)"
 if [ -z "$results" ]; then
   echo "no matches for: $query" >&2
   exit 1
