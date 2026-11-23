@@ -6,7 +6,7 @@ rq — Reference Query
 In a Rails checkout:
 
 ```sh
-rq HashWithIndifferentAccess  # → activesupport/lib/active_support/hash_with_indifferent_access.rb:55
+rq HashWithIndifferentAccess  # → activesupport/lib/active_support/hash_with_indifferent_access.rb
 rq hwia                       # → the same class: fuzzy and abbreviation-aware
 rq 'Hash*Access'              # → wildcards: `*` any run, `?` one char (quote them)
 rq ActiveRecord::Base         # → the Base defined inside ActiveRecord
@@ -116,7 +116,7 @@ it (its own file in TS/JS, its directory elsewhere).
 
 ```sh
 $ rq 'valid?' -l 2
-activemodel/lib/active_model/validations.rb:342  method valid? · ActiveModel::Validations
+activemodel/lib/active_model/validations.rb:409  method valid? · ActiveModel::Validations
 activerecord/lib/active_record/validations.rb:69  method valid? · ActiveRecord::Validations
 
 $ rq 'valid?' --anchor activerecord/lib/active_record/validations.rb:48 -l 1
@@ -198,12 +198,15 @@ stdout carries one object instead of results:
 ```
 
 `kind` is stable, and `code` is the exit code. The message also goes to stderr.
+A command line rq can't parse at all (`--bogus`) answers in JSON only when it
+also passes `-j` or `-J`, even with queries piped on stdin: until it parses, rq
+can't tell a batch from a single query.
 Errors take codes from `sysexits(3)`, so none is ever mistaken for a miss or a
 retry:
 
 | `kind` | Exit | Meaning |
 | --- | --- | --- |
-| `usage` | 64 | The command line is wrong: an unknown or conflicting flag, a bad value, an empty query — including flags before `--json`. Fix the command; it won't succeed on retry. |
+| `usage` | 64 | The command line is wrong: an unknown or conflicting flag, a bad value, an empty query. Fix the command; it won't succeed on retry. |
 | `not_found` | 66 | A file or directory the command names doesn't exist (`--symbols`, a search's PATH). |
 | `no_remote`, `launch` | 69 | Nothing to hand off to: `-w` on a repo with no git host, or an editor or browser that won't start. |
 | `internal` | 70 | rq couldn't render its own output — a bug. |
@@ -221,9 +224,9 @@ file; either is safe to delete.
 
 ### Batch mode
 
-Pipe queries on stdin, one per line, and rq answers each as NDJSON. It
-resolves the repo and opens the index once instead of per query, which on a
-large repo is most of what a lookup costs:
+Pipe queries on stdin, one per line, and rq answers each as NDJSON; no flag
+needed. It resolves the repo and opens the index once instead of per query,
+which on a large repo is most of what a lookup costs:
 
 ```sh
 printf 'HashWithIndifferentAccess\nNoSuchThing\n' | rq -l 1
@@ -234,15 +237,25 @@ printf 'HashWithIndifferentAccess\nNoSuchThing\n' | rq -l 1
 {"query":"NoSuchThing","status":"no_match"}
 ```
 
-Each row carries its `query`; a miss row carries its own `status`. Each line
-is answered as it arrives, so a caller can hold the pipe open and ask one name
-at a time. A line that isn't UTF-8 gets a `usage` error row carrying its
-`query`, stderr names its line number, and the batch goes on. The run exits `0` if any query matched,
-non-zero only if none did. `--show`/`--open`/`--web` don't apply, and
-`--json` is refused (exit 64). A cold repo is indexed up front, within the `--wait` budget, before the
-first answer. A line that arrives after the pipe sat idle (an edit made between
-questions) first takes in what changed in the worktree; lines piped together
-are answered against one look.
+Key rows on their `query`, not on line position: blank lines are skipped,
+and each query answers with up to `--limit` rows (default 10). A miss row
+carries its own `status`. Each line is answered as it arrives, so a caller can
+hold the pipe open and ask one name at a time.
+
+The run exits `0` if any query matched, so read each row's `status` (and a
+hit's `warming`), not the exit code: other rows may still be misses or
+`warming`. Only when none matched is it non-zero, with the code a caller can
+act on most — an error's, else `2` if any row was `warming`, else `1`. A cold
+repo is indexed up front, within the `--wait` budget, before the first answer.
+A line that arrives after the pipe sat idle (an edit made between questions)
+first takes in what changed in the worktree; lines piped together are answered
+against one look.
+
+Errors are NDJSON rows too. A line that isn't UTF-8 gets a `usage` error row
+carrying its `query`, stderr names its line number, and the batch goes on. A
+bad value (`-k widget`) refuses the whole batch with one error row, as do
+`--json` and `--show`/`--open`/`--web` (exit 64). Piped stdin with no queries
+on it prints nothing on stdout and exits `1`.
 
 ### Reading the source
 
@@ -252,7 +265,7 @@ it prints the ranked list, so it never dumps a definition it isn't sure about.
 
 ```sh
 rq ActiveSupport::HashWithIndifferentAccess --show   # confident: prints the class
-rq perform --show                                    # 122 candidates: prints the list
+rq perform --show                                    # a hundred-odd candidates: prints the list
 ```
 
 ### Other commands
@@ -266,7 +279,10 @@ written a file), or a pass cut short that the next query continues; or
 other worktrees after an upgrade, until a search there indexes it. A checkout
 deleted from disk is forgotten, and doesn't appear. `files` and `symbols` count
 what the checkout holds so far, and a partial checkout's `of` the files its tree
-spans, as a result's `warming` counts them, with its `phase` and `phase_secs`. A dropped checkout is gone from `--status` until a query or `--index`
+spans, as a result's `warming` counts them, with its `phase` and `phase_secs`,
+and `interrupted`: `true` when nothing is filling it any more (an indexer
+killed part-way; the text row says `rq --index …` finishes it), `false` while
+a pass is. A dropped checkout is gone from `--status` until a query or `--index`
 starts rebuilding it, and then reads `warming`. `rq --index --json` emits what
 this run parsed (`files_added`, `symbols_added` — a file whose content a
 sibling checkout already stored is parsed by neither, so a new worktree often
@@ -290,9 +306,11 @@ Single-result commands emit one object.
 `rq --usage` counts calls per day by caller and flags, in the local index and
 nowhere else. A command's row leads with its name (`symbols,ndjson`); a
 search's flags also name its query's shape (`scoped`, `new`, `glob`,
-`kind-keyword`), and `searches` counts calls either way. A tool that calls rq names itself with `RQ_CALLER=<name>`;
-otherwise rq tells an agent (`claude-code`, `cursor`, `ci`), a terminal
-(`human`) and anything else (`piped`) apart.
+`kind-keyword`), and `searches` counts calls either way. A tool that calls rq
+names itself with `RQ_CALLER=<name>`. rq lowercases it and keeps ASCII letters,
+digits, `-` and `.`, up to 24 (`VS Code` counts as `vscode`); a non-ASCII name
+counts as `unknown`, and `0` is a name, not "off". Otherwise rq tells an agent (`claude-code`, `cursor`, `ci`), a
+terminal (`human`) and anything else (`piped`) apart.
 
 These commands exit `0` whenever they ran, including when there's nothing to
 report: an empty `--status`, `--storage` or `--usage`, an `--index` that found nothing new, or a `--drop`
@@ -324,8 +342,10 @@ emits the same fields as a search result, minus the scoring ones.
 
 A file with no definitions — none at all, none of the kinds asked for, or in a
 language rq doesn't parse — is a miss like a search's: `{"status": "no_match"}`,
-exit 1, so `rq --symbols f && …` reads as "it defines something". A file that
-doesn't exist is an error (`not_found`, 66).
+exit 1, so `rq --symbols f && …` reads as "it defines something". A minified
+file (see [Staying current](#staying-current)) is a miss too, and says why:
+stderr names it, and JSON adds `"reason": "minified"`. A file that doesn't
+exist is an error (`not_found`, 66); a directory is a usage error (64).
 
 ```sh
 rq --symbols src/search/score.rs
@@ -376,7 +396,17 @@ a detached, low-priority process finishes the sweep in the background. A
 rather than report a false miss. On a terminal, a progress line appears if that
 takes longer than half a second, and Ctrl-C stops it. It's a one-time cost — the
 index persists and self-heals as you search, re-reading edited files and
-reconciling added and removed ones.
+reconciling added and removed ones. An upgrade that changes what rq extracts
+re-reads the affected files the same way, on the next search; until then
+`--status` shows the checkout `warming` at every file read (`88 of 88`) and
+"stopped part-way".
+
+A minified source — 16 KB or more, lines averaging over 200 bytes and over 10
+of `;,(){}` each — is held without definitions instead of parsed: its names are
+one-letter locals. A file whose long lines are strings or data (an inlined
+image, a base64 blob) is parsed as usual. Indexing parses on one thread per
+core; `RQ_JOBS=N` sets the count (a value that isn't one warns and keeps the
+default, and over 4 per core is capped).
 
 A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so

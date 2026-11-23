@@ -173,9 +173,12 @@ rq < names.txt
 ```
 
 Every row carries the `query` it answers, and a miss still reports
-`{"query": …, "status": "no_match"}` rather than vanishing. The run exits 0 if
-any query matched, non-zero only if all missed — so read each row's `status`,
-not the exit code. `--show`/`--open` don't apply. `--anchor` does.
+`{"query": …, "status": "no_match"}` rather than vanishing. Match rows to
+queries by `query`, not position: blank lines are skipped, and each query
+returns up to 10 rows (`-l 1` for one each). The run exits 0 if any query
+matched, even while other rows are misses or `warming` — so read each row's
+`status`, not the exit code. Don't add `--json` (refused; the output is already
+NDJSON). `--show`/`--open` don't apply. `--anchor` does.
 
 ## Outline a file
 
@@ -187,6 +190,10 @@ right span instead of scanning the whole thing.
 rq --symbols app/models/widget.rb --json
 rq --symbols app/models/widget.rb -k method --json   # just the methods
 ```
+
+A file with no definitions is `no_match` (exit 1). A minified bundle is held
+unparsed and says so with `"reason": "minified"`: read it with `rg`, not rq.
+`--symbols` takes a file, not a directory.
 
 A class method carries `"singleton": true` — `def self.x`, anything inside
 `class << self` (its `private` section too), a `module_function`, a Python

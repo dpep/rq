@@ -2,7 +2,8 @@
 
 rq is editor-independent: every result is a `path:line`, so any editor can
 jump to it. That's the whole contract. No daemon, no socket — just a CLI call.
-Everything below is a thin wrapper around it.
+Everything below is a thin wrapper around it. A wrapper of your own can name
+itself with `RQ_CALLER=<name>`, so `rq --usage` counts its calls apart.
 
 ## Native (works today)
 
@@ -70,8 +71,8 @@ When one match remains or rq's top confidence is ≥ 0.8, the click jumps straig
 there; otherwise up to five candidates show as a peek list.
 
 rq runs in the file's repo root (the nearest `.git` ancestor, as rq itself
-resolves it), falling back to the workspace folder outside git, with
-`--wait 2s` and a 5 s kill: a cold repo answers with what's indexed and keeps
+resolves it), falling back to the workspace folder outside git, as
+`RQ_CALLER=vscode`, with `--wait 2s` and a 5 s kill: a cold repo answers with what's indexed and keeps
 warming in the background, and a `warming` miss shows a status-bar note rather
 than an error. A request VS Code cancels kills its rq process.
 
