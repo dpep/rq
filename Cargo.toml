@@ -35,11 +35,15 @@ serde_json = "1"
 ignore = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tree-sitter = "0.25"
-tree-sitter-ruby = "0.23"
+ruby-prism = "2.1"
 tree-sitter-rust = "0.24"
 tree-sitter-go = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23.2"
+
+[dev-dependencies]
+# the Ruby extraction prism replaced, kept as the parity oracle
+tree-sitter-ruby = "0.23"
 
 # Dependencies optimized in dev builds: SQLite and the grammars are C, and at
 # -O0 they slow every test run and `make dogfood`'s indexing. rq itself stays

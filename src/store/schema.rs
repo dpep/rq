@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 29;
+pub(crate) const VERSION: i64 = 30;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -712,6 +712,22 @@ UPDATE files SET content_hash = 'stale:' || content_hash
 pub(crate) const MIGRATION_V29: &str =
     "DELETE FROM meta WHERE key LIKE 'git_ts_head:%' OR key LIKE 'head:%';";
 
+/// Migration v29 -> v30: Ruby is extracted by prism (D70), which keeps the
+/// definitions around a syntax error and reads a few valid forms the
+/// Tree-sitter grammar misparsed. Ruby files are queued for re-extraction as
+/// v24 queued them.
+pub(crate) const MIGRATION_V30: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND checkout_id IN (
+      SELECT cf.checkout_id FROM checkout_files cf JOIN files f ON f.id = cf.file_id
+      WHERE f.language = 'ruby');
+UPDATE checkout_files SET mtime = NULL
+  WHERE file_id IN (SELECT id FROM files WHERE language = 'ruby');
+UPDATE files SET content_hash = 'stale:' || content_hash
+  WHERE language = 'ruby' AND content_hash NOT LIKE 'stale:%';
+"#;
+
 /// Indexes the schema gained without a version bump, which would set every
 /// older rq on a side store (D51) for an index: a fresh store has them, and
 /// the background cleanup adds them to one laid down before (D65).
@@ -754,7 +770,7 @@ pub(crate) const LADDER: Ladder = Ladder {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 32] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 33] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -787,4 +803,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 32] = [
     (27, Step::Sql(MIGRATION_V27)),
     (28, Step::Sql(MIGRATION_V28)),
     (29, Step::Sql(MIGRATION_V29)),
+    (30, Step::Sql(MIGRATION_V30)),
 ];

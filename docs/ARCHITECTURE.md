@@ -24,7 +24,8 @@ printed and corrected. Everything below assumes the index may be partial.
 ## Implementation language
 
 Rust. The latency target effectively requires a compiled language with
-near-zero startup cost; Rust also has first-class Tree-sitter bindings and
+near-zero startup cost; Rust also has first-class bindings to the parsers rq
+extracts with (Tree-sitter, and Ruby's own prism) and
 ships as a single static binary (the `rg`/`fd`/`fzf` feel we are matching). A
 scripting-language runtime's startup alone would consume the whole 50 ms
 budget.
@@ -82,7 +83,7 @@ src/
   store/      # SQLite schema, migrations, queries (WAL mode)
   index/      # walker, incremental indexer, coverage tracking
   search/     # staged pipeline, scorer, --explain
-  lang/       # Tree-sitter plugins: ruby, rust, go, python, typescript
+  lang/       # language plugins: ruby (prism), rust, go, python, typescript (Tree-sitter)
     ruby/     # the first plugin
     rust/     # what rq dogfoods on its own source
 ```
@@ -101,7 +102,9 @@ trait LanguagePlugin {
 ```
 
 A registry maps file extension → plugin. Adding Java/C# is a new
-plugin. The one shared thing a language may extend is the `core::Kind`
+plugin. A plugin picks its own parser: Tree-sitter for most, prism — Ruby's
+own parser, faster and better at recovering from a syntax error — for Ruby
+(D70). The one shared thing a language may extend is the `core::Kind`
 vocabulary — Rust added `struct`/`enum`/`trait`, then `type`/`macro`/`variant`, and
 `field` came to four languages at once (D48) — which generalizes the model
 rather than leaking a language into `index`/`search`/scoring.
@@ -290,7 +293,7 @@ Decisions worth calling out:
   CommonJS export of a local (`exports.x = x`) gives it, and v27 TS/JS
   for minified bundles, held without definitions (D67), and v28 every
   file without definitions plus Ruby, Rust, Python and Go for that rule's
-  final form. Users upgrade and the symbols appear, with no `--drop`. Old
+  final form, and v30 Ruby for prism's extraction (D70). Users upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten; meanwhile the checkout
   reads `warming` with `read` equal to `of`, since a stale file still counts as
   held.
@@ -351,7 +354,7 @@ search only reads.
   recorded, no definitions (D67). It
   reads bytes and lines, so it runs ahead of every plugin, and `--symbols`
   reports such a file's miss with `reason: minified`.
-- **Parallel parse, batched write** — parsing (the expensive Tree-sitter step)
+- **Parallel parse, batched write** — parsing (the expensive step)
   fans out across CPUs; the parsed files are written in **one** transaction (one
   `fsync` per batch, not per file). Writes stay serialized; parsing doesn't.
   A pass over a cold repo — one no checkout holds a version of yet — (explicit
@@ -462,7 +465,7 @@ search only reads.
 - **Language-isolated** — the indexer is blind to language; plugins emit the
   common symbol model.
 
-Tree-sitter parsing is the expensive step and is kept **off the search critical
+Parsing is the expensive step and is kept **off the search critical
 path**: the inline warm is time-boxed, and the bulk of extraction persists for
 the *next* query rather than blocking the current one.
 

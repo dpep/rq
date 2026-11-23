@@ -25,8 +25,8 @@ it's called, reach for text search (`rg`) instead.
 - **ctags** is static and relevance-blind; rq ranks by match quality, your current repo, recency, and the branch you're on.
 - **an LSP** is heavy — per-language, per-project, slow to warm. rq is one binary across all your repos: sub-millisecond search, warms itself on first use, and self-heals on edits.
 
-Definitions come from [Tree-sitter](https://tree-sitter.github.io/) for Ruby, Rust, Go, Python,
-TypeScript, and JavaScript.
+Definitions come from [prism](https://github.com/ruby/prism) for Ruby and
+[Tree-sitter](https://tree-sitter.github.io/) for Rust, Go, Python, TypeScript, and JavaScript.
 
 ## Install
 

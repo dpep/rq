@@ -12,6 +12,7 @@
 #   make recall     - fuzzy-ranking recall on pinned Ruby + Rust corpora (BASE=<ref>)
 #   make fuzz       - name index vs scorer on many names and every recall query (N=, SEED=)
 #   make imports-scan - the large-source import walk vs a whole parse on the JS/TS corpora
+#   make ruby-parity - Ruby extraction, prism vs the Tree-sitter oracle, over DIR
 #   make lint       - cargo fmt --check && cargo clippy (warnings = errors)
 #   make fmt        - cargo fmt
 #   make clean      - cargo clean
@@ -26,7 +27,7 @@ BIN   := rq
 TARGET := $(abspath $(or $(CARGO_TARGET_DIR),target))
 
 .DEFAULT_GOAL := help
-.PHONY: help build release install uninstall test check dogfood bench recall fuzz imports-scan lint fmt clean
+.PHONY: help build release install uninstall test check dogfood bench recall fuzz imports-scan ruby-parity lint fmt clean
 
 help:
 	@echo "rq targets:"
@@ -41,6 +42,7 @@ help:
 	@echo "  make recall     fuzzy-ranking recall on pinned corpora (BASE=<ref>, ARGS=<flags>)"
 	@echo "  make fuzz       name index vs scorer on random names (N=<names>, SEED=<n>)"
 	@echo "  make imports-scan  import walk vs whole parse on the JS/TS corpora (OUT=, BASE=)"
+	@echo "  make ruby-parity  Ruby extraction, prism vs Tree-sitter, over DIR=<checkout>"
 	@echo "  make lint       cargo fmt --check && cargo clippy"
 	@echo "  make fmt        cargo fmt"
 	@echo "  make clean      cargo clean"
@@ -128,6 +130,14 @@ imports-scan:
 	@RQ_IMPORTS_CORPUS="$(IMPORTS_CORPUS)" $(if $(OUT),RQ_IMPORTS_OUT=$(OUT)) \
 		$(if $(BASE),RQ_IMPORTS_BASE=$(BASE)) $(CARGO) test --release --lib \
 		corpus_scan -- --ignored --nocapture
+
+# Every Ruby file under DIR extracted by prism and by the Tree-sitter walk it
+# replaced (D70); fails on a file prism parses cleanly whose rows differ.
+#   make ruby-parity DIR=~/code/lib/ruby/rails
+ruby-parity:
+	@test -n "$(DIR)" || { echo "usage: make ruby-parity DIR=<dir>" >&2; exit 2; }
+	@RQ_RUBY_PARITY="$(abspath $(DIR))" $(CARGO) test --release --lib \
+		ruby_parity_corpus -- --ignored --nocapture
 
 lint:
 	$(CARGO) fmt --check

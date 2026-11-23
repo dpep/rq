@@ -371,6 +371,7 @@ dependencies = [
  "ignore",
  "libc",
  "memchr",
+ "ruby-prism",
  "rusqlite",
  "serde",
  "serde_json",
@@ -410,6 +411,27 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+
+[[package]]
+name = "ruby-prism"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef9dd23fe10d6335d390c9fd23cf7dac83f594be5676ad28de58d6f2bac65f4c"
+dependencies = [
+ "ruby-prism-sys",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ruby-prism-sys"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3e6b1801eb164c6b2c6c6cd42e55bf61d73f973719f675370769ce0295ba7f1"
+dependencies = [
+ "cc",
+ "shlex",
+]
 
 [[package]]
 name = "rusqlite"

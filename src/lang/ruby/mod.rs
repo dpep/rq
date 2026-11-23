@@ -1,9 +1,15 @@
 //! Ruby plugin — the first language.
 //!
 //! Extracts classes, modules, methods (instance and singleton), and constants
-//! via Tree-sitter. `parent` carries the enclosing qualified name so a method
-//! renders as `Foo::Bar#baz` and a nested class as `Foo::Bar`.
+//! via prism, Ruby's own parser. `parent` carries the enclosing qualified name
+//! so a method renders as `Foo::Bar#baz` and a nested class as `Foo::Bar`.
 
+#[cfg(test)]
+mod parity;
+mod prism;
+/// The extraction prism replaced, kept as the oracle prism's must match on
+/// every file both parse (D70).
+#[cfg(test)]
 mod tree_sitter;
 
 use crate::core::{Kind, Symbol, Visibility};
@@ -27,7 +33,7 @@ impl LanguagePlugin for Ruby {
     }
 
     fn extract(&self, file: &str, source: &str) -> Vec<Symbol> {
-        tree_sitter::extract(file, source)
+        prism::extract(file, source)
     }
 }
 
@@ -421,6 +427,91 @@ end
         // a macro under `private` defines private methods too
         assert_eq!(find(&syms, "secret").visibility, Some(Visibility::Private));
         assert_eq!(find(&syms, "reopened").visibility, Some(Visibility::Public));
+    }
+
+    #[test]
+    fn a_file_cut_off_mid_edit_keeps_what_is_above_the_cut() {
+        let src = include_str!("../../tests/fixtures/ruby/truncated.rb");
+        let got: Vec<_> = extract(src)
+            .into_iter()
+            .map(|s| {
+                let vis = s.visibility.map_or("", |v| v.as_str());
+                (s.name, s.parent, s.singleton, vis)
+            })
+            .collect();
+        let sprocket = || Some("Gizmos::Sprocket".to_string());
+        let expect = [
+            ("Gizmos", None, false, "public"),
+            ("Sprocket", Some("Gizmos".to_string()), false, "public"),
+            ("teeth", sprocket(), false, "public"),
+            ("build", sprocket(), true, "public"),
+            ("spin", sprocket(), false, "public"),
+            ("mesh", sprocket(), false, "private"),
+        ]
+        .map(|(n, p, s, v)| (n.to_string(), p, s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn names_are_read_as_written_and_text_that_isnt_code_is_skipped() {
+        let syms = extract(include_str!("../../tests/fixtures/ruby/forms.rb"));
+        let vector: Vec<_> = syms
+            .iter()
+            .filter(|s| s.parent.as_deref() == Some("Forms::Vector") && !s.singleton)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            vector,
+            [
+                "x",
+                "y",
+                "initialize",
+                "length",
+                "[]",
+                "[]=",
+                "<=>",
+                "==",
+                "~@",
+                "-@",
+                "+@",
+                "!",
+                "call!",
+                "ready?",
+                "x=",
+                "`",
+                "describe"
+            ]
+        );
+        // heredoc bodies, `=begin` blocks and the data after `__END__` aren't code
+        for name in [
+            "NotAClass",
+            "not_a_method",
+            "inside_a_heredoc",
+            "Commented",
+            "AfterEnd",
+        ] {
+            assert!(!syms.iter().any(|s| s.name == name), "{name}: {syms:?}");
+        }
+        assert_eq!(
+            find(&syms, "origin").parent.as_deref(),
+            Some("Forms::Vector")
+        );
+        assert_eq!(find(&syms, "cache").visibility, Some(Visibility::Private));
+        assert_eq!(find(&syms, "norm").visibility, Some(Visibility::Private));
+        assert_eq!(find(&syms, "maß").parent.as_deref(), Some("Forms::Größe"));
+        let dynamic: Vec<_> = syms
+            .iter()
+            .filter(|s| s.parent.as_deref() == Some("Forms::Dynamic"))
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(dynamic, ["spin", "twirl"]);
+    }
+
+    #[test]
+    fn a_constant_may_start_with_any_uppercase_letter() {
+        // Ruby's rule, which the Tree-sitter grammar read as ASCII only
+        let syms = extract("class Größe\n  ÜBER = 1\nend\n");
+        assert_eq!(find(&syms, "ÜBER").kind, Kind::Constant);
     }
 
     #[test]

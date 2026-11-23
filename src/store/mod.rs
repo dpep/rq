@@ -2457,6 +2457,36 @@ mod tests {
     }
 
     #[test]
+    fn v30_queues_only_ruby() {
+        let (_dir, path) = legacy(
+            "migrate-v30",
+            22,
+            &two_repos(&[("a.rs", "rust"), ("f.rb", "ruby")]),
+        );
+        drop(open_at(&path, 29).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "UPDATE files SET content_hash = 'h'; UPDATE checkout_files SET mtime = 1; \
+                 UPDATE coverage SET status = 'complete';",
+            )
+            .unwrap();
+        let store = open_at(&path, 30).unwrap();
+        for p in ["f.rb", "z.rb"] {
+            assert_eq!(stat(&store, p), (None, "stale:h".to_string()), "{p}");
+        }
+        assert_eq!(stat(&store, "a.rs"), (Some(1), "h".to_string()));
+        for root in ["/mixed", "/ruby"] {
+            assert_eq!(
+                store.coverage_status(root).unwrap().unwrap(),
+                Coverage::Warming,
+                "{root}"
+            );
+        }
+        drop(store);
+    }
+
+    #[test]
     fn v29_forgets_where_commit_times_were_captured() {
         let (_dir, path) = legacy("migrate-v29", 22, &two_repos(&[("a.rs", "rust")]));
         drop(open_at(&path, 28).unwrap());

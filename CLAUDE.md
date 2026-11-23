@@ -52,7 +52,7 @@ note the query and what you expected in your report; misses are logged in
 
 ## Language and toolchain
 
-Rust, single static binary. Tree-sitter for symbol extraction, `rusqlite` for
+Rust, single static binary. Tree-sitter for symbol extraction (prism for Ruby), `rusqlite` for
 storage (SQLite, WAL mode).
 
 This machine's Rust came via Homebrew's keg-only `rustup`, so `cargo` may not be
@@ -79,7 +79,7 @@ rq/
     store/       ← SQLite schema, migrations, queries (WAL)
     index/       ← walker, incremental indexer, coverage
     search/      ← staged pipeline, scoring (score.rs), --explain
-    lang/        ← Tree-sitter plugins (ruby, rust, go, python, typescript)
+    lang/        ← language plugins (ruby on prism; rust, go, python, typescript on Tree-sitter)
       ruby/      ← first plugin
       rust/      ← rq dogfoods on its own source
     tests/       ← tests through the crate's internals + fixtures/<lang>/
@@ -134,7 +134,8 @@ Before committing: `cargo fmt && cargo clippy --all-targets && cargo test`.
 
 ## Adding a language plugin
 
-1. Add the Tree-sitter grammar dependency.
+1. Add the parser dependency — a Tree-sitter grammar unless the language has a
+   better parser of its own (Ruby uses prism, D70).
 2. Implement `LanguagePlugin` in `src/lang/<lang>/`: `extensions()` +
    `extract(source) -> Vec<Symbol>`.
 3. Register it in the extension→plugin registry.
