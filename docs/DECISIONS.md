@@ -4470,3 +4470,46 @@ of 6,879 queries; regress 54 of 57 on both.
 
 *Reverses if* a corpus's navigable definitions live in single-line data or generated
 files over 16 KB: the one-line `export const` data file is the case it costs.
+
+*Amended 2026-11-22, before release.* The premise that a file with a few long lines
+averages well under 200 holds for big files, not short ones: one B-byte line among n
+lines of ~35 bytes trips the mean while n < (B − 200)/165, so an 85-line `logo.ts`
+whose first line is a 20 KB data URI lost `LogoWidget` and its 27 functions, as did a
+Ruby module with one 20 KB `DATA` line and a Python file of 20 long string constants.
+And a file with bare-`\r` line endings counted as one line, so a formatted 27 KB file
+lost its 600 functions.
+
+*The corrected rule.* Held when the source is at least 16 KB, its lines average over
+200 bytes, **and** over 10 of `;,(){}` each — long lines of code, not of a string. A
+bare `\r` ends a line. Surveyed over the recall corpora, lodash, rails and two Python
+site-packages (3,249 sources ≥ 16 KB), syntax marks per line split the two groups the
+mean lumped together: every D67 target is far above 10 (react-dom test input 54,
+`lodash.min.js` 91, `jquery.min.js` 4,335, `viz-3.0.1.js` 19,642, `staticFixtures` 34),
+every string-blob file far below (the hunt's fixtures 0.1–2.5, excalidraw's
+`harfbuzz-wasm.ts`/`woff2-wasm.ts`, 0.8–1 MB of base64, 1.6–1.8, `ExcalidrawLogo.tsx`
+0.7, pygments `unistring.py` 1.0). The released files are cheap: both wasm files index
+in 0.06 s at a 5 MB peak, one string token each. Generated files of real code stay
+held, as before: setuptools' `fastjsonschema_validations.py` (11.3; its names are
+schema-URL validators nobody navigates to) and pygments' `_cocoa_builtins.py` (55).
+The mean gate stays because marks alone aren't enough: formatted numeric tables
+(chardet's frequency tables, 13–30 marks a line at 70–115 bytes) would trip them.
+discourse full `--index`, n=3 interleaved against 43c9b54, load 21–23: peak footprint
+60–67 → 50–74 MB, instructions 96.0–96.3 G on both.
+
+*Considered for the fix.*
+- Median line length. Rejected: a bundle under a license header has short lines in the
+  majority — `viz-3.0.1.js`'s median line is 24 bytes, `jquery.min.js`'s 88, most of
+  next.js's `compiled/` bundles under 80 — so it releases the files D67 was for, and it
+  still holds the 20-constant Python file.
+- Share of bytes in long lines. Rejected: `logo.ts` has 91% of its bytes in its one long
+  line, `ExcalidrawLogo.tsx` 93%, the same as a bundle. Line shape alone can't tell a
+  data line from a code line; what's on it can.
+
+*Requeue.* Schema v28 re-reads every file with no definitions (all v27 held) and every
+Ruby, Rust, Python and Go file, since v27 queued only TS/JS and the rule runs for every
+language. TS/JS files with definitions are skipped: v27 re-read them under a rule that
+holds a superset of this one's. Priced as the first `--index` after upgrading a v27
+index, against a fresh full index: rails re-reads 3,293 of 3,321 files, 28.5 G
+instructions (1.2 s) vs 28.3 G fresh; discourse 11,960 of 14,399, 85.8 G (2.1 s) vs
+95.8 G fresh; next.js 6,913 of 25,906, 40.8 G (1.6 s) vs 76.5 G fresh. Requeueing only the files with no definitions is narrower in Ruby but
+leaves an upgraded Ruby or Python index holding definitions a fresh one doesn't.

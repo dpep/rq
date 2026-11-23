@@ -288,7 +288,9 @@ Decisions worth calling out:
   v24 every language but Go for `singleton`, and v25 TS/JS for `export
   let` and CommonJS member assignments, and v26 TS/JS for the visibility a
   CommonJS export of a local (`exports.x = x`) gives it, and v27 TS/JS
-  for minified bundles, held without definitions (D67): users
+  for minified bundles, held without definitions (D67), and v28 every
+  file without definitions plus Ruby, Rust, Python and Go for that rule's
+  correction: users
   upgrade and the symbols appear, with no `--drop`. Old
   symbols stay readable until each file is rewritten.
 - **`coverage`** lets search know its own confidence and decide whether to

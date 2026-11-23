@@ -2379,7 +2379,7 @@ mod tests {
                 ("f.rb", "ruby"),
             ]),
         );
-        let store = Store::open(&path).unwrap();
+        let store = open_at(&path, 24).unwrap();
         for p in ["a.rs", "c.py", "d.ts", "e.js", "f.rb", "z.rb"] {
             assert_eq!(stat(&store, p), (None, "stale:h".to_string()), "{p}");
         }
@@ -2398,7 +2398,7 @@ mod tests {
     #[test]
     fn a_go_only_checkout_stays_complete_through_v24() {
         let (_dir, path) = legacy("migrate-v24-go", 22, &two_repos(&[("b.go", "go")]));
-        let store = Store::open(&path).unwrap();
+        let store = open_at(&path, 24).unwrap();
         assert_eq!(
             store.coverage_status("/mixed").unwrap().unwrap(),
             Coverage::Complete
@@ -2427,7 +2427,7 @@ mod tests {
                      UPDATE coverage SET status = 'complete';",
                 )
                 .unwrap();
-            let store = Store::open(&path).unwrap();
+            let store = open_at(&path, from + 1).unwrap();
             for p in ["d.ts", "e.js"] {
                 assert_eq!(
                     stat(&store, p),
@@ -2448,6 +2448,41 @@ mod tests {
             );
             drop(store);
         }
+    }
+
+    #[test]
+    fn v28_queues_files_without_definitions_and_every_language_v27_skipped() {
+        let (_dir, path) = legacy(
+            "migrate-v28",
+            22,
+            &two_repos(&[
+                ("a.rs", "rust"),
+                ("b.go", "go"),
+                ("d.ts", "typescript"),
+                ("e.js", "javascript"),
+            ]),
+        );
+        drop(open_at(&path, 27).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "UPDATE files SET content_hash = 'h'; UPDATE checkout_files SET mtime = 1; \
+                 UPDATE coverage SET status = 'complete'; \
+                 INSERT INTO symbols (repository_id, file_id, name, name_lower, kind, language, line) \
+                   SELECT repository_id, id, 'W', 'w', 'class', language, 1 FROM files \
+                   WHERE path IN ('a.rs', 'd.ts');",
+            )
+            .unwrap();
+        let store = Store::open(&path).unwrap();
+        for p in ["a.rs", "b.go", "e.js", "z.rb"] {
+            assert_eq!(stat(&store, p), (None, "stale:h".to_string()), "{p}");
+        }
+        assert_eq!(stat(&store, "d.ts"), (Some(1), "h".to_string()));
+        assert_eq!(
+            store.coverage_status("/mixed").unwrap().unwrap(),
+            Coverage::Warming
+        );
+        drop(store);
     }
 
     #[test]

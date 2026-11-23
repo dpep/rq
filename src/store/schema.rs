@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 27;
+pub(crate) const VERSION: i64 = 28;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -680,6 +680,29 @@ UPDATE files SET content_hash = 'stale:' || content_hash
     AND content_hash NOT LIKE 'stale:%';
 "#;
 
+/// Migration v27 -> v28: a minified source is long lines of *code* (D67), so a
+/// file v27 held may now be read, and since the rule runs for every language,
+/// one an older rq read may now be held. Queued as v24 queued them: every file
+/// with no definitions (all v27 held), and every Ruby, Rust, Python and Go
+/// file (v27 queued only TS/JS, so theirs predate the rule).
+pub(crate) const MIGRATION_V28: &str = r#"
+UPDATE coverage SET status = 'warming'
+  WHERE scope = 'full' AND status = 'complete'
+    AND checkout_id IN (
+      SELECT cf.checkout_id FROM checkout_files cf JOIN files f ON f.id = cf.file_id
+      WHERE f.language IN ('ruby', 'rust', 'python', 'go')
+        OR NOT EXISTS (SELECT 1 FROM symbols s WHERE s.file_id = f.id));
+UPDATE checkout_files SET mtime = NULL
+  WHERE file_id IN (
+    SELECT id FROM files f
+    WHERE f.language IN ('ruby', 'rust', 'python', 'go')
+      OR NOT EXISTS (SELECT 1 FROM symbols s WHERE s.file_id = f.id));
+UPDATE files SET content_hash = 'stale:' || content_hash
+  WHERE content_hash NOT LIKE 'stale:%'
+    AND (language IN ('ruby', 'rust', 'python', 'go')
+      OR NOT EXISTS (SELECT 1 FROM symbols s WHERE s.file_id = files.id));
+"#;
+
 /// Indexes the schema gained without a version bump, which would set every
 /// older rq on a side store (D51) for an index: a fresh store has them, and
 /// the background cleanup adds them to one laid down before (D65).
@@ -722,7 +745,7 @@ pub(crate) const LADDER: Ladder = Ladder {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 30] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 31] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -753,4 +776,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 30] = [
     (25, Step::Sql(MIGRATION_V25)),
     (26, Step::Sql(MIGRATION_V26)),
     (27, Step::Sql(MIGRATION_V27)),
+    (28, Step::Sql(MIGRATION_V28)),
 ];

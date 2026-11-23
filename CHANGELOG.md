@@ -32,10 +32,13 @@ and aren't listed; see `git log` for those.
   few the search had read, so recency ranks a newly indexed repo fully.
 - A short fuzzy query over a large index (`rq usr`) spends about an eighth
   less CPU fetching the definitions its recalled names point at.
-- A minified source (16 KB or more, lines averaging over 200 bytes) is indexed
-  without definitions instead of parsed: its names are one-letter locals, and
-  one bundle could set an index's peak memory (discourse: 267 → 68 MB).
-  Existing indexes re-read their TypeScript and JavaScript files once in the
+- A minified source (16 KB or more, lines averaging over 200 bytes and over
+  10 of `;,(){}` each) is indexed without definitions instead of parsed: its
+  names are one-letter locals, and one bundle could set an index's peak memory
+  (discourse: 267 → 68 MB). A file whose long lines are strings or data (an
+  inlined image, a base64 blob) is still parsed, and a bare `\r` ends a line.
+  Existing indexes re-read their Ruby,
+  Rust, Python and Go files, and any file with no definitions, once in the
   background after upgrading; nothing to do.
 
 ### Removed

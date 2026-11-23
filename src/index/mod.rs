@@ -1416,17 +1416,39 @@ fn parse_file(
 /// someone's code, and parsing it is cheap anyway.
 const MINIFIED_MIN: usize = 16 * 1024;
 
-/// Mean line length past which a source is minified. Formatted code averages
-/// 25–45 bytes a line, minified bundles hundreds to thousands (D58).
+/// Mean line length past which a source may be minified. Formatted code
+/// averages 25–45 bytes a line, minified bundles hundreds to thousands (D58).
 const MINIFIED_LINE: usize = 200;
+
+/// Syntax marks (`;,(){}`) a line must average for its length to be minified
+/// code. A long string or base64 blob is long too, but nearly mark-free, and
+/// parses as one cheap token (D67).
+const MINIFIED_MARKS: usize = 10;
 
 /// Whether `source` is a minified bundle: held with no definitions, unparsed.
 /// Its names are one-letter locals, and its parse is the costliest in a repo.
-fn minified(source: &str) -> bool {
-    source.len() >= MINIFIED_MIN && {
-        let lines = source.bytes().filter(|&b| b == b'\n').count() + 1;
-        source.len() > MINIFIED_LINE * lines
+pub(crate) fn minified(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    bytes.len() >= MINIFIED_MIN && {
+        let lines = line_count(bytes);
+        bytes.len() > MINIFIED_LINE * lines && {
+            let marks = bytes
+                .iter()
+                .filter(|b| matches!(b, b';' | b',' | b'(' | b')' | b'{' | b'}'))
+                .count();
+            marks > MINIFIED_MARKS * lines
+        }
     }
+}
+
+/// Lines in `bytes`; a bare `\r` (classic Mac endings) ends one as `\n` does.
+fn line_count(bytes: &[u8]) -> usize {
+    let breaks = bytes
+        .iter()
+        .enumerate()
+        .filter(|&(i, &b)| b == b'\n' || (b == b'\r' && bytes.get(i + 1) != Some(&b'\n')))
+        .count();
+    breaks + 1
 }
 
 /// Bytes of a file's head searched for a NUL: git's and ripgrep's binary test.
@@ -2514,6 +2536,41 @@ mod tests {
         let held = names("widget.rb", &data);
         assert!(held.contains(&"Widget".to_string()), "{held:?}");
         assert!(held.contains(&"TEMPLATE_0".to_string()), "{held:?}");
+        // a short file whose one line is a long data blob
+        let mut logo = format!(
+            "export const LOGO = 'data:image/png;base64,{}';\n",
+            "Qk0".repeat(7_000)
+        );
+        logo.push_str("export class LogoWidget {\n  render() { return LOGO; }\n}\n");
+        assert_eq!(names("logo.ts", &logo), ["LOGO", "LogoWidget", "render"]);
+    }
+
+    #[test]
+    fn minified_means_long_lines_of_code() {
+        let code = |n: usize| "a(b,c);".repeat(n / 7);
+        // the 16 KB floor
+        assert!(!minified(&code(MINIFIED_MIN - 7)));
+        assert!(minified(&code(MINIFIED_MIN + 7)));
+        // long lines that are strings, not code
+        let constants: String = (0..20)
+            .map(|i| format!("CAT_{i} = '{}'\n", "\\u0041-\\u005a".repeat(80)))
+            .collect();
+        assert!(constants.len() >= MINIFIED_MIN);
+        assert!(!minified(&constants));
+        let blob = format!("module Table\n  DATA = '{}'\nend\n", "Zm9v".repeat(5_000));
+        assert!(!minified(&blob));
+        // formatted code, whatever ends its lines
+        let formatted: String = (0..800)
+            .map(|i| format!("function f{i}(a) {{\n  return a;\n}}\n"))
+            .collect();
+        assert!(formatted.len() >= MINIFIED_MIN);
+        assert!(!minified(&formatted));
+        assert!(!minified(&formatted.replace('\n', "\r\n")));
+        assert!(!minified(&formatted.replace('\n', "\r")));
+        // a minified bundle under a license header, CRLF or not
+        let bundle = format!("/*!\n * lib v1\n * MIT\n */\n{}\n", code(40_000));
+        assert!(minified(&bundle));
+        assert!(minified(&bundle.replace('\n', "\r\n")));
     }
 
     #[test]
