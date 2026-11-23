@@ -4825,3 +4825,35 @@ Ruby nor libclang. CI builds it on Linux.
 
 *Reverses if:* prism's Rust bindings stop tracking Ruby releases, or its build grows a
 requirement (`bindgen`, a Ruby install) that `cargo install` can't meet.
+
+### D70 addendum — literal names read as Ruby reads them
+
+The port first copied the Tree-sitter walk's reading of a macro's literal argument, so the
+two extracted alike. That reading was the grammar's, not Ruby's, and is gone:
+
+- **A string names its content.** `attr_reader %q(x)` defined `%q(x)` and `"a\tb"` kept
+  its backslash: the walk trimmed quotes off the source. It now takes the decoded value.
+- **An interpolated name is skipped.** `define_method("get_#{k}")` defined `get_#{k}`, a
+  name no call can spell. It now defines nothing, as `define_method(name)` already did —
+  a computed name isn't guessed. rails loses 64 of these, discourse 34.
+- **Every static symbol is a name.** `attr_reader :"ready?"`, `%s(x)` and `:☠` defined
+  nothing (the grammar's `simple_symbol` is plain ASCII), and `alias :"a b" c` kept its
+  quotes. rails gains 2.
+
+These rode the unreleased v30 requeue. The parity test now names its intended differences
+(`Intended` in `src/lang/ruby/parity.rs`): a non-ASCII constant, string content,
+interpolated names, symbol names, and what follows the oracle's own parse error. Each rule
+is narrow, a difference no rule explains fails, and a rule no fixture exercises fails too.
+`make ruby-parity`: rails and discourse differ only by those rules; ruby's one remaining
+file is `def XMLDocument=` (an uppercase setter the grammar reads as a getter, with no
+error node to excuse what follows).
+
+`make recall BASE=main`: 36 sources up, 4 down. The only losses (one #1, three top 10)
+are queries whose recorded source is `skip_#{callback}_action`, one of the interpolated
+names now gone; the query set inherited it from the old extraction.
+
+Kept, as not clearly wrong or never seen: a bare marker inside `if`/`begin` applies to
+that branch only (Ruby's applies after it, when the branch runs); `module_function` then
+`private def x` gives `x` a private singleton (Ruby: a public module copy, a private
+instance one); `private()` with empty parens doesn't flip the section (Ruby's does; no
+corpus spells it).

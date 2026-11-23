@@ -36,6 +36,9 @@ and aren't listed; see `git log` for those.
   unclosed `class` stay under it rather than dropping out. A few valid forms
   the old parser misread now come out right: a method named `self`, an
   uppercase setter (`def Name=`), a constant or symbol in non-ASCII letters.
+  A macro's literal name reads as Ruby does: `attr_reader %q(x)` and
+  `attr_reader :"x?"` define `x` and `x?`, and a name built by interpolation
+  (`define_method("get_#{k}")`) defines nothing rather than `get_#{k}`.
   Existing indexes re-read their Ruby files once, on the next search.
 
 ### Fixed

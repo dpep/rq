@@ -713,9 +713,10 @@ pub(crate) const MIGRATION_V29: &str =
     "DELETE FROM meta WHERE key LIKE 'git_ts_head:%' OR key LIKE 'head:%';";
 
 /// Migration v29 -> v30: Ruby is extracted by prism (D70), which keeps the
-/// definitions around a syntax error and reads a few valid forms the
-/// Tree-sitter grammar misparsed. Ruby files are queued for re-extraction as
-/// v24 queued them.
+/// definitions around a syntax error, reads a few valid forms the Tree-sitter
+/// grammar misparsed, and names a method by a literal's value (an
+/// interpolated name, none). Ruby files are queued for re-extraction as v24
+/// queued them.
 pub(crate) const MIGRATION_V30: &str = r#"
 UPDATE coverage SET status = 'warming'
   WHERE scope = 'full' AND status = 'complete'
