@@ -380,7 +380,7 @@ fn write_files(
     let mut out = stats(&written);
     if !written.unmapped.is_empty() {
         let paths: Vec<_> = written.unmapped.iter().map(|p| root.join(p)).collect();
-        let (parsed, _) = parse_files(root, &paths, None, None, &Versions::new());
+        let (parsed, _) = parse_files(root, &paths, None, &[], &Versions::new());
         out += stats(&store.replace_files(checkout, &parsed)?);
     }
     Ok(out)
@@ -729,7 +729,7 @@ fn stream_walk(
     candidates: impl Iterator<Item = std::path::PathBuf> + Send,
     deadline: Option<Instant>,
     cap: Option<usize>,
-    needle: Option<&str>,
+    needles: &[&str],
     versions: &Versions,
     seen: HashSet<String>,
     keep: impl Fn(&str, Option<i64>) -> bool + Send,
@@ -797,7 +797,7 @@ fn stream_walk(
                         parse_incomplete.store(true, Ordering::Relaxed); // backlog abandoned
                         break;
                     }
-                    if let Some(fs) = parse_file(root, &path, needle, versions)
+                    if let Some(fs) = parse_file(root, &path, needles, versions)
                         && res_tx.send(fs).is_err()
                     {
                         break;
@@ -1105,7 +1105,7 @@ fn fill_checkout(
         );
     }
     let mut active_span = crate::profile::span("index: active files");
-    let (active_parsed, _) = parse_files(root, &active_to_parse, None, None, &versions);
+    let (active_parsed, _) = parse_files(root, &active_to_parse, None, &[], &versions);
     let mut stats = write_files(store, checkout, root, &active_parsed)?;
     active_span.note(|| format!("{} file(s)", active_parsed.len()));
     drop(active_span);
@@ -1132,21 +1132,21 @@ fn fill_checkout(
         let mut writer = BatchWriter::new(&mut *store, checkout, root);
         writer.mark = marked.then(|| (root_key.as_str(), Instant::now()));
         // Demand first: a query's exact or prefix match — the only kind a warming
-        // search answers with — lives in a file containing its leaf name, and
-        // reading for that is several times cheaper than parsing. So parse those
+        // search answers with — lives in a file holding its name ([`query_names`]),
+        // and reading for that is several times cheaper than parsing. So parse those
         // files ahead of the walk-order pass below, which skips them. Uncapped:
         // the cap bounds parsing, and on a repo bigger than one pass it's what
         // would otherwise leave the answer for a later search.
         let mut demanded: HashSet<String> = HashSet::new();
-        let needle = query.and_then(crate::search::literal_leaf);
-        if let (Some(paths), Some(needle)) = (&git_candidates, needle) {
+        let needles = query.map(query_names).unwrap_or_default();
+        if let Some(paths) = git_candidates.as_ref().filter(|_| !needles.is_empty()) {
             let mut demand_span = crate::profile::span("index: demand scan");
             let (_, read_all) = stream_walk(
                 root,
                 paths.iter().cloned(),
                 deadline,
                 None,
-                Some(needle),
+                &needles,
                 &versions,
                 seen.clone(),
                 changed,
@@ -1160,7 +1160,7 @@ fn fill_checkout(
             if read_all && let Some(flag) = demanded_flag {
                 flag.store(true, std::sync::atomic::Ordering::Release);
             }
-            demand_span.note(|| format!("{} file(s) contain {needle:?}", demanded.len()));
+            demand_span.note(|| format!("{} file(s) hold {needles:?}", demanded.len()));
         }
         let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
             Some(paths) => Box::new(paths.into_iter()),
@@ -1183,7 +1183,7 @@ fn fill_checkout(
             candidates,
             deadline,
             cap,
-            None,
+            &[],
             &versions,
             seen,
             keep,
@@ -1398,14 +1398,14 @@ fn note_candidate(
 }
 
 /// Read + parse one source file into a [`FileSymbols`](crate::store::FileSymbols), or `None` if it isn't a
-/// known language, can't be read, or (when `needle` is set) doesn't contain the
-/// query — the ripgrep-style content pre-filter, applied here so it runs on the
+/// known language, can't be read, or (when `needles` isn't empty) holds none of
+/// them — the ripgrep-style content pre-filter, applied here so it runs on the
 /// worker thread. Touches no store — safe to run in parallel (each call builds
 /// its own Tree-sitter parser).
 fn parse_file(
     root: &Path,
     file: &Path,
-    needle: Option<&str>,
+    needles: &[&str],
     versions: &Versions,
 ) -> Option<crate::store::FileSymbols> {
     let timing = crate::profile::enabled().then(Instant::now);
@@ -1414,9 +1414,7 @@ fn parse_file(
     let rel = index_key(root, file)?;
     let source = read_source(file).ok()?;
     // pre-filter: skip the expensive parse on files that can't hold the match
-    if let Some(n) = needle
-        && !may_hold_name(&source, n)
-    {
+    if !needles.is_empty() && !needles.iter().any(|n| may_hold_name(&source, n)) {
         return None;
     }
     let content_hash = content_hash(&source);
@@ -1598,7 +1596,7 @@ fn past(deadline: Option<Instant>) -> bool {
 }
 
 /// Parse many files across the available CPUs, stopping early once `deadline`
-/// passes; when `needle` is set, each worker skips files that don't contain it
+/// passes; with `needles`, each worker skips files that hold none of them
 /// (the content pre-filter). Returns the parsed files and whether *all* of them
 /// were parsed (false if the deadline cut it short). Parsing is the expensive,
 /// CPU-bound step; writing stays serialized in one batched transaction by the
@@ -1607,7 +1605,7 @@ fn parse_files(
     root: &Path,
     paths: &[std::path::PathBuf],
     deadline: Option<Instant>,
-    needle: Option<&str>,
+    needles: &[&str],
     versions: &Versions,
 ) -> (Vec<crate::store::FileSymbols>, bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1620,7 +1618,7 @@ fn parse_files(
             if past(deadline) {
                 return (out, false);
             }
-            if let Some(parsed) = parse_file(root, p, needle, versions) {
+            if let Some(parsed) = parse_file(root, p, needles, versions) {
                 out.push(parsed);
             }
         }
@@ -1642,7 +1640,7 @@ fn parse_files(
                             bailed.store(true, Ordering::Relaxed);
                             break;
                         }
-                        if let Some(parsed) = parse_file(root, p, needle, versions) {
+                        if let Some(parsed) = parse_file(root, p, needles, versions) {
                             local.push(parsed);
                         }
                     }
@@ -1776,13 +1774,12 @@ impl<'a> LiveTree<'a> {
 /// coverage. Bounded and filtered:
 /// - stop once `deadline` passes;
 /// - skip any file whose repo-relative path is in `skip` (already indexed);
-/// - when `needle` is set, parse only files containing it (case-insensitive
-///   substring, joiners skipped: [`may_hold_name`]) — the ripgrep-style
-///   pre-filter that skips the tree-sitter parse on files that can't hold an
-///   exact/prefix/substring match. `needle` is `None`
-///   for the *fuzzy* fallback: an abbreviation (`usr` → `user`) isn't a substring
-///   of its match, so it can't be content-filtered; callers retry unfiltered when
-///   a filtered scan comes up empty.
+/// - when `query` is set, parse only files holding one of its
+///   [`query_names`] — the ripgrep-style pre-filter that skips the tree-sitter
+///   parse on files that can't hold an exact/prefix/substring match. `query` is
+///   `None` for the *fuzzy* fallback: an abbreviation (`usr` → `user`) isn't a
+///   substring of its match, so it can't be content-filtered; callers retry
+///   unfiltered when a filtered scan comes up empty.
 ///
 /// The caller decides the fate of the result, which is exactly where the
 /// persist-or-not policy lives: a warming git repo **persists** them via
@@ -1794,10 +1791,10 @@ pub(crate) fn scan(
     tree: &LiveTree,
     skip: &HashSet<String>,
     deadline: Option<Instant>,
-    needle: Option<&str>,
+    query: Option<&str>,
 ) -> Vec<crate::store::FileSymbols> {
     let root = tree.root;
-    let needle = needle.filter(|n| !n.is_empty());
+    let needles = query.map(query_names).unwrap_or_default();
     // git's index for a git repo (content-scan a huge repo without traversing it),
     // else a filesystem walk (the live scan of a non-git dir)
     let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send + '_> = match &tree.tracked {
@@ -1816,7 +1813,7 @@ pub(crate) fn scan(
         candidates,
         deadline,
         None,
-        needle,
+        &needles,
         &Versions::new(),
         HashSet::new(),
         keep,
@@ -1827,6 +1824,21 @@ pub(crate) fn scan(
         },
     );
     out
+}
+
+/// The names a file must hold ([`may_hold_name`]) to define a literal match for
+/// `query`: its leaf name, and for a constructor call (`Widget.new`) the owner's
+/// too, since the constructor (`initialize`, `__init__`) needn't spell `new`.
+/// Empty for a glob, which can't be content-filtered.
+pub(crate) fn query_names(query: &str) -> Vec<&str> {
+    use crate::search::literal_leaf;
+    let Some(leaf) = literal_leaf(query) else {
+        return Vec::new();
+    };
+    let owner = crate::search::parse_qualified(query).1;
+    let constructor = leaf.eq_ignore_ascii_case("new");
+    let owner = owner.filter(|_| constructor).and_then(literal_leaf);
+    std::iter::once(leaf).chain(owner).collect()
 }
 
 /// Whether `haystack` may hold a symbol named `needle` — the content pre-filter.
@@ -2626,6 +2638,16 @@ mod tests {
     }
 
     #[test]
+    fn a_constructor_call_also_names_its_owner() {
+        assert_eq!(query_names("Widget"), ["Widget"]);
+        assert_eq!(query_names("Z::fetch_widget"), ["fetch_widget"]);
+        assert_eq!(query_names("Widget.new"), ["new", "Widget"]);
+        assert_eq!(query_names("Z::Widget::new"), ["new", "Widget"]);
+        assert_eq!(query_names("new"), ["new"]);
+        assert!(query_names("Wid*").is_empty());
+    }
+
+    #[test]
     fn the_pre_filter_agrees_with_a_squash_then_search_reference() {
         let squash = |s: &str| -> String {
             s.chars()
@@ -2674,7 +2696,7 @@ mod tests {
         let dir = Scratch::new("minified");
         let names = |file: &str, source: &str| -> Vec<String> {
             std::fs::write(dir.join(file), source).unwrap();
-            let fs = parse_file(&dir, &dir.join(file), None, &Versions::new()).unwrap();
+            let fs = parse_file(&dir, &dir.join(file), &[], &Versions::new()).unwrap();
             fs.symbols.unwrap().into_iter().map(|s| s.name).collect()
         };
         // one line of minified code

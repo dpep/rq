@@ -5064,6 +5064,36 @@ fn a_cold_search_reads_the_name_spelled_with_separators() {
 }
 
 #[test]
+fn a_cold_constructor_search_reads_the_owners_files() {
+    // `Widget.new` runs `initialize`, which a file can define without the
+    // text `new`: the warm must read it before another class's answers.
+    let (dir, db) = scratch("demand-constructor");
+    fs::write(
+        dir.join("a.rb"),
+        "class Gadget\n  def initialize(x)\n    @x = x.new\n  end\nend\n",
+    )
+    .unwrap();
+    for i in 0..10 {
+        fs::write(
+            dir.join(format!("m{i:02}.rb")),
+            format!("class M{i}\nend\n"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        dir.join("zz.rb"),
+        "class Widget\n  def initialize\n  end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+
+    let env = [NO_CHILD[0], ("RQ_COLLECT_CAP", "1")];
+    let (code, out, _) = rq_full(&db, &dir, &["Widget.new", "--json"], &env, None);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(json(&out)[0]["file"], "zz.rb", "{out}");
+}
+
+#[test]
 fn a_search_waits_on_another_process_still_indexing() {
     // Another writer holds the index mid-build: this search's own warm can't
     // write, and ending is not the index being done. It waits, and answers

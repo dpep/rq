@@ -3084,6 +3084,12 @@ demand walk gets cheap enough that waiting for it costs nothing.
   `TopicView` 126 → 180). A demand scan that reads every file and matches none takes the
   same time (discourse 172–251 ms against 171–251 ms, 3 alternating rounds each for two
   needles, load 4–6), and first answers on rails moved within noise (8 queries).
+  A constructor call reads its owner's files as well (`query_names`): `Widget.new`
+  matches `initialize`, `__init__` or `constructor`, which 19% of rails' and 29% of
+  discourse's constructor-defining files hold without the text `new`; until the walk
+  order reached one, nothing settled, and a cap left it `warming`. First answers for
+  three rails constructor calls, 3 alternating cold runs each, load 6–11: 0.9–2.6 s
+  before and after.
 
 ## D53 — Untracked files are in a checkout's index, and a warm keeps them
 
