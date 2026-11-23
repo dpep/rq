@@ -16,6 +16,9 @@ and aren't listed; see `git log` for those.
   later.
 - A first index reads commit times while it parses rather than after, so a
   search waiting on it answers sooner (discourse, about half a second).
+- A search waiting on a first index no longer finishes a slow search begun
+  before the index got far enough to answer; it stops it and asks again,
+  which on discourse took some cold constructor calls from about 5 s to 2 s.
 - Short fuzzy queries that match thousands of names (`rq usr`, `rq -a usr`)
   answer faster, about a quarter faster across every repo: definitions are
   read in batches of names rather than one statement per name, each name is

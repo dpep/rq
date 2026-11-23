@@ -1489,6 +1489,12 @@ impl Store {
         self.conn.query_row("PRAGMA data_version", [], |r| r.get(0))
     }
 
+    /// Stops the statement this connection is running, from another thread:
+    /// it fails with `SQLITE_INTERRUPT`. A no-op while none runs.
+    pub(crate) fn interrupt_handle(&self) -> rusqlite::InterruptHandle {
+        self.conn.get_interrupt_handle()
+    }
+
     /// Let this connection's writes wait out another writer for `wait` each
     /// time, instead of the default sized for a search's latency, calling
     /// `on_long_wait` while a wait runs past a second. For a process that runs

@@ -100,6 +100,10 @@ fn flag_summary(args: &SearchArgs) -> String {
 /// progress line only redraws every `PROGRESS_REDRAW` anyway).
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How often the watch on a warm's progress looks: two atomics, so a poll in
+/// flight is stopped within a few ms of what it waits for.
+const FUTILE_TICK: Duration = Duration::from_millis(10);
+
 /// How long a cold-repo query may wait silently before we tell the user we're
 /// indexing — short enough to explain the pause, long enough that a repo which
 /// indexes quickly never flashes a message.
@@ -528,6 +532,41 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
             warm_done.store(true, std::sync::atomic::Ordering::Relaxed);
         })
     });
+    // A poll that began before the demand walk or the warm finished can't
+    // answer from what changed, yet on a cold pass's suspended name index it
+    // can run for seconds past it. So either event stops the poll in flight,
+    // and the loop searches again. Only the poll's search: the warm writes on
+    // its own connection, and `in_search` brackets the search call alone, so an
+    // interrupt never reaches another statement on this one. The one write a
+    // search can make (rebuilding a dead pass's name index) is one transaction,
+    // which an interrupt rolls back whole.
+    let in_search = std::sync::Arc::new(std::sync::Mutex::new(false));
+    if indexer.is_some() {
+        let handle = store.interrupt_handle();
+        let in_search = std::sync::Arc::clone(&in_search);
+        let warm_done = std::sync::Arc::clone(&warm_done);
+        let demanded = std::sync::Arc::clone(&demanded);
+        std::thread::spawn(move || {
+            let mut read = false;
+            loop {
+                let done = warm_done.load(std::sync::atomic::Ordering::Relaxed);
+                let now_read = demanded.load(std::sync::atomic::Ordering::Acquire);
+                if done || now_read != read {
+                    // held while interrupting, so the search can't end and
+                    // another statement start in between
+                    let searching = in_search.lock().unwrap_or_else(|e| e.into_inner());
+                    if *searching {
+                        handle.interrupt();
+                    }
+                }
+                if done {
+                    break;
+                }
+                read = now_read;
+                std::thread::sleep(FUTILE_TICK);
+            }
+        });
+    }
 
     // Poll while a cold/partial repo warms. Don't print the first hit off a sparse
     // index — a prefix, fuzzy or path match can be wrong once more is indexed.
@@ -621,7 +660,10 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         let read_before = demanded.load(std::sync::atomic::Ordering::Acquire);
         name_read = read_before;
         let searched_at = std::time::Instant::now();
-        match scope(current).search(store, query, current, &ctx, rank_limit) {
+        *in_search.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        let searched = scope(current).search(store, query, current, &ctx, rank_limit);
+        *in_search.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        match searched {
             Ok(m) => {
                 last_cost = searched_at.elapsed();
                 total = m.total;
@@ -679,6 +721,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
                     last_draw = std::time::Instant::now();
                 }
             }
+            Err(e) if polling && interrupted(&e) => continue,
             Err(e) => {
                 if let Some(h) = indexer {
                     let _ = h.join();
@@ -1068,6 +1111,11 @@ fn may_settle_early(shown: &[crate::search::Hit], here: Option<&str>, unread: &U
             crate::search::is_literal(&h.features)
                 && h.root.as_deref().is_none_or(|r| Some(r) == here)
         })
+}
+
+/// Whether a search failed because the watch on the warm stopped it.
+fn interrupted(e: &rusqlite::Error) -> bool {
+    e.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted)
 }
 
 /// Whether another poll, after the sleep, costing what the last one did,
@@ -1710,6 +1758,29 @@ mod tests {
             explain: None,
             warming: None,
         }
+    }
+
+    #[test]
+    fn a_poll_stopped_by_its_watch_reads_as_interrupted_and_nothing_else_does() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let handle = conn.get_interrupt_handle();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            handle.interrupt();
+        });
+        let endless = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) \
+                       SELECT count(*) FROM c";
+        let err = conn
+            .query_row(endless, [], |r| r.get::<_, i64>(0))
+            .unwrap_err();
+        stopper.join().unwrap();
+        assert!(super::interrupted(&err), "{err}");
+        // an interrupt with nothing running leaves the next statement be
+        conn.get_interrupt_handle().interrupt();
+        let one: i64 = conn.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(one, 1);
+        let other = conn.execute("SELECT * FROM missing", []).unwrap_err();
+        assert!(!super::interrupted(&other), "{other}");
     }
 
     #[test]
