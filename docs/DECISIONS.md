@@ -4641,3 +4641,29 @@ even when the window doesn't.
 
 *Reverses if:* the non-name features become bounded by name evidence (scaled by match
 quality like `extent` and `kind`), and `total` is allowed to become an estimate.
+
+### D68 addendum — hits move their rows, the sort moves hits once; two levers measured and left
+
+Same index and query, interleaved against the commit before, load 7–19.
+
+*Adopted.* Scoring went by index instead of building a `Hit` per candidate with seven
+cloned strings: each pick takes its row (a row picked twice, a path match that is also a
+near miss, is cloned for all but its last pick, as before). `score` 20.1 → 17.1 ms median.
+`sort_and_truncate` sorts indices and moves each hit once, where sorting the hits in
+place spent its time in memmove: `sort` 6.1 → 4.8 ms. Together `-a usr` 1,137M → 1,089M
+instructions, scoped discourse `usr` 445M → 417M. Output identical (the D68 harness),
+`make recall` against the commit before: 0 moved, anchored unchanged.
+
+*Measured, left:*
+- **Skipping `read_from`'s preferred-checkout lookup when there is none** (`CASE WHEN ?
+  IS NULL`): −0.8% of instructions. Dropping both per-row checkout subqueries outright,
+  which is wrong with several checkouts, saves 5.6%: the ceiling for any rewrite of them.
+- **Not re-fetching a file match's rows that the name fetch already holds.** For `-a usr`,
+  1,519 of the 3,612 rows the file fetch reads are already in hand. Skipping them needs
+  the file walk to know which names the (possibly capped) name walk took, and changes
+  what the file walk's own cap counts.
+
+What remains for `-a usr` is per row and per name: SQLite row fetches ~38% of samples,
+the signature scan 11%, ranking every name for the capped walk 10%, scoring 16%
+(`fuzzy_value` is computed twice per name, once to rank and once in `score`; sharing it
+reaches into `score`'s signature, which D1 and D7 keep).

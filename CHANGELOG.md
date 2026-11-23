@@ -15,10 +15,10 @@ and aren't listed; see `git log` for those.
   index's end can answer it: less CPU while it waits, the same answer, no
   later.
 - Short fuzzy queries that match thousands of names (`rq usr`, `rq -a usr`)
-  answer faster, about a fifth faster across every repo: definitions are read
-  in batches of names rather than one statement per name, each name is read
-  once even when the matches overflow the candidate cap, and the
-  per-candidate bookkeeping hashes without copying.
+  answer faster, about a quarter faster across every repo: definitions are
+  read in batches of names rather than one statement per name, each name is
+  read once even when the matches overflow the candidate cap, and ranking
+  copies and moves far less per candidate.
 
 ### Fixed
 
