@@ -419,6 +419,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                 &mut session,
                 &SearchArgs {
                     query: &query,
+                    echo: &query,
                     explain: cli.explain,
                     out,
                     paths: &paths,

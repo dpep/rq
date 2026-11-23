@@ -119,6 +119,9 @@ const INDEXER_STALL: Duration = Duration::from_secs(5);
 /// Everything `rq <query>` needs, bundled from the parsed CLI flags.
 pub(super) struct SearchArgs<'a> {
     pub(super) query: &'a str,
+    /// What a row's `query` echoes: a batch line as it arrived, so rows key
+    /// on what the caller sent; a typed query's `query` otherwise.
+    pub(super) echo: &'a str,
     pub(super) explain: bool,
     pub(super) out: Output,
     pub(super) paths: &'a [String],
@@ -267,13 +270,15 @@ pub(super) fn cmd_batch(
             )
             .into(),
             BatchLine::Query(line) => {
-                let (keyword, query, _) = read_query(line, Vec::new(), !cli.kind.is_empty());
+                let (keyword, query, _) =
+                    read_query(line.clone(), Vec::new(), !cli.kind.is_empty());
                 let mut kinds = kinds.to_vec();
                 kinds.extend(keyword.unwrap_or_default().iter().map(|k| k.to_string()));
                 cmd_search(
                     &mut session,
                     &SearchArgs {
                         query: &query,
+                        echo: &line,
                         explain: cli.explain,
                         out,
                         paths,
@@ -783,7 +788,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         };
         let code = no_match_code(
             out,
-            query,
+            args.echo,
             interrupted,
             verdict,
             warming.as_ref(),
@@ -1226,7 +1231,7 @@ fn emit_provisional(
         Output::Json | Output::Ndjson => {
             let obj = Provisional {
                 provisional: hits,
-                query: args.query,
+                query: args.echo,
                 status: Verdict::Warming.status(),
                 warming,
             };

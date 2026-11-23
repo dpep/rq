@@ -71,7 +71,8 @@ and aren't listed; see `git log` for those.
   behind: the next background warm clears it.
 - A batch line reads exactly as the same query typed on the command line: a
   leading kind keyword (`class Base`, `method save`) filters by kind instead
-  of being searched as part of the name.
+  of being searched as part of the name. Its rows' `query` is still the line
+  as sent (`class Base`).
 - A cold search whose indexing an `rq --drop` cut short indexes again within
   its wait and answers, instead of giving up as `warming` (exit 2).
 - `RQ_JOBS` that isn't a thread count (`abc`, `-1`) warns on stderr and runs

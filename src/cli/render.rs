@@ -25,7 +25,7 @@ pub(super) fn render_hits(
         let rows: Vec<Tagged> = hits
             .iter()
             .map(|hit| Tagged {
-                query: args.query,
+                query: args.echo,
                 hit,
             })
             .collect();

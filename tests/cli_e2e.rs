@@ -4027,6 +4027,42 @@ fn a_batch_line_reads_exactly_as_the_same_query_on_the_command_line() {
 }
 
 #[test]
+fn a_batch_row_echoes_the_line_it_answers() {
+    // Callers key rows on `query`; a kind keyword stripped from the echo
+    // would make `Base` and `class Base` collide.
+    let (dir, db) = scratch("batch-echo");
+    fs::write(
+        dir.join("a.rb"),
+        "module Persistence\n  class Base\n  end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let (_, out) = rq_stdin(
+        &db,
+        &dir,
+        &["-l", "1"],
+        "Base\n  class Base  \nmodule Persistence\nclass Nope\n",
+    );
+    let rows: Vec<(String, String)> = out
+        .lines()
+        .map(json)
+        .map(|r| {
+            let answer = r["name"].as_str().or(r["status"].as_str()).unwrap();
+            (r["query"].as_str().unwrap().to_string(), answer.to_string())
+        })
+        .collect();
+    let expected = [
+        ("Base", "Base"),
+        ("class Base", "Base"),
+        ("module Persistence", "Persistence"),
+        ("class Nope", "no_match"),
+    ];
+    assert_eq!(rows, expected.map(|(q, a)| (q.to_string(), a.to_string())),);
+}
+
+#[test]
 fn a_batch_answers_each_line_before_stdin_closes() {
     // `tail -f log | rq -J`, or an agent holding the pipe open for its next
     // question: an answer that waits for EOF never comes.
