@@ -633,22 +633,25 @@ fn search_query(
     let now = now_unix();
     let reach = ctx.reach_splits(&candidates);
 
-    // Borrows rather than consumes, so the retry below can re-rank the same
-    // candidates instead of asking the store for them again.
-    let rank = |candidates: &[SymbolRow], near_miss: bool| -> Vec<Hit> {
-        candidates
-            .iter()
-            .filter_map(|c| {
+    // Scores by index, so the retries below re-rank the same candidates
+    // without asking the store again, and each pick becomes a `Hit` by moving
+    // its row rather than cloning it.
+    let rank = |picks: &mut dyn Iterator<Item = usize>,
+                near_miss: bool|
+     -> Vec<(usize, score::Scored)> {
+        picks
+            .filter_map(|i| {
+                let c = &candidates[i];
                 // prefer whichever recency signal is more recent: a recent edit
                 // (mtime, stored in nanoseconds — convert to seconds) or a
                 // recent commit (git_ts, seconds)
                 let recency = recency_boost(c.git_ts.max(c.mtime.map(|n| n / 1_000_000_000)), now);
                 let boosts = ctx.boosts(c, recency, reach);
-                rank_one(query, c, current, boosts, near_miss)
+                Some((i, score::score(query, c, current, boosts, near_miss)?))
             })
             .collect()
     };
-    let mut hits = rank(&candidates, false);
+    let mut picks = rank(&mut (0..candidates.len()), false);
     // A near miss competes with fuzzy matches, never with a literal one: once
     // the query spelled a name outright (exact, prefix, glob) the typo reading
     // is moot. Short of that, every near miss joins and ranks on its score:
@@ -657,34 +660,52 @@ fn search_query(
     // ranks above the typo. Side features scale with match quality, so a weak
     // guess can't ride in on them. Candidates that already matched keep the
     // score they had.
-    let literal = hits
+    let literal = picks
         .iter()
-        .any(|h| h.score > 0.0 && score::is_literal(&h.features));
+        .any(|(_, s)| s.total > 0.0 && score::is_literal(&s.features));
     if typo && qualifier.is_none() && !literal {
-        let near: Vec<SymbolRow> = candidates
-            .iter()
-            .filter(|c| score::near_miss_possible(query, &c.name))
-            .cloned()
-            .collect();
-        hits.extend(
-            rank(&near, true)
-                .into_iter()
-                .filter(|h| h.features.iter().any(|f| f.name == "typo")),
+        let near = rank(
+            &mut (0..candidates.len())
+                .filter(|&i| score::near_miss_possible(query, &candidates[i].name)),
+            true,
+        );
+        picks.extend(
+            near.into_iter()
+                .filter(|(_, s)| s.features.iter().any(|f| f.name == "typo")),
         );
     }
     // A named scope that answered nothing may itself be the slip. That is a
     // guess about the question, not the name, so it stays a last resort:
     // only when nothing above zero turned up.
-    if typo && qualifier.is_some() && hits.iter().all(|h| h.score <= 0.0) {
+    if typo && qualifier.is_some() && picks.iter().all(|(_, s)| s.total <= 0.0) {
         // Only candidates that could *be* a near miss are worth re-scoring —
         // the alternative is paying the whole name-match chain a second time
         // for ten thousand rows to serve a few hundred.
-        let retried = rank(&candidates, true);
+        let retried = rank(&mut (0..candidates.len()), true);
         // keep the first pass's answer if the retry turns up nothing
         if !retried.is_empty() {
-            hits = retried;
+            picks = retried;
         }
     }
+    // A row picked twice (a path match that is also a near miss) is cloned
+    // for all but its last pick.
+    let mut picked = vec![0u32; candidates.len()];
+    for (i, _) in &picks {
+        picked[*i] += 1;
+    }
+    let mut rows: Vec<Option<SymbolRow>> = candidates.into_iter().map(Some).collect();
+    let mut hits: Vec<Hit> = picks
+        .into_iter()
+        .filter_map(|(i, scored)| {
+            picked[i] -= 1;
+            let row = if picked[i] > 0 {
+                rows[i].clone()
+            } else {
+                rows[i].take()
+            };
+            Some(to_hit(row?, scored))
+        })
+        .collect();
     if qualifier.is_none() {
         top_level(&mut hits);
     }
@@ -990,21 +1011,26 @@ fn rank_one(
     boosts: Boosts,
     near_miss: bool,
 ) -> Option<Hit> {
-    // Borrowed, so a candidate that doesn't score costs nothing; the clones
-    // below happen only for the few that become results.
+    // Borrowed, so a candidate that doesn't score costs nothing; the clone
+    // happens only for one that does.
     let scored = score::score(query, c, current, boosts, near_miss)?;
-    Some(Hit {
-        name: c.name.clone(),
-        kind: c.kind.clone(),
-        language: c.language.clone(),
-        file: c.file.clone(),
-        root: Some(c.root.clone()),
+    Some(to_hit(c.clone(), scored))
+}
+
+/// A scored row as a result, before the output-time fields are filled.
+fn to_hit(c: SymbolRow, scored: score::Scored) -> Hit {
+    Hit {
+        name: c.name,
+        kind: c.kind,
+        language: c.language,
+        file: c.file,
+        root: Some(c.root),
         line: c.line,
         end_line: c.end_line,
-        parent: c.parent.clone(),
+        parent: c.parent,
         visibility: c.visibility,
         singleton: c.singleton,
-        repo_identity: c.repo_identity.clone(),
+        repo_identity: c.repo_identity,
         source: Source::Index,
         score: scored.total,
         confidence: 0.0, // filled from the final result set before output
@@ -1016,7 +1042,7 @@ fn rank_one(
         total: 0, // filled from the final result set before output
         explain: None,
         warming: None,
-    })
+    }
 }
 
 #[cfg(test)]
