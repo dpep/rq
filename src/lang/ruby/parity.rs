@@ -68,6 +68,10 @@ enum Intended {
     /// A quoted symbol (`:"x?"`, `%s(x)`) or one in non-ASCII letters (`:☠`)
     /// names a method; the grammar read only plain ASCII symbols.
     SymbolName,
+    /// The grammar fell into an error on Ruby prism parses cleanly, and lost
+    /// what follows it: parents, a class's end. Only definitions reaching the
+    /// first error are excused; those wholly before it must still agree.
+    OracleMisparse,
 }
 
 /// The delimiter pairs a `%` literal may use.
@@ -84,11 +88,12 @@ fn symbol_spelled(text: &str, name: &str) -> bool {
 }
 
 impl Intended {
-    const ALL: [Intended; 4] = [
+    const ALL: [Intended; 5] = [
         Intended::NonAsciiConstant,
         Intended::StringContent,
         Intended::InterpolatedName,
         Intended::SymbolName,
+        Intended::OracleMisparse,
     ];
 
     /// Why a row only prism extracted is right.
@@ -156,11 +161,13 @@ struct Diff {
     explained: Vec<(Intended, String)>,
     /// Each difference nothing explains: a parity bug.
     unexplained: Vec<String>,
+    /// The row being noted reaches the oracle's first parse error.
+    misparsed: bool,
 }
 
 impl Diff {
     fn note(&mut self, why: Option<Intended>, row: String) {
-        match why {
+        match why.or_else(|| self.misparsed.then_some(Intended::OracleMisparse)) {
             Some(why) => self.explained.push((why, row)),
             None => self.unexplained.push(row),
         }
@@ -173,6 +180,8 @@ fn diff(file: &str, source: &str) -> Diff {
     let oracle = rows(tree_sitter::extract(file, source));
     let mut ours_only: Vec<Row> = ours.difference(&oracle).cloned().collect();
     let mut out = Diff::default();
+    let error = tree_sitter::first_error_line(source);
+    let reaches_error = |r: &Row| error.is_some_and(|line| r.end_line >= line);
     let blank_name = |r: &Row| Row {
         name: String::new(),
         ..r.clone()
@@ -198,14 +207,17 @@ fn diff(file: &str, source: &str) -> Diff {
             (Some(i), _) => (Intended::renamed(o, &ours_only[i]), i),
             (None, Some(i)) => (Intended::revisited(&ours_only[i], source), i),
             (None, None) => {
+                out.misparsed = reaches_error(o);
                 out.note(Intended::oracle_only(o), format!("tree-sitter {o}"));
                 continue;
             }
         };
         let p = ours_only.remove(pair);
+        out.misparsed = reaches_error(o) || reaches_error(&p);
         out.note(why, format!("tree-sitter {o}\n  prism       {p}"));
     }
     for p in &ours_only {
+        out.misparsed = reaches_error(p);
         out.note(Intended::prism_only(p, source), format!("prism       {p}"));
     }
     out

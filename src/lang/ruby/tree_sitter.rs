@@ -17,6 +17,25 @@ pub(super) fn extract(file: &str, source: &str) -> Vec<Symbol> {
     )
 }
 
+/// The 1-based line of the grammar's first error or missing node in
+/// `source`, if its parse has one.
+pub(super) fn first_error_line(source: &str) -> Option<u32> {
+    let grammar = tree_sitter_ruby::LANGUAGE.into();
+    let tree = crate::lang::parse(super::LANGUAGE, &grammar, source)?;
+    let mut node = tree.root_node();
+    if !node.has_error() {
+        return None;
+    }
+    while !(node.is_error() || node.is_missing()) {
+        let mut cursor = node.walk();
+        let Some(next) = node.children(&mut cursor).find(Node::has_error) else {
+            break;
+        };
+        node = next;
+    }
+    Some(node.start_position().row as u32 + 1)
+}
+
 /// Recursively collect definitions. `parent` is the enclosing qualified name;
 /// `vis` is the access section in effect (a bare `private`/`protected`/`public`
 /// marker flips it for everything after, including through wrapping nodes like
