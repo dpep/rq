@@ -66,6 +66,10 @@ and aren't listed; see `git log` for those.
   empty batch: nothing on stdout, a note on stderr, exit `1`. It printed
   `--help` and exited `0`, which an NDJSON reader choked on. `rq` alone at a
   terminal still shows help.
+- `rq --status` tells a partial index nothing is filling (an indexer killed
+  part-way) from one still being indexed, as a hit from it does: the row says
+  "stopped part-way: `rq --index …` finishes it", and its JSON carries
+  `interrupted` (`true`/`false`, absent once complete).
 
 ## 0.60.15 — 2026-11-21
 

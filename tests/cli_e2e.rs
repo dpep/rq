@@ -4838,6 +4838,15 @@ fn an_exact_match_from_a_partial_index_answers_and_says_so() {
     let (_, _, err) = rq_full(&db, &dir, &["User", "--no-wait"], &NO_CHILD, None);
     assert!(err.contains("indexing stopped part-way"), "{err}");
     assert!(!err.contains("still indexing"), "{err}");
+    // and --status says it as the hit does
+    let (_, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert_eq!(json(&out)[0]["interrupted"], true, "{out}");
+    let (_, out) = rq(&db, &dir, &["--status"]);
+    let row = out.lines().next().unwrap();
+    assert!(
+        row.contains("stopped part-way") && row.contains("rq --index"),
+        "{out}"
+    );
 
     // --show judges which definition was meant, as --open does; the share
     // read is disclosed, not a reason to withhold the body

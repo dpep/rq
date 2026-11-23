@@ -1135,7 +1135,7 @@ pub(super) fn read_share_confidence(confidence: f64, w: &crate::search::Warming)
 
 /// What finishes indexing the checkout at `root`: `rq --index` in the one
 /// this search runs in, naming the root anywhere else.
-fn index_command(root: &str, here: bool) -> String {
+pub(super) fn index_command(root: &str, here: bool) -> String {
     if here {
         "rq --index".to_string()
     } else {

@@ -244,6 +244,23 @@ pub(super) fn cmd_status(store: &Store, out: Output) -> ExitCode {
             row.of = tree_span(store, &row.root, checkout.id).map(|s| s.max(row.files));
         }
     }
+    // A partial index nothing is filling stopped part-way, as a hit from it
+    // says (`warming.interrupted`); omitted on a complete one.
+    #[derive(serde::Serialize)]
+    struct Row<'a> {
+        #[serde(flatten)]
+        row: &'a crate::store::CoverageRow,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interrupted: Option<bool>,
+    }
+    let rows: Vec<Row> = rows
+        .iter()
+        .map(|row| Row {
+            row,
+            interrupted: (row.status != Coverage::Complete)
+                .then(|| !store.indexed_by_others(&row.root)),
+        })
+        .collect();
     if let Err(failed) = emit_rows(out, &rows) {
         return failed.into();
     }
@@ -253,7 +270,11 @@ pub(super) fn cmd_status(store: &Store, out: Output) -> ExitCode {
             println!("no repositories indexed yet (try `rq --index`)");
         }
         Output::Text => {
-            for r in &rows {
+            for Row {
+                row: r,
+                interrupted,
+            } in &rows
+            {
                 // a local identity is its root already
                 let at = if r.identity == format!("local:{}", r.root) {
                     String::new()
@@ -265,8 +286,16 @@ pub(super) fn cmd_status(store: &Store, out: Output) -> ExitCode {
                     None => r.files.to_string(),
                 };
                 let finishing = finishing_note(r.phase, r.phase_secs);
+                let stopped = if *interrupted == Some(true) {
+                    format!(
+                        "  (stopped part-way: `{}` finishes it)",
+                        index_command(&r.root, false)
+                    )
+                } else {
+                    String::new()
+                };
                 println!(
-                    "{:<10} {files:>6} files{finishing}  {:>7} symbols  {}{at}",
+                    "{:<10} {files:>6} files{finishing}  {:>7} symbols  {}{at}{stopped}",
                     r.status, r.symbols, r.identity
                 );
             }
