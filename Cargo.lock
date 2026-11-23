@@ -367,6 +367,7 @@ version = "0.61.1"
 dependencies = [
  "clap",
  "clap_complete",
+ "foldhash",
  "ignore",
  "libc",
  "memchr",

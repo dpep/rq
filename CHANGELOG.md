@@ -16,7 +16,8 @@ and aren't listed; see `git log` for those.
   later.
 - A short fuzzy query across every repo (`rq -a usr`) does less work: when its
   matches overflow the candidate cap, each name's definitions are read from
-  the index once rather than twice.
+  the index once rather than twice, and the per-candidate bookkeeping hashes
+  without copying.
 
 ### Fixed
 

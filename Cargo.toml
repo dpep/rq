@@ -27,6 +27,7 @@ undocumented_unsafe_blocks = "warn"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
+foldhash = "0.2"
 libc = "0.2"
 memchr = "2"
 serde = { version = "1", features = ["derive"] }

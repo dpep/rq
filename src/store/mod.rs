@@ -1621,7 +1621,7 @@ impl Store {
         use rusqlite::types::Value;
         // folded as `name_lower` is at index time, or a non-ASCII name misses
         let q = query.to_lowercase();
-        let mut found: HashMap<(i64, i64), SymbolRow> = HashMap::new();
+        let mut found: foldhash::HashMap<(i64, i64), SymbolRow> = Default::default();
         let mut keep = |rows: Vec<(i64, SymbolRow)>| {
             for (id, row) in rows {
                 found.entry((id, row.checkout_id)).or_insert(row);
@@ -1768,7 +1768,7 @@ fn fold_checkouts(
         return rows;
     }
     let rank = |checkout: i64| (Some(checkout) != prefer, std::cmp::Reverse(checkout));
-    let mut winner: HashMap<Def, i64> = HashMap::new();
+    let mut winner: foldhash::HashMap<Def, i64> = Default::default();
     for r in &rows {
         winner
             .entry(def_key(r))

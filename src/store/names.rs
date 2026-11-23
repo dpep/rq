@@ -27,7 +27,7 @@ fn in_checkout(only: Option<Checkout>) -> String {
 /// What the cap counts: rows in one checkout; across checkouts, definitions,
 /// which branches far enough apart hold in several versions each.
 struct Held {
-    defs: Option<std::collections::HashSet<u64>>,
+    defs: Option<foldhash::HashSet<u64>>,
     rows: usize,
 }
 
@@ -40,10 +40,10 @@ impl Held {
     }
 
     fn add(&mut self, row: &SymbolRow) {
-        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        use std::hash::BuildHasher;
         self.rows += 1;
         if let Some(defs) = &mut self.defs {
-            defs.insert(BuildHasherDefault::<DefaultHasher>::default().hash_one(def_key(row)));
+            defs.insert(foldhash::fast::FixedState::default().hash_one(def_key(row)));
         }
     }
 

@@ -933,19 +933,25 @@ fn sort_and_truncate(hits: &mut Vec<Hit>, limit: usize) -> usize {
 /// file they are one definition declared more than once: TypeScript's overload
 /// signatures, Rust's `#[cfg]` alternatives.
 fn collapse_declarations(hits: &mut Vec<Hit>) {
-    use std::collections::HashMap;
     // a class method and an instance method of one name are two definitions
-    type Key = (String, Option<String>, Option<String>, String, String, bool);
-    let mut first: HashMap<Key, usize> = HashMap::new();
+    type Key<'a> = (
+        &'a str,
+        Option<&'a str>,
+        Option<&'a str>,
+        &'a str,
+        &'a str,
+        bool,
+    );
+    let mut first: foldhash::HashMap<Key, usize> = Default::default();
     let mut folded: Vec<Vec<String>> = vec![Vec::new(); hits.len()];
     let mut keep = Vec::with_capacity(hits.len());
     for (i, hit) in hits.iter().enumerate() {
         let key = (
-            hit.root.clone().unwrap_or_default(),
-            hit.parent.clone(),
-            hit.parent.is_none().then(|| hit.file.clone()),
-            hit.name.clone(),
-            hit.kind.clone(),
+            hit.root.as_deref().unwrap_or_default(),
+            hit.parent.as_deref(),
+            hit.parent.is_none().then_some(hit.file.as_str()),
+            hit.name.as_str(),
+            hit.kind.as_str(),
             hit.singleton,
         );
         match first.get(&key) {
@@ -959,6 +965,7 @@ fn collapse_declarations(hits: &mut Vec<Hit>) {
             }
         }
     }
+    drop(first);
     let mut i = 0;
     hits.retain(|_| {
         let k = keep[i];
