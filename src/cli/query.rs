@@ -497,17 +497,27 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
                 // first; the abort flag (`INTERRUPTED`) lets a Ctrl-C, a wait
                 // timeout, or an early answer stop the pass without losing
                 // committed work
-                let pass = crate::index::index_budgeted_cancellable(
-                    &mut idx,
-                    &root,
-                    &active,
-                    wait_budget,
-                    Some(&q),
-                    &INTERRUPTED,
-                    &demanded,
-                );
-                if let Err(e) = pass {
+                let started = std::time::Instant::now();
+                loop {
+                    let left = wait_budget.saturating_sub(started.elapsed());
+                    let pass = crate::index::index_budgeted_cancellable(
+                        &mut idx,
+                        &root,
+                        &active,
+                        left,
+                        Some(&q),
+                        &INTERRUPTED,
+                        &demanded,
+                    );
+                    let Err(e) = pass else { break };
                     crate::trace!("warm {}: pass failed: {e}", crate::trace::abbrev(&root));
+                    // A `--drop` raced the pass. Nobody else is indexing the
+                    // repo now, and the search still wants it: index it again
+                    // within what's left of the wait.
+                    let stopped = INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
+                    if !e.is::<crate::index::Dropped>() || stopped || left.is_zero() {
+                        break;
+                    }
                 }
             }
             warm_done.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -570,8 +580,9 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     // whether the anchor's reach split the index's candidates, for the merge
     let mut reach;
     let mut hits = loop {
-        // the warm registers a repo it's indexing for the first time
-        if current.is_none() {
+        // the warm registers a repo it's indexing for the first time, and
+        // again under a new id when a `--drop` raced it
+        if current.is_none() || polling {
             current = checkout_here(store);
         }
         let searched_at = std::time::Instant::now();

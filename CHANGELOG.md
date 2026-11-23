@@ -70,6 +70,8 @@ and aren't listed; see `git log` for those.
   part-way) from one still being indexed, as a hit from it does: the row says
   "stopped part-way: `rq --index …` finishes it", and its JSON carries
   `interrupted` (`true`/`false`, absent once complete).
+- A cold search whose indexing an `rq --drop` cut short indexes again within
+  its wait and answers, instead of giving up as `warming` (exit 2) a moment in.
 
 ## 0.60.15 — 2026-11-21
 

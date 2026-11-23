@@ -4788,6 +4788,42 @@ fn json(out: &str) -> serde_json::Value {
 }
 
 #[test]
+fn a_cold_search_outlasts_a_drop_that_races_its_pass() {
+    // The drop ends the search's own pass and nothing else is indexing: the
+    // search indexes again within its wait, rather than give up as `warming`.
+    let (dir, db) = scratch("drop-race");
+    // enough files that each drop lands before the pass could finish
+    for i in 0..2000 {
+        fs::write(
+            dir.join(format!("w{i}.rb")),
+            format!("class Widget{i}\nend\n"),
+        )
+        .unwrap();
+    }
+    fs::write(dir.join("router.rb"), "class Router\nend\n").unwrap();
+    git_init_commit(&dir);
+    // a race: bounded in rounds and time, each landing the drop a bit later
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    for round in 0..12u64 {
+        if std::time::Instant::now() > deadline {
+            break;
+        }
+        rq(&db, &dir, &["--drop"]);
+        let search = rq_cmd(&db, &dir)
+            .args(["Router", "-l", "1", "--json"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(round * 3 % 20));
+        rq(&db, &dir, &["--drop"]);
+        let out = search.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(common::code(&out), 0, "round {round}: {stdout}");
+    }
+}
+
+#[test]
 fn a_prefix_match_from_a_partial_index_is_provisional_not_an_answer() {
     let (dir, db) = prefix_and_exact("partial-prefix");
     rq(&db, &dir, &["--index", "app"]);
