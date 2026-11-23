@@ -17,7 +17,7 @@
 
 use tree_sitter::Node;
 
-use crate::core::{Kind, Symbol};
+use crate::core::{Kind, Symbol, Visibility};
 use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "python";
@@ -84,7 +84,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
                     let (kind, vis) = match scope {
                         Scope::Class | Scope::Enum => (Kind::Method, name_visibility(&name)),
                         Scope::Module => (Kind::Function, name_visibility(&name)),
-                        Scope::Function => (Kind::Function, "local"),
+                        Scope::Function => (Kind::Function, Visibility::Local),
                     };
                     let mut s = ctx.symbol(&name, kind, child, parent);
                     s.visibility = Some(vis);
@@ -99,7 +99,7 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, scope: Scope, out: &mut Vec
             "class_definition" => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     let mut s = ctx.symbol(&name, Kind::Class, child, parent);
-                    s.visibility = Some("local");
+                    s.visibility = Some(Visibility::Local);
                     out.push(s);
                 }
             }
@@ -164,7 +164,7 @@ fn members(ctx: &Ctx, assign: Node, parent: Option<&str>, out: &mut Vec<Symbol>)
             && !name.starts_with('_')
         {
             let mut s = ctx.symbol(&name, Kind::Variant, assign, parent);
-            s.visibility = Some("public");
+            s.visibility = Some(Visibility::Public);
             out.push(s);
         }
     });
@@ -237,12 +237,12 @@ fn is_constant_name(name: &str) -> bool {
 
 /// Python's naming convention: a leading underscore marks internal —
 /// except dunders (`__init__`), which are the public protocol surface.
-fn name_visibility(name: &str) -> &'static str {
+fn name_visibility(name: &str) -> Visibility {
     let dunder = name.starts_with("__") && name.ends_with("__");
     if name.starts_with('_') && !dunder {
-        "private"
+        Visibility::Private
     } else {
-        "public"
+        Visibility::Public
     }
 }
 
@@ -317,11 +317,11 @@ class Account:
         let wrapper = find(&syms, "_wrapper");
         assert_eq!(wrapper.kind, Kind::Function);
         assert_eq!(wrapper.parent.as_deref(), Some("_multi_decorate"));
-        assert_eq!(wrapper.visibility, Some("local"));
+        assert_eq!(wrapper.visibility, Some(Visibility::Local));
 
         let inner = find(&syms, "inner");
         assert_eq!(inner.parent.as_deref(), Some("_multi_decorate._wrapper"));
-        assert_eq!(inner.visibility, Some("local"));
+        assert_eq!(inner.visibility, Some(Visibility::Local));
 
         // a closure in a method is a function, not a method, of that method
         let helper = find(&syms, "helper");
@@ -332,7 +332,7 @@ class Account:
         let local = find(&syms, "Local");
         assert_eq!(local.kind, Kind::Class);
         assert_eq!(local.parent.as_deref(), Some("_multi_decorate"));
-        assert_eq!(local.visibility, Some("local"));
+        assert_eq!(local.visibility, Some(Visibility::Local));
 
         // but its body, and a def's assignments, are locals' locals
         for absent in ["hidden", "LIMIT"] {
@@ -426,12 +426,15 @@ class Account:
         let max = find(&syms, "MAX_RETRIES");
         assert_eq!(max.kind, Kind::Constant);
         assert_eq!(max.parent, None);
-        assert_eq!(max.visibility, Some("public"));
+        assert_eq!(max.visibility, Some(Visibility::Public));
 
         for name in ["TIMEOUT", "LOW", "HIGH", "FIRST", "SECOND", "FAST_PATH"] {
             assert_eq!(find(&syms, name).kind, Kind::Constant, "{name}");
         }
-        assert_eq!(find(&syms, "_INTERNAL_LIMIT").visibility, Some("private"));
+        assert_eq!(
+            find(&syms, "_INTERNAL_LIMIT").visibility,
+            Some(Visibility::Private)
+        );
 
         // a class-level constant belongs to its class
         let default = find(&syms, "DEFAULT_BALANCE");
@@ -474,9 +477,9 @@ class Point:
                 (Kind::Field, Some("Point")),
                 "{name}"
             );
-            assert_eq!(f.visibility, Some("public"));
+            assert_eq!(f.visibility, Some(Visibility::Public));
         }
-        assert_eq!(find(&syms, "_cache").visibility, Some("private"));
+        assert_eq!(find(&syms, "_cache").visibility, Some(Visibility::Private));
         assert_eq!(find(&syms, "ORIGIN").kind, Kind::Constant);
         assert_eq!(
             find(&syms, "ordering").parent.as_deref(),
@@ -498,9 +501,12 @@ class Point:
     fn underscore_names_read_as_private_except_dunders() {
         let src = "class Account:\n    def _internal(self):\n        pass\n    def __init__(self):\n        pass\n\ndef fetch():\n    pass\n";
         let syms = extract(src);
-        assert_eq!(find(&syms, "_internal").visibility, Some("private"));
-        assert_eq!(find(&syms, "__init__").visibility, Some("public"));
-        assert_eq!(find(&syms, "fetch").visibility, Some("public"));
+        assert_eq!(
+            find(&syms, "_internal").visibility,
+            Some(Visibility::Private)
+        );
+        assert_eq!(find(&syms, "__init__").visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "fetch").visibility, Some(Visibility::Public));
     }
 
     #[test]

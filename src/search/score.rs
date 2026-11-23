@@ -4,7 +4,7 @@
 //! smaller additive features layered on (kind, current-repo). Every component
 //! is recorded so `--explain` can show why a result ranked where it did.
 
-use crate::core::Kind;
+use crate::core::{Kind, Visibility};
 use crate::store::SymbolRow;
 
 /// One named contribution to a score.
@@ -285,10 +285,10 @@ pub(crate) fn score(
     // reachable only from inside its enclosing definition, so it ranks below
     // every same-named definition that isn't, and above test code: sized, like
     // `separators`, past what `path`, extent and kind can add together.
-    let visibility = match cand.visibility.as_deref() {
-        Some("private" | "protected") => Some(("private", -15.0)),
-        Some("local") => Some(("local", -LOCAL_PENALTY)),
-        _ => None,
+    let visibility = match cand.visibility {
+        Some(Visibility::Private | Visibility::Protected) => Some(("private", -15.0)),
+        Some(Visibility::Local) => Some(("local", -LOCAL_PENALTY)),
+        Some(Visibility::Public | Visibility::Crate) | None => None,
     };
     if let Some((name, value)) = visibility {
         features.push(Feature {
@@ -1681,7 +1681,7 @@ mod tests {
         let declared = SymbolRow {
             file: "types/widget.d.ts".into(),
             end_line: Some(200),
-            visibility: Some("public".into()),
+            visibility: Some(Visibility::Public),
             stub: true,
             singleton: false,
             ..row("Widget", "class", 1)
@@ -1689,7 +1689,7 @@ mod tests {
         let implemented = SymbolRow {
             file: "lib/index.js".into(),
             end_line: Some(40),
-            visibility: Some("private".into()),
+            visibility: Some(Visibility::Private),
             ..row("Widget", "class", 1)
         };
         let total = |q: &str, c: &SymbolRow| score(q, c, None, Boosts::default(), false);
@@ -1850,14 +1850,11 @@ mod tests {
     fn a_leading_underscore_asks_for_the_underscored_name() {
         let fz = |q: &str, name: &str| {
             let mut r = row(name, "method", 1);
-            r.visibility = Some(
-                if name.starts_with('_') {
-                    "private"
-                } else {
-                    "public"
-                }
-                .into(),
-            );
+            r.visibility = Some(if name.starts_with('_') {
+                Visibility::Private
+            } else {
+                Visibility::Public
+            });
             score(q, &r, None, Boosts::default(), false).unwrap().total
         };
         assert!(fz("_frmtr", "_formatter") > fz("_frmtr", "formatter"));
@@ -1930,9 +1927,9 @@ mod tests {
     #[test]
     fn private_ranks_below_public_on_an_equal_match() {
         let mut public = row("save", "method", 1);
-        public.visibility = Some("public".into());
+        public.visibility = Some(Visibility::Public);
         let mut private = row("save", "method", 1);
-        private.visibility = Some("private".into());
+        private.visibility = Some(Visibility::Private);
         let unknown = row("save", "method", 1); // pre-v9 row: no signal
 
         let pub_score = score("save", &public, None, Boosts::default(), false).unwrap();

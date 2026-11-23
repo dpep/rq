@@ -79,6 +79,58 @@ impl fmt::Display for Kind {
     }
 }
 
+/// A definition's access level, in the vocabulary every language maps onto. A
+/// ranking hint (private helpers sit below public API), never a filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Visibility {
+    Public,
+    /// Visible within its crate or package, not beyond: Rust's `pub(crate)`.
+    Crate,
+    Private,
+    Protected,
+    /// Reachable only from inside its enclosing definition's body: a closure, a
+    /// function nested in another.
+    Local,
+}
+
+impl Visibility {
+    pub(crate) const ALL: [Visibility; 5] = [
+        Visibility::Public,
+        Visibility::Crate,
+        Visibility::Private,
+        Visibility::Protected,
+        Visibility::Local,
+    ];
+
+    /// The visibility a stored tag names; `None` for one this build doesn't know.
+    pub(crate) fn from_tag(tag: &str) -> Option<Visibility> {
+        Visibility::ALL.into_iter().find(|v| v.as_str() == tag)
+    }
+
+    /// Stable lowercase tag used in storage and output.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Visibility::Public => "public",
+            Visibility::Crate => "crate",
+            Visibility::Private => "private",
+            Visibility::Protected => "protected",
+            Visibility::Local => "local",
+        }
+    }
+}
+
+impl fmt::Display for Visibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl serde::Serialize for Visibility {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
 /// How far a definition its language marks private can be called from: the
 /// file that defines it (an ES module), or every file in its directory (a Go
 /// package; a Rust module, whose children beside a `mod.rs` or crate root call
@@ -119,11 +171,8 @@ pub(crate) struct Symbol {
     pub end_line: u32,
     /// Enclosing symbol name, if any (lexical nesting only).
     pub parent: Option<String>,
-    /// Access level when the language expresses one: `public`, `crate`,
-    /// `private`, `protected`, or `local` (only its enclosing definition's body
-    /// can reach it: a closure). `None` when unknown. A ranking hint (private
-    /// helpers sit below public API), never a filter.
-    pub visibility: Option<&'static str>,
+    /// Access level when the language expresses one; `None` when unknown.
+    pub visibility: Option<Visibility>,
     /// Declares a definition whose body lives elsewhere: a TypeScript ambient
     /// `declare` or `.d.ts` entry, an overload signature. A ranking hint (the
     /// implementation outranks it), never a filter.
@@ -153,5 +202,16 @@ mod tests {
         assert_eq!(Kind::Type.as_str(), "type");
         assert_eq!(Kind::Variant.as_str(), "variant");
         assert_eq!(Kind::Field.as_str(), "field");
+    }
+
+    #[test]
+    fn visibility_tags_round_trip_and_unknown_ones_parse_to_none() {
+        for v in Visibility::ALL {
+            assert_eq!(Visibility::from_tag(v.as_str()), Some(v));
+            assert_eq!(serde_json::to_string(&v).unwrap(), format!("\"{v}\""));
+        }
+        // a stored value this build doesn't know (another build's, a typo)
+        assert_eq!(Visibility::from_tag("Private"), None);
+        assert_eq!(Visibility::from_tag(""), None);
     }
 }

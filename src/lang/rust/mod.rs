@@ -16,7 +16,7 @@
 
 use tree_sitter::Node;
 
-use crate::core::{Kind, Symbol};
+use crate::core::{Kind, Symbol, Visibility};
 use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "rust";
@@ -91,9 +91,9 @@ fn walk(ctx: &Ctx, node: Node, parent: Option<&str>, out: &mut Vec<Symbol>) {
                     // `macro_rules!` has no `pub`: `#[macro_export]` makes it
                     // public API, otherwise it's in scope within the crate
                     s.visibility = Some(if exported(ctx, child) {
-                        "public"
+                        Visibility::Public
                     } else {
-                        "crate"
+                        Visibility::Crate
                     });
                     out.push(s);
                 }
@@ -240,7 +240,7 @@ fn push<'o>(
 /// An item's visibility. A trait's items carry none of their own: they are as
 /// visible as the trait. A trait impl's are as visible as a trait this file
 /// may not declare, so they're unknown rather than private.
-fn item_visibility(ctx: &Ctx, node: Node) -> Option<&'static str> {
+fn item_visibility(ctx: &Ctx, node: Node) -> Option<Visibility> {
     let owner = node.parent().and_then(|list| list.parent());
     match owner {
         Some(t) if t.kind() == "trait_item" => Some(visibility(ctx, t)),
@@ -251,19 +251,19 @@ fn item_visibility(ctx: &Ctx, node: Node) -> Option<&'static str> {
 
 /// The item's declared visibility: `pub` → public, any scoped `pub(...)` →
 /// crate, none → private (Rust's default).
-fn visibility(ctx: &Ctx, node: Node) -> &'static str {
+fn visibility(ctx: &Ctx, node: Node) -> Visibility {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "visibility_modifier" {
             let text = ctx.node_text(child).unwrap_or_default();
             return if text.contains('(') {
-                "crate"
+                Visibility::Crate
             } else {
-                "public"
+                Visibility::Public
             };
         }
     }
-    "private"
+    Visibility::Private
 }
 
 /// Whether an fn declares a `self` receiver (an instance method). A typed one,
@@ -346,7 +346,7 @@ pub fn build() -> Widget {
         let render = find(&syms, "render");
         assert_eq!(render.kind, Kind::Method);
         assert_eq!(render.parent.as_deref(), Some("Render"));
-        assert_eq!(render.visibility, Some("public"));
+        assert_eq!(render.visibility, Some(Visibility::Public));
 
         assert_eq!(widget.language, "rust");
     }
@@ -408,8 +408,8 @@ impl Widget {
         let syms = extract(src);
         let max = find(&syms, "MAX");
         assert_eq!(max.kind, Kind::Constant);
-        assert_eq!(max.visibility, Some("public"));
-        assert_eq!(find(&syms, "NAME").visibility, Some("private"));
+        assert_eq!(max.visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "NAME").visibility, Some(Visibility::Private));
         // an associated const belongs to its impl's type
         assert_eq!(find(&syms, "DEFAULT").parent.as_deref(), Some("Widget"));
     }
@@ -444,12 +444,12 @@ impl Iterator for Walker {
         let square = find(&syms, "Square");
         assert_eq!(square.kind, Kind::Variant);
         assert_eq!(square.parent.as_deref(), Some("Shape"));
-        assert_eq!(square.visibility, Some("public"));
+        assert_eq!(square.visibility, Some(Visibility::Public));
         assert_eq!(find(&syms, "Result").kind, Kind::Type);
         let shout = find(&syms, "shout");
         assert_eq!(shout.kind, Kind::Macro);
-        assert_eq!(shout.visibility, Some("public"));
-        assert_eq!(find(&syms, "helper").visibility, Some("crate"));
+        assert_eq!(shout.visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "helper").visibility, Some(Visibility::Crate));
         // an associated type is the trait's slot, not a definition
         assert!(!syms.iter().any(|s| s.name == "Item"), "{syms:?}");
     }
@@ -482,7 +482,7 @@ not_items! { a => b, c }
             (handle.kind, handle.line, handle.end_line),
             (Kind::Struct, 4, 6)
         );
-        assert_eq!(handle.visibility, Some("public"));
+        assert_eq!(handle.visibility, Some(Visibility::Public));
         // nested calls, and calls inside an impl, which keep the impl's type
         assert_eq!(find(&syms, "spawn").line, 9);
         let block_on = find(&syms, "block_on");
@@ -512,10 +512,10 @@ pub enum Shape { Rect { width: u32 } }
         let also_in = find(&syms, "also_in");
         assert_eq!(
             (also_in.kind, also_in.parent.as_deref(), also_in.visibility),
-            (Kind::Field, Some("search::Hit"), Some("public"))
+            (Kind::Field, Some("search::Hit"), Some(Visibility::Public))
         );
-        assert_eq!(find(&syms, "score").visibility, Some("crate"));
-        assert_eq!(find(&syms, "rank").visibility, Some("private"));
+        assert_eq!(find(&syms, "score").visibility, Some(Visibility::Crate));
+        assert_eq!(find(&syms, "rank").visibility, Some(Visibility::Private));
         assert_eq!(find(&syms, "word").parent.as_deref(), Some("Bits"));
         // a tuple struct's positions and a struct variant's fields aren't here
         let fields = syms.iter().filter(|s| s.kind == Kind::Field).count();
@@ -526,9 +526,9 @@ pub enum Shape { Rect { width: u32 } }
     fn visibility_reflects_the_pub_modifier() {
         let src = "pub fn open() {}\npub(crate) fn shared() {}\nfn helper() {}\n";
         let syms = extract(src);
-        assert_eq!(find(&syms, "open").visibility, Some("public"));
-        assert_eq!(find(&syms, "shared").visibility, Some("crate"));
-        assert_eq!(find(&syms, "helper").visibility, Some("private"));
+        assert_eq!(find(&syms, "open").visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "shared").visibility, Some(Visibility::Crate));
+        assert_eq!(find(&syms, "helper").visibility, Some(Visibility::Private));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use tree_sitter::Node;
 
-use crate::core::{Kind, Symbol};
+use crate::core::{Kind, Symbol, Visibility};
 use crate::lang::{Ctx, LanguagePlugin, extract_with, qualify};
 
 const LANGUAGE: &str = "ruby";
@@ -32,7 +32,7 @@ impl LanguagePlugin for Ruby {
             tree_sitter_ruby::LANGUAGE.into(),
             file,
             source,
-            |ctx, root, out| walk(ctx, root, None, "public", false, out),
+            |ctx, root, out| walk(ctx, root, None, Visibility::Public, false, out),
         )
     }
 }
@@ -46,7 +46,7 @@ fn walk(
     ctx: &Ctx,
     node: Node,
     parent: Option<&str>,
-    vis: &'static str,
+    vis: Visibility,
     singleton: bool,
     out: &mut Vec<Symbol>,
 ) {
@@ -74,23 +74,23 @@ fn walk(
                     // is found by its leaf name either way
                     let (leaf, effective_parent) = leaf_and_parent(&name, parent);
                     let mut s = ctx.symbol(leaf, kind, child, effective_parent.as_deref());
-                    s.visibility = Some("public");
+                    s.visibility = Some(Visibility::Public);
                     out.push(s);
                     let qualified = qualify(effective_parent.as_deref(), leaf, "::");
                     // a fresh body starts a fresh (public) access section
-                    walk(ctx, child, Some(&qualified), "public", false, out);
+                    walk(ctx, child, Some(&qualified), Visibility::Public, false, out);
                 } else {
                     walk(ctx, child, parent, vis, singleton, out);
                 }
             }
             // `class << self`: a fresh access section, on the class itself
-            "singleton_class" => walk(ctx, child, parent, "public", true, out),
+            "singleton_class" => walk(ctx, child, parent, Visibility::Public, true, out),
             "method" | "singleton_method" => {
                 if let Some(name) = ctx.field_text(child, "name") {
                     let mut s = ctx.symbol(&name, Kind::Method, child, parent);
                     // `private` sections don't apply to `def self.x`
                     let own = child.kind() == "singleton_method";
-                    s.visibility = Some(if own { "public" } else { vis });
+                    s.visibility = Some(if own { Visibility::Public } else { vis });
                     s.singleton = own || singleton;
                     out.push(s);
                 }
@@ -124,15 +124,15 @@ fn walk(
             "identifier" => match ctx.node_text(child).as_deref() {
                 Some(marker @ ("private" | "protected" | "public")) => {
                     vis = match marker {
-                        "private" => "private",
-                        "protected" => "protected",
-                        _ => "public",
+                        "private" => Visibility::Private,
+                        "protected" => Visibility::Protected,
+                        _ => Visibility::Public,
                     };
                     module_function = false;
                 }
                 // the module's copy is public; its instance copy is private
                 Some("module_function") => {
-                    vis = "public";
+                    vis = Visibility::Public;
                     module_function = true;
                 }
                 _ => {}
@@ -176,7 +176,7 @@ fn module_functions(ctx: &Ctx, call: Node, parent: Option<&str>, out: &mut [Symb
             .filter(|s| s.kind == Kind::Method && s.name == name && s.parent.as_deref() == parent)
         {
             s.singleton = true;
-            s.visibility = Some("public");
+            s.visibility = Some(Visibility::Public);
         }
     }
 }
@@ -202,13 +202,13 @@ fn access_call(
         return;
     };
     let (vis, singleton) = match method.as_str() {
-        "private" => ("private", class_side),
-        "protected" => ("protected", class_side),
-        "public" => ("public", class_side),
+        "private" => (Visibility::Private, class_side),
+        "protected" => (Visibility::Protected, class_side),
+        "public" => (Visibility::Public, class_side),
         // inside `class << self` these address the singleton class's own
         // singleton, which rq doesn't model (and Ruby raises for a plain def)
-        "private_class_method" if !class_side => ("private", true),
-        "public_class_method" if !class_side => ("public", true),
+        "private_class_method" if !class_side => (Visibility::Private, true),
+        "public_class_method" if !class_side => (Visibility::Public, true),
         _ => return,
     };
     let Some(args) = call.child_by_field_name("arguments") else {
@@ -286,7 +286,7 @@ fn alias_visibility(
     parent: Option<&str>,
     singleton: bool,
     original: &str,
-) -> &'static str {
+) -> Visibility {
     out.iter()
         .rev()
         .find(|s| {
@@ -296,7 +296,7 @@ fn alias_visibility(
                 && s.name == original
         })
         .and_then(|s| s.visibility)
-        .unwrap_or("public")
+        .unwrap_or(Visibility::Public)
 }
 
 /// How many of a DSL macro's arguments name methods it defines.
@@ -336,7 +336,7 @@ fn dsl_symbols(
     ctx: &Ctx,
     call: Node,
     parent: Option<&str>,
-    vis: &'static str,
+    vis: Visibility,
     singleton: bool,
     out: &mut Vec<Symbol>,
 ) {
@@ -408,7 +408,7 @@ fn constants(ctx: &Ctx, left: Node, def: Node, parent: Option<&str>, out: &mut V
                 // setter call, not a constant)
                 if leaf.starts_with(char::is_uppercase) {
                     let mut s = ctx.symbol(leaf, Kind::Constant, def, effective_parent.as_deref());
-                    s.visibility = Some("public");
+                    s.visibility = Some(Visibility::Public);
                     out.push(s);
                 }
             }
@@ -668,9 +668,9 @@ end
         let syms = extract(src);
         let build = find(&syms, "build");
         assert_eq!(build.parent.as_deref(), Some("Foo"));
-        assert_eq!(build.visibility, Some("public"));
+        assert_eq!(build.visibility, Some(Visibility::Public));
         // unlike `def self.x`, visibility applies inside `class << self`
-        assert_eq!(find(&syms, "hidden").visibility, Some("private"));
+        assert_eq!(find(&syms, "hidden").visibility, Some(Visibility::Private));
     }
 
     #[test]
@@ -703,7 +703,7 @@ Version = Struct.new(:major)
             assert_eq!(find(&syms, name).kind, Kind::Constant, "{name}");
         }
         // method visibility sections don't apply to constants
-        assert_eq!(find(&syms, "SECRET").visibility, Some("public"));
+        assert_eq!(find(&syms, "SECRET").visibility, Some(Visibility::Public));
         // an anonymous class is at least findable by the constant naming it
         assert_eq!(find(&syms, "Version").kind, Kind::Constant);
     }
@@ -730,7 +730,7 @@ end
         let hidden = find(&syms, "hidden");
         assert_eq!(hidden.kind, Kind::Method);
         assert_eq!(hidden.parent.as_deref(), Some("Widget"));
-        assert_eq!(hidden.visibility, Some("private"));
+        assert_eq!(hidden.visibility, Some(Visibility::Private));
     }
 
     #[test]
@@ -753,11 +753,14 @@ class Widget
 end
 "#;
         let syms = extract(src);
-        assert_eq!(find(&syms, "open_api").visibility, Some("public"));
-        assert_eq!(find(&syms, "internal").visibility, Some("private"));
+        assert_eq!(find(&syms, "open_api").visibility, Some(Visibility::Public));
+        assert_eq!(
+            find(&syms, "internal").visibility,
+            Some(Visibility::Private)
+        );
         // a macro under `private` defines private methods too
-        assert_eq!(find(&syms, "secret").visibility, Some("private"));
-        assert_eq!(find(&syms, "reopened").visibility, Some("public"));
+        assert_eq!(find(&syms, "secret").visibility, Some(Visibility::Private));
+        assert_eq!(find(&syms, "reopened").visibility, Some(Visibility::Public));
     }
 
     #[test]
@@ -777,7 +780,7 @@ end
         extract(src)
             .into_iter()
             .filter(|s| s.kind == Kind::Method)
-            .map(|s| (s.name, s.singleton, s.visibility.unwrap()))
+            .map(|s| (s.name, s.singleton, s.visibility.unwrap().as_str()))
             .collect()
     }
 

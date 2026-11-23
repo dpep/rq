@@ -53,7 +53,7 @@ use std::collections::HashSet;
 
 use tree_sitter::{Language, Node};
 
-use crate::core::{ImportTarget, Kind, PrivateScope, Symbol};
+use crate::core::{ImportTarget, Kind, PrivateScope, Symbol, Visibility};
 use crate::lang::{Ctx, LanguagePlugin, extract_with_key, qualify};
 
 mod imports;
@@ -187,19 +187,19 @@ fn exported_locals(ctx: &Ctx, root: Node, out: &mut [Symbol]) {
     }
     let mut enums = HashSet::new();
     for s in out.iter_mut().filter(|s| {
-        s.parent.is_none() && s.visibility == Some("private") && names.contains(&s.name)
+        s.parent.is_none() && s.visibility == Some(Visibility::Private) && names.contains(&s.name)
     }) {
-        s.visibility = Some("public");
+        s.visibility = Some(Visibility::Public);
         if s.kind == Kind::Enum {
             enums.insert(s.name.clone());
         }
     }
     for s in out.iter_mut().filter(|s| {
         s.kind == Kind::Variant
-            && s.visibility == Some("private")
+            && s.visibility == Some(Visibility::Private)
             && s.parent.as_ref().is_some_and(|p| enums.contains(p))
     }) {
-        s.visibility = Some("public");
+        s.visibility = Some(Visibility::Public);
     }
 }
 
@@ -296,11 +296,11 @@ impl<'a> Scope<'a> {
     /// ESM's convention, where the module's own visibility applies: what a
     /// module exports is its public API. A declaration describes API that
     /// exists, so an ambient one is public.
-    fn visibility(self) -> &'static str {
+    fn visibility(self) -> Visibility {
         if self.exported || self.ambient {
-            "public"
+            Visibility::Public
         } else {
-            "private"
+            Visibility::Private
         }
     }
 }
@@ -618,11 +618,29 @@ fn assigned(
     };
     let parent = parent.as_deref();
     if value.kind() == "class" {
-        push(ctx, out, &name, Kind::Class, node, parent, "public", false);
+        push(
+            ctx,
+            out,
+            &name,
+            Kind::Class,
+            node,
+            parent,
+            Visibility::Public,
+            false,
+        );
         let qualified = qualify(parent, &name, ".");
         walk(ctx, value, scope.within(Some(&qualified)), out);
     } else if is_function_literal(value) {
-        push(ctx, out, &name, kind, node, parent, "public", false);
+        push(
+            ctx,
+            out,
+            &name,
+            kind,
+            node,
+            parent,
+            Visibility::Public,
+            false,
+        );
     } else {
         return false;
     }
@@ -681,7 +699,16 @@ fn exported_object(
         match name {
             Some(name) => {
                 let name = name.trim_matches(|c| c == '"' || c == '\'');
-                push(ctx, out, name, kind, entry, parent, "public", false);
+                push(
+                    ctx,
+                    out,
+                    name,
+                    kind,
+                    entry,
+                    parent,
+                    Visibility::Public,
+                    false,
+                );
             }
             None => walk(ctx, entry, scope, out),
         }
@@ -715,7 +742,7 @@ fn members(
     ctx: &Ctx,
     node: Node,
     qualified: &str,
-    vis: &'static str,
+    vis: Visibility,
     stub: bool,
     out: &mut Vec<Symbol>,
 ) {
@@ -936,7 +963,7 @@ fn push<'o>(
     kind: Kind,
     node: Node,
     parent: Option<&str>,
-    visibility: &'static str,
+    visibility: Visibility,
     stub: bool,
 ) -> &'o mut Symbol {
     let mut s = ctx.symbol(name, kind, node, parent);
@@ -948,21 +975,21 @@ fn push<'o>(
 
 /// A member's declared access: the TypeScript modifier if it has one, else the
 /// `#` prefix of an ES private name, else public (both languages' default).
-fn member_visibility(ctx: &Ctx, node: Node, name: &str) -> &'static str {
+fn member_visibility(ctx: &Ctx, node: Node, name: &str) -> Visibility {
     if name.starts_with('#') {
-        return "private";
+        return Visibility::Private;
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "accessibility_modifier" {
             return match ctx.node_text(child).as_deref() {
-                Some("private") => "private",
-                Some("protected") => "protected",
-                _ => "public",
+                Some("private") => Visibility::Private,
+                Some("protected") => Visibility::Protected,
+                _ => Visibility::Public,
             };
         }
     }
-    "public"
+    Visibility::Public
 }
 
 #[cfg(test)]
@@ -1098,13 +1125,13 @@ export class Account {
 }
 "#;
         let syms = extract(src);
-        assert_eq!(find(&syms, "open").visibility, Some("public"));
-        assert_eq!(find(&syms, "helper").visibility, Some("private"));
-        assert_eq!(find(&syms, "deposit").visibility, Some("public"));
-        assert_eq!(find(&syms, "audit").visibility, Some("private"));
-        assert_eq!(find(&syms, "hook").visibility, Some("protected"));
+        assert_eq!(find(&syms, "open").visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "helper").visibility, Some(Visibility::Private));
+        assert_eq!(find(&syms, "deposit").visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "audit").visibility, Some(Visibility::Private));
+        assert_eq!(find(&syms, "hook").visibility, Some(Visibility::Protected));
         // an ES private name is private, and navigable without the `#`
-        assert_eq!(find(&syms, "secret").visibility, Some("private"));
+        assert_eq!(find(&syms, "secret").visibility, Some(Visibility::Private));
     }
 
     #[test]
@@ -1128,18 +1155,22 @@ namespace Inner {
 "#;
         let syms = extract(src);
         for name in ["Main", "helper", "Store", "LIMIT"] {
-            assert_eq!(find(&syms, name).visibility, Some("public"), "{name}");
+            assert_eq!(
+                find(&syms, name).visibility,
+                Some(Visibility::Public),
+                "{name}"
+            );
         }
-        assert_eq!(find(&syms, "hidden").visibility, Some("private"));
+        assert_eq!(find(&syms, "hidden").visibility, Some(Visibility::Private));
         // an enum's variants go public with it, as under `export enum`
-        assert_eq!(find(&syms, "Fast").visibility, Some("public"));
-        assert_eq!(find(&syms, "Still").visibility, Some("private"));
+        assert_eq!(find(&syms, "Fast").visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "Still").visibility, Some(Visibility::Private));
         // an alias or a re-export names nothing declared here
         for absent in ["assist", "StoreType", "relayed"] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}");
         }
         // a namespace's own list exports from the namespace, not the module
-        assert_eq!(find(&syms, "nested").visibility, Some("private"));
+        assert_eq!(find(&syms, "nested").visibility, Some(Visibility::Private));
     }
 
     #[test]
@@ -1194,17 +1225,20 @@ describe("widget", () => {
         let max = find(&syms, "MAX_RETRIES");
         assert_eq!(max.kind, Kind::Constant);
         assert_eq!(max.parent, None);
-        assert_eq!(max.visibility, Some("public"));
+        assert_eq!(max.visibility, Some(Visibility::Public));
 
         // the keyword decides, not the casing
         let router = find(&syms, "router");
         assert_eq!(router.kind, Kind::Constant);
-        assert_eq!(router.visibility, Some("private"));
+        assert_eq!(router.visibility, Some(Visibility::Private));
 
         // an exported `let`/`var` is API, read like a constant
         for name in ["startTime", "legacyExport"] {
             let s = find(&syms, name);
-            assert_eq!((s.kind, s.visibility), (Kind::Constant, Some("public")));
+            assert_eq!(
+                (s.kind, s.visibility),
+                (Kind::Constant, Some(Visibility::Public))
+            );
         }
 
         let ceiling = find(&syms, "CEILING");
@@ -1253,8 +1287,8 @@ class Widget {
         let size = find(&syms, "DEFAULT_SIZE");
         assert_eq!(size.kind, Kind::Constant);
         assert_eq!(size.parent.as_deref(), Some("Widget"));
-        assert_eq!(size.visibility, Some("public"));
-        assert_eq!(find(&syms, "SECRET").visibility, Some("private"));
+        assert_eq!(size.visibility, Some(Visibility::Public));
+        assert_eq!(find(&syms, "SECRET").visibility, Some(Visibility::Private));
 
         // mutable statics and instance fields are fields
         for name in ["count", "id"] {
@@ -1281,9 +1315,9 @@ const enum Hidden {
             let m = find(&syms, name);
             assert_eq!(m.kind, Kind::Variant, "{name}");
             assert_eq!(m.parent.as_deref(), Some("EVENT"), "{name}");
-            assert_eq!(m.visibility, Some("public"), "{name}");
+            assert_eq!(m.visibility, Some(Visibility::Public), "{name}");
         }
-        assert_eq!(find(&syms, "Inner").visibility, Some("private"));
+        assert_eq!(find(&syms, "Inner").visibility, Some(Visibility::Private));
         assert_eq!(syms.len(), 6, "{syms:?}");
     }
 
@@ -1348,7 +1382,7 @@ declare global {
             let s = find(&syms, name);
             (s.kind, s.parent.as_deref(), s.visibility, s.stub)
         };
-        let top = |kind| (kind, None, Some("public"), true);
+        let top = |kind| (kind, None, Some(Visibility::Public), true);
         assert_eq!(at("setup"), top(Kind::Function));
         assert_eq!(at("teardown"), top(Kind::Function));
         // a declared binding is a global's definition, whatever its keyword
@@ -1358,16 +1392,26 @@ declare global {
         assert_eq!(at("Store"), top(Kind::Class));
         assert_eq!(
             at("get"),
-            (Kind::Method, Some("Store"), Some("public"), true)
+            (Kind::Method, Some("Store"), Some(Visibility::Public), true)
         );
         assert_eq!(at("Widgets"), top(Kind::Module));
         assert_eq!(
             at("build"),
-            (Kind::Function, Some("Widgets"), Some("public"), true)
+            (
+                Kind::Function,
+                Some("Widgets"),
+                Some(Visibility::Public),
+                true
+            )
         );
         assert_eq!(
             at("LIMIT"),
-            (Kind::Constant, Some("Widgets"), Some("public"), true)
+            (
+                Kind::Constant,
+                Some("Widgets"),
+                Some(Visibility::Public),
+                true
+            )
         );
         // a module named by a string is named without its quotes
         assert_eq!(at("widget-store"), top(Kind::Module));
@@ -1381,10 +1425,18 @@ declare global {
         assert_eq!(at("registry"), top(Kind::Constant));
         // `global` is the top level, not a scope; a declared type is the
         // definition, with nothing elsewhere to be a stub of
-        assert_eq!(at("Window"), (Kind::Trait, None, Some("public"), false));
+        assert_eq!(
+            at("Window"),
+            (Kind::Trait, None, Some(Visibility::Public), false)
+        );
         assert_eq!(
             at("focusApp"),
-            (Kind::Method, Some("Window"), Some("public"), false)
+            (
+                Kind::Method,
+                Some("Window"),
+                Some(Visibility::Public),
+                false
+            )
         );
         assert_eq!(at("track"), top(Kind::Function));
         // a wildcard or bodiless module declares no definition
@@ -1399,7 +1451,7 @@ declare global {
         for name in ["isReady", "Pool", "size"] {
             let s = find(&syms, name);
             assert!(s.stub, "{name}");
-            assert_eq!(s.visibility, Some("public"), "{name}");
+            assert_eq!(s.visibility, Some(Visibility::Public), "{name}");
         }
         // the same class in a source file is its own definition
         let src = "export class Pool {\n  size(): number { return 1; }\n}\n";
@@ -1435,7 +1487,7 @@ class Codec {
                     .all(|s| (s.kind, &s.parent) == (all[2].kind, &all[2].parent))
             );
         }
-        assert_eq!(find(&syms, "parse").visibility, Some("public"));
+        assert_eq!(find(&syms, "parse").visibility, Some(Visibility::Public));
     }
 
     #[test]
@@ -1470,7 +1522,10 @@ function setup() {
             let s = find(&syms, name);
             (s.kind, s.parent.as_deref(), s.visibility)
         };
-        assert_eq!(at("compile"), (Kind::Function, None, Some("public")));
+        assert_eq!(
+            at("compile"),
+            (Kind::Function, None, Some(Visibility::Public))
+        );
         let renders: Vec<_> = syms.iter().filter(|s| s.name == "render").collect();
         assert_eq!(renders.len(), 2, "{renders:?}");
         assert!(
@@ -1478,15 +1533,21 @@ function setup() {
                 .iter()
                 .any(|s| s.kind == Kind::Function && s.parent.is_none())
         );
-        assert_eq!(at("Router"), (Kind::Class, None, Some("public")));
-        assert_eq!(at("route"), (Kind::Method, Some("Router"), Some("public")));
+        assert_eq!(at("Router"), (Kind::Class, None, Some(Visibility::Public)));
+        assert_eq!(
+            at("route"),
+            (Kind::Method, Some("Router"), Some(Visibility::Public))
+        );
         // the prototype is how a constructor declares instance methods
         assert!(renders.iter().any(|s| s.parent.as_deref() == Some("View")));
-        assert_eq!(at("json"), (Kind::Method, Some("res"), Some("public")));
+        assert_eq!(
+            at("json"),
+            (Kind::Method, Some("res"), Some(Visibility::Public))
+        );
         assert_eq!(find(&syms, "json").line, 8);
         assert_eq!(
             at("handle"),
-            (Kind::Method, Some("app.router"), Some("public"))
+            (Kind::Method, Some("app.router"), Some(Visibility::Public))
         );
         // data, a definition made elsewhere, a computed or `this` target, and
         // anything below the module's own statements
@@ -1637,11 +1698,19 @@ if (typeof window === "undefined") {
         for name in [
             "compile", "render", "keep", "LIMIT", "Store", "create", "open", "close",
         ] {
-            assert_eq!(find(&syms, name).visibility, Some("public"), "{name}");
+            assert_eq!(
+                find(&syms, name).visibility,
+                Some(Visibility::Public),
+                "{name}"
+            );
         }
         // a call's result isn't the local; a body or a branch isn't the module's own
         for name in ["hidden", "patched", "guarded"] {
-            assert_eq!(find(&syms, name).visibility, Some("private"), "{name}");
+            assert_eq!(
+                find(&syms, name).visibility,
+                Some(Visibility::Private),
+                "{name}"
+            );
         }
         // the exported name is an alias: nothing is defined by it
         assert!(!syms.iter().any(|s| s.name == "view"), "{syms:?}");
@@ -1679,9 +1748,9 @@ const config = { port: 80 };
         let tally = find(&syms, "tally");
         assert_eq!(
             (tally.kind, tally.visibility),
-            (Kind::Field, Some("private"))
+            (Kind::Field, Some(Visibility::Private))
         );
-        assert_eq!(find(&syms, "cache").visibility, Some("protected"));
+        assert_eq!(find(&syms, "cache").visibility, Some(Visibility::Protected));
         // through an intersection and parentheses, the alias's own properties
         for name in ["width", "height"] {
             assert_eq!(find(&syms, name).parent.as_deref(), Some("Size"), "{name}");

@@ -17,7 +17,7 @@ pub(crate) use score::{
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crate::core::{PrivateScope, now_unix};
+use crate::core::{PrivateScope, Visibility, now_unix};
 use crate::store::{Checkout, Store, SymbolRow};
 
 /// Per-layer cap on candidates pulled from the store before ranking. Exact and
@@ -203,8 +203,8 @@ impl Anchor {
     /// context there (D31, D60). A private definition is callable only within
     /// its language's private scope: its file, or its directory (a Go package).
     fn in_tree(&self, c: &SymbolRow) -> bool {
-        let callable = || match c.visibility.as_deref() {
-            Some("private") => match crate::lang::private_scope(&c.language) {
+        let callable = || match c.visibility {
+            Some(Visibility::Private) => match crate::lang::private_scope(&c.language) {
                 PrivateScope::File => false,
                 PrivateScope::Directory => parent_dir(&c.file) == parent_dir(&self.file),
             },
@@ -380,7 +380,7 @@ pub(crate) struct Hit {
     /// Access level (`public`/`crate`/`private`/`protected`/`local`) when the language
     /// expresses one. Omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub visibility: Option<String>,
+    pub visibility: Option<Visibility>,
     /// The type's own member rather than its instances' — a class method, a
     /// `static` member (D55). Omitted when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -995,7 +995,7 @@ fn rank_one(
         line: c.line,
         end_line: c.end_line,
         parent: c.parent.clone(),
-        visibility: c.visibility.clone(),
+        visibility: c.visibility,
         singleton: c.singleton,
         repo_identity: c.repo_identity.clone(),
         source: Source::Index,
@@ -1918,13 +1918,13 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let repo = store.test_checkout(&crate::core::RepoIdentity::local("/tmp/x"));
         for (file, visibility) in [
-            ("examples/blog/utils/range.rb", Some("public")),
-            ("examples/blog/utils/helpers.rb", Some("private")),
-            ("examples/blog/app/helpers.rb", Some("private")),
-            ("examples/blog/app/fake.ts", Some("private")),
-            ("examples/blog/app/pkg.go", Some("private")),
-            ("examples/blog/app/main.rs", Some("private")),
-            ("examples/shop/range.rb", Some("public")),
+            ("examples/blog/utils/range.rb", Some(Visibility::Public)),
+            ("examples/blog/utils/helpers.rb", Some(Visibility::Private)),
+            ("examples/blog/app/helpers.rb", Some(Visibility::Private)),
+            ("examples/blog/app/fake.ts", Some(Visibility::Private)),
+            ("examples/blog/app/pkg.go", Some(Visibility::Private)),
+            ("examples/blog/app/main.rs", Some(Visibility::Private)),
+            ("examples/shop/range.rb", Some(Visibility::Public)),
         ] {
             let name = match file {
                 "examples/blog/utils/helpers.rb" => "range_helper",

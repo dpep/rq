@@ -20,7 +20,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-use crate::core::{Symbol, now_unix};
+use crate::core::{Symbol, Visibility, now_unix};
 use crate::search::{Probe, Verdict};
 
 pub(crate) type Result<T> = rusqlite::Result<T>;
@@ -48,9 +48,9 @@ pub(crate) struct SymbolRow {
     pub mtime: Option<i64>,
     /// Last git commit time touching the file — the stronger recency signal.
     pub git_ts: Option<i64>,
-    /// Access level (`public`/`crate`/`private`/`protected`/`local`) when the language
-    /// expresses one; `None` for unknown (or pre-v9 rows). A ranking hint.
-    pub visibility: Option<String>,
+    /// Access level when the language expresses one; `None` for unknown: pre-v9
+    /// rows, and stored text this build has no variant for. A ranking hint.
+    pub visibility: Option<Visibility>,
     /// The file declares itself generated. A ranking hint.
     pub generated: bool,
     /// Declares a definition whose body lives elsewhere ([`Symbol::stub`]).
@@ -77,7 +77,7 @@ impl SymbolRow {
             root: root.to_string(),
             mtime: None,
             git_ts: None,
-            visibility: s.visibility.map(str::to_string),
+            visibility: s.visibility,
             stub: s.stub,
             singleton: s.singleton,
             generated,
@@ -944,7 +944,7 @@ impl Store {
                                     s.line,
                                     s.end_line,
                                     s.parent,
-                                    s.visibility,
+                                    s.visibility.map(Visibility::as_str),
                                     s.stub,
                                     s.singleton,
                                 ])?;
@@ -1804,7 +1804,10 @@ fn row_to_candidate(r: &rusqlite::Row) -> Result<(i64, SymbolRow)> {
             repo_identity: r.get(9)?,
             mtime: r.get(10)?,
             git_ts: r.get(11)?,
-            visibility: r.get(12)?,
+            visibility: r
+                .get::<_, Option<String>>(12)?
+                .as_deref()
+                .and_then(Visibility::from_tag),
             stub: r.get(14)?,
             generated: r.get(13)?,
             checkout_id: r.get(15)?,
@@ -2983,6 +2986,41 @@ mod tests {
             !store
                 .file_unchanged(checkout.id, "missing.rb", "abc")
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn stored_visibility_text_without_a_variant_reads_as_unknown() {
+        let mut store = Store::open_in_memory().unwrap();
+        let checkout = store.test_checkout(&RepoIdentity::local("/tmp/x"));
+        let symbols = ["known", "odd", "unset"].map(|name| Symbol {
+            visibility: Some(Visibility::Private),
+            ..sym(name, Kind::Method, 1, None)
+        });
+        store
+            .replace_file_symbols(checkout, "w.rb", "ruby", None, "h", &symbols)
+            .unwrap();
+        // another build's tag, or a casing no plugin emits
+        store
+            .conn
+            .execute_batch(
+                "UPDATE symbols SET visibility = 'Private' WHERE name = 'odd'; \
+                 UPDATE symbols SET visibility = NULL WHERE name = 'unset';",
+            )
+            .unwrap();
+        let read: Vec<_> = store
+            .symbols_in_file(checkout.id, "w.rb")
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.name, r.visibility))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("known".to_string(), Some(Visibility::Private)),
+                ("odd".to_string(), None),
+                ("unset".to_string(), None),
+            ]
         );
     }
 }

@@ -2,6 +2,7 @@
 //! file and assert the ordering — the named definition wins, with the right
 //! kind and qualification.
 
+use crate::core::Visibility;
 use crate::search::{self, Context};
 use crate::tests::support::{indexed, indexed_files, top};
 
@@ -22,7 +23,7 @@ fn members(
         .unwrap()
         .hits
         .into_iter()
-        .map(|h| (h.parent, h.singleton, h.visibility))
+        .map(|h| (h.parent, h.singleton, h.visibility.map(|v| v.to_string())))
         .collect();
     hits.sort();
     hits
@@ -226,14 +227,17 @@ fn typescript_definitions_rank_and_classify() {
     // an exported `let` is the module's API, like an exported `const`
     let active = top(&store, "activeWidget");
     assert_eq!(
-        (active.kind.as_str(), active.visibility.as_deref()),
+        (
+            active.kind.as_str(),
+            active.visibility.map(Visibility::as_str)
+        ),
         ("constant", Some("public"))
     );
     // an `export { … }` list or `export default name` exports a declaration
     // made earlier, by its local name
     for name in ["WIDGET_THEME", "formatWidget", "trimWidgetName"] {
         assert_eq!(
-            top(&store, name).visibility.as_deref(),
+            top(&store, name).visibility.map(Visibility::as_str),
             Some("public"),
             "{name}"
         );
@@ -251,7 +255,10 @@ fn typescript_definitions_rank_and_classify() {
     assert_eq!(top(&store, "WidgetSize.height").kind, "field");
     let owner = top(&store, "Widget.owner");
     assert_eq!(
-        (owner.kind.as_str(), owner.visibility.as_deref()),
+        (
+            owner.kind.as_str(),
+            owner.visibility.map(Visibility::as_str)
+        ),
         ("field", Some("private"))
     );
     // static members are the class's own: methods, getters and fields
@@ -382,7 +389,11 @@ fn commonjs_assignments_rank_above_test_doubles() {
     // and exporting it makes it public
     let ctor = top(&store, "WidgetStore");
     assert_eq!(
-        (ctor.kind.as_str(), ctor.line, ctor.visibility.as_deref()),
+        (
+            ctor.kind.as_str(),
+            ctor.line,
+            ctor.visibility.map(Visibility::as_str)
+        ),
         ("function", 9, Some("public"))
     );
 }

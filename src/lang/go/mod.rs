@@ -11,7 +11,7 @@
 
 use tree_sitter::Node;
 
-use crate::core::{Kind, Symbol};
+use crate::core::{Kind, Symbol, Visibility};
 use crate::lang::{Ctx, LanguagePlugin, extract_with};
 
 const LANGUAGE: &str = "go";
@@ -174,9 +174,9 @@ fn embedded_name(ctx: &Ctx, ty: Node) -> Option<String> {
 fn push(ctx: &Ctx, out: &mut Vec<Symbol>, name: &str, kind: Kind, node: Node, p: Option<&str>) {
     let mut s = ctx.symbol(name, kind, node, p);
     s.visibility = Some(if name.chars().next().is_some_and(char::is_uppercase) {
-        "public"
+        Visibility::Public
     } else {
-        "private"
+        Visibility::Private
     });
     out.push(s);
 }
@@ -272,9 +272,9 @@ type Frame struct {
                 (Kind::Field, Some("Frame")),
                 "{name}"
             );
-            assert_eq!(f.visibility, Some("public"));
+            assert_eq!(f.visibility, Some(Visibility::Public));
         }
-        assert_eq!(find(&syms, "title").visibility, Some("private"));
+        assert_eq!(find(&syms, "title").visibility, Some(Visibility::Private));
         // a nested anonymous struct's fields are reached through `Inner`
         for absent in ["Deep", "_"] {
             assert!(!syms.iter().any(|s| s.name == absent), "{absent}: {syms:?}");
@@ -307,9 +307,9 @@ type Stack[T any] []T
         ] {
             let s = find(&syms, name);
             assert_eq!(s.kind, Kind::Type, "{name}");
-            assert_eq!(s.visibility, Some("public"), "{name}");
+            assert_eq!(s.visibility, Some(Visibility::Public), "{name}");
         }
-        assert_eq!(find(&syms, "state").visibility, Some("private"));
+        assert_eq!(find(&syms, "state").visibility, Some(Visibility::Private));
     }
 
     #[test]
@@ -338,14 +338,14 @@ func Build() {
         let max = find(&syms, "MaxRetries");
         assert_eq!(max.kind, Kind::Constant);
         assert_eq!(max.parent, None);
-        assert_eq!(max.visibility, Some("public"));
+        assert_eq!(max.visibility, Some(Visibility::Public));
 
         // each name in a grouped block sits on its own line
         let idle = find(&syms, "StateIdle");
         assert_eq!(idle.kind, Kind::Constant);
         let busy = find(&syms, "stateBusy");
         assert_eq!(busy.line, idle.line + 1);
-        assert_eq!(busy.visibility, Some("private"));
+        assert_eq!(busy.visibility, Some(Visibility::Private));
 
         // one spec may bind several names
         assert_eq!(find(&syms, "Low").kind, Kind::Constant);
@@ -367,7 +367,10 @@ func Build() {
     fn capitalization_is_visibility() {
         let src = "package x\n\nfunc Exported() {}\nfunc internal() {}\n";
         let syms = extract(src);
-        assert_eq!(find(&syms, "Exported").visibility, Some("public"));
-        assert_eq!(find(&syms, "internal").visibility, Some("private"));
+        assert_eq!(find(&syms, "Exported").visibility, Some(Visibility::Public));
+        assert_eq!(
+            find(&syms, "internal").visibility,
+            Some(Visibility::Private)
+        );
     }
 }

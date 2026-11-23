@@ -19,7 +19,7 @@ struct SymbolOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     parent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    visibility: Option<String>,
+    visibility: Option<crate::core::Visibility>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     singleton: bool,
     repo: String,
