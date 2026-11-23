@@ -14,6 +14,7 @@ fs.writeFileSync(
 case "$STUB_MODE" in
   miss) echo '{"status":"no_match"}'; exit 1 ;;
   hang) exec sleep 10 ;;
+  caller) printf '[{"name":"%s","kind":"method","file":"x","line":1,"confidence":1}]' "$RQ_CALLER"; exit 0 ;;
 esac
 printf '[{"name":"%s","kind":"method","file":"%s","line":1,"confidence":1}]' "$*" "$PWD"
 `,
@@ -34,6 +35,16 @@ describe("runRq", () => {
     process.env.STUB_MODE = "miss";
     try {
       assert.deepEqual(await runRq(stub, "x", [], dir), { status: "miss" });
+    } finally {
+      delete process.env.STUB_MODE;
+    }
+  });
+
+  it("names itself to rq as the caller", async () => {
+    process.env.STUB_MODE = "caller";
+    try {
+      const res = await runRq(stub, "x", [], dir);
+      assert.equal(res.status === "ok" && res.hits[0].name, "vscode");
     } finally {
       delete process.env.STUB_MODE;
     }

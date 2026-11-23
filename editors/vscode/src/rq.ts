@@ -22,7 +22,9 @@ export function runRq(
 ): Promise<RunResult> {
   const args = ["--json", "--wait", WAIT, ...extra, "--", query];
   return new Promise((resolve) => {
-    execFile(bin, args, { cwd, signal, timeout: TIMEOUT_MS, maxBuffer: 16 << 20 }, (err, stdout, stderr) => {
+    // RQ_CALLER names us in `rq --usage`
+    const env = { ...process.env, RQ_CALLER: "vscode" };
+    execFile(bin, args, { cwd, env, signal, timeout: TIMEOUT_MS, maxBuffer: 16 << 20 }, (err, stdout, stderr) => {
       if (!err) return resolve(parseResult(0, stdout, stderr));
       const e = err as NodeJS.ErrnoException & { code?: string | number; killed?: boolean };
       if (e.code === "ENOENT") return resolve({ status: "missing" });
