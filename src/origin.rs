@@ -2,7 +2,8 @@
 //!
 //! Deliberately coarse. This answers "how much of rq's traffic is agents, and
 //! which flags do they reach for", so the labels are a small fixed vocabulary
-//! rather than a fingerprint. Nothing here is read by ranking.
+//! rather than a fingerprint — plus whatever a tool calling rq names itself
+//! with `RQ_CALLER`. Nothing here is read by ranking.
 
 use std::io::IsTerminal;
 
@@ -16,11 +17,16 @@ pub(crate) fn detect() -> String {
 }
 
 /// The pure half, so the taxonomy is testable without touching the real
-/// environment. Ordered most-specific first: a known agent beats the terminal
-/// check, because an agent's shell is not a terminal but a script's may be.
+/// environment. Ordered most-specific first: a caller's own name beats any
+/// guess, and a known agent beats the terminal check, because an agent's
+/// shell is not a terminal but a script's may be.
 pub(crate) fn detect_from(env: impl Fn(&str) -> Option<String>, tty: bool) -> String {
     let get = |k: &str| env(k).filter(|v| !v.is_empty() && v != "0");
 
+    // an editor or tool run by an agent is still that tool
+    if let Some(v) = get("RQ_CALLER") {
+        return label(&v);
+    }
     if get("CLAUDECODE").is_some() {
         // The entrypoint distinguishes a shell call from an MCP or SDK one.
         // `cli` is the overwhelming case and stays unadorned so the common
@@ -104,6 +110,20 @@ mod tests {
             ),
             "claude-code:mcp"
         );
+    }
+
+    #[test]
+    fn a_caller_that_names_itself_is_taken_at_its_word() {
+        assert_eq!(
+            detect_from(env(&[("RQ_CALLER", "VS Code")]), false),
+            "vscode"
+        );
+        // even when an agent runs it
+        assert_eq!(
+            detect_from(env(&[("RQ_CALLER", "prlink"), ("CLAUDECODE", "1")]), true),
+            "prlink"
+        );
+        assert_eq!(detect_from(env(&[("RQ_CALLER", "")]), true), "human");
     }
 
     #[test]

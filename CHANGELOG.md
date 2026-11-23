@@ -9,6 +9,10 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Added
+- `RQ_CALLER=<name>` names the tool calling rq in `rq --usage`, ahead of rq's
+  own guess (`claude-code`, `human`, `piped`).
+
 ### Changed
 - `rq --usage` exits `0` when nothing is recorded yet, as `--status` does when
   nothing is indexed. A script that read exit 1 as "empty" should check for no

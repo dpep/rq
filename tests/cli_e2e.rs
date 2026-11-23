@@ -2608,6 +2608,12 @@ fn usage_counts_searches_by_caller_and_flags() {
         .find(|l| l.contains("\"flags\":\"ndjson,show\""))
         .unwrap_or_else(|| panic!("no --show row: {out}"));
     assert!(show_row.contains("\"searches\":2"), "{show_row}");
+
+    // a tool that names itself is its own caller, whoever runs it
+    let named = [("RQ_CALLER", "Widget-Tool")];
+    rq_full(&db, &dir, &["Widget", "--ndjson"], &named, None);
+    let (_, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
+    assert!(out.contains("\"source\":\"widget-tool\""), "{out}");
 }
 
 #[test]

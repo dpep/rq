@@ -285,6 +285,11 @@ pages), `retry_at` (after `busy`, when it looks again) and `error` (after
 hands free pages back on its own once they're worth it.
 Single-result commands emit one object.
 
+`rq --usage` counts calls per day by caller and flags, in the local index and
+nowhere else. A tool that calls rq names itself with `RQ_CALLER=<name>`;
+otherwise rq tells an agent (`claude-code`, `cursor`, `ci`), a terminal
+(`human`) and anything else (`piped`) apart.
+
 These commands exit `0` whenever they ran, including when there's nothing to
 report: an empty `--status`, `--storage` or `--usage`, an `--index` that found nothing new, or a `--drop`
 of a repo that isn't indexed (`"dropped": false` tells you). They exit non-zero
