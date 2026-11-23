@@ -72,6 +72,10 @@ module Forms
     end
     define_method(name) { 3 }
     %i[a b].each { |n| define_method(n) { n } }
+
+    class self.class::Scoped
+      def inside; end
+    end
   end
 end
 

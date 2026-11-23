@@ -159,13 +159,13 @@ impl Walk<'_> {
     /// A class or module named `path` (`Foo`, `A::B`, `::Top`), and its body
     /// visited in a fresh frame under its qualified name.
     fn namespace(&mut self, kind: Kind, path: &Node, at: &Location, body: impl FnOnce(&mut Self)) {
-        if !is_constant_path(path) {
+        let Some(name) = class_name(path) else {
             // a name not typed yet: what recovery put in its place, and the
             // body, are still walked, in place
             self.visit(path);
             return body(self);
-        }
-        let (leaf, parent) = leaf_and_parent(text(&path.location()), self.parent.as_deref());
+        };
+        let (leaf, parent) = leaf_and_parent(name, self.parent.as_deref());
         let qualified = qualify(parent.as_deref(), leaf, "::");
         self.push(leaf, kind, at, parent, Visibility::Public, false);
         let outer = self.parent.replace(qualified);
@@ -291,8 +291,24 @@ impl Walk<'_> {
     }
 }
 
-/// Whether `node` names a class: `Foo`, `A::B`, `::Top`, every part a
-/// constant. Recovery from a half-typed name puts anything there.
+/// The name a class or module path gives it: `Foo`, `A::B`, `::Top`. A scope
+/// computed at runtime (`self.class::Foo`) can't be read, so the class is
+/// named by its leaf alone. None when the leaf isn't a constant: recovery
+/// from a half-typed name puts anything there.
+fn class_name<'pr>(node: &Node<'pr>) -> Option<&'pr str> {
+    if node.as_constant_read_node().is_some() {
+        return Some(text(&node.location()));
+    }
+    let path = node.as_constant_path_node()?;
+    path.name()?;
+    if path.parent().is_none_or(|p| is_constant_path(&p)) {
+        Some(text(&node.location()))
+    } else {
+        Some(text(&path.name_loc()))
+    }
+}
+
+/// Whether `node` is constants all the way: `Foo`, `A::B`, `::Top`.
 fn is_constant_path(node: &Node) -> bool {
     if node.as_constant_read_node().is_some() {
         return true;

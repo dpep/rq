@@ -458,6 +458,12 @@ end
     }
 
     #[test]
+    fn a_class_under_a_runtime_scope_is_named_by_its_leaf() {
+        let src = "class Outer\n  class self.class::Inner\n    def m; end\n  end\nend\n";
+        assert_eq!(names(src), ["Outer", "Outer#Inner", "Outer::Inner#m"]);
+    }
+
+    #[test]
     fn a_def_whose_name_is_not_typed_yet_defines_nothing_and_swallows_nothing() {
         let cases: [(&str, &[&str]); 3] = [
             // the next line's word is taken for the name
@@ -550,7 +556,8 @@ end
             .filter(|s| s.parent.as_deref() == Some("Forms::Dynamic"))
             .map(|s| s.name.as_str())
             .collect();
-        assert_eq!(dynamic, ["spin", "twirl"]);
+        // a class under a runtime scope, filed under the enclosing name
+        assert_eq!(dynamic, ["spin", "twirl", "Scoped"]);
     }
 
     #[test]

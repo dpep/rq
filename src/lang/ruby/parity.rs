@@ -75,6 +75,10 @@ enum Intended {
     /// A name with a space in it (`alias :"a b" c`) is none a query spells,
     /// and prism emits no such name.
     SpacedName,
+    /// `class self.class::Foo` sits under a scope computed at runtime: prism
+    /// files it under the enclosing name, where the oracle took the
+    /// expression's source (`Outer::self.class`) for a namespace.
+    RuntimeScope,
 }
 
 /// The delimiter pairs a `%` literal may use.
@@ -91,13 +95,14 @@ fn symbol_spelled(text: &str, name: &str) -> bool {
 }
 
 impl Intended {
-    const ALL: [Intended; 6] = [
+    const ALL: [Intended; 7] = [
         Intended::NonAsciiConstant,
         Intended::StringContent,
         Intended::InterpolatedName,
         Intended::SymbolName,
         Intended::OracleMisparse,
         Intended::SpacedName,
+        Intended::RuntimeScope,
     ];
 
     /// Why a row only prism extracted is right.
@@ -144,6 +149,15 @@ impl Intended {
         } else {
             None
         }
+    }
+
+    /// Why prism files the oracle's definition under another parent.
+    fn reparented(oracle: &Row) -> Option<Intended> {
+        let parent = oracle.parent.as_deref()?;
+        parent
+            .split("::")
+            .any(|part| !part.starts_with(char::is_uppercase))
+            .then_some(Intended::RuntimeScope)
     }
 
     /// Why prism gives the oracle's definition another visibility: an access
@@ -201,6 +215,10 @@ fn diff(file: &str, source: &str) -> Diff {
         visibility: None,
         ..r.clone()
     };
+    let blank_parent = |r: &Row| Row {
+        parent: None,
+        ..r.clone()
+    };
     for o in oracle.difference(&ours) {
         // the same definition on both sides, named or made visible otherwise
         // several definitions can share a place (`attr_reader :a, :b`): pair
@@ -214,10 +232,14 @@ fn diff(file: &str, source: &str) -> Diff {
                     .position(|p| blank_name(p) == blank_name(o))
             });
         let revisited = ours_only.iter().position(|p| blank_vis(p) == blank_vis(o));
-        let (why, pair) = match (renamed, revisited) {
-            (Some(i), _) => (Intended::renamed(o, &ours_only[i]), i),
-            (None, Some(i)) => (Intended::revisited(&ours_only[i], source), i),
-            (None, None) => {
+        let reparented = ours_only
+            .iter()
+            .position(|p| blank_parent(p) == blank_parent(o));
+        let (why, pair) = match (renamed, revisited, reparented) {
+            (Some(i), _, _) => (Intended::renamed(o, &ours_only[i]), i),
+            (None, Some(i), _) => (Intended::revisited(&ours_only[i], source), i),
+            (None, None, Some(i)) => (Intended::reparented(o), i),
+            (None, None, None) => {
                 out.misparsed = reaches_error(o);
                 out.note(Intended::oracle_only(o), format!("tree-sitter {o}"));
                 continue;
