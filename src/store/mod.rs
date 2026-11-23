@@ -2451,6 +2451,24 @@ mod tests {
     }
 
     #[test]
+    fn v29_forgets_where_commit_times_were_captured() {
+        let (_dir, path) = legacy("migrate-v29", 22, &two_repos(&[("a.rs", "rust")]));
+        drop(open_at(&path, 28).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO meta (key, value) VALUES ('git_ts_head:1', 'abc'), \
+                   ('git_ts_head:2', 'def'), ('head:1', 'abc'), ('span:/mixed', '3');",
+            )
+            .unwrap();
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.git_ts_head(1).unwrap(), None);
+        assert_eq!(store.git_ts_head(2).unwrap(), None);
+        assert_eq!(store.indexed_head(1).unwrap(), None, "reads as moved");
+        assert_eq!(store.meta_get("span:/mixed").unwrap().as_deref(), Some("3"));
+    }
+
+    #[test]
     fn v28_queues_files_without_definitions_and_every_language_v27_skipped() {
         let (_dir, path) = legacy(
             "migrate-v28",

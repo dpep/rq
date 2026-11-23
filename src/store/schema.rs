@@ -6,7 +6,7 @@
 //! straight to [`crate::core::Symbol`].
 
 /// Current schema version. Bump when adding a migration step.
-pub(crate) const VERSION: i64 = 28;
+pub(crate) const VERSION: i64 = 29;
 
 /// Full schema for a fresh database (already at the current [`VERSION`]).
 pub(crate) const SCHEMA: &str = r#"
@@ -703,6 +703,15 @@ UPDATE files SET content_hash = 'stale:' || content_hash
       OR NOT EXISTS (SELECT 1 FROM symbols s WHERE s.file_id = files.id));
 "#;
 
+/// Migration v28 -> v29: a pass cut short by its budget recorded the HEAD it
+/// captured commit times at after dating only the files it had read, so the
+/// rest were never dated. Forgetting every capture's HEAD has the next
+/// finalized pass date the whole checkout again: one bounded `git log`, no
+/// reparse. Forgetting the indexed HEAD too reads a complete checkout as
+/// moved, so the next search hands it to a warm, which runs that pass.
+pub(crate) const MIGRATION_V29: &str =
+    "DELETE FROM meta WHERE key LIKE 'git_ts_head:%' OR key LIKE 'head:%';";
+
 /// Indexes the schema gained without a version bump, which would set every
 /// older rq on a side store (D51) for an index: a fresh store has them, and
 /// the background cleanup adds them to one laid down before (D65).
@@ -745,7 +754,7 @@ pub(crate) const LADDER: Ladder = Ladder {
 
 /// The cumulative migration ladder for existing databases: apply every step
 /// whose version exceeds the database's `user_version`.
-pub(crate) const MIGRATIONS: [(i64, Step); 31] = [
+pub(crate) const MIGRATIONS: [(i64, Step); 32] = [
     (2, Step::Sql(MIGRATION_V2)),
     (3, Step::Sql(MIGRATION_V3)),
     (4, Step::Sql(MIGRATION_V4)),
@@ -777,4 +786,5 @@ pub(crate) const MIGRATIONS: [(i64, Step); 31] = [
     (26, Step::Sql(MIGRATION_V26)),
     (27, Step::Sql(MIGRATION_V27)),
     (28, Step::Sql(MIGRATION_V28)),
+    (29, Step::Sql(MIGRATION_V29)),
 ];

@@ -3103,7 +3103,7 @@ per pass.
 ## D54 — A pass says what it is doing: `warming.phase`
 
 **Adopted**, 2026-10-01. `set_pass_phase`/`pass_phase` in `src/store/marks.rs`, the
-two phase writes in `run_index` (`src/index/mod.rs`), `warming_state` and
+two phase writes in `fill_checkout` (`src/index/mod.rs`), `warming_state` and
 `finishing_note` in `src/cli/query.rs`; e2e test `a_pass_past_its_reads_says_it_is_finishing`.
 
 *The problem.* A user polling `--no-wait` once a second through a rebuild of a

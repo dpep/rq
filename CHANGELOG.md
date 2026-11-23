@@ -14,8 +14,8 @@ and aren't listed; see `git log` for those.
 - Commit times reach every file of a checkout warmed over several passes. A
   pass that ran out of budget recorded them as captured after dating only the
   files it had read, so on a repo too big for one pass most files never got
-  one and lost the recency signal. An index built that way keeps the gap:
-  `rq --drop` in the checkout and index it again to fill it.
+  one and lost the recency signal. Existing indexes are repaired in the
+  background by the next pass that completes a checkout; nothing to do.
 - `--drop` refuses as `busy` from the moment an `rq --index` starts, not only
   once it has listed the tree; a drop in between went ahead and failed the
   index instead.
