@@ -4236,12 +4236,12 @@ fn rq_full(
     }
     let mut child = cmd.spawn().expect("run rq");
     if let Some(input) = stdin {
-        child
+        // a refusal can exit before reading stdin, closing the pipe under us
+        let _ = child
             .stdin
             .take()
             .expect("stdin piped")
-            .write_all(input.as_bytes())
-            .expect("write stdin");
+            .write_all(input.as_bytes());
     }
     let out = child.wait_with_output().expect("rq exits");
     (
