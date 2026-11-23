@@ -729,7 +729,7 @@ fn stream_walk(
     candidates: impl Iterator<Item = std::path::PathBuf> + Send,
     deadline: Option<Instant>,
     cap: Option<usize>,
-    needle: Option<&[u8]>,
+    needle: Option<&str>,
     versions: &Versions,
     seen: HashSet<String>,
     keep: impl Fn(&str, Option<i64>) -> bool + Send,
@@ -1146,7 +1146,7 @@ fn fill_checkout(
                 paths.iter().cloned(),
                 deadline,
                 None,
-                Some(needle.as_bytes()),
+                Some(needle),
                 &versions,
                 seen.clone(),
                 changed,
@@ -1405,7 +1405,7 @@ fn note_candidate(
 fn parse_file(
     root: &Path,
     file: &Path,
-    needle: Option<&[u8]>,
+    needle: Option<&str>,
     versions: &Versions,
 ) -> Option<crate::store::FileSymbols> {
     let timing = crate::profile::enabled().then(Instant::now);
@@ -1415,7 +1415,7 @@ fn parse_file(
     let source = read_source(file).ok()?;
     // pre-filter: skip the expensive parse on files that can't hold the match
     if let Some(n) = needle
-        && !contains_ascii_ci(source.as_bytes(), n)
+        && !contains_ascii_ci(source.as_bytes(), n.as_bytes())
     {
         return None;
     }
@@ -1607,7 +1607,7 @@ fn parse_files(
     root: &Path,
     paths: &[std::path::PathBuf],
     deadline: Option<Instant>,
-    needle: Option<&[u8]>,
+    needle: Option<&str>,
     versions: &Versions,
 ) -> (Vec<crate::store::FileSymbols>, bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1793,7 +1793,7 @@ pub(crate) fn scan(
     tree: &LiveTree,
     skip: &HashSet<String>,
     deadline: Option<Instant>,
-    needle: Option<&[u8]>,
+    needle: Option<&str>,
 ) -> Vec<crate::store::FileSymbols> {
     let root = tree.root;
     let needle = needle.filter(|n| !n.is_empty());

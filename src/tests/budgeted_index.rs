@@ -222,7 +222,7 @@ fn a_content_scan_returns_only_matching_files_to_persist() {
         &index::LiveTree::detect(&dir),
         &HashSet::new(),
         None,
-        Some(b"widget"),
+        Some("widget"),
     );
     assert_eq!(scanned.len(), 1, "only the matching file: {scanned:?}");
     assert_eq!(scanned[0].path, "a.rb");

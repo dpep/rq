@@ -779,7 +779,7 @@ pub(crate) fn live_search(
     prefilter: bool,
     ctx: &Context,
 ) -> LiveScan {
-    let needle = prefilter.then_some(query.as_bytes());
+    let needle = prefilter.then_some(query);
     let identity = &tree.identity;
     let root_str = tree.root.to_string_lossy();
     let files = crate::index::scan(tree, skip, deadline, needle);

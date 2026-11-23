@@ -1421,6 +1421,11 @@ pub(super) fn lower(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// A word joiner: the separators [`joiners_eq`] ignores.
+pub(crate) fn is_joiner(c: char) -> bool {
+    matches!(c, '_' | '-' | '.')
+}
+
 /// Are these the same identifier once separators are dropped? `_`, `-`, and
 /// `.` are all word joiners across the languages rq indexes, and a query that
 /// omits them is spelling the same name. Any other character is part of the
@@ -1429,7 +1434,7 @@ pub(crate) fn joiners_eq(a: &str, b: &str) -> bool {
     // Compared in lockstep rather than by building two squashed Strings: this
     // runs against every candidate, and on a query that recalls thousands the
     // allocations cost more than everything else in scoring put together.
-    let word = |c: &char| !matches!(c, '_' | '-' | '.');
+    let word = |c: &char| !is_joiner(*c);
     let mut sa = a.chars().filter(word);
     let mut sb = b.chars().filter(word);
     let mut any = false;
