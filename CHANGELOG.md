@@ -11,78 +11,70 @@ and aren't listed; see `git log` for those.
 
 ### Added
 - `RQ_CALLER=<name>` names the tool calling rq in `rq --usage`, ahead of rq's
-  own guess (`claude-code`, `human`, `piped`).
+  own guess (`claude-code`, `human`, `piped`). The VS Code extension sets
+  `RQ_CALLER=vscode`; set it in any script or tool that calls rq.
+- `rq --status` tells a partial index nothing is filling (an indexer killed
+  part-way) from one still being indexed: the row says "stopped part-way:
+  `rq --index …` finishes it", and its JSON carries `interrupted`
+  (`true`/`false`, absent once complete), as a hit's `warming` does.
 
 ### Changed
 - Queries piped on stdin are answered as NDJSON without `-J`
-  (`printf 'Widget\n' | rq`). A batch that relied on text output now gets one
-  JSON object per line; `-J` still works, and `--json` is still refused.
-- `rq --usage` counts every command (`symbols`, `status`, `index`, `drop`,
-  `storage`, `usage`, `completions`) as a row whose `flags` lead with its
-  name, and a search's `wait` and query shape (`scoped`, `new`, `glob`,
-  `kind-keyword`). A batch's queries no longer count as `no-wait` unless
-  asked. Field names are unchanged; `searches` counts calls.
+  (`printf 'Widget\n' | rq`), usage errors included. A script that read a
+  batch's text output must read one JSON object per line instead. `-J` still
+  works; `--json` is refused (exit 64). Piped stdin with no queries on it
+  (`rq </dev/null`, only blank lines) prints nothing on stdout and exits `1`.
 - `rq --usage` exits `0` when nothing is recorded yet, as `--status` does when
   nothing is indexed. A script that read exit 1 as "empty" should check for no
   rows instead.
-
-- A first search in a repo not yet indexed exits sooner: once it has answered,
-  it leaves reading commit history to the background pass that finishes the
-  index. That pass now records commit times for every file, not only for the
-  few the search had read, so recency ranks a newly indexed repo fully.
-- A short fuzzy query over a large index (`rq usr`) spends about an eighth
-  less CPU fetching the definitions its recalled names point at.
+- `rq --usage` counts every command (`symbols`, `status`, `index`, `drop`,
+  `storage`, `usage`, `completions`) as a row whose `flags` lead with its
+  name, and a search's `wait` and query shape (`scoped`, `new`, `glob`,
+  `kind-keyword`). A batch's queries count as `no-wait` only when asked.
+  Field names are unchanged; `searches` counts calls.
 - A minified source (16 KB or more, lines averaging over 200 bytes and over
   10 of `;,(){}` each) is indexed without definitions instead of parsed: its
   names are one-letter locals, and one bundle could set an index's peak memory
-  (discourse: 267 → 68 MB). A file whose long lines are strings or data (an
-  inlined image, a base64 blob) is still parsed, and a bare `\r` ends a line.
-  `rq --symbols` on a held file says so (`"reason": "minified"` under
-  `--json`). Existing indexes re-read their Ruby, Rust, Python and Go files,
-  and any file with no definitions, once in the background after upgrading;
-  nothing to do.
+  (discourse: 267 → 68 MB). `rq --symbols` on such a file says so
+  (`"reason": "minified"` under `--json`). After upgrading, rq re-reads every
+  Ruby, Rust, Python and Go file, and any file with no definitions, once: the
+  next search in a checkout starts it, and nothing else is needed. Until then,
+  `--status` shows the checkout `warming` at every file read (`88 of 88`) and
+  "stopped part-way".
+- A first search in a repo not yet indexed exits sooner: once it has answered,
+  it leaves reading commit history to the background pass that finishes the
+  index. That pass records commit times for every file, and a later pass fills
+  in any a killed one left out, so recency ranks a newly indexed repo fully.
+- A short fuzzy query over a large index (`rq usr`) spends about an eighth
+  less CPU fetching the definitions its recalled names point at.
 
 ### Removed
 - The `--jobs` flag. Set parse threads with `RQ_JOBS=N` instead
-  (`RQ_JOBS=2 rq --index`); a command line still passing `--jobs` now fails
-  with a usage error (exit 64).
+  (`RQ_JOBS=2 rq --index`); a command line passing `--jobs` fails with a usage
+  error (exit 64).
 
 ### Fixed
 - A checkout whose path has a non-ASCII character (`~/code/café`) is seen as
   being indexed: `--drop` there refuses with 75 while an `rq --index` runs, a
   search follows that indexer instead of calling the index `interrupted`, and a
   crashed pass's leftover mark is cleared.
-- A pass that fails in a process that keeps running (a batch: queries piped on stdin)
-  no longer leaves the checkout marked as being indexed for up to 10 minutes:
-  `--drop` no longer refuses naming that idle pid, and `--status` no longer
-  shows the checkout `warming`.
+- A pass that fails in a process that keeps running (a batch) clears its
+  mark: `--drop` doesn't refuse naming that idle pid, and `--status` doesn't
+  show the checkout `warming` for up to 10 minutes.
 - A background warm woken after a long sleep (a laptop's lid closed past
-  10 minutes) no longer deletes the lock of the warm that took over meanwhile,
-  and stops rather than repeating its work: two warms no longer index one
-  checkout at once, and `--drop` still refuses while the newer one runs.
-- An `rq --index` killed while refreshing an already-indexed checkout no
-  longer leaves it marked as being indexed until the next `--index` or
-  `--drop`: the next background warm clears the mark.
+  10 minutes) leaves the lock of the warm that took over meanwhile and stops:
+  two warms never index one checkout at once, and `--drop` still refuses while
+  the newer one runs.
+- An `rq --index` killed while refreshing an indexed checkout leaves no mark
+  behind: the next background warm clears it.
 - A batch line reads exactly as the same query typed on the command line: a
   leading kind keyword (`class Base`, `method save`) filters by kind instead
   of being searched as part of the name.
-- Piped stdin with no queries on it (`rq </dev/null`, only blank lines) is an
-  empty batch: nothing on stdout, a note on stderr, exit `1`. It printed
-  `--help` and exited `0`, which an NDJSON reader choked on. `rq` alone at a
-  terminal still shows help.
-- `rq --status` tells a partial index nothing is filling (an indexer killed
-  part-way) from one still being indexed, as a hit from it does: the row says
-  "stopped part-way: `rq --index …` finishes it", and its JSON carries
-  `interrupted` (`true`/`false`, absent once complete).
 - A cold search whose indexing an `rq --drop` cut short indexes again within
-  its wait and answers, instead of giving up as `warming` (exit 2) a moment in.
+  its wait and answers, instead of giving up as `warming` (exit 2).
 - `RQ_JOBS` that isn't a thread count (`abc`, `-1`) warns on stderr and runs
-  at one parse thread per core instead of doing so silently, and an absurd
-  count (`RQ_JOBS=100000`, which crashed) is capped at 4 per core with a
-  warning.
-- Commit times a killed pass left unrecorded are filled by the next pass, even
-  one with no file to re-read, so recency doesn't wait for each file's next
-  edit.
+  one parse thread per core; a count over 4 per core (`RQ_JOBS=100000`, which
+  crashed) is capped there, with a warning.
 - `rq --symbols DIR` says the path is a directory (usage error, exit 64)
   instead of "no such file".
 
