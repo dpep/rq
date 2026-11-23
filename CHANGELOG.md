@@ -80,6 +80,9 @@ and aren't listed; see `git log` for those.
   at one parse thread per core instead of doing so silently, and an absurd
   count (`RQ_JOBS=100000`, which crashed) is capped at 4 per core with a
   warning.
+- Commit times a killed pass left unrecorded are filled by the next pass, even
+  one with no file to re-read, so recency doesn't wait for each file's next
+  edit.
 
 ## 0.60.15 — 2026-11-21
 

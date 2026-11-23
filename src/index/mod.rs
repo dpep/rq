@@ -1310,18 +1310,16 @@ fn fill_checkout(
         }
     }
     // commit times feed the recency signal, but `git log -n1000 --name-only` is
-    // pricey on a big repo. Run it only when this run indexed something AND
-    // `root` is the work-tree root: a subdir index's `git log` walks the whole
-    // repo's history yet emits repo-relative paths that wouldn't match our
-    // subdir-relative ones — pure waste. (A subdir index leans on mtime recency.)
-    // A pass its search cut short left the checkout incomplete, so the pass
-    // that completes it (the detached warm) captures them, off the search's exit.
+    // pricey on a big repo. The capture runs it only when HEAD has moved past
+    // the one it last captured at — so a pass that read nothing still fills
+    // times a killed pass left missing — and only when `root` is the work-tree
+    // root: a subdir index's `git log` walks the whole repo's history yet emits
+    // repo-relative paths that wouldn't match our subdir-relative ones — pure
+    // waste. (A subdir index leans on mtime recency.) A pass its search cut
+    // short left the checkout incomplete, so the pass that completes it (the
+    // detached warm) captures them, off the search's exit.
     let cut_short = cancelled && !completed;
-    if !leave_tail
-        && !cut_short
-        && stats.files_indexed > 0
-        && repo_root(root).is_some_and(|r| r == root_display)
-    {
+    if !leave_tail && !cut_short && repo_root(root).is_some_and(|r| r == root_display) {
         let _span = crate::profile::span("index: git metadata");
         capture_commit_times(store, checkout.id, root);
     }

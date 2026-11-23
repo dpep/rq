@@ -277,3 +277,48 @@ fn a_pass_its_search_cut_short_leaves_commit_times_to_the_warm() {
     assert_eq!(store.git_ts_head(checkout.id).unwrap(), Some(head));
     assert_eq!(dated(&store), ["Gadget", "Widget"]);
 }
+
+#[test]
+fn commit_times_a_pass_left_missing_are_captured_by_one_that_reads_nothing() {
+    // a pass killed before its capture leaves every file read and no times:
+    // the pass after it reads nothing new, and must still capture them
+    let dir = scratch("git-ts-missing");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    git(&dir, &["init", "-q"]);
+    git(&dir, &["add", "-A"]);
+    git(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    );
+    let mut store = crate::store::Store::open_in_memory().unwrap();
+    let key = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+    let budget = std::time::Duration::from_secs(5);
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let demanded = std::sync::atomic::AtomicBool::new(false);
+    let stats = index::index_budgeted_cancellable(
+        &mut store,
+        &dir,
+        &["a.rb".to_string()],
+        budget,
+        Some("Widget"),
+        &cancel,
+        &demanded,
+    )
+    .unwrap();
+    assert_eq!(stats.files_indexed, 1, "{stats:?}");
+    let checkout = store.checkout(&key).unwrap().unwrap();
+    assert_eq!(store.git_ts_head(checkout.id).unwrap(), None);
+
+    let stats = index::index_budgeted(&mut store, &dir, &[], budget, None).unwrap();
+    assert_eq!(stats.files_indexed, 0, "{stats:?}");
+    let head = rev_parse(&dir, &["rev-parse", "HEAD"]);
+    assert_eq!(store.git_ts_head(checkout.id).unwrap(), Some(head));
+}
