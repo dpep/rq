@@ -4593,3 +4593,51 @@ is held.
 
 v28's requeue already covers the change: its held set is a subset of v27's (both gate
 on the mean), so the TS/JS files with definitions v28 skips are ones neither rule holds.
+
+## D68 — Recall fetches in batches of names; a top-K cut by name evidence is unsound
+
+**Adopted / rejected**, 2026-11-23. Release builds on a copy of a real 59-repo index
+(388,701 symbols), `rq -a usr` from outside any repo, 15 interleaved reps, load ~7.
+Instructions retired are the headline because wall time on that box swung with load.
+
+*Adopted, three changes inside recall, none moving a seam:*
+- A capped walk (the names hold more definitions than the 8,000 cap) walked the names
+  a second time, best first, and re-ran every row query the first walk had made. It
+  reuses them.
+- The per-candidate maps (the cap's definition count, the recall dedup, the checkout
+  fold, the declaration collapse) hash with foldhash instead of SipHash, and the
+  collapse borrows its key instead of cloning five strings per hit.
+- Rows are fetched 256 names (or files) a statement, the keys a JSON array joined
+  through `json_each`, rather than a statement per key. Each key's rows arrive in the
+  same index order, so the cap and the scoped truncate keep exactly what they did.
+
+| `-a usr` | instructions | first answer best / median |
+|---|---|---|
+| before | 1,425M | 129.7 / 131.5 ms |
+| reuse the first walk | 1,312M | |
+| foldhash, borrowed keys | 1,232M | 112.5 / 114.3 |
+| batched fetch | 1,136M | 105.9 / 107.6 |
+
+Scoped `usr` in discourse (5,550 candidates, under the cap): 512M → 443M, 42.5 → 37.8
+ms best. Output was identical on 287 harness queries × 3 scopes (unscoped, rails,
+discourse), and sorted-identical at `--limit 0` (deep near-ties reorder run to run as
+`recency` moves with the clock, base against itself too). `make recall BASE=main
+--anchored`: 0 sources moved, top 10 changed in 0 of 6,879, anchored unchanged.
+
+Still over the 50 ms budget on this index: what remains is per row. Of the search's
+samples, fetching rows is ~37% (names 25%, files 12%), the signature scan 12%, scoring
+17%, and ranking the names for a capped walk 10% (`fuzzy_value` per accepted name,
+computed again by `score` for each row).
+
+*Rejected: fetch full rows only for the top-K names by name evidence.* Non-name features
+are not bounded by the name's own evidence. `recency` (up to 120), `current_repo` (200),
+`branch` (up to 180) and the anchor boosts are added unscaled. For `-a usr`,
+`upsert_checkout` ranks #9 at fuzzy 47 + recency 120, and its name ranks 1,004th of the
+6,140 matched; any K below that drops it. A sound cut would fetch every name within the
+largest possible lift of the 10th score, ≥ 120 + ~40 of scaled features here with no repo
+context, against a 10th score of 175 and a best name evidence of 76: it prunes nothing.
+And `total` in the output counts every hit after collapse, so a cut changes the JSON
+even when the window doesn't.
+
+*Reverses if:* the non-name features become bounded by name evidence (scaled by match
+quality like `extent` and `kind`), and `total` is allowed to become an estimate.

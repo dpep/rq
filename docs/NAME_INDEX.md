@@ -127,9 +127,11 @@ lifecycle for `--drop` and a replaced `RQ_DB`; SQLite gives all three for free.
 them, the name index replaced the first-letter net, the trigram net, the path `LIKE` net,
 `rq_keep` and `NET_WINDOW`: scan the repo's name signatures, verify survivors, fetch rows by
 `(repository_id, name_lower)`; scan its file signatures, verify stems, fetch the primary
-definitions of the accepted files. The cap still bounds the rows. When the accepted names
-hold more rows than the cap, they are fetched best first by the value `score` gives the
-name (glob or alignment), not in whatever order a net met them. `score()` still sees whole
+definitions of the accepted files. Fetches go 256 keys a statement, the keys bound as a
+JSON array through `json_each` (D68). The cap still bounds the rows. When the accepted names
+hold more rows than the cap, they are taken best first by the value `score` gives the
+name (glob or alignment), not in whatever order a net met them, reusing the rows the first
+walk read. `score()` still sees whole
 rows and is unchanged, so this isn't D1's two-phase split.
 
 Schema v18 dropped the FTS table, its triggers and the `name_lower`-only index its
