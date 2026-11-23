@@ -261,27 +261,32 @@ pub(super) fn cmd_batch(
                 format_args!("rq: stdin line {line} isn't UTF-8; skipped"),
             )
             .into(),
-            BatchLine::Query(query) => cmd_search(
-                &mut session,
-                &SearchArgs {
-                    query: &query,
-                    explain: cli.explain,
-                    out,
-                    paths,
-                    kinds,
-                    langs,
-                    want: requested_limit(cli.limit),
-                    no_wait: cli.no_wait,
-                    wait: cli.wait,
-                    open: false,
-                    web: false,
-                    all_repos: cli.all_repos,
-                    show: false,
-                    batch: true,
-                    anchored: cli.anchor.is_some(),
-                    kind_keyword: false,
-                },
-            ),
+            BatchLine::Query(line) => {
+                let (keyword, query, _) = read_query(line, Vec::new(), !cli.kind.is_empty());
+                let mut kinds = kinds.to_vec();
+                kinds.extend(keyword.unwrap_or_default().iter().map(|k| k.to_string()));
+                cmd_search(
+                    &mut session,
+                    &SearchArgs {
+                        query: &query,
+                        explain: cli.explain,
+                        out,
+                        paths,
+                        kinds: &kinds,
+                        langs,
+                        want: requested_limit(cli.limit),
+                        no_wait: cli.no_wait,
+                        wait: cli.wait,
+                        open: false,
+                        web: false,
+                        all_repos: cli.all_repos,
+                        show: false,
+                        batch: true,
+                        anchored: cli.anchor.is_some(),
+                        kind_keyword: keyword.is_some(),
+                    },
+                )
+            }
         };
         outcome = outcome.max(Some(answered));
     }

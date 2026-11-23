@@ -3887,6 +3887,49 @@ fn a_batch_line_that_is_not_utf8_is_reported_and_the_rest_answered() {
 }
 
 #[test]
+fn a_batch_line_reads_exactly_as_the_same_query_on_the_command_line() {
+    let (dir, db) = scratch("batch-parity");
+    fs::write(
+        dir.join("a.rb"),
+        "module Helpers\n  class Base\n    def initialize; end\n    def save; end\n  end\nend\n\
+         def test_hook_uses_class_eval_when_base_is_a_module; end\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    let rows = |out: &str| -> Vec<serde_json::Value> {
+        out.lines()
+            .map(|l| {
+                let mut row = json(l);
+                row.as_object_mut().unwrap().remove("query");
+                row
+            })
+            .collect()
+    };
+    for (query, flags) in [
+        ("Base", &[][..]),
+        ("bas", &[]),
+        ("Helpers::Base", &[]),
+        ("Base#save", &[]),
+        ("Base.new", &[]),
+        ("Ba*e", &[]),
+        ("class Base", &[]),
+        ("module Helpers", &[]),
+        ("method save", &[]),
+        ("fn save", &[]),
+        ("class Base", &["-k", "class"]),
+        ("save", &["-k", "method"]),
+    ] {
+        let mut args = vec!["-J", "-l", "3"];
+        args.extend(flags);
+        let (_, single) = rq(&db, &dir, &[args.as_slice(), &[query]].concat());
+        let (_, batch) = rq_stdin(&db, &dir, &args, &format!("{query}\n"));
+        assert_eq!(rows(&batch), rows(&single), "{query:?} {flags:?}");
+    }
+}
+
+#[test]
 fn a_batch_answers_each_line_before_stdin_closes() {
     // `tail -f log | rq -J`, or an agent holding the pipe open for its next
     // question: an answer that waits for EOF never comes.

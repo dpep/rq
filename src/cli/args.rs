@@ -125,6 +125,22 @@ pub(super) fn split_kind_keyword(
     (None, target, dirs)
 }
 
+/// Read a typed query — a TARGET and the positionals after it, or one batch
+/// line — into `(kind keyword, query, trailing path dirs)`. Both ways in go
+/// through here so a query means the same wherever it's typed. An explicit
+/// `-k` turns the keyword shorthand off, so the two never conflict.
+pub(super) fn read_query(
+    target: String,
+    dirs: Vec<String>,
+    explicit_kind: bool,
+) -> (Option<&'static [&'static str]>, String, Vec<String>) {
+    if explicit_kind {
+        (None, target, dirs)
+    } else {
+        split_kind_keyword(target, dirs)
+    }
+}
+
 /// Normalize a `--kind` value (name or shortcut) to the canonical symbol kinds
 /// it selects; `None` for an unknown one, which is a usage error.
 pub(super) fn canonical_kind(s: &str) -> Option<&'static [&'static str]> {

@@ -59,6 +59,9 @@ and aren't listed; see `git log` for those.
 - An `rq --index` killed while refreshing an already-indexed checkout no
   longer leaves it marked as being indexed until the next `--index` or
   `--drop`: the next background warm clears the mark.
+- A batch line reads exactly as the same query typed on the command line: a
+  leading kind keyword (`class Base`, `method save`) filters by kind instead
+  of being searched as part of the name.
 
 ## 0.60.15 — 2026-11-21
 

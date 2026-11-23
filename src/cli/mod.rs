@@ -405,21 +405,11 @@ fn dispatch(cli: Cli) -> ExitCode {
     let mut paths = cli.path.clone();
     match cli.target {
         Some(target) => {
-            // A leading kind keyword (`rq class Foo`) is shorthand for `-k`; skip
-            // it when the user gave an explicit `-k`, so the two never conflict.
-            let mut kind_keyword = false;
-            let query = if cli.kind.is_empty() {
-                let (kw, query, dirs) = split_kind_keyword(target, cli.dirs.clone());
-                if let Some(k) = kw {
-                    kinds.extend(k.iter().map(|k| k.to_string()));
-                    kind_keyword = true;
-                }
-                paths.extend(dirs);
-                query
-            } else {
-                paths.extend(cli.dirs.clone());
-                target
-            };
+            // a leading kind keyword (`rq class Foo`) is shorthand for `-k`
+            let (keyword, query, dirs) = read_query(target, cli.dirs.clone(), !cli.kind.is_empty());
+            let kind_keyword = keyword.is_some();
+            kinds.extend(keyword.unwrap_or_default().iter().map(|k| k.to_string()));
+            paths.extend(dirs);
             let mut session = match Session::open(out, &paths) {
                 Ok(s) => s,
                 Err(code) => return code,
