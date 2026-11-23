@@ -4687,3 +4687,53 @@ What remains for `-a usr` is per row and per name: SQLite row fetches ~38% of sa
 the signature scan 11%, ranking every name for the capped walk 10%, scoring 16%
 (`fuzzy_value` is computed twice per name, once to rank and once in `score`; sharing it
 reaches into `score`'s signature, which D1 and D7 keep).
+
+## D69 — mimalloc and the tree-sitter 0.26/0.27 runtimes: measured, not adopted
+
+**Declined**, 2026-11-23. Release builds, fresh DB per run, interleaved A/B, median of
+5–9, `/usr/bin/time -l`. The box ran other work at load 13–36, so instructions retired
+are the headline and wall is noise.
+
+*mimalloc* (0.1.52, mimalloc v3), as tree-sitter's allocator (`tree_sitter::set_allocator`
+at the top of `main`), as Rust's `#[global_allocator]`, and both:
+
+| full `--index` | system malloc | tree-sitter only | global only | both |
+|---|---|---|---|---|
+| rails instructions | 32.1 G | 29.5 | 31.6 | 28.8 |
+| rails user+sys | 3.9 s | 3.7 | 4.3 | 3.7 |
+| rails peak footprint | 36 MB | 53 | 45 | 60 |
+| discourse instructions | 92.8 G | 84.9 | 91.5 | 83.4 |
+| discourse user+sys | 11.8 s | 10.8 | 12.6 | 10.8 |
+| discourse peak footprint | 59 MB | 98 | 81 | 85 |
+
+A rerun of both against none (rails n=9, discourse n=7) agreed: instructions −10%,
+user+sys −6%, peak footprint +18–25 MB. `MIMALLOC_PURGE_DELAY=0` cut discourse's
+footprint only to 81 MB; mimalloc v2 gave the same instructions at 82 MB. Warm search
+(rails, n=40 interleaved, min/median ms): `--version` 3.8/4.5 → 4.0/4.6, `Middleware`
+flat at 7.3–7.5/8.3, `usr` 26.2/28.4 → 23.9/25.5 with the global allocator, flat with
+tree-sitter's only. Binary +129 KB; the C source builds in ~3 s beside the other crates.
+
+That is the malloc share D9 measured, taken: but on a background pass nobody waits on,
+for 40% more peak memory, the kind D67 removed. `usr` sits inside the 50 ms budget
+either way.
+
+*tree-sitter runtime.* 0.26.13 and 0.27.2 build unchanged against every grammar.
+Instructions for a full index, 0.25.10 → 0.26.13 → 0.27.2: rails 32.4 → 32.4 → 31.2 G,
+discourse 94.4 → 93.8 → 91.0, react 30.2 → 30.0 → 27.4, next.js 73.4 → 73.5 → 71.9,
+tokio 6.2 → 6.2 → 5.9, django 31.3 → 31.3 → 30.0. Symbol rows are identical on rails,
+discourse, mastodon, tokio, ripgrep, trekr, django, hugo, gin, excalidraw, next.js,
+jest, zod and lodash. react's error-recovered Flow files move: 0.26 adds three real
+definitions (`update` in `ReactFiberConfigDOM.js`, two fixture components) and drops
+five keyword-named rows (`if`, `return`); 0.27 does the same but also loses five real
+object-literal methods in `ReactFlightReplyServer.js` (`start`, `enqueueModel`, `close`,
+`error`, `fulfill`) for `for`/`if` rows.
+
+So 0.26 costs the same and 0.27 is 2–10% cheaper but regresses a file. Either reaches
+existing indexes only through a JS/TS requeue. Not taken now: the parse work that matters
+is on tree-sitter's master after 0.27.2 (about a quarter fewer instructions reported),
+and one requeue should carry that.
+
+*Reverses if:* a released runtime carries master's parse work with extraction no worse
+than 0.26's (re-run the corpus diff above, then requeue JS/TS as v24 did); for mimalloc,
+peak memory stops mattering, or a profile shows a foreground path spending its time in
+malloc.
