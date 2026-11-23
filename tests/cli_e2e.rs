@@ -3690,6 +3690,20 @@ fn an_outline_of_a_minified_file_says_it_was_held() {
 }
 
 #[test]
+fn a_bad_rq_jobs_warns_and_indexes_anyway() {
+    let (dir, db) = scratch("bad-rq-jobs");
+    fs::write(dir.join("w.rb"), "class Widget\nend\n").unwrap();
+    for value in ["abc", "-1", "100000"] {
+        let (code, out, err) = rq_full(&db, &dir, &["--index"], &[("RQ_JOBS", value)], None);
+        assert_eq!(code, 0, "RQ_JOBS={value}: {out}{err}");
+        assert_eq!(err.matches("RQ_JOBS").count(), 1, "warned once: {err}");
+    }
+    let (code, _, err) = rq_full(&db, &dir, &["--index"], &[("RQ_JOBS", "2")], None);
+    assert_eq!(code, 0);
+    assert!(!err.contains("RQ_JOBS"), "{err}");
+}
+
+#[test]
 fn a_file_rq_cannot_stat_is_not_forgotten() {
     // EACCES on its dir isn't a delete: a pass must keep what it can't see
     use std::os::unix::fs::PermissionsExt;

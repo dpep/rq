@@ -235,14 +235,49 @@ pub(crate) fn parse_jobs() -> usize {
     if configured > 0 {
         return configured;
     }
-    if let Some(n) = std::env::var("RQ_JOBS").ok().and_then(|v| v.parse().ok())
-        && n > 0
-    {
-        return n;
+    static FROM_ENV: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *FROM_ENV.get_or_init(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let value = std::env::var("RQ_JOBS").ok();
+        let (jobs, warning) = jobs_from_env(value.as_deref(), cores);
+        if let Some(warning) = warning {
+            eprintln!("rq: {warning}");
+        }
+        jobs
+    })
+}
+
+/// Most parse workers per core `RQ_JOBS` gets: past the core count buys
+/// nothing, and tens of thousands of threads fail to spawn.
+const JOBS_PER_CORE: usize = 4;
+
+/// Parse workers for an `RQ_JOBS` of `value` on `cores` cores, and a warning
+/// when it can't be honored. A warning, not an error: the variable lives in a
+/// shell profile, and failing every search over a tuning knob is worse than
+/// running at the default.
+fn jobs_from_env(value: Option<&str>, cores: usize) -> (usize, Option<String>) {
+    let value = value.map(str::trim).unwrap_or("");
+    let ceiling = cores * JOBS_PER_CORE;
+    match value.parse::<usize>() {
+        // unset, empty or 0: one per core
+        _ if value.is_empty() => (cores, None),
+        Ok(0) => (cores, None),
+        Ok(n) if n > ceiling => (
+            ceiling,
+            Some(format!(
+                "RQ_JOBS={n} is over {JOBS_PER_CORE} per core; using {ceiling}"
+            )),
+        ),
+        Ok(n) => (n, None),
+        Err(_) => (
+            cores,
+            Some(format!(
+                "RQ_JOBS={value} is not a thread count; using {cores} (one per core)"
+            )),
+        ),
     }
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
 }
 
 /// Summed per-file parse time across every worker, in microseconds. Profiling
@@ -2789,6 +2824,23 @@ mod tests {
         set_parse_jobs(3);
         assert_eq!(parse_jobs(), 3, "an explicit --jobs still wins");
         set_parse_jobs(0);
+    }
+
+    #[test]
+    fn rq_jobs_is_honored_within_reason_and_warns_otherwise() {
+        assert_eq!(jobs_from_env(None, 8), (8, None));
+        assert_eq!(jobs_from_env(Some(""), 8), (8, None));
+        assert_eq!(jobs_from_env(Some("0"), 8), (8, None));
+        assert_eq!(jobs_from_env(Some(" 2 "), 8), (2, None));
+        assert_eq!(jobs_from_env(Some("32"), 8), (32, None));
+        for bad in ["abc", "-1", "1.5"] {
+            let (jobs, warning) = jobs_from_env(Some(bad), 8);
+            assert_eq!(jobs, 8, "{bad}");
+            assert!(warning.unwrap().contains(bad));
+        }
+        let (jobs, warning) = jobs_from_env(Some("100000"), 8);
+        assert_eq!(jobs, 32);
+        assert!(warning.unwrap().contains("using 32"));
     }
 
     #[test]

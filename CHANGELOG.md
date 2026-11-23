@@ -38,9 +38,9 @@ and aren't listed; see `git log` for those.
   (discourse: 267 → 68 MB). A file whose long lines are strings or data (an
   inlined image, a base64 blob) is still parsed, and a bare `\r` ends a line.
   `rq --symbols` on a held file says so (`"reason": "minified"` under
-  `--json`). Existing indexes re-read their Ruby,
-  Rust, Python and Go files, and any file with no definitions, once in the
-  background after upgrading; nothing to do.
+  `--json`). Existing indexes re-read their Ruby, Rust, Python and Go files,
+  and any file with no definitions, once in the background after upgrading;
+  nothing to do.
 
 ### Removed
 - The `--jobs` flag. Set parse threads with `RQ_JOBS=N` instead
@@ -76,6 +76,10 @@ and aren't listed; see `git log` for those.
   `interrupted` (`true`/`false`, absent once complete).
 - A cold search whose indexing an `rq --drop` cut short indexes again within
   its wait and answers, instead of giving up as `warming` (exit 2) a moment in.
+- `RQ_JOBS` that isn't a thread count (`abc`, `-1`) warns on stderr and runs
+  at one parse thread per core instead of doing so silently, and an absurd
+  count (`RQ_JOBS=100000`, which crashed) is capped at 4 per core with a
+  warning.
 
 ## 0.60.15 — 2026-11-21
 
