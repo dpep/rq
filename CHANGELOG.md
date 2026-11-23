@@ -26,6 +26,13 @@ and aren't listed; see `git log` for those.
   read in batches of names rather than one statement per name, each name is
   read once even when the matches overflow the candidate cap, and ranking
   copies and moves far less per candidate.
+- Ruby is parsed with prism, Ruby's own parser: indexing a Ruby repo takes
+  about a quarter of the CPU it did (rails 3.5 s → 0.6 s, discourse 9.6 s →
+  2.6 s), and a file mid-edit keeps its definitions — the methods above an
+  unclosed `class` stay under it rather than dropping out. A few valid forms
+  the old parser misread now come out right: a method named `self`, an
+  uppercase setter (`def Name=`), a constant or symbol in non-ASCII letters.
+  Existing indexes re-read their Ruby files once, on the next search.
 
 ### Fixed
 

@@ -4737,3 +4737,75 @@ and one requeue should carry that.
 than 0.26's (re-run the corpus diff above, then requeue JS/TS as v24 did); for mimalloc,
 peak memory stops mattering, or a profile shows a foreground path spending its time in
 malloc.
+
+## D70 — Ruby is extracted by prism
+
+**Adopted**, 2026-11-23. `src/lang/ruby/prism.rs` on `ruby-prism` 2.1; the Tree-sitter
+walk stays as a test-only oracle (`src/lang/ruby/tree_sitter.rs`, `tree-sitter-ruby` a
+dev-dependency). Schema v30 requeues Ruby files.
+
+D9 found the parser is the cost of indexing; for Ruby that was Tree-sitter's parse of
+every method body only to skip it. Prism, Ruby's own parser, builds a tree a walk can
+skip through for a fraction of the instructions.
+
+*Measured.* Release builds, fresh DB per run, interleaved A/B, 3 rounds, `/usr/bin/time
+-l`, load 6–9.5 on 8 cores (wall is noisy; instructions and user time are the headline):
+
+| full `--index` | Tree-sitter | prism |
+|---|---|---|
+| rails instructions | 32.4–32.7 G | 7.7 G |
+| rails user | 3.2–3.5 s | 0.60 s |
+| rails wall (median) | 0.72 s | 0.38 s |
+| rails peak RSS | 60 MB | 54 MB |
+| discourse instructions | 94.0–95.2 G | 30.0 G |
+| discourse user | 9.4–9.8 s | 2.5–2.7 s |
+| discourse wall (median) | 1.79 s | 0.92 s |
+| discourse peak RSS | 94–111 MB | 90–91 MB |
+
+What discourse still spends is mostly not parsing (walk, hashing, SQLite). The binary is
+1.6 MB smaller (14.1 → 12.5 MB release). A cold first answer is unchanged — the
+profile's `first answer` phase, rails `Middleware`, ~121 ms → 126–144 ms; discourse
+`Guardian` 0.25–0.28 s → 0.27–0.39 s to exit — but on rails the process now exits later
+(0.15 s → 0.22–0.44 s): the search's usage write after the answer waits on its own warm,
+which with the faster parse gets through most of the repo before it lets go. That is the
+cold path's to fix, not the parser's. `make recall BASE=main`: 0 sources up or down
+over 6,879 queries, top 10 unchanged in all of them; the corpora indexed in 8 s, from 16.
+
+*Parity.* The walk keeps the Tree-sitter walk's shape — one frame per node carrying the
+access section, the class side and `module_function`, a bare marker flipping the frame
+it sits in — and reads a def's name from its source text (prism's own drops the `@` of
+`def ~@`). On every file prism parses cleanly the two must agree, row for row: the
+fixture test enforces it, and `make ruby-parity DIR=<checkout>` checks a corpus. 0
+differences on rails (3,479 files, 56,954 symbols) and discourse (11,206 files, 60,248
+symbols), nor on rubocop, prism, mastodon, graphql, hexapdf, faker, dd-trace-rb, spoom,
+rspec-core, webmock and rack. The differences that remain are Tree-sitter misreading
+valid Ruby: 6 of ruby's 7,834 files (`def self` read as `def self.` across a newline, an
+uppercase setter `def XMLDocument=`, a TRICK entry, and three files whose parse fell
+into an error and dropped every later method's parent) and one of sidekiq's
+(`alias_method :☠`); and Tree-sitter reads `ÜBER = 1` as a local, where Ruby reads a
+constant.
+
+*Error tolerance.* A file mid-edit is normal for a tool that reindexes on save. Cutting
+real files short, Tree-sitter kept 5–14% of the definitions above the cut (an unclosed
+class became one flat error and its methods lost their parent); prism kept 99.7–100%.
+`fixtures/ruby/truncated.rb` pins the gain.
+
+*Build.* `ruby-prism-sys` compiles its vendored C with `cc`, as `rusqlite` and the
+grammars already do; `bindgen` is optional and off, so `cargo install` needs neither
+Ruby nor libclang. CI builds it on Linux.
+
+*Rejected.*
+
+- **An in-house extractor** (a hand-written scanner for `class`/`module`/`def` and the
+  macros): its ceiling over prism is at most 1.3×, since prism's parse is already a small
+  share of the pass, and it would carry the upkeep the TypeScript import scanner shows —
+  every syntax corner (heredocs, `%`-literals, endless defs, `=begin`) found one bug at a
+  time, against a parser Ruby itself ships and keeps current.
+- **Tree-sitter without method bodies**: even with a perfect oracle blanking every def
+  body before the parse, Tree-sitter saved only 26% — it still lexes the blanked bytes
+  and builds the rest of the tree.
+- **lib-ruby-parser**: Ruby 3.1 syntax only, 4–7× slower than prism, and it errors on 8
+  rails files.
+
+*Reverses if:* prism's Rust bindings stop tracking Ruby releases, or its build grows a
+requirement (`bindgen`, a Ruby install) that `cargo install` can't meet.
