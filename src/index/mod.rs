@@ -1663,23 +1663,48 @@ fn parse_files(
 /// covers). A vanished old sha (rebase, gc) fails the range and falls back to
 /// the full bounded walk.
 fn capture_commit_times(store: &mut Store, checkout: i64, root: &Path) {
-    let Some(head) = git_head(root) else { return };
-    let last = store.git_ts_head(checkout).ok().flatten();
-    if last.as_deref() == Some(head.as_str()) {
-        return; // HEAD unmoved — nothing new to capture
+    if let Some(capture) = CommitTimes::start(store, checkout, root) {
+        capture.finish(store, checkout);
     }
-    let first = last.is_none();
-    let times = last
-        .and_then(|old| git_commit_times_range(root, &old, 1000))
-        .unwrap_or_else(|| git_commit_times(root, 1000));
-    if !times.is_empty() {
-        if store.set_file_git_ts(checkout, &times).is_err() {
-            return; // don't advance the marker past an unpersisted capture
+}
+
+/// A [`capture_commit_times`] whose `git log` runs on its own thread, so a
+/// pass can read it while it parses and store it once the sweep finalizes.
+struct CommitTimes {
+    head: String,
+    first: bool,
+    times: std::thread::JoinHandle<HashMap<String, i64>>,
+}
+
+impl CommitTimes {
+    /// Start reading the commits since the last capture; `None` when HEAD
+    /// hasn't moved since.
+    fn start(store: &Store, checkout: i64, root: &Path) -> Option<Self> {
+        let head = git_head(root)?;
+        let last = store.git_ts_head(checkout).ok().flatten();
+        if last.as_deref() == Some(head.as_str()) {
+            return None;
         }
-    } else if first {
-        return; // full walk yielded nothing — leave the marker unset to retry
+        let first = last.is_none();
+        let root = root.to_path_buf();
+        let times = std::thread::spawn(move || {
+            last.and_then(|old| git_commit_times_range(&root, &old, 1000))
+                .unwrap_or_else(|| git_commit_times(&root, 1000))
+        });
+        Some(Self { head, first, times })
     }
-    let _ = store.set_git_ts_head(checkout, &head);
+
+    fn finish(self, store: &mut Store, checkout: i64) {
+        let times = self.times.join().unwrap_or_default();
+        if !times.is_empty() {
+            if store.set_file_git_ts(checkout, &times).is_err() {
+                return; // don't advance the marker past an unpersisted capture
+            }
+        } else if self.first {
+            return; // full walk yielded nothing — leave the marker unset to retry
+        }
+        let _ = store.set_git_ts_head(checkout, &self.head);
+    }
 }
 
 /// Map of repo-relative path → most-recent commit time (unix seconds), from the
