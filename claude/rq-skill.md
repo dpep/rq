@@ -70,9 +70,9 @@ rq.
 - `warming` (`{read, of, interrupted, phase, phase_secs, hint}`) means the
   repo's index is still being built: `read` of `of` files are in. `phase` is
   `reading`, or `finishing` while `read` stands still at the end of a pass (not
-  hung); `phase_secs` is how long it has been in that phase. Another definition may not be
-  indexed yet, and `confidence` is scaled down to match (to 0 when `of` is
-  missing: outside git nothing counts the tree). Use the answer; if it
+  hung); `phase_secs` is how long it has been in that phase. Another definition
+  may not be indexed yet, and `confidence` is scaled down to match (to 0 when
+  `of` is missing: outside git nothing counts the tree). Use the answer; if it
   matters, ask again once indexing finishes (`hint` says how).
 - Fields that don't apply (`parent`, `visibility`, `end_line`, `singleton`, …) are omitted,
   never `null`. `declarations` and `also_in` appear when one name is declared in
@@ -89,9 +89,8 @@ On a miss, JSON is one `{"status": …, "query": …}` object, not results:
   says where the name does live. Re-ask with that scope.
 - `warming` (exit 2) — index incomplete; retry. Mostly after `--no-wait`;
   otherwise rq indexes a cold repo before answering. Its `warming` field says
-  how far indexing got. When it found something a
-  file not read yet could beat, the matches so far are in `provisional`: a
-  lead, not an answer. (Under `-a`, a match from another checkout nothing is
+  how far indexing got. When it found something a file not read yet could
+  beat, the matches so far are in `provisional`: a lead, not an answer. (Under `-a`, a match from another checkout nothing is
   indexing answers instead, with `warming.interrupted` and the `rq --index`
   that finishes it: asking again wouldn't change it. One another process is
   still indexing holds back every checkout's match, and the search waits on it.)
