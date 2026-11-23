@@ -369,6 +369,7 @@ dependencies = [
  "clap_complete",
  "ignore",
  "libc",
+ "memchr",
  "rusqlite",
  "serde",
  "serde_json",

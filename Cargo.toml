@@ -28,6 +28,7 @@ undocumented_unsafe_blocks = "warn"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 libc = "0.2"
+memchr = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ignore = "0.4"

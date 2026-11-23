@@ -1848,12 +1848,16 @@ pub(crate) fn may_hold_name(haystack: &str, needle: &str) -> bool {
     if needle.is_ascii() {
         let word = |b: &&u8| !is_joiner(char::from(**b));
         let (h, n) = (haystack.as_bytes(), needle.as_bytes());
-        return (0..h.len()).any(|i| {
+        let first = *n.iter().find(word).expect("a word byte");
+        // memchr finds each start the needle's first word byte allows; most
+        // files are rejected without a byte-at-a-time compare
+        let starts =
+            memchr::memchr2_iter(first.to_ascii_lowercase(), first.to_ascii_uppercase(), h);
+        return starts.into_iter().any(|i| {
             let mut rest = h[i..].iter().filter(word);
-            word(&&h[i])
-                && n.iter()
-                    .filter(word)
-                    .all(|nb| rest.next().is_some_and(|hb| hb.eq_ignore_ascii_case(nb)))
+            n.iter()
+                .filter(word)
+                .all(|nb| rest.next().is_some_and(|hb| hb.eq_ignore_ascii_case(nb)))
         });
     }
     fn folded(s: &str) -> impl Iterator<Item = char> + '_ {
@@ -2619,6 +2623,41 @@ mod tests {
         // the needle at the very end, and longer than the haystack
         assert!(may_hold_name("x.fetch_w", "fetchw"));
         assert!(!may_hold_name("fetc", "fetch"));
+    }
+
+    #[test]
+    fn the_pre_filter_agrees_with_a_squash_then_search_reference() {
+        let squash = |s: &str| -> String {
+            s.chars()
+                .filter(|c| !crate::search::is_joiner(*c))
+                .map(|c| c.to_ascii_lowercase())
+                .collect()
+        };
+        let hays = [
+            "",
+            "f",
+            "Fetch_Widget",
+            "x_f_e_t_c_h",
+            "éfetchwidgeté",
+            "fé_tch",
+            "ffetch.widge",
+            "def fetch-widget; fetchwidget",
+            "_-._fetch",
+        ];
+        let needles = [
+            "fetch",
+            "FetchWidget",
+            "f",
+            "_fetch_",
+            "fetchwidgetlonger",
+            "tch",
+        ];
+        for h in hays {
+            for n in needles {
+                let want = squash(h).contains(&squash(n));
+                assert_eq!(may_hold_name(h, n), want, "{h:?} {n:?}");
+            }
+        }
     }
 
     #[test]
