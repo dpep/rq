@@ -2949,8 +2949,8 @@ demand walk gets cheap enough that waiting for it costs nothing.
   stderr line a listed hit gets; the `confidence` field stays scaled. A provisional
   answer still isn't shown, and says only that.
 - **Text says what JSON says.** With nothing continuing the index (`interrupted: true`),
-  the stderr line reads "indexing stopped part-way" and names the `rq --index` that
-  finishes it, rather than "still indexing".
+  the stderr line reads "nothing is indexing this checkout" and names the `rq --index`
+  that finishes it, rather than "still indexing".
 - **Paper cuts.** A `warming` miss carries the same `warming` object a provisional answer
   does (and text its "N of M files read"); `provisional` lists its hits in a result's key
   order rather than sorted, inside the same alphabetical status object a miss is; "1 file
