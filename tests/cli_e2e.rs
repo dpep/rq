@@ -3663,6 +3663,20 @@ fn an_outline_of_a_file_over_the_size_cap_says_so() {
 }
 
 #[test]
+fn an_outline_of_a_directory_asks_for_a_file() {
+    let (dir, db) = scratch("outline-dir");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(dir.join("lib/w.rb"), "class Widget\nend\n").unwrap();
+    let (code, out, err) = rq_full(&db, &dir, &["--symbols", "lib", "--json"], &[], None);
+    assert_eq!(code, 64, "the path exists, so not 66: {out}");
+    let obj: serde_json::Value = serde_json::from_str(out.trim()).expect("error json");
+    assert_eq!(obj["kind"], "usage");
+    assert!(err.contains("is a directory"), "{err}");
+    let (code, _, err) = rq_full(&db, &dir, &["--symbols", "nope.rb"], &[], None);
+    assert_eq!(code, 66, "{err}");
+}
+
+#[test]
 fn an_outline_of_a_minified_file_says_it_was_held() {
     let (dir, db) = scratch("minified-outline");
     let bundle = format!("function a(n){{return n}}{}\n", "var b=a(1);".repeat(2_000));

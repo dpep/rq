@@ -55,6 +55,13 @@ pub(super) fn cmd_symbols(
         is_git || matches!(store.file_mtime(checkout.id, &rel), Ok(Some(_)))
     };
     let path = root.join(&rel);
+    if path.is_dir() {
+        return fail(
+            out,
+            Failure::Usage,
+            format_args!("rq --symbols: {file_arg} is a directory; name a file in it"),
+        );
+    }
     if !path.is_file() {
         return fail(
             out,

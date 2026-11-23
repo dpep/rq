@@ -83,6 +83,8 @@ and aren't listed; see `git log` for those.
 - Commit times a killed pass left unrecorded are filled by the next pass, even
   one with no file to re-read, so recency doesn't wait for each file's next
   edit.
+- `rq --symbols DIR` says the path is a directory (usage error, exit 64)
+  instead of "no such file".
 
 ## 0.60.15 — 2026-11-21
 
