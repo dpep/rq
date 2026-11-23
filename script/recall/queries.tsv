@@ -649,12 +649,6 @@ rails	subtest	first+last	SubscriberTest
 rails	sbscrb	consonants	SubscriberTest
 rails	sbuscribertest	typo	SubscriberTest
 rails	sub*tes	glob	SubscriberTest
-rails	skicalact	abbr3	skip_#{callback}_action
-rails	skcaac	abbr2	skip_#{callback}_action
-rails	skiaction	first+last	skip_#{callback}_action
-rails	skp#{c	consonants	skip_#{callback}_action
-rails	ski_p#{callback}_action	typo	skip_#{callback}_action
-rails	ski*act	glob	skip_#{callback}_action
 rails	neco	abbr2	new_connection
 rails	newconnection	first+last	new_connection
 rails	nwcnnc	consonants	new_connection

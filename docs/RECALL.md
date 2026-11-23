@@ -27,7 +27,7 @@ Every query was derived from a real symbol name, and that name, the query's
 source ranks **#1**, in the **top 10**, or is **found** at all (`--limit 0`).
 Rank is by name, so any definition of the source counts.
 
-6,879 queries over six corpora (plus the regress cases below, over four more),
+6,873 queries over six corpora (plus the regress cases below, over four more),
 reported per language and per repo as well as in total. A ranking change has to hold up on each language, not just on the
 mixed total.
 
