@@ -458,6 +458,26 @@ end
     }
 
     #[test]
+    fn source_is_read_as_utf8_whatever_its_magic_comment_says() {
+        // rq hands the parser UTF-8; a declared encoding would split its
+        // characters
+        for magic in [
+            "encoding: shift_jis",
+            "coding: euc-jp",
+            "-*- coding: binary -*-",
+        ] {
+            let src = format!(
+                "# {magic}\nclass K\n  def māÜ; end\n  attr_reader :nāÜ\n  Cā = 1\n  def after; end\nend\n"
+            );
+            assert_eq!(
+                names(&src),
+                ["K", "K#māÜ", "K#nāÜ", "K#Cā", "K#after"],
+                "{magic}"
+            );
+        }
+    }
+
+    #[test]
     fn a_class_under_a_runtime_scope_is_named_by_its_leaf() {
         let src = "class Outer\n  class self.class::Inner\n    def m; end\n  end\nend\n";
         assert_eq!(names(src), ["Outer", "Outer#Inner", "Outer::Inner#m"]);

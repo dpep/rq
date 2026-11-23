@@ -15,31 +15,44 @@ use crate::core::{Kind, Symbol, Visibility};
 use crate::lang::qualify;
 
 /// Every definition in `source`. Prism recovers from a syntax error locally,
-/// so a file mid-edit keeps the definitions around the broken spot.
+/// so a file mid-edit keeps most of the definitions around the broken spot.
 pub(super) fn extract(file: &str, source: &str) -> Vec<Symbol> {
-    let result = ruby_prism::parse(source.as_bytes());
-    let mut walk = Walk {
-        file,
-        lines: result.line_offsets(),
-        out: Vec::new(),
-        scopes: Vec::new(),
-        parent: None,
-        frame: Frame::fresh(false),
-        stack: Vec::new(),
-        flip: None,
-    };
-    walk.visit(&result.node());
-    walk.out
+    parse(source, |result| {
+        let mut walk = Walk {
+            file,
+            lines: result.line_offsets(),
+            out: Vec::new(),
+            scopes: Vec::new(),
+            parent: None,
+            frame: Frame::fresh(false),
+            stack: Vec::new(),
+            flip: None,
+        };
+        walk.visit(&result.node());
+        walk.out
+    })
 }
 
 /// Whether prism parses `source` without a syntax error: the files the
 /// Tree-sitter oracle is expected to agree on.
 #[cfg(test)]
 pub(super) fn parses_cleanly(source: &str) -> bool {
-    ruby_prism::parse(source.as_bytes())
-        .errors()
-        .next()
-        .is_none()
+    parse(source, |result| result.errors().next().is_none())
+}
+
+thread_local! {
+    /// `source` is the `&str` rq read, UTF-8 whatever a magic comment
+    /// (`# encoding: shift_jis`) declares: locked, prism doesn't re-decode it
+    /// and split its characters.
+    static OPTIONS: ruby_prism::ParseOptions = ruby_prism::Options::default()
+        .encoding("UTF-8")
+        .encoding_locked(true)
+        .build();
+}
+
+/// Hand `f` prism's parse of `source`.
+fn parse<R>(source: &str, f: impl FnOnce(&ruby_prism::ParseResult) -> R) -> R {
+    OPTIONS.with(|options| f(&ruby_prism::parse_with_options(source.as_bytes(), options)))
 }
 
 /// What a node's definitions inherit from where it sits.
