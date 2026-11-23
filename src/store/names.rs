@@ -52,6 +52,103 @@ impl Held {
     }
 }
 
+/// Keys a fetch reads in one statement: per-statement overhead is paid per
+/// batch, and a capped walk reads at most one batch past where it stops.
+const FETCH_BATCH: usize = 256;
+
+/// A fetch of each key's rows, `(repository_id, key)`, by a statement taking
+/// the repo as `?1`, the keys as a JSON array `?2` and the checkout as `?3`,
+/// that selects `j.key` after [`CANDIDATE_COLS`]. A key's rows are read once,
+/// however many walks take them.
+struct Walk<'a> {
+    keys: &'a [(i64, &'a str)],
+    read: Vec<Option<Vec<(i64, SymbolRow)>>>,
+    checkout: Option<i64>,
+    only: Option<Checkout>,
+    limit: usize,
+}
+
+impl<'a> Walk<'a> {
+    fn new(
+        keys: &'a [(i64, &'a str)],
+        checkout: Option<i64>,
+        only: Option<Checkout>,
+        limit: usize,
+    ) -> Self {
+        Walk {
+            keys,
+            read: vec![None; keys.len()],
+            checkout,
+            only,
+            limit,
+        }
+    }
+
+    /// Take keys in `order` until the cap is held: the keys taken, and whether
+    /// the cap stopped the walk short.
+    fn take(
+        &mut self,
+        stmt: &mut rusqlite::CachedStatement,
+        order: Vec<usize>,
+    ) -> Result<(Vec<usize>, bool)> {
+        let (mut taken, mut held) = (Vec::new(), Held::new(self.only));
+        for batch in order.chunks(FETCH_BATCH) {
+            if held.count() >= self.limit {
+                return Ok((taken, true));
+            }
+            self.load(stmt, batch)?;
+            for &i in batch {
+                if held.count() >= self.limit {
+                    return Ok((taken, true));
+                }
+                for row in self.read[i].iter().flatten() {
+                    held.add(&row.1);
+                }
+                taken.push(i);
+            }
+        }
+        Ok((taken, false))
+    }
+
+    /// Read the keys of `batch` not read yet, one statement per repo.
+    fn load(&mut self, stmt: &mut rusqlite::CachedStatement, batch: &[usize]) -> Result<()> {
+        let key_col = CANDIDATE_COLS.matches(',').count() + 1;
+        let mut missing: Vec<usize> = batch
+            .iter()
+            .copied()
+            .filter(|&i| self.read[i].is_none())
+            .collect();
+        missing.sort_by_key(|&i| self.keys[i].0);
+        for group in missing.chunk_by(|&a, &b| self.keys[a].0 == self.keys[b].0) {
+            let json =
+                serde_json::Value::from(group.iter().map(|&i| self.keys[i].1).collect::<Vec<_>>());
+            for &i in group {
+                self.read[i] = Some(Vec::new());
+            }
+            let mut rows = stmt.query(params![
+                self.keys[group[0]].0,
+                json.to_string(),
+                self.checkout
+            ])?;
+            while let Some(row) = rows.next()? {
+                let at: usize = row.get(key_col)?;
+                if let Some(Some(read)) = group.get(at).map(|&i| &mut self.read[i]) {
+                    read.push(row_to_candidate(row)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The rows of the keys taken, in the order taken.
+    fn rows(&mut self, taken: Vec<usize>) -> Vec<(i64, SymbolRow)> {
+        taken
+            .into_iter()
+            .flat_map(|i| self.read[i].take().unwrap_or_default())
+            .collect()
+    }
+}
+
 /// What `?3` binds: the scope's checkout, or unscoped the one to prefer.
 fn checkout_arg(only: Option<Checkout>, prefer: Option<i64>) -> Option<i64> {
     only.map_or(prefer, |c| Some(c.id))
@@ -446,47 +543,28 @@ impl Store {
         // the scan, whose repair of a corrupt row is a write.
         let _read = self.conn.unchecked_transaction()?;
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE s.repository_id = ?1 AND s.name_lower = ?2 {}",
+            "SELECT {CANDIDATE_COLS}, j.key {CANDIDATE_FROM} \
+             JOIN json_each(?2) j ON s.name_lower = j.value \
+             WHERE s.repository_id = ?1 {}",
             in_checkout(only)
         ))?;
-        let checkout = checkout_arg(only, prefer);
-        // Each name's rows, read at most once: a capped recall walks the names
-        // a second time, best first, and reuses what the first walk read.
-        let mut read: Vec<Option<Vec<(i64, SymbolRow)>>> = vec![None; keys.len()];
-        let mut fetch = |order: &mut dyn Iterator<Item = usize>| -> Result<(Vec<usize>, bool)> {
-            let (mut taken, mut held) = (Vec::new(), Held::new(only));
-            for i in order {
-                if held.count() >= limit {
-                    return Ok((taken, true));
-                }
-                if read[i].is_none() {
-                    let (r, lower, _) = &keys[i];
-                    read[i] = Some(
-                        stmt.query_map(params![r, lower, checkout], row_to_candidate)?
-                            .collect::<Result<_>>()?,
-                    );
-                }
-                for row in read[i].iter().flatten() {
-                    held.add(&row.1);
-                }
-                taken.push(i);
-            }
-            Ok((taken, false))
-        };
-        let (mut taken, over) = fetch(&mut (0..keys.len()))?;
+        let keyed: Vec<(i64, &str)> = keys
+            .iter()
+            .map(|(r, lower, _)| (*r, lower.as_str()))
+            .collect();
+        let mut walk = Walk::new(&keyed, checkout_arg(only, prefer), only, limit);
+        let (mut taken, over) = walk.take(&mut stmt, (0..keys.len()).collect())?;
         if over {
             // best first, rather than in whatever order the names were met
             let mut ranked: Vec<(f64, usize)> = (0..keys.len())
                 .map(|i| (probe.rank(&keys[i].2), i))
                 .collect();
             ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| keys[a.1].cmp(&keys[b.1])));
-            taken = fetch(&mut ranked.into_iter().map(|(_, i)| i))?.0;
+            taken = walk
+                .take(&mut stmt, ranked.into_iter().map(|(_, i)| i).collect())?
+                .0;
         }
-        let mut rows: Vec<(i64, SymbolRow)> = taken
-            .into_iter()
-            .flat_map(|i| read[i].take().unwrap_or_default())
-            .collect();
+        let mut rows = walk.rows(taken);
         if only.is_some() {
             rows.truncate(limit);
         }
@@ -553,24 +631,17 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {CANDIDATE_COLS} {CANDIDATE_FROM} \
-             WHERE fi.repository_id = ?1 AND fi.path = ?2 AND s.kind IN ({kinds}) {}",
+            "SELECT {CANDIDATE_COLS}, j.key {CANDIDATE_FROM} \
+             JOIN json_each(?2) j ON fi.path = j.value \
+             WHERE fi.repository_id = ?1 AND s.kind IN ({kinds}) {}",
             in_checkout(only)
         ))?;
-        let checkout = checkout_arg(only, prefer);
         // as in `named_candidates`
         let _read = self.conn.unchecked_transaction()?;
-        let (mut rows, mut held) = (Vec::new(), Held::new(only));
-        for (r, path) in &files {
-            if held.count() >= limit {
-                break;
-            }
-            for row in stmt.query_map(params![r, path, checkout], row_to_candidate)? {
-                let row = row?;
-                held.add(&row.1);
-                rows.push(row);
-            }
-        }
+        let keyed: Vec<(i64, &str)> = files.iter().map(|(r, path)| (*r, path.as_str())).collect();
+        let mut walk = Walk::new(&keyed, checkout_arg(only, prefer), only, limit);
+        let taken = walk.take(&mut stmt, (0..keyed.len()).collect())?.0;
+        let mut rows = walk.rows(taken);
         if only.is_some() {
             rows.truncate(limit);
         }
@@ -979,6 +1050,32 @@ mod tests {
         assert_eq!(kept.len(), 2);
         assert!(kept.contains(&"Widget".to_string()), "{kept:?}");
         assert!(!kept.contains(&"w_x_i_x_d".to_string()), "{kept:?}");
+    }
+
+    #[test]
+    fn recall_reads_every_batch_and_caps_across_them() {
+        let mut store = Store::open_in_memory().unwrap();
+        let r = repo(&store, "/tmp/a");
+        let names: Vec<String> = (0..2 * FETCH_BATCH + 7)
+            .map(|i| format!("widget_{i:04}"))
+            .collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        write(&mut store, r, "a.rs", &refs);
+        let fetch = |limit| -> Vec<String> {
+            let mut got: Vec<String> = store
+                .named_candidates(Some(r), None, &[], &Probe::new("wid"), limit)
+                .unwrap()
+                .into_iter()
+                .map(|(_, c)| c.name)
+                .collect();
+            got.sort();
+            got
+        };
+        assert_eq!(fetch(10_000), names);
+        // every name ranks alike, so the cap keeps the first in key order,
+        // wherever it falls in a batch
+        let cap = FETCH_BATCH + 3;
+        assert_eq!(fetch(cap), names[..cap]);
     }
 
     #[test]
