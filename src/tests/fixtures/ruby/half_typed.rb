@@ -10,3 +10,5 @@ class
 def helper(x)
   x
 end
+
+def(target:primary).hello = :hi

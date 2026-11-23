@@ -439,7 +439,7 @@ end
 
     #[test]
     fn a_half_typed_definition_names_nothing_and_hides_nothing() {
-        let cases: [(&str, &[&str]); 2] = [
+        let cases: [(&str, &[&str]); 3] = [
             // a class keyword with no name yet
             (
                 "class Widget\n  def a; end\nend\n\nclass\n\ndef helper(x)\n  x\nend\n",
@@ -451,6 +451,9 @@ end
                 "module Outer\n  class Inner::\n  def m; end\nend\n",
                 &["Outer"],
             ),
+            // an invalid receiver, whose recovery offers a label (`target:`)
+            // for the name and leaves no def of `hello`
+            ("def(target:primary).hello = :hi\n", &[]),
         ];
         for (src, want) in cases {
             assert_eq!(names(src), want, "{src}");

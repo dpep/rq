@@ -143,9 +143,7 @@ impl Walk<'_> {
         visibility: Visibility,
         singleton: bool,
     ) {
-        // recovery from a half-typed name can leave nothing, or a span of
-        // source, where a name goes: neither is one a query spells
-        if name.is_empty() || name.contains(char::is_whitespace) {
+        if !is_name(name) {
             return;
         }
         self.out.push(Symbol {
@@ -304,6 +302,12 @@ impl Walk<'_> {
     }
 }
 
+/// Whether recovery from a half-typed name left a name: not nothing, and not
+/// a span of source or a label (`target:`), none of which a query spells.
+fn is_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(|c: char| c.is_whitespace() || c == ':')
+}
+
 /// The name a class or module path gives it: `Foo`, `A::B`, `::Top`. A scope
 /// computed at runtime (`self.class::Foo`) can't be read, so the class is
 /// named by its leaf alone. None when the leaf isn't a constant: recovery
@@ -441,14 +445,15 @@ impl<'pr> Visit<'pr> for Walk<'_> {
     }
 
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
-        if self.line(node.name_loc().start()) > self.line(node.def_keyword_loc().start()) {
-            // a `def` whose name isn't typed yet: the word on a later line is
-            // what comes next, and what the def swallowed is still the body
-            // around it
-            return ruby_prism::visit_def_node(self, node);
-        }
         // the name as written: prism's own drops the `@` of `def ~@`
         let name = text(&node.name_loc());
+        let later = self.line(node.name_loc().start()) > self.line(node.def_keyword_loc().start());
+        if later || !is_name(name) {
+            // a `def` whose name isn't typed yet: the word on a later line, or
+            // what recovery offered, isn't its name, and what the def swallowed
+            // is still the body around it
+            return ruby_prism::visit_def_node(self, node);
+        }
         // `private` sections don't apply to `def self.x`
         let own = node.receiver().is_some();
         let vis = if own {
