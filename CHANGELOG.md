@@ -9,6 +9,12 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Changed
+
+- A fuzzy search on a repo's first index stops re-searching once only the
+  index's end can answer it: less CPU while it waits, the same answer, no
+  later.
+
 ### Fixed
 
 - A search on a repo still being indexed reads the files that spell its name

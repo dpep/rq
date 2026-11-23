@@ -5035,14 +5035,23 @@ fn a_cold_search_reads_the_name_spelled_with_separators() {
     // `FetchWidget` is an exact `fetch_widget`. The warm reads every file that
     // could hold the name before a prefix match may answer, so it must read the
     // one spelling it with an underscore, though the capped pass never gets there.
+    // Without the prefix match, nothing literal is found until it does, which is
+    // when a fuzzy search stops polling for one.
     let env = [NO_CHILD[0], ("RQ_COLLECT_CAP", "1")];
-    for (i, q) in ["FetchWidget", "fetch-widget"].into_iter().enumerate() {
+    let cases = [
+        ("FetchWidget", true),
+        ("fetch-widget", true),
+        ("FetchWidget", false),
+    ];
+    for (i, (q, prefix)) in cases.into_iter().enumerate() {
         let (dir, db) = scratch(&format!("demand-joiners-{i}"));
-        fs::write(
-            dir.join("a.rb"),
-            "class FetchWidgetWithRetryController\nend\n",
-        )
-        .unwrap();
+        if prefix {
+            fs::write(
+                dir.join("a.rb"),
+                "class FetchWidgetWithRetryController\nend\n",
+            )
+            .unwrap();
+        }
         for i in 0..10 {
             fs::write(
                 dir.join(format!("m{i:02}.rb")),
