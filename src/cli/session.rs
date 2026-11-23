@@ -380,6 +380,10 @@ pub(super) fn open_store_or_fail(out: Output, mode: &str) -> std::result::Result
 /// A relative path would resolve against each caller's cwd, silently splitting
 /// the one shared index into a database per directory.
 pub(super) fn db_location() -> Result<PathBuf, String> {
+    // the environment's index is the user's; a unit test opens one at a scratch path
+    if cfg!(test) {
+        panic!("a unit test reached the user's index: open a Store at a scratch path");
+    }
     let var = |name| std::env::var_os(name).filter(|v| !v.is_empty());
     db_location_from(var("RQ_DB"), var("HOME"))
 }

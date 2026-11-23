@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub(crate) fn rq_cmd(db: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rq"));
     scrub_git(&mut cmd);
+    sandbox_home(&mut cmd, db);
     cmd.current_dir(cwd)
         .env("RQ_DB", db)
         .env("RQ_WARM_DETACH", "wait")
@@ -27,6 +28,23 @@ pub(crate) fn rq_cmd(db: &Path, cwd: &Path) -> Command {
         .env("RQ_ANSWER_BUDGET_MS", GENEROUS_MS)
         .env("RQ_DEFERRED_BUDGET_MS", GENEROUS_MS);
     cmd
+}
+
+/// Keep a test off the user's index: refuse a `db` inside the real default
+/// location, and point `HOME` beside `db`, so a test that empties `RQ_DB`
+/// gets a default inside its own scratch.
+fn sandbox_home(cmd: &mut Command, db: &Path) {
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        let real = Path::new(&home).join(".local/share/rq");
+        assert!(
+            !db.starts_with(&real),
+            "a test would touch the user's index: {}",
+            db.display()
+        );
+    }
+    if let Some(dir) = db.parent().filter(|d| d.is_absolute()) {
+        cmd.env("HOME", dir);
+    }
 }
 
 /// A budget no test's tree comes near, but short of hanging a broken run.
