@@ -584,15 +584,42 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let mut total;
     // whether the anchor's reach split the index's candidates, for the merge
     let mut reach;
+    // Once our warm has read every file holding the name, a poll that finds no
+    // literal match here can't answer until the warm ends: an unread file holds
+    // only fuzzy and path matches, which wait for a complete index. Searching
+    // meanwhile re-reads a suspended name index (D25) for nothing.
+    let mut futile = false;
+    let mut last_cost = Duration::ZERO;
     let mut hits = loop {
+        if futile
+            && !warm_done.load(std::sync::atomic::Ordering::Relaxed)
+            && !INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed)
+            && !root.is_some_and(|r| is_complete(store, r))
+            && !(all_repos && others_open(store, here.as_deref()).is_some())
+            && deadline.is_none_or(|d| poll_fits(std::time::Instant::now(), d, last_cost))
+        {
+            if progress_ui
+                && poll_start.elapsed() >= HEADS_UP_DELAY
+                && last_draw.elapsed() >= PROGRESS_REDRAW
+            {
+                draw_progress(store, current, &label);
+                drew_progress = true;
+                last_draw = std::time::Instant::now();
+            }
+            std::thread::sleep(POLL_INTERVAL);
+            continue;
+        }
         // the warm registers a repo it's indexing for the first time, and
         // again under a new id when a `--drop` raced it
         if current.is_none() || polling {
             current = checkout_here(store);
         }
+        // before the search, so every file holding the name is in what it read
+        let read_before = demanded.load(std::sync::atomic::Ordering::Acquire);
         let searched_at = std::time::Instant::now();
         match scope(current).search(store, query, current, &ctx, rank_limit) {
             Ok(m) => {
+                last_cost = searched_at.elapsed();
                 total = m.total;
                 reach = m.reach;
                 let h = m.hits;
@@ -600,7 +627,8 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
                     break h;
                 }
                 let unread = unread(store, demanded.load(std::sync::atomic::Ordering::Acquire));
-                let answered = shown(args, cwd.as_deref(), root, &h)
+                let shown = shown(args, cwd.as_deref(), root, &h);
+                let answered = shown
                     .first()
                     .is_some_and(|top| held_back_by(top, here.as_deref(), &unread).is_none());
                 let version = store.data_version().ok();
@@ -628,6 +656,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
                 if answered || complete || !indexing || stopped || timed_out {
                     break h;
                 }
+                futile = own && read_before && !may_settle_early(&shown, here.as_deref(), &unread);
                 if progress_ui
                     && poll_start.elapsed() >= HEADS_UP_DELAY
                     && last_draw.elapsed() >= PROGRESS_REDRAW
@@ -1019,6 +1048,19 @@ fn held_back_by<'a>(
         .as_deref()
         .filter(|_| !here_read)
         .or(unread.elsewhere.as_deref())
+}
+
+/// Whether a later poll could answer before this checkout completes: another
+/// checkout may still commit an exact match, or the name's files aren't all
+/// read, or a literal match here could still reach the top. Otherwise only
+/// fuzzy and path matches are left unread, and those wait for completion.
+fn may_settle_early(shown: &[crate::search::Hit], here: Option<&str>, unread: &Unread) -> bool {
+    !unread.name_read
+        || unread.elsewhere.is_some()
+        || shown.iter().any(|h| {
+            crate::search::is_literal(&h.features)
+                && h.root.as_deref().is_none_or(|r| Some(r) == here)
+        })
 }
 
 /// Whether another poll, after the sleep, costing what the last one did,
@@ -1631,5 +1673,63 @@ mod tests {
         ] {
             assert_eq!(batch_lines(input).collect::<Vec<_>>(), want, "{input:?}");
         }
+    }
+
+    fn hit(feature: &'static str, root: Option<&str>) -> crate::search::Hit {
+        crate::search::Hit {
+            name: "Widget".into(),
+            kind: "class".into(),
+            language: "ruby".into(),
+            file: "a.rb".into(),
+            root: root.map(Into::into),
+            line: 1,
+            end_line: Some(1),
+            parent: None,
+            visibility: None,
+            singleton: false,
+            repo_identity: "r".into(),
+            source: crate::search::Source::Index,
+            score: 1.0,
+            confidence: 0.0,
+            features: vec![crate::search::Feature {
+                name: feature,
+                value: 1.0,
+            }],
+            signature: None,
+            body: None,
+            declarations: 1,
+            also_in: Vec::new(),
+            total: 0,
+            explain: None,
+            warming: None,
+        }
+    }
+
+    #[test]
+    fn only_fuzzy_matches_after_the_name_is_read_wait_for_completion() {
+        use super::{Unread, may_settle_early};
+        let unread = |name_read, elsewhere: Option<&str>| Unread {
+            here: Some("/here".into()),
+            name_read,
+            elsewhere: elsewhere.map(Into::into),
+        };
+        let here = Some("/here");
+        let fuzzy = [hit("fuzzy", None), hit("path", None)];
+        assert!(!may_settle_early(&fuzzy, here, &unread(true, None)));
+        assert!(!may_settle_early(&[], here, &unread(true, None)));
+        // the name's files aren't all read yet
+        assert!(may_settle_early(&fuzzy, here, &unread(false, None)));
+        // another checkout's indexer may commit an exact match
+        assert!(may_settle_early(
+            &fuzzy,
+            here,
+            &unread(true, Some("/there"))
+        ));
+        // a literal match here, below the top, may yet rise to it
+        let below = [hit("fuzzy", None), hit("prefix", Some("/here"))];
+        assert!(may_settle_early(&below, here, &unread(true, None)));
+        // ...but not one from a checkout the demand walk didn't read
+        let other = [hit("fuzzy", None), hit("exact", Some("/there"))];
+        assert!(!may_settle_early(&other, here, &unread(true, None)));
     }
 }
