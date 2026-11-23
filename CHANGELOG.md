@@ -9,59 +9,59 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Upgrade note
+
+- Nothing to run. Existing indexes re-read their Ruby, TypeScript and
+  JavaScript files once (schema v30, v31), in the background, starting with
+  the next search in each checkout. Until then the old definitions keep
+  answering and `--status` shows the checkout `warming`.
+
 ### Changed
 
-- A fuzzy search on a repo's first index stops re-searching once only the
-  index's end can answer it: less CPU while it waits, the same answer, no
-  later.
-- A first index reads commit times while it parses rather than after, so a
-  search waiting on it answers sooner (discourse, about half a second).
-- A search waiting on a first index no longer finishes a slow search begun
-  before the index got far enough to answer; it stops it and asks again,
-  which on discourse took some cold constructor calls from about 5 s to 2 s.
-  A lowercase name (`connection_pool`) stops re-searching until the files
-  holding it are read, since nothing earlier could answer it.
-- A search on a repo still being indexed exits sooner after its answer: it
-  stops its own indexing before its bookkeeping writes, and drops the parsed
-  files the writer hadn't reached, which the background index redoes (cold
-  rails, exit about 350 → 185 ms).
-- Short fuzzy queries that match thousands of names (`rq usr`, `rq -a usr`)
-  answer faster, about a quarter faster across every repo: definitions are
-  read in batches of names rather than one statement per name, each name is
-  read once even when the matches overflow the candidate cap, and ranking
-  copies and moves far less per candidate.
-- Ruby is parsed with prism, Ruby's own parser: indexing a Ruby repo takes
-  about a quarter of the CPU it did (rails 3.5 s → 0.6 s, discourse 9.6 s →
-  2.6 s), and a file mid-edit keeps its definitions — the methods above an
-  unclosed `class` stay under it rather than dropping out. A few valid forms
-  the old parser misread now come out right: a method named `self`, an
-  uppercase setter (`def Name=`), a constant or symbol in non-ASCII letters.
-  A macro's literal name reads as Ruby does: `attr_reader %q(x)` and
-  `attr_reader :"x?"` define `x` and `x?`, and a name built by interpolation
+- Ruby is parsed with prism, Ruby's own parser. Indexing a Ruby repo takes
+  about a quarter of the CPU (rails 3.5 s → 0.6 s, discourse 9.6 s → 2.6 s),
+  and a file mid-edit keeps its definitions: the methods above an unclosed
+  `class` stay under it rather than dropping out. Valid forms the old parser
+  misread now come out right: a method named `self`, an uppercase setter
+  (`def Name=`), a constant or symbol in non-ASCII letters. A macro's literal
+  name reads as Ruby reads it: `attr_reader %q(x)` and `attr_reader :"x?"`
+  define `x` and `x?`, and a name built by interpolation
   (`define_method("get_#{k}")`) defines nothing rather than `get_#{k}`.
-  Existing indexes re-read their Ruby files once, on the next search.
 
 ### Fixed
 
-- A source file nesting an expression thousands deep no longer aborts rq with
-  a stack overflow while indexing or outlining it.
-- A search on a repo still being indexed reads the files that spell its name
-  with separators before trusting a partial match: `rq AssertResponse` could
-  answer `AssertResponseWithUnexpectedErrorController` while the file defining
-  `assert_response` sat unread.
-- The same search for a constructor call (`Widget.new`) reads the files naming
-  its owner, since `initialize` needn't mention `new`.
-- Nor does it settle on a partial match from a search that began before every
-  file holding the name was read; a read finishing mid-search could let it.
-- A database error answering one line of a batch carries that line's `query`,
-  as every other batch row does.
-- In a directory rq doesn't index, an owner-scoped query (`Z::FetchWidget`)
-  reads every file holding the name, not only those spelling out the owner.
 - A JSX or TSX file whose text holds a character reference above U+FFFF
   (`&#128269;`) keeps its definitions; the parser lost the whole file. Code it
   can't fully read, such as Flow annotations, yields fewer junk definitions
-  named `if` or `return`. Existing indexes re-read their TypeScript and
-  JavaScript files once, on the next search.
+  named `if` or `return`.
+- A search on a repo still being indexed no longer settles on a partial match
+  while the file defining the name sits unread. Before trusting one it reads
+  the files that spell the name with separators (`rq AssertResponse` could
+  answer `AssertResponseWithUnexpectedErrorController` with `assert_response`
+  unread) and, for a constructor call (`Widget.new`), the files naming its
+  owner, since `initialize` needn't mention `new`. Nor does it trust a search
+  that began before all those files were read.
+- In a directory rq doesn't index, an owner-scoped query (`Z::FetchWidget`)
+  reads every file holding the name, not only those spelling out the owner.
+- A source file nesting an expression thousands deep no longer aborts rq with
+  a stack overflow while indexing or outlining it.
+- A batch row for a database error carries its line's `query`, as every other
+  row answering a line does.
+
+### Performance
+
+- Short fuzzy queries that match thousands of names (`rq usr`, `rq -a usr`)
+  answer at least a fifth faster (`rq -a usr` over 59 indexed repos,
+  131 → 108 ms): each name's definitions are read once, in batches, and
+  ranking copies far less per candidate.
+- A search waiting on a repo's first index answers sooner and spends less CPU
+  waiting. The index reads commit times while it parses rather than after
+  (discourse, first answer about half a second sooner). A search begun before
+  the index could answer is stopped and asked again rather than finished (some
+  cold constructor lookups on discourse, about 5 s → 2 s). And once nothing
+  more but the index's end can answer, it stops re-searching: a lowercase name
+  (`connection_pool`) until the files holding it are read, a fuzzy one until
+  the index completes.
 
 ## 0.61.1 — 2026-11-22
 
