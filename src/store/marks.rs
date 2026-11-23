@@ -127,20 +127,17 @@ fn rows_under(conn: &Connection, prefix: &str) -> Result<Vec<(String, String)>> 
         .collect()
 }
 
-/// Delete every `meta` row whose key starts with `prefix`.
-fn delete_under(conn: &Connection, prefix: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM meta WHERE key >= ?1 AND key < ?2",
-        params![prefix, prefix_upper_bound(prefix)],
-    )
-    .map(drop)
-}
-
 /// Forget every pass and phase mark on `root`, live or not: its checkout is
 /// going.
 pub(super) fn forget_marks(conn: &Connection, root: &str) -> Result<()> {
-    delete_under(conn, &marks_on(PASS, root))?;
-    delete_under(conn, &marks_on(PHASE, root))
+    for kind in [PASS, PHASE] {
+        for (key, _) in rows_under(conn, &marks_on(kind, root))? {
+            if root_and_pid(kind, &key).is_some_and(|(r, _)| r == root) {
+                conn.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// This process's pass mark on a checkout, held while the pass runs, and the
@@ -648,6 +645,22 @@ mod tests {
         assert!(t.elapsed() < std::time::Duration::from_secs(1), "no wait");
         writer.conn.execute_batch("COMMIT").unwrap();
         assert_eq!(store.marked_pids("/r"), vec![std::process::id()]);
+    }
+
+    #[test]
+    fn a_drop_forgets_only_its_own_roots_marks() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .upsert_repository(&crate::core::RepoIdentity::local("/a"), None)
+            .unwrap();
+        store.upsert_checkout(repo, "/a", None).unwrap();
+        store.begin_pass("/a", other(), None).unwrap();
+        store.begin_pass("/a:b", other(), None).unwrap();
+        store.forget_checkout("/a").unwrap();
+        assert!(store.marked_pids("/a").is_empty());
+        assert_eq!(store.marked_pids("/a:b"), vec![other()]);
+        let phase = phase_key("/a:b", other());
+        assert!(store.meta_get(&phase).unwrap().is_some());
     }
 
     #[test]
