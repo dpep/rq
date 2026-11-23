@@ -412,6 +412,12 @@ impl<'pr> Visit<'pr> for Walk<'_> {
     }
 
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+        if self.line(node.name_loc().start()) > self.line(node.def_keyword_loc().start()) {
+            // a `def` whose name isn't typed yet: the word on a later line is
+            // what comes next, and what the def swallowed is still the body
+            // around it
+            return ruby_prism::visit_def_node(self, node);
+        }
         // the name as written: prism's own drops the `@` of `def ~@`
         let name = text(&node.name_loc());
         // `private` sections don't apply to `def self.x`

@@ -458,6 +458,24 @@ end
     }
 
     #[test]
+    fn a_def_whose_name_is_not_typed_yet_defines_nothing_and_swallows_nothing() {
+        let cases: [(&str, &[&str]); 3] = [
+            // the next line's word is taken for the name
+            ("class A\n  def\nend\n", &["A"]),
+            // ...here `def`, taking `b` as its parameter
+            ("class A\n  private def # soon\n  def b; end\nend\n", &["A"]),
+            // ...here `require`, whose body is then the rest of the file
+            (
+                "private def\nrequire \"x\"\n\nclass Upload\n  LIMIT = 1\n  def name; end\nend\n",
+                &["Upload", "Upload#LIMIT", "Upload#name"],
+            ),
+        ];
+        for (src, want) in cases {
+            assert_eq!(names(src), want, "{src}");
+        }
+    }
+
+    #[test]
     fn a_file_cut_off_mid_edit_keeps_what_is_above_the_cut() {
         let src = include_str!("../../tests/fixtures/ruby/truncated.rb");
         let got: Vec<_> = extract(src)
