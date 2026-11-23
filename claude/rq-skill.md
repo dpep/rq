@@ -172,7 +172,8 @@ printf 'WidgetProcessor\nAccount\nNoSuchThing\n' | rq
 rq < names.txt
 ```
 
-Every row carries the `query` it answers, and a miss still reports
+Every row carries the `query` it answers (a refusal — bad flag, unopenable
+index — is the only row and has none), and a miss still reports
 `{"query": …, "status": "no_match"}` rather than vanishing. Match rows to
 queries by `query`, not position: blank lines are skipped, and each query
 returns up to 10 rows (`-l 1` for one each). The run exits 0 if any query
