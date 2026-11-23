@@ -9,6 +9,11 @@ and aren't listed; see `git log` for those.
 
 ## Unreleased
 
+### Changed
+- `rq --usage` exits `0` when nothing is recorded yet, as `--status` does when
+  nothing is indexed. A script that read exit 1 as "empty" should check for no
+  rows instead.
+
 ### Removed
 - The `--jobs` flag. Set parse threads with `RQ_JOBS=N` instead
   (`RQ_JOBS=2 rq --index`); a command line still passing `--jobs` now fails

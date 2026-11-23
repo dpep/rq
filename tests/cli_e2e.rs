@@ -2555,10 +2555,10 @@ fn usage_counts_searches_by_caller_and_flags() {
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
     rq(&db, &dir, &["--index"]);
 
-    // nothing recorded yet exits 1, like a search that finds nothing
+    // nothing recorded yet is an answer, as an empty --status is
     let (code, out) = rq(&db, &dir, &["--usage", "--ndjson"]);
-    assert_ne!(code, 0, "empty usage should exit non-zero: {out}");
-    // and says so on stderr, as an empty search does: stdout stays data
+    assert_eq!((code, out.as_str()), (0, ""));
+    // and says so on stderr: stdout stays data
     let (_, out, err) = rq_both(&db, &dir, &["--usage"]);
     assert_eq!((out.as_str(), err.trim()), ("", "no usage recorded yet"));
 
@@ -4113,9 +4113,15 @@ fn help_and_version_are_not_usage_errors() {
 #[test]
 fn commands_with_nothing_to_do_still_succeed() {
     // A command that ran but had nothing to report or remove still succeeded;
-    // exit 1 stays a search's "absent" (and --usage's "nothing recorded").
+    // exit 1 stays a search's "absent".
     let (dir, db) = scratch("nothing-to-do");
-    for args in [&["--status"][..], &["--drop"], &["--index"], &["--index"]] {
+    for args in [
+        &["--status"][..],
+        &["--usage"],
+        &["--drop"],
+        &["--index"],
+        &["--index"],
+    ] {
         let (code, out, _) = rq_full(&db, &dir, args, &[], None);
         assert_eq!(code, 0, "{args:?}: {out}");
     }

@@ -73,8 +73,8 @@ answer instead of reporting a false \"no matches\"; --no-wait answers right away
 A result from an index still being built says so (`warming`: files read of\n  \
 the tree) and scales its confidence to the share read.\n\n\
 EXIT CODES:\n  \
-0   matched; for --status, --storage, --index, --drop: ran, even with nothing to show or drop\n  \
-1   no match; for --usage: nothing recorded yet\n  \
+0   matched; for the other commands: ran, even with nothing to show or drop\n  \
+1   no match\n  \
 2   no answer yet: the index is still warming or indexing was interrupted; ask\n      \
 again. Matches found so far come back as `provisional`\n  \
 64  usage error: a bad flag, value or query\n  \

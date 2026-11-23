@@ -478,10 +478,5 @@ pub(super) fn cmd_usage(out: Output) -> ExitCode {
             );
         }
     }
-    // Nothing recorded exits 1, like a search that finds nothing. (An empty
-    // --status exits 0: it ran, and "no repos" is its answer.)
-    if rows.is_empty() {
-        return Outcome::Miss.into();
-    }
     ExitCode::SUCCESS
 }

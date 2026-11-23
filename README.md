@@ -286,11 +286,10 @@ hands free pages back on its own once they're worth it.
 Single-result commands emit one object.
 
 These commands exit `0` whenever they ran, including when there's nothing to
-report: an empty `--status` or `--storage`, an `--index` that found nothing new, or a `--drop`
+report: an empty `--status`, `--storage` or `--usage`, an `--index` that found nothing new, or a `--drop`
 of a repo that isn't indexed (`"dropped": false` tells you). They exit non-zero
 only with an error code from the table above — for `--drop`, `busy` (75) while
-another rq is indexing that checkout, which it leaves untouched. `--usage` is the exception: with
-nothing recorded yet it exits `1`.
+another rq is indexing that checkout, which it leaves untouched.
 
 ### Waiting on the index
 
