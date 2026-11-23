@@ -10,3 +10,15 @@ class Labels
   def secret; end
   private %w[hidden], %q(secret)
 end
+
+class Symbols
+  attr_reader :"ready?", :'single', %s(percent), :☠
+  define_method(:"dyn_#{kind}") { kind }
+  alias_method :"copy?", :"ready?"
+  alias :"spaced name" :single
+  alias :"alias_#{kind}" :single
+
+  def shown; end
+  def kept; end
+  private %I[shown#{kind} kept], :"shown"
+end

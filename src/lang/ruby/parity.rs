@@ -65,19 +65,45 @@ enum Intended {
     /// A name built by interpolation (`"get_#{x}"`) can't be known
     /// statically, so it's skipped, as any computed name is.
     InterpolatedName,
+    /// A quoted symbol (`:"x?"`, `%s(x)`) or one in non-ASCII letters (`:☠`)
+    /// names a method; the grammar read only plain ASCII symbols.
+    SymbolName,
+}
+
+/// The delimiter pairs a `%` literal may use.
+const PERCENT: [(&str, &str); 5] = [("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"), ("|", "|")];
+
+/// Whether `text` spells `name` as a symbol the grammar didn't read.
+fn symbol_spelled(text: &str, name: &str) -> bool {
+    text.contains(&format!(":\"{name}\""))
+        || text.contains(&format!(":'{name}'"))
+        || PERCENT
+            .iter()
+            .any(|(open, close)| text.contains(&format!("%s{open}{name}{close}")))
+        || (!name.is_ascii() && text.contains(&format!(":{name}")))
 }
 
 impl Intended {
-    const ALL: [Intended; 3] = [
+    const ALL: [Intended; 4] = [
         Intended::NonAsciiConstant,
         Intended::StringContent,
         Intended::InterpolatedName,
+        Intended::SymbolName,
     ];
 
     /// Why a row only prism extracted is right.
-    fn prism_only(row: &Row, _source: &str) -> Option<Intended> {
-        (row.kind == Kind::Constant.as_str() && row.name.starts_with(|c: char| !c.is_ascii()))
-            .then_some(Intended::NonAsciiConstant)
+    fn prism_only(row: &Row, source: &str) -> Option<Intended> {
+        if row.kind == Kind::Constant.as_str() && row.name.starts_with(|c: char| !c.is_ascii()) {
+            return Some(Intended::NonAsciiConstant);
+        }
+        // the lines of the definition: the macro call that spells the name
+        let lines: Vec<&str> = source
+            .lines()
+            .skip(row.line as usize - 1)
+            .take((row.end_line - row.line) as usize + 1)
+            .collect();
+        (row.kind == Kind::Method.as_str() && symbol_spelled(&lines.join("\n"), &row.name))
+            .then_some(Intended::SymbolName)
     }
 
     /// Why a row only the oracle extracted is wrong.
@@ -91,7 +117,17 @@ impl Intended {
         let (was, is) = (oracle.name.as_str(), ours.name.as_str());
         // `%q(x)` kept whole, or an escape kept as its backslash
         let source_spelling = (was.starts_with('%') && was.contains(is)) || was.contains('\\');
-        (oracle.kind == Kind::Method.as_str() && source_spelling).then_some(Intended::StringContent)
+        // `alias :"x y" z` kept its quotes
+        let quoted = was.len() == is.len() + 2 && was[1..was.len() - 1] == *is;
+        if oracle.kind != Kind::Method.as_str() {
+            None
+        } else if source_spelling {
+            Some(Intended::StringContent)
+        } else if quoted && (was.starts_with('"') || was.starts_with('\'')) {
+            Some(Intended::SymbolName)
+        } else {
+            None
+        }
     }
 
     /// Why prism gives the oracle's definition another visibility: an access
@@ -103,10 +139,13 @@ impl Intended {
                 .iter()
                 .any(|p| source.contains(&format!("{p}{open}{name}{close}")))
         };
-        [("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"), ("|", "|")]
-            .iter()
-            .any(|(open, close)| spelled(open, close))
-            .then_some(Intended::StringContent)
+        if PERCENT.iter().any(|(open, close)| spelled(open, close)) {
+            Some(Intended::StringContent)
+        } else if symbol_spelled(source, name) {
+            Some(Intended::SymbolName)
+        } else {
+            None
+        }
     }
 }
 

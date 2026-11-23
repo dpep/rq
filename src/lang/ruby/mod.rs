@@ -533,6 +533,35 @@ end
     }
 
     #[test]
+    fn a_quoted_symbol_names_a_method_and_an_interpolated_one_is_skipped() {
+        let src = r#"
+class Widget
+  attr_reader :"ready?", :'single', %s(percent), :☠
+  define_method(:"dyn_#{kind}") { }
+  alias_method :"copy?", :"ready?"
+  alias :"spaced name" :single
+  alias :"dyn_#{x}" :single
+  def a; end
+  def b; end
+  private %I[a#{x} b], :"a"
+end
+"#;
+        let got = methods(src);
+        let expect = [
+            ("ready?", false, "public"),
+            ("single", false, "public"),
+            ("percent", false, "public"),
+            ("☠", false, "public"),
+            ("copy?", false, "public"),
+            ("spaced name", false, "public"),
+            ("a", false, "private"),
+            ("b", false, "private"),
+        ]
+        .map(|(n, s, v)| (n.to_string(), s, v));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
     fn a_constant_may_start_with_any_uppercase_letter() {
         // Ruby's rule, which the Tree-sitter grammar read as ASCII only
         let syms = extract("class Größe\n  ÜBER = 1\nend\n");

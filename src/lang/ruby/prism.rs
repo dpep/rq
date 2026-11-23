@@ -290,15 +290,12 @@ fn text<'pr>(loc: &Location<'pr>) -> &'pr str {
     std::str::from_utf8(loc.as_slice()).unwrap_or_default()
 }
 
-/// The name a literal `:symbol` or quoted string argument carries: a
-/// string's content (`%q(x)` names `x`). Not a `:"quoted"` symbol, a heredoc,
-/// a `?c` character, or an interpolated string, whose name can't be known
-/// statically.
+/// The name a literal symbol or quoted string argument carries: its value
+/// (`:"x?"` names `x?`, `%q(x)` names `x`). Not a heredoc, a `?c` character,
+/// or an interpolated literal, whose name can't be known statically.
 fn literal_name<'pr>(node: &Node<'pr>) -> Option<Cow<'pr, str>> {
     if let Some(symbol) = node.as_symbol_node() {
-        let t = text(&symbol.location());
-        return (t.starts_with(':') && !t.starts_with(":\"") && !t.starts_with(":'"))
-            .then(|| Cow::Borrowed(t.trim_start_matches(':')));
+        return symbol_name(&symbol);
     }
     let string = node.as_string_node()?;
     // no opening: a piece of adjacent strings run together
@@ -307,6 +304,11 @@ fn literal_name<'pr>(node: &Node<'pr>) -> Option<Cow<'pr, str>> {
         return None;
     }
     content(&string.content_loc(), string.unescaped())
+}
+
+/// A symbol's value, bare (`alias a b`, a `%i[]` word) or not.
+fn symbol_name<'pr>(symbol: &ruby_prism::SymbolNode<'pr>) -> Option<Cow<'pr, str>> {
+    content(&symbol.content_loc(), symbol.unescaped())
 }
 
 /// A literal's value: its source text, unless an escape changed it.
@@ -332,8 +334,8 @@ fn literal_names<'pr>(node: &Node<'pr>, names: &mut Vec<Cow<'pr, str>>) {
                 literal_names(&element, names);
             } else if let Some(word) = element.as_string_node() {
                 names.extend(content(&word.content_loc(), word.unescaped()));
-            } else if element.as_interpolated_string_node().is_none() {
-                names.push(Cow::Borrowed(text(&element.location())));
+            } else if let Some(word) = element.as_symbol_node() {
+                names.extend(symbol_name(&word));
             }
         }
     } else if let Some(splat) = node.as_splat_node() {
@@ -409,11 +411,16 @@ impl<'pr> Visit<'pr> for Walk<'_> {
     /// `alias new old`, the keyword form of `alias_method`. A global-variable
     /// alias is another node, and defines no method.
     fn visit_alias_method_node(&mut self, node: &ruby_prism::AliasMethodNode<'pr>) {
-        let name = text(&node.new_name().location()).trim_start_matches(':');
-        let original = text(&node.old_name().location()).trim_start_matches(':');
+        // an interpolated new name can't be known statically
+        let name = node.new_name().as_symbol_node();
+        let Some(name) = name.and_then(|s| symbol_name(&s)).filter(|n| !n.is_empty()) else {
+            return;
+        };
+        let original = node.old_name().as_symbol_node();
+        let original = original.and_then(|s| symbol_name(&s)).unwrap_or_default();
         let singleton = self.frame.singleton;
-        let vis = alias_visibility(&self.out, self.parent.as_deref(), singleton, original);
-        self.method(name, &node.location(), vis, singleton);
+        let vis = alias_visibility(&self.out, self.parent.as_deref(), singleton, &original);
+        self.method(&name, &node.location(), vis, singleton);
     }
 
     fn visit_call_node(&mut self, node: &CallNode<'pr>) {
