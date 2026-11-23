@@ -64,9 +64,7 @@ A lowercase receiver is a variable whose class the extension can't know, so it
 is dropped; a constant or a `::` path scopes the query, and the bare name is the
 fallback for an inherited or mixed-in method. `--lang` is set from the file's
 language (TypeScript and JavaScript together), and `--anchor` from the click, so
-a bare `save` inside `Widget` prefers `Widget#save`. An rq older than 0.53
-rejects `--anchor`; the extension notices once and asks without it from then
-on. Only exact, case-sensitive names are kept — rq's fuzzy neighbours are right
+a bare `save` inside `Widget` prefers `Widget#save`. Only exact, case-sensitive names are kept — rq's fuzzy neighbours are right
 for a search box, wrong for a jump.
 When one match remains or rq's top confidence is ≥ 0.8, the click jumps straight
 there; otherwise up to five candidates show as a peek list.

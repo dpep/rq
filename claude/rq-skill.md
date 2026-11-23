@@ -209,7 +209,7 @@ cargo install --git https://github.com/dpep/rq
 ```
 
 To update: `brew upgrade dpep/tools/rq` (or re-run the `cargo install --git …`
-line). `--anchor` and the `root` field need rq 0.53 or newer. Source and issues:
+line). Source and issues:
 <https://github.com/dpep/rq>.
 
 ## Notes

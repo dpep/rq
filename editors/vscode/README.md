@@ -7,9 +7,8 @@ methods `attr_accessor`, `delegate`, `has_many` and friends define.
 
 ## Requirements
 
-`rq` 0.52 or newer on your `PATH` (`brew install dpep/tools/rq`), or set
-`rq.path`. rq 0.53 adds click-aware ranking (below); older versions work
-without it. rq indexes the repo on first use; there is nothing else to set up.
+`rq` 0.53 or newer on your `PATH` (`brew install dpep/tools/rq`), or set
+`rq.path`. rq indexes the repo on first use; there is nothing else to set up.
 
 ## What it does
 
@@ -21,8 +20,7 @@ without it. rq indexes the repo on first use; there is nothing else to set up.
   candidates show as a peek list.
 - **Click-aware ranking.** Each click passes its position as `--anchor`, so a
   bare `save` inside `Widget` prefers `Widget#save`, then definitions in the same
-  file and nearby directories. On an rq older than 0.53 the extension notices
-  once and ranks without it.
+  file and nearby directories.
 - **Go to Symbol in Workspace (Cmd/Ctrl-T)** from rq's ranked index.
 - **rq: Search Definitions** in the command palette — any query rq accepts,
   across every language.

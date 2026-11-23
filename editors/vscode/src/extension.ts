@@ -6,8 +6,6 @@ import { runRq, RunResult } from "./rq";
 
 let log: vscode.OutputChannel;
 let missingReported = false;
-// rq before 0.53 rejects --anchor; learned on first refusal, reset when rq.path changes
-let anchorUnsupported = false;
 // Positions whose definition we're asking the other providers for; the ask
 // re-enters our own provider, which must stay out of its answer.
 const asking = new Set<string>();
@@ -29,7 +27,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     { dispose: () => definitions?.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("rq.languages")) registerDefinitions();
-      if (e.affectsConfiguration("rq.path")) missingReported = anchorUnsupported = false;
+      if (e.affectsConfiguration("rq.path")) missingReported = false;
     }),
     vscode.languages.registerWorkspaceSymbolProvider({ provideWorkspaceSymbols }),
     vscode.commands.registerCommand("rq.search", search),
@@ -170,17 +168,8 @@ async function rq(
   const sub = token?.onCancellationRequested(() => abort.abort());
   const bin = vscode.workspace.getConfiguration("rq").get<string>("path") || "rq";
   try {
-    let res: RunResult;
-    if (anchor && !anchorUnsupported) {
-      res = await runRq(bin, query, [...extra, "--anchor", anchor], cwd, abort.signal);
-      if (res.status === "error" && res.message.includes("--anchor")) {
-        anchorUnsupported = true;
-        log.appendLine("rq doesn't know --anchor (older than 0.53); ranking without the click position");
-        res = await runRq(bin, query, extra, cwd, abort.signal);
-      }
-    } else {
-      res = await runRq(bin, query, extra, cwd, abort.signal);
-    }
+    const args = anchor ? [...extra, "--anchor", anchor] : extra;
+    const res = await runRq(bin, query, args, cwd, abort.signal);
     if (res.status === "missing") reportMissing(bin);
     if (res.status === "error") log.appendLine(`rq ${JSON.stringify(query)} in ${cwd}: ${res.message}`);
     return res;
