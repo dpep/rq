@@ -14,7 +14,9 @@ ranked priorities resolve every design tension:
 2. navigation over discovery
 3. speed over exhaustiveness
 
-The latency target is **< 50 ms perceived** for index-backed results, then
+The latency target is **< 50 ms perceived** for index-backed results in one
+repo (`--all-repos` pays for the wider question, ~100 ms on a 59-repo index,
+D68), then
 *progressive improvement across calls*: a search answers from what is indexed
 and never waits to finish the index; warming carries on behind the answer, and
 the next search sees more. One limit on "answer now": a guess a half-built
@@ -442,7 +444,8 @@ search only reads.
   HEAD, branch and trunk are read from the git dir (a linked worktree's `.git`
   file is followed to its own dir and `commondir`), identity is cached by
   checkout root, and the `git log` for commit-time recency
-  runs only when a sweep actually (re)indexed something. The one remaining
+  runs only when a sweep actually (re)indexed something; on a first index it
+  runs on its own thread alongside the parse. The one remaining
   per-search question — has the worktree moved since it was indexed? — forks
   `git status`, which grows with the worktree; a hit hands it to the detached
   warm child rather than wait on it, so a hit on an indexed repo forks no `git`.

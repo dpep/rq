@@ -161,7 +161,7 @@ that doesn't apply is **omitted**, never `null`.
 | `also_in` | with `declarations` | `file:line` of the other declarations. |
 | `total` | search | Matches the window was drawn from, before `--limit`. |
 | `explain` | `--explain` | Feature name → score contribution, in whole points. |
-| `query` | batch mode | The stdin line this row answers; on a line that isn't UTF-8, its text with each invalid byte as `\u{FFFD}`. |
+| `query` | batch mode, on every row but a refusal | The stdin line this row answers; on a line that isn't UTF-8, its text with each invalid byte as `\u{FFFD}`. |
 | `warming` | search, while the checkout's index is still being built | `{read, of, interrupted, phase, phase_secs, hint}`: files the index holds, files the tree spans (what git tracks, less a sparse checkout's files outside its cone, plus anything else the index holds; omitted outside git, where nothing counts the tree, and then `confidence` is 0), whether nothing is indexing it, what a live pass over it is doing — `reading`, or `finishing` (rebuilding the name index and reading commit times, when `read` stands still for a while) — and for how many whole seconds (both omitted when no pass reports one, such as an older rq's), and what to run. A better match may be in a file not read yet, so `confidence` is scaled by `read / of` — on every result from that checkout, `live` ones too, so they compare. |
 
 ### Misses and exit codes
@@ -256,8 +256,8 @@ carrying its `query`, stderr names its line number, and the batch goes on. A
 bad value (`-k widget`) refuses the whole batch with one error row, as do
 `--json` and `--show`/`--open`/`--web` (exit 64) and an index that can't be
 opened (exit 74). A refusal is the only row and carries no `query`: no line
-was answered. Piped stdin with no queries
-on it prints nothing on stdout and exits `1`.
+was answered. Piped stdin with no queries on it prints nothing on stdout and
+exits `1`.
 
 ### Reading the source
 
@@ -453,7 +453,10 @@ The plugin is the better default; [`claude/INSTALL.md`](claude/INSTALL.md) cover
 
 The in-process search pipeline measures p50 ~160 µs, max < 0.25 ms on a mid-size
 library (a few hundred symbols) — microseconds against a 50 ms first-answer
-budget. Benchmark your own tree: `make bench REPO=/path/to/repo`.
+budget. That budget is for a search in one repo: `-a` costs more as the index
+grows, about 100 ms for a short fuzzy query over 59 repos and 389k definitions
+(as of 2026-11-23, [D68](docs/DECISIONS.md)). Benchmark your own tree:
+`make bench REPO=/path/to/repo`.
 
 ## Scope
 
