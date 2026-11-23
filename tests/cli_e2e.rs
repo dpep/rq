@@ -3796,20 +3796,21 @@ fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     git_init_commit(&dir);
     rq(&db, &dir, &["--index"]);
 
-    // --json would have to frame N result sets as one array; --ndjson is the
-    // shape that streams
-    let (code, _) = rq_stdin(&db, &dir, &["--json"], "widget\n");
-    assert_ne!(code, 0, "--json is refused for a batch");
+    // --json would have to frame N result sets as one array; NDJSON is the
+    // shape that streams, and the refusal says so in the format asked for
+    let (code, out) = rq_stdin(&db, &dir, &["--json"], "widget\n");
+    assert_eq!((code, json(&out)["kind"].as_str()), (64, Some("usage")));
+    assert!(out.contains("NDJSON"), "{out}");
     // --show/--open act on one result
     let (code, _) = rq_stdin(&db, &dir, &["-J", "--show"], "widget\n");
     assert_ne!(code, 0, "--show is refused for a batch");
 }
 
-/// A batch fed raw bytes: exit code, stdout rows, stderr.
+/// A batch fed raw bytes, with no output flag: exit code, stdout rows, stderr.
 fn rq_stdin_bytes(db: &Path, cwd: &Path, stdin: &[u8]) -> (i32, Vec<serde_json::Value>, String) {
     use std::io::Write;
     let mut child = rq_cmd(db, cwd)
-        .args(["-J", "-l", "1"])
+        .args(["-l", "1"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -3831,6 +3832,33 @@ fn rq_stdin_bytes(db: &Path, cwd: &Path, stdin: &[u8]) -> (i32, Vec<serde_json::
         rows,
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+#[test]
+fn a_batch_answers_in_ndjson_unasked_and_a_single_query_stays_text() {
+    let (dir, db) = scratch("batch-default");
+    fs::write(dir.join("a.rb"), "class Widget\nend\nclass Gadget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+
+    // blank lines are skipped; a bad query is a row like any other
+    let (code, rows, _) = rq_stdin_bytes(&db, &dir, b"widget\n\n  \nNoSuch\n-k\n");
+    assert_eq!(code, 0, "{rows:?}");
+    let queries: Vec<_> = rows.iter().map(|r| r["query"].as_str()).collect();
+    assert_eq!(
+        queries,
+        [Some("widget"), Some("NoSuch"), Some("-k")],
+        "{rows:?}"
+    );
+    assert_eq!(rows[0]["name"], "Widget");
+    assert_eq!(rows[1]["status"], "no_match");
+
+    // a query on the command line is no batch, whatever stdin holds or where
+    // stdout goes (`rq foo | head`)
+    let (code, out) = rq_stdin(&db, &dir, &["Widget"], "Gadget\n");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.starts_with("a.rb:1"), "text, as at a terminal: {out}");
+    assert!(!out.contains("Gadget"), "stdin unread: {out}");
 }
 
 #[test]

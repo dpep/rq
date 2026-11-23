@@ -58,6 +58,7 @@ rq <query> --anchor F:LINE  # rank as if asked from that line (F:LINE[:COL])
 rq <query> --show           # print the definition's source (confident match only)
 rq <query> -o/--open        # open the best match in your editor
 rq <query> -w/--web         # open the best match on GitHub, pinned to a pushed sha
+rq < names.txt              # one query per line; NDJSON answers (batch mode)
 rq --symbols FILE           # outline a file's definitions, in line order
 rq --index [PATH]           # index a repository (incremental; safe to re-run)
 rq --index --path DIR       # seed the index with a subtree first (big monorepos)
@@ -218,12 +219,12 @@ file; either is safe to delete.
 
 ### Batch mode
 
-Pipe queries on stdin, one per line, with `-J`. rq resolves the repo and opens
-the index once instead of per query, which on a large repo is most of what a
-lookup costs:
+Pipe queries on stdin, one per line, and rq answers each as NDJSON. It
+resolves the repo and opens the index once instead of per query, which on a
+large repo is most of what a lookup costs:
 
 ```sh
-printf 'HashWithIndifferentAccess\nNoSuchThing\n' | rq -J -l 1
+printf 'HashWithIndifferentAccess\nNoSuchThing\n' | rq -l 1
 ```
 
 ```json
@@ -235,9 +236,8 @@ Each row carries its `query`; a miss row carries its own `status`. Each line
 is answered as it arrives, so a caller can hold the pipe open and ask one name
 at a time. A line that isn't UTF-8 gets a `usage` error row carrying its
 `query`, stderr names its line number, and the batch goes on. The run exits `0` if any query matched,
-non-zero only if none did. `--json` can't frame
-several result sets, so batch needs `-J`, and `--show`/`--open`/`--web` don't
-apply. A cold repo is indexed up front, within the `--wait` budget, before the
+non-zero only if none did. `--show`/`--open`/`--web` don't apply, and
+`--json` is refused (exit 64). A cold repo is indexed up front, within the `--wait` budget, before the
 first answer. A line that arrives after the pipe sat idle (an edit made between
 questions) first takes in what changed in the worktree; lines piped together
 are answered against one look.

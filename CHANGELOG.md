@@ -14,6 +14,9 @@ and aren't listed; see `git log` for those.
   own guess (`claude-code`, `human`, `piped`).
 
 ### Changed
+- Queries piped on stdin are answered as NDJSON without `-J`
+  (`printf 'Widget\n' | rq`). A batch that relied on text output now gets one
+  JSON object per line; `-J` still works, and `--json` is still refused.
 - `rq --usage` counts every command (`symbols`, `status`, `index`, `drop`,
   `storage`, `usage`, `completions`) as a row whose `flags` lead with its
   name, and a search's `wait` and query shape (`scoped`, `new`, `glob`,

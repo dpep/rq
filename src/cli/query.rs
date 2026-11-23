@@ -185,6 +185,9 @@ fn batch_lines(input: impl std::io::BufRead) -> impl Iterator<Item = BatchLine> 
 /// it keeps this file's own rule that correctness beats the first query's
 /// latency. `--no-wait` opts out, exactly as it does for one query, and any
 /// line the index can't yet answer says so with `status: "warming"`.
+///
+/// The answers are NDJSON whatever the output flags, since each row has to
+/// name the query it answers; `--json`, one document, is refused.
 pub(super) fn cmd_batch(
     cli: &Cli,
     out: Output,
@@ -197,11 +200,12 @@ pub(super) fn cmd_batch(
             out,
             Failure::Usage,
             format_args!(
-                "rq: --json can't frame a stream of queries — use --ndjson (-J), \
-             where each line carries the query it answers"
+                "rq: queries read from stdin are answered as NDJSON, one object per \
+                 line naming its query — drop --json"
             ),
         );
     }
+    let out = Output::Ndjson;
     if cli.open || cli.web || cli.show {
         return fail(
             out,

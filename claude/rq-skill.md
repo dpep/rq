@@ -162,20 +162,20 @@ rq Widget -l 1 --json          # just the top hit
 
 ## Many lookups at once
 
-Looking up a list of names? Pipe them on stdin, one per line, with `-J`. rq
-resolves the repo and opens the index once instead of per query — roughly 2x
-faster on a mid-size repo and 4x on a large monorepo, where it matters most.
+Looking up a list of names? Pipe them on stdin, one per line; the answers come
+back as NDJSON. rq resolves the repo and opens the index once instead of per
+query — roughly 2x faster on a mid-size repo and 4x on a large monorepo, where
+it matters most.
 
 ```sh
-printf 'WidgetProcessor\nAccount\nNoSuchThing\n' | rq -J
-rq -J < names.txt
+printf 'WidgetProcessor\nAccount\nNoSuchThing\n' | rq
+rq < names.txt
 ```
 
 Every row carries the `query` it answers, and a miss still reports
 `{"query": …, "status": "no_match"}` rather than vanishing. The run exits 0 if
 any query matched, non-zero only if all missed — so read each row's `status`,
-not the exit code. Needs `-J` (`--json` can't frame several result sets);
-`--show`/`--open` don't apply. `--anchor` does.
+not the exit code. `--show`/`--open` don't apply. `--anchor` does.
 
 ## Outline a file
 
