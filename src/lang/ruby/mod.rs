@@ -509,6 +509,15 @@ end
     }
 
     #[test]
+    fn an_access_marker_in_a_walked_def_body_sets_no_section() {
+        let src = "class A\n  def setup\n    private\n    attr_reader :leak\n    def inner; end\n  end\n\n  def later_public; end\n\n  def broken(\nend\n";
+        let got = methods(src);
+        let expect = ["setup", "leak", "inner", "later_public", "broken"]
+            .map(|n| (n.to_string(), false, "public"));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
     fn a_def_on_another_object_is_not_the_class_s_own() {
         let src = "class A\n  def (Object).qux; end\n  obj = Object.new\n  def obj.m; end\n  def self.s; end\n  def A.c; end\nend\n";
         assert_eq!(names(src), ["A", "A#s", "A#c"]);

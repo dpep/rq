@@ -316,6 +316,7 @@ fn prism_matches_tree_sitter_on_every_fixture_both_parse() {
     assert_eq!(
         broken,
         [
+            "body_marker.rb",
             "half_typed.rb",
             "left_open.rb",
             "semantic_error.rb",
