@@ -72,9 +72,9 @@ enum Intended {
     /// what follows it: parents, a class's end. Only definitions reaching the
     /// first error are excused; those wholly before it must still agree.
     OracleMisparse,
-    /// A name with a space in it (`alias :"a b" c`) is none a query spells,
-    /// and prism emits no such name.
-    SpacedName,
+    /// A name holding whitespace or `:` (`alias :"a b" c`, `scope "/:id"`) is
+    /// none a query spells, and prism emits no such name.
+    UnspellableName,
     /// `class self.class::Foo` sits under a scope computed at runtime: prism
     /// files it under the enclosing name, where the oracle took the
     /// expression's source (`Outer::self.class`) for a namespace.
@@ -101,7 +101,7 @@ impl Intended {
         Intended::InterpolatedName,
         Intended::SymbolName,
         Intended::OracleMisparse,
-        Intended::SpacedName,
+        Intended::UnspellableName,
         Intended::RuntimeScope,
     ];
 
@@ -126,8 +126,8 @@ impl Intended {
             None
         } else if row.name.contains("#{") {
             Some(Intended::InterpolatedName)
-        } else if row.name.contains(char::is_whitespace) {
-            Some(Intended::SpacedName)
+        } else if row.name.contains(|c: char| c.is_whitespace() || c == ':') {
+            Some(Intended::UnspellableName)
         } else {
             None
         }

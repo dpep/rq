@@ -5,6 +5,7 @@ class Labels
   attr_reader %q(plain), %Q(double), "esc\u0061ped", 'quoted'
   attr_accessor "a#{suffix}"
   define_method("dyn_#{kind}") { kind }
+  scope "/:slug", -> { all }
 
   def hidden; end
   def secret; end
