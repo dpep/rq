@@ -141,6 +141,27 @@ fn a_test_class_named_in_full_does_not_take_the_call_from_a_real_constructor() {
 }
 
 #[test]
+fn a_fuzzy_leftover_in_the_owners_path_is_not_a_constructor() {
+    // `renew_all` reads as `new` scattered, inside `Widget` by its file's name;
+    // only a constructor (or a literal `new`) keeps the class from answering
+    let (store, _dir) = indexed_files(
+        "ctor-fuzzy-leftover",
+        &[
+            ("widget.rb", "class Helper\n  def renew_all; end\nend\n"),
+            (
+                "lib_widget.rb",
+                "module Lib\n  class Widget\n    def run; end\n  end\nend\n",
+            ),
+        ],
+    );
+    let hit = top(&store, "Widget.new");
+    assert_eq!(
+        (hit.name.as_str(), hit.kind.as_str(), hit.parent.as_deref()),
+        ("Widget", "class", Some("Lib"))
+    );
+}
+
+#[test]
 fn an_owner_named_in_other_capitals_is_not_named_in_full() {
     // `WidgetBox` is another constant than `WidgetBOX`: the nested class the
     // query spells exactly keeps its constructor

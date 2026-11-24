@@ -547,12 +547,8 @@ pub(crate) fn search(
 /// constructor, or a method literally named `new` (Rust's)?
 fn owns_constructor(hits: &[Hit], owner: &str) -> bool {
     let owner = scopes(owner);
-    hits.iter().any(|h| {
-        h.features
-            .iter()
-            .any(|f| matches!(f.name, "constructor" | "exact"))
-            && h.parent.as_deref().map(scopes).as_ref() == Some(&owner)
-    })
+    hits.iter()
+        .any(|h| constructs(h) && h.parent.as_deref().map(scopes).as_ref() == Some(&owner))
 }
 
 /// Is `h` the type `owner` names in full, not one nested elsewhere that only
@@ -579,15 +575,26 @@ fn scopes(s: &str) -> Vec<&str> {
 /// example) class never outranks a constructor outside them, as everywhere.
 fn constructor_class(ctor: &[Hit], mut class: Vec<Hit>, owner: &str) -> Option<Vec<Hit>> {
     constructor_owner(&mut class);
-    let some = |hits: &[Hit]| hits.iter().any(|h| h.score > 0.0);
-    if some(ctor) {
+    // a fuzzy or `new_*` leftover in scope is no constructor
+    let ctors: Vec<&Hit> = ctor
+        .iter()
+        .filter(|h| h.score > 0.0 && constructs(h))
+        .collect();
+    if !ctors.is_empty() {
         class.retain(|h| named_in_full(h, owner));
-        let primary = |hits: &[Hit]| hits.iter().any(|h| h.score > 0.0 && !secondary(h));
-        if primary(ctor) && !primary(&class) {
+        let primary = |h: &&Hit| h.score > 0.0 && !secondary(h);
+        if ctors.iter().any(primary) && !class.iter().any(|h| primary(&h)) {
             return None;
         }
     }
-    some(&class).then_some(class)
+    class.iter().any(|h| h.score > 0.0).then_some(class)
+}
+
+/// Is `h` a constructor `Foo.new` runs, or a method literally named `new`?
+fn constructs(h: &Hit) -> bool {
+    h.features
+        .iter()
+        .any(|f| matches!(f.name, "constructor" | "exact"))
 }
 
 /// Did `h` take the test, generated or example penalty?
