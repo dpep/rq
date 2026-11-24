@@ -59,7 +59,9 @@ rq.
   the file to confirm a match.
 - `confidence` (0–1) is how sure rq is this is the one you meant. Near 1.0, take
   it; about 0.5 means it's level with the next result, a coin flip. A low value or
-  several close results, disambiguate (add a kind, scope, or path).
+  several close results, disambiguate (add a kind, scope, or path). Below about
+  0.3 it's a guess, often a weak fuzzy match, though rq still exits 0: check
+  `signature` before relying on it.
 - `total` is how many matches the results were drawn from, before `-l`.
 - `source` is `live` when rq answered from a bounded scan of files on disk
   because nothing is indexed there yet — a directory outside a git repo, or a
@@ -82,7 +84,10 @@ rq.
 
 On a miss, JSON is one `{"status": …, "query": …}` object, not results:
 
-- `no_match` (exit 1) — definitive. Fall back to `rg`. Under `-a`, an
+- `no_match` (exit 1) — nothing by that name in the index. Fall back to `rg`.
+  If the name is in a file you're editing, `rg` it: rq indexes what git tracks,
+  so a new file isn't seen until `git add` (or `rq --index`), and a syntax error
+  can hide the definitions after it (worst in TS/JS). Under `-a`, an
   `incomplete` list names checkouts not fully indexed, which it can't speak
   for; searching in one indexes it.
 - `scope_not_found` (exit 1) — nothing inside the scope you named; `found_in`
@@ -94,6 +99,8 @@ On a miss, JSON is one `{"status": …, "query": …}` object, not results:
   indexing answers instead, with `warming.interrupted` and the `rq --index`
   that finishes it: asking again wouldn't change it. One another process is
   still indexing holds back every checkout's match, and the search waits on it.)
+  Right after you edit a file, a search can answer `warming` while rq reads the
+  change (`read` equals `of`); ask again.
 - `interrupted` (exit 2) — indexing was stopped; run again.
 
 An error is JSON too, on stdout: `{"error": "…", "kind": "usage", "code": 64}`.
@@ -101,7 +108,7 @@ Check for an `error` key before reading results. `code` is the exit code, and
 each means one thing:
 
 - `64` `usage` — fix the command (an unknown `-k`, a bad `--wait`, `--json` on
-  piped queries); don't retry it unchanged.
+  piped queries or with `-o`/`-w`); don't retry it unchanged.
 - `66` `not_found` — the file or directory you named (`--symbols`, a search's
   path) doesn't exist.
 - `69` `no_remote`/`launch` — nothing to hand off to (`-w` with no git host).
@@ -122,10 +129,12 @@ each means one thing:
 - **Scope.** `rq Billing::WidgetProcessor`, or `rq WidgetProcessor#perform` (or
   `.perform`) for a method inside a class — rq keeps only definitions in that
   scope, so use it when the surrounding code tells you the enclosing
-  class. A scope that isn't a class matches the path instead: a Go package
+  class. `.` and `#` both mean "inside", not class vs instance method: read
+  `singleton` to tell them apart. A scope that isn't a class matches the path instead: a Go package
   (`hugolib.HugoSites`), a Python module (`django.db.models.QuerySet`), a Rust
-  module (`mpsc::Sender`). `rq Account.new` finds the constructor (`initialize`, `__init__`,
-  `constructor`), or the class itself when the constructor is inherited.
+  module (`mpsc::Sender`). `rq Account.new` prefers the class's own constructor (`initialize`,
+  `__init__`, `constructor`); when it inherits one, rq may answer the class
+  itself or another `Account`'s constructor, so check `parent`.
 - **Kind.** `rq save -k method`, or the shorthand `rq method save`. Kinds are
   `class`/`module`/`method`/`function`/`struct`/`enum`/`trait`/`constant`/
   `type`/`variant`/`macro`/`field` (shortcuts `c`/`mod`/`m`/`f`/`s`/`e`/`t`/`const`/`v`,
@@ -145,7 +154,8 @@ each means one thing:
 - **Directory.** `rq save app/models` (rg-style trailing path, repeatable) or
   `--path`. A path in another checkout searches that checkout, as from inside
   it (`rq save /other/repo/src`, indexing it on first use); one in a non-git
-  dir rq doesn't track live-scans just that dir.
+  dir rq doesn't track live-scans just that dir. A trailing word is always a
+  path, never a filter: one that doesn't exist exits 66.
 - **Count.** `-l 1` for just the best hit, larger to survey, `-l 0` for every
   match.
 - **Repo.** Results come from the current repo by default; `-a`/`--all-repos`
@@ -221,6 +231,7 @@ line). Source and issues:
 
 ## Notes
 
-- rq indexes the current git repo on first use; no setup needed.
+- rq indexes the current git repo on first use; no setup needed. It indexes
+  what git tracks, plus untracked files an `rq --index` read.
 - Run from inside the target repo (or set the subprocess working directory) —
   rq resolves the repo from its cwd.
