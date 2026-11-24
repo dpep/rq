@@ -394,6 +394,23 @@ fn path_text<'pr>(loc: &Location<'pr>) -> Cow<'pr, str> {
     }
 }
 
+/// Whether `node` is `self`, parenthesized or not (`def (self).x`).
+fn is_self(node: &Node) -> bool {
+    if node.as_self_node().is_some() {
+        return true;
+    }
+    let Some(body) = node.as_parentheses_node().and_then(|p| p.body()) else {
+        return false;
+    };
+    match body.as_statements_node() {
+        Some(statements) => {
+            let list = statements.body();
+            list.iter().count() == 1 && list.iter().all(|only| is_self(&only))
+        }
+        None => is_self(&body),
+    }
+}
+
 /// Whether `node` is constants all the way: `Foo`, `A::B`, `::Top`.
 fn is_constant_path(node: &Node) -> bool {
     if node.as_constant_read_node().is_some() {
@@ -527,22 +544,31 @@ impl<'pr> Visit<'pr> for Walk<'_> {
             return ruby_prism::visit_def_node(self, node);
         }
         let receiver = node.receiver();
-        // `def obj.x` defines `x` on that object alone, not on the class
         if receiver
             .as_ref()
-            .is_some_and(|r| r.as_self_node().is_none() && !is_constant_path(r))
+            .is_some_and(|r| !is_self(r) && !is_constant_path(r))
         {
-            return;
-        }
-        // `private` sections don't apply to `def self.x`
-        let own = receiver.is_some();
-        let vis = if own {
-            Visibility::Public
+            // `def obj.x` defines `x` on that object alone: a singleton
+            // method with no owner rq can name, not one of the class
+            self.push(
+                name,
+                Kind::Method,
+                &node.location(),
+                None,
+                Visibility::Public,
+                true,
+            );
         } else {
-            self.frame.vis
-        };
-        let singleton = own || self.frame.singleton;
-        self.method(name, &node.location(), vis, singleton);
+            // `private` sections don't apply to `def self.x`
+            let own = receiver.is_some();
+            let vis = if own {
+                Visibility::Public
+            } else {
+                self.frame.vis
+            };
+            let singleton = own || self.frame.singleton;
+            self.method(name, &node.location(), vis, singleton);
+        }
         // method bodies rarely hold further definitions; don't descend
         if self.broken {
             self.frame.body = true;

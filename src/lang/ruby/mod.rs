@@ -571,9 +571,35 @@ end
     }
 
     #[test]
-    fn a_def_on_another_object_is_not_the_class_s_own() {
-        let src = "class A\n  def (Object).qux; end\n  obj = Object.new\n  def obj.m; end\n  def self.s; end\n  def A.c; end\nend\n";
-        assert_eq!(names(src), ["A", "A#s", "A#c"]);
+    fn a_def_on_another_object_has_no_owner() {
+        let src = "class A\n  def (Object).qux; end\n  obj = Object.new\n  def obj.m; end\n  def @ivar.n; end\n  def self.s; end\n  def (self).p; end\n  def A.c; end\nend\n";
+        let got: Vec<_> = extract(src)
+            .into_iter()
+            .filter(|s| s.kind == Kind::Method)
+            .map(|s| (s.name, s.parent, s.singleton))
+            .collect();
+        let a = || Some("A".to_string());
+        let expect = [
+            ("qux", None, true),
+            ("m", None, true),
+            ("n", None, true),
+            ("s", a(), true),
+            // a parenthesized `self` is still `self`
+            ("p", a(), true),
+            ("c", a(), true),
+        ]
+        .map(|(n, p, s)| (n.to_string(), p, s));
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn a_def_on_another_object_left_open_hides_none_of_the_defs_after_it() {
+        for src in [
+            "class Foo\n  def helper.x\n    if y\n  end\n\n  def real; end\n  def real2; end\nend\n",
+            "class Foo\n  def o.x\n    1\n  def real; end\n  def real2; end\nend\n",
+        ] {
+            assert_eq!(names(src), ["Foo", "x", "Foo#real", "Foo#real2"], "{src}");
+        }
     }
 
     #[test]

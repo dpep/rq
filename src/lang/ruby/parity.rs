@@ -82,8 +82,8 @@ enum Intended {
     /// Ruby names `def ~@` and `def !@` as `~` and `!` (`-@` and `+@` keep
     /// theirs); the oracle kept the source spelling.
     OperatorName,
-    /// `def obj.x` defines `x` on that object, not on the enclosing class,
-    /// whose singleton the oracle filed it under.
+    /// `def obj.x` defines `x` on that object: prism files it with no owner,
+    /// where the oracle made it the enclosing class's singleton method.
     ForeignReceiver,
     /// `class A::\n  B` and `A:: B` name `B`: Ruby allows whitespace around
     /// `::`, which the oracle kept in the name or didn't read past.
@@ -156,11 +156,9 @@ impl Intended {
     }
 
     /// Why a row only the oracle extracted is wrong.
-    fn oracle_only(row: &Row, source: &str) -> Option<Intended> {
+    fn oracle_only(row: &Row) -> Option<Intended> {
         if row.kind != Kind::Method.as_str() {
             None
-        } else if row.singleton && foreign_receiver(row, source) {
-            Some(Intended::ForeignReceiver)
         } else if row.name.contains("#{") {
             Some(Intended::InterpolatedName)
         } else if row.name.contains(|c: char| c.is_whitespace() || c == ':') {
@@ -195,7 +193,10 @@ impl Intended {
     }
 
     /// Why prism files the oracle's definition under another parent.
-    fn reparented(oracle: &Row) -> Option<Intended> {
+    fn reparented(oracle: &Row, ours: &Row, source: &str) -> Option<Intended> {
+        if ours.parent.is_none() && foreign_receiver(oracle, source) {
+            return Some(Intended::ForeignReceiver);
+        }
         let parent = oracle.parent.as_deref()?;
         parent
             .split("::")
@@ -281,10 +282,10 @@ fn diff(file: &str, source: &str) -> Diff {
         let (why, pair) = match (renamed, revisited, reparented) {
             (Some(i), _, _) => (Intended::renamed(o, &ours_only[i]), i),
             (None, Some(i), _) => (Intended::revisited(&ours_only[i], source), i),
-            (None, None, Some(i)) => (Intended::reparented(o), i),
+            (None, None, Some(i)) => (Intended::reparented(o, &ours_only[i], source), i),
             (None, None, None) => {
                 out.misparsed = reaches_error(o);
-                out.note(Intended::oracle_only(o, source), format!("tree-sitter {o}"));
+                out.note(Intended::oracle_only(o), format!("tree-sitter {o}"));
                 continue;
             }
         };
