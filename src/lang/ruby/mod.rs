@@ -524,12 +524,50 @@ end
     }
 
     #[test]
-    fn an_access_marker_in_a_walked_def_body_sets_no_section() {
-        let src = "class A\n  def setup\n    private\n    attr_reader :leak\n    def inner; end\n  end\n\n  def later_public; end\n\n  def broken(\nend\n";
-        let got = methods(src);
-        let expect = ["setup", "leak", "inner", "later_public", "broken"]
-            .map(|n| (n.to_string(), false, "public"));
-        assert_eq!(got, expect);
+    fn access_markers_in_a_walked_def_body_keep_their_sections() {
+        // a broken file, whose def bodies are walked; each case ends open
+        let cases: [(&str, &[(&str, &str)]); 4] = [
+            // a class's `private`, nested by a missing `end` into a def body,
+            // still sets the section for what follows it there
+            (
+                "class Foo\n  def a\n    if x\n  end\n  private\n  def b; end\n  def c; end\nend\n",
+                &[("a", "public"), ("b", "private"), ("c", "private")],
+            ),
+            // ...and one written in a method body is that body's, ending with it
+            (
+                "class A\n  def setup\n    private\n    attr_reader :leak\n  end\n  def later; end\n  def broken(\nend\n",
+                &[
+                    ("setup", "public"),
+                    ("leak", "private"),
+                    ("later", "public"),
+                    ("broken", "public"),
+                ],
+            ),
+            // in a block in a body, an access call is runtime metaprogramming
+            (
+                "module Concern\n  def self.included(base)\n    base.class_eval do\n      private\n      def hidden; end\n    end\n  end\n  def pub; end\n  def broken(\nend\n",
+                &[
+                    ("included", "public"),
+                    ("hidden", "public"),
+                    ("pub", "public"),
+                    ("broken", "public"),
+                ],
+            ),
+            // a class nested in a body starts sections of its own
+            (
+                "class Foo\n  def self.build\n    if x\n  end\n  def three; end\n  class Inner\n    private\n    def secret; end\n  end\nend\n",
+                &[
+                    ("build", "public"),
+                    ("three", "public"),
+                    ("secret", "private"),
+                ],
+            ),
+        ];
+        for (src, want) in cases {
+            let got: Vec<_> = methods(src).into_iter().map(|(n, _, v)| (n, v)).collect();
+            let want: Vec<_> = want.iter().map(|(n, v)| (n.to_string(), *v)).collect();
+            assert_eq!(got, want, "{src}");
+        }
     }
 
     #[test]

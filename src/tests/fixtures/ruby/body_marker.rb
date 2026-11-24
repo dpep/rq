@@ -1,14 +1,20 @@
-# Fixture: a broken file whose def bodies are walked — a `private` inside a
-# method body is the method's business at runtime, not a class section.
+# Fixture: a broken file whose def bodies are walked. A missing `end` nests
+# the rest of the class, its `private` included, into a def body; a block in
+# a body is runtime metaprogramming.
 
 class Widget
-  def setup
-    private
-    attr_reader :leak
-    def inner; end
+  def self.included(base)
+    base.class_eval do
+      private
+      def runtime; end
+    end
   end
 
-  def later_public; end
+  def open
+    if x
+  end
 
-  def broken(
+  private
+
+  def hidden; end
 end

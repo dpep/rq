@@ -28,7 +28,6 @@ pub(super) fn extract(file: &str, source: &str) -> Vec<Symbol> {
             stack: Vec::new(),
             flip: None,
             broken: result.errors().next().is_some() && unclosed(&result.node()),
-            in_body: false,
         };
         walk.visit(&result.node());
         walk.out
@@ -121,6 +120,12 @@ struct Frame {
     /// body: it lands wherever the block runs, out of an access call's reach
     /// from outside the block.
     block: Option<u32>,
+    /// Inside a def body a broken file walks ([`Walk::broken`]).
+    body: bool,
+    /// Inside a block or lambda within such a body: an access call there is
+    /// runtime metaprogramming (`base.class_eval { private :x }`), not a
+    /// section of the class.
+    quiet: bool,
 }
 
 impl Frame {
@@ -132,6 +137,8 @@ impl Frame {
             module_function: false,
             class_side: singleton,
             block: None,
+            body: false,
+            quiet: false,
         }
     }
 
@@ -164,9 +171,6 @@ struct Walk<'a> {
     /// The parse lost the file's structure ([`unclosed`]): a missing `end`
     /// can nest the defs after it in a def's body, so bodies are walked too.
     broken: bool,
-    /// Walking a def's body: what an access call does there is the method's
-    /// business at runtime, not a section of the class.
-    in_body: bool,
     file: &'a str,
     /// The byte offset each line starts at.
     lines: &'a [u32],
@@ -541,9 +545,8 @@ impl<'pr> Visit<'pr> for Walk<'_> {
         self.method(name, &node.location(), vis, singleton);
         // method bodies rarely hold further definitions; don't descend
         if self.broken {
-            let outer = std::mem::replace(&mut self.in_body, true);
+            self.frame.body = true;
             ruby_prism::visit_def_node(self, node);
-            self.in_body = outer;
         }
     }
 
@@ -566,7 +569,7 @@ impl<'pr> Visit<'pr> for Walk<'_> {
         let method = node.name().as_slice();
         if node.is_variable_call() {
             // a bare marker flips the section for the siblings after it
-            if !self.in_body {
+            if !self.frame.quiet {
                 self.flip = marker(method);
             }
             return;
@@ -575,12 +578,12 @@ impl<'pr> Visit<'pr> for Walk<'_> {
         if bare {
             self.dsl_symbols(node, method);
         }
-        let access = bare && !self.in_body;
+        let access = bare && !self.frame.quiet;
         if access {
             self.module_functions(node, method);
         }
         // `private def foo`: the marker's name scopes what the call wraps
-        if let Some(marker) = marker(method).filter(|_| !self.in_body) {
+        if let Some(marker) = marker(method).filter(|_| !self.frame.quiet) {
             self.frame.flip(marker);
         }
         let wrapped = self.out.len();
@@ -592,11 +595,13 @@ impl<'pr> Visit<'pr> for Walk<'_> {
 
     fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
         self.frame.block = Some(node.location().start());
+        self.frame.quiet |= self.frame.body;
         ruby_prism::visit_block_node(self, node);
     }
 
     fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
         self.frame.block = Some(node.location().start());
+        self.frame.quiet |= self.frame.body;
         ruby_prism::visit_lambda_node(self, node);
     }
 
