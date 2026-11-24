@@ -1272,7 +1272,18 @@ fn edits_unread(
 ) -> Option<crate::search::Warming> {
     let checkout = store.checkout(root).ok().flatten()?;
     let read = store.checkout_file_count(checkout.id).unwrap_or(0);
-    Some(warming_of(store, root, here, continuing, read, Some(read)))
+    let mut warming = warming_of(store, root, here, continuing, read, Some(read));
+    // as the text says it: an edit to read, not a tree to finish
+    let index = index_command(root, here);
+    warming.hint = if warming.interrupted {
+        format!(
+            "an edit isn't indexed, and {}: `{index}` reads it",
+            nothing_indexing(here)
+        )
+    } else {
+        format!("an edit isn't indexed yet: ask again, or run `{index}` to read it now")
+    };
+    Some(warming)
 }
 
 fn warming_of(

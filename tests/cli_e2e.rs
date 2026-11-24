@@ -3964,7 +3964,11 @@ fn a_miss_on_an_edited_complete_repo_says_how_far_its_index_got() {
     let w = &json(&out)["warming"];
     assert_eq!((&w["read"], &w["of"]), (&2.into(), &2.into()), "{out}");
     assert_eq!(w["interrupted"], true, "nothing is indexing: {out}");
-    assert!(w["hint"].as_str().unwrap().contains("rq --index"), "{out}");
+    let hint = w["hint"].as_str().unwrap();
+    assert!(
+        hint.contains("an edit isn't indexed") && hint.contains("`rq --index` reads it"),
+        "{out}"
+    );
     // text says an edit is unread, not "2 of 2 read", and not to retry what
     // nothing will change
     let (code, _, err) = rq_full(&db, &dir, &["added"], &NO_CHILD, None);
