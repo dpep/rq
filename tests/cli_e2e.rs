@@ -3920,6 +3920,31 @@ fn a_miss_on_an_edited_complete_repo_says_how_far_its_index_got() {
 }
 
 #[test]
+fn a_warming_miss_does_not_guess_where_the_name_lives() {
+    // the scope asked for may be in a file not read yet
+    let (dir, db) = scratch("warming-found-in");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(
+        dir.join("app/groups.rb"),
+        "class Groups\n  def create; end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("lib/post.rb"),
+        "class Post\n  def create; end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index", "app"]);
+
+    let args = ["Post#create", "--json", "--no-wait"];
+    let (code, out, _) = rq_full(&db, &dir, &args, &NO_CHILD, None);
+    assert_eq!(code, 2, "{out}");
+    assert!(json(&out).get("found_in").is_none(), "{out}");
+}
+
+#[test]
 fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     let (dir, db) = scratch("batch-flags");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

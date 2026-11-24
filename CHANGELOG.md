@@ -44,6 +44,9 @@ and aren't listed; see `git log` for those.
 - A `warming` miss right after an edit to an indexed repo carries its
   `warming` object (`read`, `of`, `interrupted`, `hint`) like any other, rather
   than a bare status.
+- A `warming` miss on a scoped query no longer names a `found_in` scope: the
+  one asked for may be in a file not read yet. `found_in` stays with the
+  definitive `scope_not_found`.
 - A commit landing while rq indexes no longer leaves the finished index
   without it for good: the index records the commit it read, so the next
   search sees HEAD moved and reads the change.

@@ -839,9 +839,11 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         // A named scope that matched nothing is a different miss from a name
         // that doesn't exist: re-run on the bare leaf to tell them apart, and
         // say where the name actually lives. Only on the miss path, so a normal
-        // search never pays for it.
+        // search never pays for it, and only a definitive one: while the index
+        // is incomplete, the scope asked for may be in a file not read yet.
         let here_id = current.map(|c| c.id);
         let elsewhere = match scope(current) {
+            _ if incomplete => None,
             Scope::Nothing => None,
             Scope::All => crate::search::scope_miss_owner(store, query, here_id, None, &ctx),
             Scope::Checkout(c) => {
