@@ -282,6 +282,31 @@ impl Anchor {
 pub(crate) struct Context {
     pub active: ActiveFiles,
     pub anchor: Option<Anchor>,
+    pub filter: Filter,
+}
+
+/// What the caller's `--kind`, `--lang` and PATH filters keep. They apply to
+/// the results, after the search; a choice the search makes between answers
+/// asks them first, so it never picks one they then drop.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Filter {
+    pub kinds: Vec<String>,
+    pub langs: Vec<String>,
+    /// Repo-relative directories or files, matched on a path boundary:
+    /// `app/services` keeps `app/services/refund.rb`, not `app/services_old/x.rb`.
+    pub paths: Vec<String>,
+}
+
+impl Filter {
+    pub(crate) fn keeps(&self, h: &Hit) -> bool {
+        let under = |p: &String| {
+            let p = p.trim_start_matches("./").trim_end_matches('/');
+            p.is_empty() || h.file == p || h.file.starts_with(&format!("{p}/"))
+        };
+        (self.paths.is_empty() || self.paths.iter().any(under))
+            && (self.kinds.is_empty() || self.kinds.contains(&h.kind))
+            && (self.langs.is_empty() || self.langs.contains(&h.language))
+    }
 }
 
 impl Context {
@@ -525,7 +550,7 @@ pub(crate) fn search(
     {
         // every hit too: only a class stands in, however far its name ranks
         let mut class = search_query(store, owner, current, only, ctx, usize::MAX, false)?;
-        if let Some(mut hits) = constructor_class(&m.hits, class.hits, owner) {
+        if let Some(mut hits) = constructor_class(&m.hits, class.hits, owner, &ctx.filter) {
             class.total = hits.len();
             hits.truncate(limit);
             class.hits = hits;
@@ -573,8 +598,15 @@ fn scopes(s: &str) -> Vec<&str> {
 /// another class's constructor; short of a constructor, any class named
 /// `Foo` answers, ranked as the owner search ranked it. A test (generated,
 /// example) class never outranks a constructor outside them, as everywhere.
-fn constructor_class(ctor: &[Hit], mut class: Vec<Hit>, owner: &str) -> Option<Vec<Hit>> {
+/// Only classes `filter` keeps stand in: one it drops leaves `ctor` answering.
+fn constructor_class(
+    ctor: &[Hit],
+    mut class: Vec<Hit>,
+    owner: &str,
+    filter: &Filter,
+) -> Option<Vec<Hit>> {
     constructor_owner(&mut class);
+    class.retain(|h| filter.keeps(h));
     // a fuzzy or `new_*` leftover in scope is no constructor
     let ctors: Vec<&Hit> = ctor
         .iter()
@@ -915,7 +947,7 @@ pub(crate) fn live_search(
     if let (leaf, Some(owner)) = score::parse_qualified(query)
         && leaf.eq_ignore_ascii_case("new")
         && !owns_constructor(&hits, owner)
-        && let Some(class) = constructor_class(&hits, rank(owner), owner)
+        && let Some(class) = constructor_class(&hits, rank(owner), owner, &ctx.filter)
     {
         hits = class;
     }
@@ -2131,6 +2163,7 @@ mod tests {
         let ctx = Context {
             active: ActiveFiles::new(["app/x.rb".to_string()]),
             anchor: None,
+            ..Default::default()
         };
         let hits = search(&store, "user", None, None, &ctx, 10).unwrap();
         assert!(hits[0].features.iter().any(|f| f.name == "branch"));

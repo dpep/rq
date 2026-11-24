@@ -431,6 +431,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let ctx = crate::search::Context {
         active: crate::search::ActiveFiles::new(active_paths.clone()),
         anchor: anchor.as_ref().map(|a| a.for_query(query)),
+        filter: post_filter(args, cwd.as_deref(), root),
     };
 
     drop(repo_span);
@@ -1636,24 +1637,28 @@ fn apply_post_filters(
     root: Option<&std::path::Path>,
     hits: &mut Vec<crate::search::Hit>,
 ) {
-    if !args.paths.is_empty() {
-        // --path values may be absolute or cwd-relative; stored files are
-        // repo-root-relative, so normalize before prefix-matching or an
-        // absolute path would silently filter everything out.
-        let here = cwd.map_or_else(|| PathBuf::from("."), PathBuf::from);
-        let base = root.map_or_else(|| here.clone(), PathBuf::from);
-        let norm: Vec<String> = args
+    let filter = post_filter(args, cwd, root);
+    hits.retain(|h| filter.keeps(h));
+}
+
+/// The post-filters as the search reads them. `--path` values may be
+/// absolute or cwd-relative; stored files are repo-root-relative, so they're
+/// normalized first or an absolute path would silently filter everything out.
+fn post_filter(
+    args: &SearchArgs,
+    cwd: Option<&std::path::Path>,
+    root: Option<&std::path::Path>,
+) -> crate::search::Filter {
+    let here = cwd.map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let base = root.map_or_else(|| here.clone(), PathBuf::from);
+    crate::search::Filter {
+        kinds: args.kinds.to_vec(),
+        langs: args.langs.to_vec(),
+        paths: args
             .paths
             .iter()
             .map(|p| repo_relative(&base, &here, p))
-            .collect();
-        hits.retain(|h| under_any(&h.file, &norm));
-    }
-    if !args.kinds.is_empty() {
-        hits.retain(|h| args.kinds.iter().any(|k| k == &h.kind));
-    }
-    if !args.langs.is_empty() {
-        hits.retain(|h| args.langs.iter().any(|l| l == &h.language));
+            .collect(),
     }
 }
 
@@ -1878,16 +1883,6 @@ fn install_interrupt_handler() {
         libc::sigemptyset(&mut action.sa_mask);
         libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
     });
-}
-
-/// Whether a repo-relative `file` sits under one of the `--path` directories
-/// (prefix match on a path boundary). `app/services` matches
-/// `app/services/refund.rb` but not `app/services_old/x.rb`.
-fn under_any(file: &str, paths: &[String]) -> bool {
-    paths.iter().any(|p| {
-        let p = p.trim_start_matches("./").trim_end_matches('/');
-        p.is_empty() || file == p || file.starts_with(&format!("{p}/"))
-    })
 }
 
 /// Revalidate the files behind the top hits against disk — each in the

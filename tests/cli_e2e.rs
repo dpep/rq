@@ -378,6 +378,41 @@ fn foo_dot_new_ranks_the_constructor_above_new_prefixed_methods() {
 }
 
 #[test]
+fn foo_dot_new_keeps_a_constructor_the_filters_keep() {
+    // the class `Widget` answers `Widget.new` over `Dev::Widget#initialize`,
+    // but not when a path, kind or language filter would drop the class
+    let (dir, db) = scratch("constructor-filters");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(dir.join("app/widget.rb"), "class Widget < Base\nend\n").unwrap();
+    fs::write(dir.join("app/widget.js"), "export class Widget {}\n").unwrap();
+    fs::write(
+        dir.join("lib/dev.rb"),
+        "module Dev\n  class Widget\n    def initialize; end\n  end\nend\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    let (code, out) = rq(&db, &dir, &["Widget.new", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let hits: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(hits[0]["kind"], "class", "unfiltered: {out}");
+
+    for filter in [
+        &["lib"][..],
+        &["-k", "method"],
+        &["--lang", "ruby", "-k", "m"],
+    ] {
+        let mut args = vec!["Widget.new", "--json"];
+        args.extend_from_slice(filter);
+        let (code, out) = rq(&db, &dir, &args);
+        assert_eq!(code, 0, "{filter:?}: {out}");
+        let hits: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(hits[0]["name"], "initialize", "{filter:?}: {out}");
+    }
+}
+
+#[test]
 fn foo_dot_new_without_its_own_constructor_finds_the_class() {
     // Widget inherits `initialize`; rq doesn't track inheritance, so the class
     // is the answer — never a similarly named class's constructor.
