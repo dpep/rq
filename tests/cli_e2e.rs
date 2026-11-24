@@ -2335,6 +2335,53 @@ fn a_path_in_an_untracked_dir_searches_only_that_dir() {
 }
 
 #[test]
+fn an_untracked_dir_asked_from_is_the_whole_search() {
+    // The cwd says where to look, as a PATH does: an untracked non-git dir
+    // answers from its live scan, and `-a` adds every indexed checkout.
+    let (repo, db) = scratch("untracked-cwd-repo");
+    let plain = Scratch::new("e2e-untracked-cwd");
+    fs::create_dir_all(repo.join("lib")).unwrap();
+    fs::write(
+        repo.join("lib/b.rb"),
+        "class Widget\nend\ndef unique_name\nend\n",
+    )
+    .unwrap();
+    fs::write(plain.join("z.rb"), "class Gadget\nend\nclass Widget\nend\n").unwrap();
+    git_init_commit(&repo);
+    rq(&db, &repo, &["--index"]);
+
+    let (code, out) = rq(&db, &plain, &["Widget", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(top_file(&out), "z.rb", "{out}");
+    assert!(!out.contains("b.rb"), "leaked an indexed checkout: {out}");
+
+    let (code, out) = rq(&db, &plain, &["UniqueNameQ", "--json"]);
+    assert_eq!(
+        code, 1,
+        "another checkout's fuzzy near-match is no answer: {out}"
+    );
+    assert!(!out.contains("b.rb"), "{out}");
+
+    let (code, out, _) = rq_full(&db, &plain, &["-J"], &NO_CHILD, Some("Widget\n"));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("z.rb") && !out.contains("b.rb"),
+        "batch: {out}"
+    );
+
+    // `-a` reaches the index too, and the dir asked from still ranks first
+    let (code, out) = rq(&db, &plain, &["Widget", "-a", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(top_file(&out), "z.rb", "{out}");
+    assert!(out.contains("b.rb"), "-a searches every checkout: {out}");
+
+    // a non-git subdir of a checkout is that checkout
+    let (code, out) = rq(&db, &repo.join("lib"), &["Widget", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("b.rb") && !out.contains("z.rb"), "{out}");
+}
+
+#[test]
 fn limit_caps_the_number_of_results() {
     let (dir, db) = scratch("limit");
     // more definitions than the default cap, so `--limit 0` is distinguishable

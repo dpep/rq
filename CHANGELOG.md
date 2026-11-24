@@ -7,6 +7,18 @@ Entries are reconstructed from tags and their release notes, so they summarise
 what shipped rather than every commit. Releases before 0.26.2 predate tagging
 and aren't listed; see `git log` for those.
 
+## Unreleased
+
+### Fixed
+
+- **A search from a directory outside git answers for that directory.** It
+  searched every indexed repo instead, so another checkout's `Widget` could
+  hide the one beside you, and a name nothing there defines answered other
+  repos' fuzzy near-matches at exit 0. It now answers from the directory's
+  live scan alone, as a path naming it already did, and misses with
+  `no_match` (exit 1). Pass `-a` to reach your indexed repos too; the
+  directory you're in still ranks first.
+
 ## 0.61.2 — 2026-11-23
 
 ### Upgrade note

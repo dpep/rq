@@ -412,11 +412,9 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let repo_span = crate::profile::span("setup: repo state");
     let checkout_here = |store: &Store| root.and_then(|r| checkout_at(store, r));
     let mut current = checkout_here(store);
-    // Default: scope results to the current checkout so a search never leaks
-    // another tree's definitions. `--all-repos` searches everything, as does
-    // a dir rq doesn't track — unless a PATH named it, making it the search.
-    let one_tree = warming_ok || !args.paths.is_empty();
-    let scope = |current| Scope::new(all_repos, one_tree, current);
+    // Default: scope results to the tree asked from so a search never leaks
+    // another tree's definitions; `--all-repos` searches everything.
+    let scope = |current| Scope::new(all_repos, current);
     let ctx = crate::search::Context {
         active: crate::search::ActiveFiles::new(active_paths.clone()),
         anchor: anchor.as_ref().map(|a| a.for_query(query)),
@@ -796,7 +794,12 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     // live in-memory (substring, then fuzzy) and blend with whatever the index
     // gave. The only non-persisting scan left.
     let mut live_scan = None;
-    if !hits.iter().any(strong)
+    // only this tree's own answer makes its scan unneeded: under `-a`, another
+    // checkout's exact match must not hide the definition beside you
+    let answered_here = hits
+        .iter()
+        .any(|h| strong(h) && h.root.is_some() && h.root == here);
+    if !answered_here
         && indexer.is_none()
         && coverage.is_none()
         && let (Some(root), Some(identity)) = (root, &identity)
@@ -1706,22 +1709,21 @@ fn attach_confidence(hits: &mut [crate::search::Hit]) {
 /// The checkouts a search may answer from.
 #[derive(Clone, Copy)]
 enum Scope {
-    /// `--all-repos`, or a directory that isn't a repo rq tracks, asked from.
+    /// `--all-repos`.
     All,
     Checkout(Checkout),
     /// A checkout the index hasn't registered yet — its first query, before
-    /// the warm has written anything — or an untracked dir a PATH named.
-    /// Nothing is in scope, not every repo.
+    /// the warm has written anything — or an untracked dir, whose live scan
+    /// is the search. Nothing indexed is in scope, not every repo.
     Nothing,
 }
 
 impl Scope {
-    fn new(all_repos: bool, one_tree: bool, current: Option<Checkout>) -> Scope {
+    fn new(all_repos: bool, current: Option<Checkout>) -> Scope {
         match current {
             _ if all_repos => Scope::All,
             Some(c) => Scope::Checkout(c),
-            None if one_tree => Scope::Nothing,
-            None => Scope::All,
+            None => Scope::Nothing,
         }
     }
 

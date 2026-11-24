@@ -416,7 +416,9 @@ default, and over 4 per core is capped).
 
 A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
-it still answers at zero coverage. A `--no-wait` query live-scans a git repo
+it still answers at zero coverage. That scan is the whole search, as a checkout
+is from inside it: another indexed repo answers only under `-a`, where the
+directory you're in still ranks first. A `--no-wait` query live-scans a git repo
 whose first index hasn't finished the same way. A live answer is marked
 `"source": "live"` in JSON (text output doesn't mark it), `-v` notes the files it scanned and how long it took, and `--usage` counts these answers
 apart. The index is a SQLite file at `$RQ_DB`

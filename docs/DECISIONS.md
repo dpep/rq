@@ -906,7 +906,7 @@ doesn't shrink the file, and later writes reuse the freed pages.
   cold rails index: 231 → 189 ms, overlapped with parsing). Every name query joins
   `repositories`, so the planner already seeks `(repository_id, name_lower)` once per
   repo, with or without planner stats. The one exception is the unscoped first-letter
-  net (`-a`, or a search outside any repo), whose inner query has no join. Without the
+  net (`-a`), whose inner query has no join. Without the
   index it needs a skip-scan plus a sort to keep its name order. Output stayed
   identical, but on the nine-repo index (7 interleaved reps) that net's recall got
   slower: `usr` +5 ms, `acn` +6, `sleect` +4 to +8, `tes*lim` +12 to +16. Those
@@ -4492,6 +4492,27 @@ so it's `not_found` (66) — it used to filter everything out and read as a defi
   root-relative everywhere, `-a` included; `--json` carries `root`.
 
 *Reverses if* PATHs spanning checkouts turn out common enough to want each searched.
+
+### D66 addendum — the cwd says where to look, as a PATH does
+
+*The problem.* With no PATH, an untracked non-git cwd still searched every indexed repo,
+and an exact match there skipped the live scan: `rq Widget` beside a `class Widget`
+answered another checkout's, and a name nothing defines answered other repos' fuzzy
+near-matches at exit 0 instead of `no_match`. A PATH naming the same dir answered right.
+
+*The rule.* The tree asked from is the search, whether a PATH or the cwd names it: an
+untracked non-git dir is `Scope::Nothing` plus its live scan, so `Scope::All` is `-a`
+alone. Under `-a` the scan still runs unless one of its own tree's hits is an exact or
+prefix match; another checkout's can't stand in for it. Live hits carry `current_repo`,
+so the dir asked from ranks first.
+
+*Considered.*
+- Keeping every repo as the default outside a checkout, with the scan always run and
+  ranked first. Rejected: a rule with an exception, and a miss would still answer from
+  unrelated repos. `-a` is one flag away.
+
+*Not settled here.* The live scan is bounded by time (`RQ_FALLBACK_BUDGET_MS`, 250 ms),
+not by place: asked from `/` or `$HOME`, it reads whatever it reaches first.
 
 ## D67 — A minified source is held without definitions
 
