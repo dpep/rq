@@ -5032,7 +5032,8 @@ with `Error`) was declined: the recall set's 830 `glob` queries are `first3*last
 sources match anchored at both ends; the other 697 would find nothing.
 
 *The rule.* The edge bonus goes to the start, or, when the pattern opens with `*`, to the
-end (the last literal on the name's last character); `*foo*` earns neither. `*Error` asks
+end (the pattern can match ending on the name's last character, even when its leftmost
+match lands earlier: `*Error` in `ErrorOnError`); `*foo*` earns neither. `*Error` asks
 for something before `Error`, so `FooError` gains 20 and `ErrorLog` loses it. The bonus
 stays inside the `wildcard` feature, as the start bonus always was.
 

@@ -1167,7 +1167,12 @@ fn glob_positions(query: &str, name: &str) -> Option<Vec<usize>> {
     let mut toks = vec![Glob::Star];
     toks.extend(compile_glob(query));
     toks.push(Glob::Star);
+    match_tokens(&toks, name)
+}
 
+/// Match compiled glob tokens against the whole of `name`; anchoring is
+/// whatever `*` the tokens open or close with.
+fn match_tokens(toks: &[Glob], name: &str) -> Option<Vec<usize>> {
     let lower: Vec<char> = name.chars().map(fold).collect();
     let mut ti = 0;
     let mut ni = 0;
@@ -1226,11 +1231,17 @@ fn glob_positions(query: &str, name: &str) -> Option<Vec<usize>> {
 /// nothing: a pattern's tail is usually a word's prefix (`tes*lim`), not the
 /// name's end.
 pub(super) fn wildcard_score(query: &str, name: &str) -> Option<f64> {
-    let positions = glob_positions(query, name)?;
-    let (&first, &last) = (positions.first()?, positions.last()?);
     let toks = compile_glob(query);
     let open_start = matches!(toks.first(), Some(Glob::Star));
     let open_end = !open_start || matches!(toks.last(), Some(Glob::Star));
+    // the leftmost match can miss a suffix the pattern also reaches
+    // (`*Error` in `ErrorOnError`), so try ending at the name's end first
+    let suffix = (!open_end).then(|| match_tokens(&toks, name)).flatten();
+    let positions = match suffix {
+        Some(p) => p,
+        None => glob_positions(query, name)?,
+    };
+    let (&first, &last) = (positions.first()?, positions.last()?);
 
     let chars: Vec<char> = name.chars().collect();
     let boundary = boundaries(&chars);
@@ -2296,6 +2307,15 @@ mod tests {
         let boundary = total("a*b", "Alpha_Bravo").unwrap();
         let midword = total("a*b", "Alphabet").unwrap();
         assert!(boundary > midword, "{boundary} > {midword}");
+    }
+
+    #[test]
+    fn a_leading_star_ends_where_the_name_ends_even_after_an_earlier_match() {
+        // the leftmost `Error` in `ErrorOnError` is at the start; the bonus
+        // asks whether the pattern can end at the name's end
+        let ends = total("*Error", "ErrorOnError").unwrap();
+        let contains = total("*Error", "ErrorLog").unwrap();
+        assert!(ends > contains, "{ends} > {contains}");
     }
 
     #[test]
