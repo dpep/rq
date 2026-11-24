@@ -132,9 +132,8 @@ each means one thing:
   class. `.` and `#` both mean "inside", not class vs instance method: read
   `singleton` to tell them apart. A scope that isn't a class matches the path instead: a Go package
   (`hugolib.HugoSites`), a Python module (`django.db.models.QuerySet`), a Rust
-  module (`mpsc::Sender`). `rq Account.new` prefers the class's own constructor (`initialize`,
-  `__init__`, `constructor`); when it inherits one, rq may answer the class
-  itself or another `Account`'s constructor, so check `parent`.
+  module (`mpsc::Sender`). `rq Account.new` answers the class's own constructor (`initialize`,
+  `__init__`, `constructor`), or the class itself when it inherits one.
 - **Kind.** `rq save -k method`, or the shorthand `rq method save`. Kinds are
   `class`/`module`/`method`/`function`/`struct`/`enum`/`trait`/`constant`/
   `type`/`variant`/`macro`/`field` (shortcuts `c`/`mod`/`m`/`f`/`s`/`e`/`t`/`const`/`v`,
