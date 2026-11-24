@@ -526,16 +526,15 @@ pub(crate) fn search(
     limit: usize,
 ) -> crate::store::Result<Matches> {
     let run = |q: &str, typo: bool| search_query(store, q, current, only, ctx, limit, typo);
-    if !query.contains('.') {
-        return run(query, true);
-    }
-    // `.` reads as a scope first (`Foo.bar`). When no scope answers, fall back
-    // to its older meaning as a one-char wildcard (`find.controller`) — a
-    // literal match — before guessing at typos.
+    // a constructor call, whichever scope separator spells it
     let owner = match score::parse_qualified(query) {
         (leaf, Some(owner)) if leaf.eq_ignore_ascii_case("new") => Some(owner),
         _ => None,
     };
+    let dotted = query.contains('.');
+    if !dotted && owner.is_none() {
+        return run(query, true);
+    }
     // A constructor call keeps every hit, so the owner's own constructor
     // isn't missed for ranking past `limit`.
     let wide = if owner.is_some() { usize::MAX } else { limit };
@@ -561,6 +560,12 @@ pub(crate) fn search(
         m.hits.truncate(limit);
         return Ok(m);
     }
+    if !dotted {
+        return run(query, true);
+    }
+    // `.` reads as a scope first (`Foo.bar`). When no scope answers, fall back
+    // to its older meaning as a one-char wildcard (`find.controller`) — a
+    // literal match — before guessing at typos.
     let glob = run(&query.replace('.', "?"), false)?;
     if found(&glob) {
         return Ok(glob);

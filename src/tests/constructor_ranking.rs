@@ -81,7 +81,12 @@ fn an_owner_without_a_constructor_answers_before_a_nested_namesakes_constructor(
             ),
         ],
     );
-    for (query, owner) in [("Widget.new", "Widget"), ("Gadget.new", "Gadget")] {
+    for (query, owner) in [
+        ("Widget.new", "Widget"),
+        ("Widget::new", "Widget"),
+        ("Widget#new", "Widget"),
+        ("Gadget.new", "Gadget"),
+    ] {
         let hit = top(&store, query);
         assert_eq!(
             (hit.name.as_str(), hit.kind.as_str()),
