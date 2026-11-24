@@ -41,6 +41,9 @@ module Forms
     def
       split_name; end
 
+    probe = Object.new
+    def probe.foreign; end
+
     def describe
       <<~DOC
         def inside_a_heredoc; end

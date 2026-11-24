@@ -82,6 +82,25 @@ enum Intended {
     /// Ruby names `def ~@` and `def !@` as `~` and `!` (`-@` and `+@` keep
     /// theirs); the oracle kept the source spelling.
     OperatorName,
+    /// `def obj.x` defines `x` on that object, not on the enclosing class,
+    /// whose singleton the oracle filed it under.
+    ForeignReceiver,
+}
+
+/// Whether the def at `row` names a receiver other than `self` or a constant:
+/// `def obj.x`, `def (expr).x`.
+fn foreign_receiver(row: &Row, source: &str) -> bool {
+    let Some(line) = source.lines().nth(row.line as usize - 1) else {
+        return false;
+    };
+    let Some((before, _)) = line.split_once(&format!(".{}", row.name)) else {
+        return false;
+    };
+    let Some((_, receiver)) = before.rsplit_once("def ") else {
+        return false;
+    };
+    let receiver = receiver.trim();
+    receiver != "self" && !receiver.starts_with(char::is_uppercase)
 }
 
 /// The delimiter pairs a `%` literal may use.
@@ -98,7 +117,7 @@ fn symbol_spelled(text: &str, name: &str) -> bool {
 }
 
 impl Intended {
-    const ALL: [Intended; 8] = [
+    const ALL: [Intended; 9] = [
         Intended::NonAsciiConstant,
         Intended::StringContent,
         Intended::InterpolatedName,
@@ -107,6 +126,7 @@ impl Intended {
         Intended::UnspellableName,
         Intended::RuntimeScope,
         Intended::OperatorName,
+        Intended::ForeignReceiver,
     ];
 
     /// Why a row only prism extracted is right.
@@ -125,9 +145,11 @@ impl Intended {
     }
 
     /// Why a row only the oracle extracted is wrong.
-    fn oracle_only(row: &Row) -> Option<Intended> {
+    fn oracle_only(row: &Row, source: &str) -> Option<Intended> {
         if row.kind != Kind::Method.as_str() {
             None
+        } else if row.singleton && foreign_receiver(row, source) {
+            Some(Intended::ForeignReceiver)
         } else if row.name.contains("#{") {
             Some(Intended::InterpolatedName)
         } else if row.name.contains(|c: char| c.is_whitespace() || c == ':') {
@@ -248,7 +270,7 @@ fn diff(file: &str, source: &str) -> Diff {
             (None, None, Some(i)) => (Intended::reparented(o), i),
             (None, None, None) => {
                 out.misparsed = reaches_error(o);
-                out.note(Intended::oracle_only(o), format!("tree-sitter {o}"));
+                out.note(Intended::oracle_only(o, source), format!("tree-sitter {o}"));
                 continue;
             }
         };

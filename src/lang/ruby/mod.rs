@@ -509,6 +509,12 @@ end
     }
 
     #[test]
+    fn a_def_on_another_object_is_not_the_class_s_own() {
+        let src = "class A\n  def (Object).qux; end\n  obj = Object.new\n  def obj.m; end\n  def self.s; end\n  def A.c; end\nend\n";
+        assert_eq!(names(src), ["A", "A#s", "A#c"]);
+    }
+
+    #[test]
     fn a_valid_def_may_put_its_name_on_a_later_line() {
         let src = "class A\n  def self.\n    foo; 1; end\n  def\n    bar; 2; end\n  def \\\n    baz; 3; end\nend\n";
         assert_eq!(names(src), ["A", "A#foo", "A#bar", "A#baz"]);

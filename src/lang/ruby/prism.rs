@@ -507,8 +507,16 @@ impl<'pr> Visit<'pr> for Walk<'_> {
             // is still the body around it
             return ruby_prism::visit_def_node(self, node);
         }
+        let receiver = node.receiver();
+        // `def obj.x` defines `x` on that object alone, not on the class
+        if receiver
+            .as_ref()
+            .is_some_and(|r| r.as_self_node().is_none() && !is_constant_path(r))
+        {
+            return;
+        }
         // `private` sections don't apply to `def self.x`
-        let own = node.receiver().is_some();
+        let own = receiver.is_some();
         let vis = if own {
             Visibility::Public
         } else {
