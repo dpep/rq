@@ -5017,3 +5017,36 @@ existing ones.
 
 *Reverses if:* rq tracks inheritance, so an inherited constructor can be answered as the
 superclass's `initialize` rather than the class standing in for it.
+
+## D72 — Globs are unanchored substring matches; an edge `*` only steers ranking
+
+**Adopted**, 2026-11-23. `rq '*Error'` ranked `ErrorLog` above `FooError`: a literal at a
+name's very start earns +20 in `wildcard_score` (`src/search/score.rs`), and a leading `*`
+didn't suppress it.
+
+*Matching stays unanchored.* One matcher, `glob_positions`, serves the index probe
+(`Probe::accepts`) and the scorer, and treats a pattern as starred at both ends, so `Act*`
+and `Act` match the same names. Shell anchoring (`Act*` must start with `Act`, `*Error` end
+with `Error`) was declined: the recall set's 830 `glob` queries are `first3*last3`
+(`tes*lim` for `test_float_limits`), the way people abbreviate, and only 133 of their
+sources match anchored at both ends; the other 697 would find nothing.
+
+*The rule.* The edge bonus goes to the start, or, when the pattern opens with `*`, to the
+end (the last literal on the name's last character); `*foo*` earns neither. `*Error` asks
+for something before `Error`, so `FooError` gains 20 and `ErrorLog` loses it. The bonus
+stays inside the `wildcard` feature, as the start bonus always was.
+
+*Why not symmetric.* Rewarding an unstarred end too (`tes*lim` preferring a name ending in
+`lim`) moved recall: #1 flat (25 up, 40 down), glob top 10 82.7 → 82.8%, but four glob #1s
+lost to a name that happened to end in the tail (`cha*ser` → `ChatChannelComposer` over
+`ChannelSerializer`, `set*ter` → `set_after` over `set_line_term`). A pattern's tail is
+usually a word's prefix, not the name's end; its head is the name's start.
+
+*Recall.* `make recall BASE=main`: 0 up, 0 down, 6,815 unchanged; lost #1 0, lost top 10 0;
+the glob row 56.4% / 82.7% both sides. The set has no leading-`*` query, so the change is
+invisible to it by construction; the fixture tests in `src/tests/fuzzy_ranking.rs` hold the
+order. On ripgrep, `*Error` went from `ErrorKind` ×2 first to `Error` ×3, `SinkError`,
+`ConfigError`, then `ErrorKind`.
+
+*Reverses if:* glob queries in real use turn out to mean shell anchoring (a tail meant as
+the name's end), at which point the end bonus extends to unstarred ends.

@@ -8,7 +8,7 @@ In a Rails checkout:
 ```sh
 rq HashWithIndifferentAccess  # → activesupport/lib/active_support/hash_with_indifferent_access.rb
 rq hwia                       # → the same class: fuzzy and abbreviation-aware
-rq 'Hash*Access'              # → wildcards: `*` any run, `?` one char (quote them)
+rq 'Hash*Access'              # → wildcards match anywhere in the name: `*` any run, `?` one char (quote them)
 rq ActiveRecord::Base         # → the Base defined inside ActiveRecord
 rq Persistence#save           # → the save defined inside Persistence
 rq Migration.new              # → Migration's constructor (initialize, __init__, constructor)

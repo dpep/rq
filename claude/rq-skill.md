@@ -160,8 +160,11 @@ each means one thing:
 - **Repo.** Results come from the current repo by default; `-a`/`--all-repos`
   searches every repo you've indexed (so `no_match` means absent *here*).
 - **Wildcards.** `*` (any run) and `?` (one char) — **quote them** so the shell
-  doesn't glob: `rq 'Widget*proc'`. A lone trailing `?` is part of the name, so
-  `rq 'valid?'` finds a Ruby predicate. `::`, `#` and `.` need no quoting.
+  doesn't glob: `rq 'Widget*proc'`. A pattern matches anywhere in the name, as
+  if starred at both ends; an edge `*` only ranks: `'*Error'` puts names ending
+  in `Error` first, `'Act*'` names starting with `Act`. A lone trailing `?` is
+  part of the name, so `rq 'valid?'` finds a Ruby predicate. `::`, `#` and `.`
+  need no quoting.
 
 ```sh
 rq save -k method app/models --json
