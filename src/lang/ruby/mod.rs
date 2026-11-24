@@ -491,8 +491,12 @@ end
         let cases: [(&str, &[&str]); 3] = [
             // the next line's word is taken for the name
             ("class A\n  def\nend\n", &["A"]),
-            // ...here `def`, taking `b` as its parameter
-            ("class A\n  private def # soon\n  def b; end\nend\n", &["A"]),
+            // ...but with every construct closed it's valid Ruby, a method
+            // named `def` taking `b`, and read so
+            (
+                "class A\n  private def # soon\n  def b; end\nend\n",
+                &["A", "A#def"],
+            ),
             // ...here `require`, whose body is then the rest of the file
             (
                 "private def\nrequire \"x\"\n\nclass Upload\n  LIMIT = 1\n  def name; end\nend\n",
@@ -502,6 +506,12 @@ end
         for (src, want) in cases {
             assert_eq!(names(src), want, "{src}");
         }
+    }
+
+    #[test]
+    fn a_valid_def_may_put_its_name_on_a_later_line() {
+        let src = "class A\n  def self.\n    foo; 1; end\n  def\n    bar; 2; end\n  def \\\n    baz; 3; end\nend\n";
+        assert_eq!(names(src), ["A", "A#foo", "A#bar", "A#baz"]);
     }
 
     #[test]
@@ -593,6 +603,7 @@ end
                 "ready?",
                 "x=",
                 "`",
+                "split_name",
                 "describe"
             ]
         );

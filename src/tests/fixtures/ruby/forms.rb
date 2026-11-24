@@ -38,6 +38,8 @@ module Forms
     def ready? = true
     def x=(value); end
     def `(cmd); end
+    def
+      split_name; end
 
     def describe
       <<~DOC

@@ -497,7 +497,10 @@ impl<'pr> Visit<'pr> for Walk<'_> {
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
         // Ruby's name for it: `def ~@` and `def !@` define `~` and `!`
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or_default();
-        let later = self.line(node.name_loc().start()) > self.line(node.def_keyword_loc().start());
+        // valid Ruby may put the name on a later line (`def\n  foo`); in a
+        // file left open, that word is what comes after a `def` not named yet
+        let later = self.broken
+            && self.line(node.name_loc().start()) > self.line(node.def_keyword_loc().start());
         if later || !is_name(name) {
             // a `def` whose name isn't typed yet: the word on a later line, or
             // what recovery offered, isn't its name, and what the def swallowed
