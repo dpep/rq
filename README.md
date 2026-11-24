@@ -13,7 +13,7 @@ rq ActiveRecord::Base         # → the Base defined inside ActiveRecord
 rq Persistence#save           # → the save defined inside Persistence
 rq Migration.new              # → Migration's constructor (initialize, __init__, constructor)
 rq class Base                 # → a leading kind keyword is shorthand for -k class
-rq perform activejob          # → the perform under activejob/, ranked
+rq perform activejob          # → perform, only under the activejob/ directory
 ```
 
 rq finds **names**, not behaviour. If you know what the code does but not what
@@ -46,7 +46,7 @@ cargo install --path .          # or: make install
 rq <query>                  # search definitions; ranked
 rq <query> -e/--explain     # show the score behind each result
 rq <query> -j/--json        # JSON array (-J/--ndjson for one object per line)
-rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path); one in another checkout searches that checkout
+rq <query> [DIR...]         # restrict to directories (rg-style; or -p/--path); one in another checkout searches that checkout; a missing one exits 66
 rq <query> -k/--kind KIND   # restrict to kind: class|module|method|function|struct|enum|trait|constant|type|macro|variant|field
 rq KIND <query>             # a leading kind keyword is shorthand for -k (rq class Widget)
 rq Scope::name              # scope-aware: only the name defined inside Scope (or Scope#method)
@@ -131,8 +131,9 @@ The VS Code extension passes `--anchor` on every click.
 ## For agents / scripts
 
 `-j/--json` (array) and `-J/--ndjson` (one object per line) are the structured
-surface for editors, scripts, and AI agents. Every command honors them, not just
-search.
+surface for editors, scripts, and AI agents. Every command that prints output
+honors them, not just search. `-o/--open` and `-w/--web` hand off to an editor
+or browser instead, so they refuse `--json` (exit 64).
 
 ### Result fields
 
@@ -153,7 +154,7 @@ that doesn't apply is **omitted**, never `null`.
 | `singleton` | when true | `true`: the definition belongs to the type itself, not its instances — a Ruby class method (`def self.x`, anything in `class << self`, a `module_function`), a Python `@classmethod`/`@staticmethod`, a TypeScript/JavaScript `static` member, a Rust associated fn without `self`. Constants never carry it, and Go has no such member. Text output says `singleton method`. |
 | `repo` | always | Repo identity: `github.com/org/repo`, or `local:/abs/path`. |
 | `source` | search | `index`, or `live` when the result came from a live scan of files on disk because no index pass has finished for this directory yet: one rq doesn't track, or a repo asked with `--no-wait` before its first index (or after `--drop`). The hit is real; only its ranking is provisional. In a repo it carries `warming`, and its `confidence` is scaled as an index hit's is. See [Staying current](#staying-current). |
-| `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it; about 0.5 means it's level with the next result, a coin flip. |
+| `confidence` | search | 0–1: match quality × how far it leads the runner-up. Near 1 means take it; about 0.5 means it's level with the next result, a coin flip. Below about 0.3 it's a guess, often a weak fuzzy match, and still exits 0: verify it. |
 | `features` | search | The scoring signals that fired, strongest first. |
 | `signature` | when the line is non-empty | The definition's first source line, trimmed. |
 | `body` | `--show`, confident match | The full `line..=end_line` source. |
@@ -170,9 +171,9 @@ A miss is one `{"status": …, "query": …}` object instead of results:
 
 | `status` | Exit | Meaning |
 | --- | --- | --- |
-| `no_match` | 1 | Definitive: nothing by that name. Under `-a`, `incomplete` lists the roots of checkouts that aren't fully indexed, which the miss can't speak for; a search in one indexes it. |
+| `no_match` | 1 | Nothing by that name in the index. Not proof it's absent: rq indexes what git tracks, so a new file isn't seen until it's `git add`ed or `rq --index` reads it, and definitions after a syntax error can be lost (worst in TS/JS). Under `-a`, `incomplete` lists the roots of checkouts that aren't fully indexed, which the miss can't speak for; a search in one indexes it. |
 | `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
-| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. It carries `warming` (as on a result) for how far the checkout holding the answer back got (under `-a`, possibly another one being indexed, which its `hint` names), and when something matched but a file not read yet could hold a better match, the matches so far as `provisional`. |
+| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. It carries `warming` (as on a result) for how far the checkout holding the answer back got (under `-a`, possibly another one being indexed, which its `hint` names), and when something matched but a file not read yet could hold a better match, the matches so far as `provisional`. Right after an edit, a search can answer `warming` while rq reads the change; on a complete checkout its `read` equals `of`. |
 | `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
 
 A match exits `0`. Every miss is non-zero, so `rq … && …` reads as "found
@@ -375,7 +376,7 @@ lib/toolbar.rb:4  method widget · Toolbar
   Ruby `private` sections, Python `_underscore`, Go capitalization, TypeScript
   member modifiers and ESM `export`), and a function nested in another ranks
   below every same-named definition that isn't (`local`)
-- **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope; `Foo.new` finds the constructor, or the class itself when it inherits one. A package or module scope is read off the file's path, so `hugolib.HugoSites`, `models.QuerySet` and `mpsc::Sender` work too
+- **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope. `.` and `#` both mean "inside", not class vs instance: `Topic.recover!` can answer an instance method (`singleton` tells them apart). `Foo.new` prefers the class's own constructor; when the class inherits one, it may answer the class itself or another `Foo`'s constructor (a nested `Dev::Foo`). A package or module scope is read off the file's path, so `hugolib.HugoSites`, `models.QuerySet` and `mpsc::Sender` work too
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the checkout you're in by default,
   so each worktree answers from its own branch (`-a`/`--all-repos` to search
@@ -399,7 +400,9 @@ a detached, low-priority process finishes the sweep in the background. A
 rather than report a false miss. On a terminal, a progress line appears if that
 takes longer than half a second, and Ctrl-C stops it. It's a one-time cost — the
 index persists and self-heals as you search, re-reading edited files and
-reconciling added and removed ones. An upgrade that changes what rq extracts
+reconciling tracked files added and removed. It indexes what git tracks: a
+brand-new file is found once it's `git add`ed, or after `rq --index`, which walks
+the disk. An upgrade that changes what rq extracts
 re-reads the affected files the same way, on the next search; until then
 `--status` shows the checkout `warming`.
 
