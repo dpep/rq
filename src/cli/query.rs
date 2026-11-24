@@ -631,8 +631,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let mut futile = false;
     let mut futile_read = false;
     let mut last_cost = Duration::ZERO;
-    // an exact match carries `case` only when the name typed has capitals
-    let case_typed = crate::search::literal_leaf(query).is_some_and(|l| l.to_lowercase() != l);
+    let case_typed = case_typed(query);
     // whether the demand walk had read every file holding the name when the
     // search behind `hits` began
     let mut name_read;
@@ -1116,6 +1115,15 @@ fn held_back_by<'a>(
 /// match in the capitals typed (`case_typed`) may be committed, or after it a
 /// literal match here could still reach the top. Otherwise only the end of the
 /// pass can answer.
+/// Whether a match can carry `case`, the one answer before the name's files are
+/// all read: an exact match, or for a constructor call its owner, in capitals
+/// typed.
+fn case_typed(query: &str) -> bool {
+    crate::index::query_names(query)
+        .iter()
+        .any(|n| n.to_lowercase() != *n)
+}
+
 fn may_settle_early(
     shown: &[crate::search::Hit],
     here: Option<&str>,
@@ -1782,6 +1790,18 @@ mod tests {
             explain: None,
             warming: None,
         }
+    }
+
+    #[test]
+    fn a_name_or_constructor_owner_in_capitals_can_answer_early() {
+        use super::case_typed;
+        assert!(case_typed("Gadget"));
+        assert!(case_typed("Z::fetch_Widget"));
+        assert!(case_typed("Gadget.new"));
+        assert!(!case_typed("gadget"));
+        assert!(!case_typed("gadget.new"));
+        assert!(!case_typed("Gadget::fetch"));
+        assert!(!case_typed("Gad*"));
     }
 
     #[test]
