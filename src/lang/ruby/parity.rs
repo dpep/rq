@@ -79,6 +79,9 @@ enum Intended {
     /// files it under the enclosing name, where the oracle took the
     /// expression's source (`Outer::self.class`) for a namespace.
     RuntimeScope,
+    /// Ruby names `def ~@` and `def !@` as `~` and `!` (`-@` and `+@` keep
+    /// theirs); the oracle kept the source spelling.
+    OperatorName,
 }
 
 /// The delimiter pairs a `%` literal may use.
@@ -95,7 +98,7 @@ fn symbol_spelled(text: &str, name: &str) -> bool {
 }
 
 impl Intended {
-    const ALL: [Intended; 7] = [
+    const ALL: [Intended; 8] = [
         Intended::NonAsciiConstant,
         Intended::StringContent,
         Intended::InterpolatedName,
@@ -103,6 +106,7 @@ impl Intended {
         Intended::OracleMisparse,
         Intended::UnspellableName,
         Intended::RuntimeScope,
+        Intended::OperatorName,
     ];
 
     /// Why a row only prism extracted is right.
@@ -140,8 +144,11 @@ impl Intended {
         let source_spelling = (was.starts_with('%') && was.contains(is)) || was.contains('\\');
         // `alias :"x y" z` kept its quotes
         let quoted = was.len() == is.len() + 2 && was[1..was.len() - 1] == *is;
+        let unary = matches!((was, is), ("~@", "~") | ("!@", "!"));
         if oracle.kind != Kind::Method.as_str() {
             None
+        } else if unary {
+            Some(Intended::OperatorName)
         } else if source_spelling {
             Some(Intended::StringContent)
         } else if quoted && (was.starts_with('"') || was.starts_with('\'')) {

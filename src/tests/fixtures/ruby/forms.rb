@@ -33,7 +33,7 @@ module Forms
     def ~@; end
     def -@ = self.class.new(-x, -y)
     def +@; self; end
-    def !; false; end
+    def !@; false; end
     def call!(arg) = arg
     def ready? = true
     def x=(value); end
