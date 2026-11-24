@@ -2787,6 +2787,18 @@ an older rq steps around.
 or side stores pile up in practice; then the older rq refusing with a clear message is the
 simpler shape.
 
+### D51 addendum — an older rq already mid-pass at the upgrade: accepted
+
+An older rq that opened the database before a newer one migrated it keeps its connection
+and finishes its pass with its own extractor, writing fresh hashes and `complete`. The
+newer schema's requeue (v24, v30, v31) then misses those files until each is next edited
+(measured: an 0.61.1 `--index` of discourse with 0.61.2 migrating 2 s in left 6,051 of
+14,399 files at the old extraction). Their rows are what the older release gave, not wrong
+ones. Rejected: "a `stale:` hash means warming" (misses those 6,051, and needs a
+`content_hash` index), and a per-file extractor stamp (sound, but a column, an index and a
+new requeue mechanism for an upgrade-time race). *Reverses if:* a requeue fixes rows that
+are wrong rather than improved, so a stale extraction would mislead.
+
 ## D52 — An answer from a half-built index says so, and a guess waits
 
 **Adopted**, 2026-09-30. `settled`, `disclose_warming` and the poll in `src/cli/query.rs`;
