@@ -425,6 +425,11 @@ pub(crate) fn score(
             }
         } else {
             let (owned, pathed, depth) = path_scope(qual, cand)?;
+            // `Foo.new` runs Foo's constructor: a path may hold Foo's outer
+            // scopes, but Foo itself must be the constructor's recorded owner
+            if owned == 0 && features.first().is_some_and(|f| f.name == "constructor") {
+                return None;
+            }
             if owned > 0 {
                 features.push(Feature {
                     name: "parent",
