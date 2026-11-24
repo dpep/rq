@@ -671,11 +671,13 @@ fn fs_walk_candidates(
     roots: Vec<std::path::PathBuf>,
     deadline: Option<Instant>,
     unwalked: Unwalked,
+    prune: std::sync::Arc<[std::path::PathBuf]>,
 ) -> impl Iterator<Item = std::path::PathBuf> {
     roots.into_iter().flat_map(move |root| {
         let unwalked = unwalked.clone();
+        let prune = std::sync::Arc::clone(&prune);
         walk(&root)
-            .filter_entry(move |_| !past(deadline))
+            .filter_entry(move |e| !past(deadline) && !prune.iter().any(|p| e.path() == p))
             .build()
             .filter_map(move |entry| {
                 entry
@@ -1212,7 +1214,12 @@ fn fill_checkout(
         }
         let candidates: Box<dyn Iterator<Item = std::path::PathBuf> + Send> = match git_candidates {
             Some(paths) => Box::new(paths.into_iter()),
-            None => Box::new(fs_walk_candidates(walk_roots, deadline, unwalked.clone())),
+            None => Box::new(fs_walk_candidates(
+                walk_roots,
+                deadline,
+                unwalked.clone(),
+                std::sync::Arc::from([]),
+            )),
         };
         let demanded = &demanded;
         let skipped = &skipped;
@@ -1816,6 +1823,8 @@ pub(crate) struct LiveTree<'a> {
     pub(crate) identity: String,
     /// git's tracked source files; `None` walks the filesystem instead
     tracked: Option<Vec<std::path::PathBuf>>,
+    /// directories a filesystem walk leaves out (checkouts the index answers for)
+    prune: std::sync::Arc<[std::path::PathBuf]>,
 }
 
 impl<'a> LiveTree<'a> {
@@ -1828,6 +1837,15 @@ impl<'a> LiveTree<'a> {
             root,
             identity,
             tracked,
+            prune: std::sync::Arc::from([]),
+        }
+    }
+
+    /// Leave `dirs` out of a filesystem walk; absolute, canonical as `root` is.
+    pub(crate) fn pruning(self, dirs: Vec<std::path::PathBuf>) -> LiveTree<'a> {
+        LiveTree {
+            prune: dirs.into(),
+            ..self
         }
     }
 
@@ -1874,6 +1892,7 @@ pub(crate) fn scan(
             vec![root.to_path_buf()],
             deadline,
             Unwalked::default(),
+            std::sync::Arc::clone(&tree.prune),
         )),
     };
     let mut out: Vec<crate::store::FileSymbols> = Vec::new();
@@ -3021,7 +3040,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("a/b")).unwrap();
         std::fs::write(dir.join("a/b/x.rb"), "class X\nend\n").unwrap();
         let files = |deadline| {
-            fs_walk_candidates(vec![dir.to_path_buf()], deadline, Unwalked::default()).count()
+            let none = std::sync::Arc::from([]);
+            fs_walk_candidates(vec![dir.to_path_buf()], deadline, Unwalked::default(), none).count()
         };
         assert_eq!(files(None), 1);
         assert_eq!(files(Some(Instant::now())), 0);

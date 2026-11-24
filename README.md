@@ -173,7 +173,7 @@ A miss is one `{"status": …, "query": …}` object instead of results:
 | --- | --- | --- |
 | `no_match` | 1 | Nothing by that name in the index. Not proof it's absent: rq indexes what git tracks, so a new file isn't seen until it's `git add`ed or `rq --index` reads it, and definitions after a syntax error can be lost (worst in TS/JS). Under `-a`, `incomplete` lists the roots of checkouts that aren't fully indexed, which the miss can't speak for; a search in one indexes it. |
 | `scope_not_found` | 1 | Nothing in the scope you named; `found_in` says where the name does live. |
-| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. It carries `warming` (as on a result) for how far the checkout holding the answer back got (under `-a`, possibly another one being indexed, which its `hint` names), and when something matched but a file not read yet could hold a better match, the matches so far as `provisional`. Right after an edit, a search can answer `warming` while rq reads the change; on a complete checkout its `read` equals `of`. |
+| `warming` | 2 | The index is incomplete; retry. Mostly with `--no-wait` or a short `--wait`, since otherwise a cold repo blocks until it can answer. It carries `warming` (as on a result) for how far the checkout holding the answer back got (under `-a`, possibly another one being indexed, which its `hint` names), and when something matched but a file not read yet could hold a better match, the matches so far as `provisional`. Right after an edit, a search can answer `warming` while rq reads the change; on a complete checkout its `read` equals `of`. Outside git, a live scan that ran out of time answers it too: `read` is the files it parsed, and `hint` names `rq --index` and `-a`. |
 | `interrupted` | 2 | Indexing was stopped (Ctrl-C) before it could answer; run again. |
 
 A match exits `0`. Every miss is non-zero, so `rq … && …` reads as "found
@@ -208,7 +208,7 @@ retry:
 | `kind` | Exit | Meaning |
 | --- | --- | --- |
 | `usage` | 64 | The command line is wrong: an unknown or conflicting flag, a bad value, an empty query. Fix the command; it won't succeed on retry. |
-| `not_found` | 66 | A file or directory the command names doesn't exist (`--symbols`, a search's PATH), or a directory `--index` names can't be read. |
+| `not_found` | 66 | A file or directory the command names doesn't exist (`--symbols`, a search's PATH, or the directory a search runs in, deleted under the shell), or a directory `--index` names can't be read. |
 | `no_remote`, `launch` | 69 | Nothing to hand off to: `-w` on a repo with no git host, or an editor or browser that won't start. |
 | `internal` | 70 | rq couldn't render its own output — a bug. |
 | `database`, `index` | 74 | The index can't be opened, read or written. |
@@ -416,9 +416,12 @@ default, and over 4 per core is capped).
 
 A non-git directory isn't warmed on a stray query, but `rq --index <dir>` tracks
 it like any repo under a `local:<path>` identity; otherwise rq live-scans it, so
-it still answers at zero coverage. That scan is the whole search, as a checkout
-is from inside it: another indexed repo answers only under `-a`, where the
-directory you're in still ranks first. A `--no-wait` query live-scans a git repo
+it still answers at zero coverage. From such a directory rq searches it and
+the indexed checkouts inside it (through their index, which the scan leaves
+out); indexed repos elsewhere answer only under `-a`, where the directory you're
+in still ranks first. A scan that ran out of time before finding a match can't
+call it absent: it answers `warming` (exit 2), with a `hint` to `rq --index`
+the directory or search `-a`. A `--no-wait` query live-scans a git repo
 whose first index hasn't finished the same way. A live answer is marked
 `"source": "live"` in JSON (text output doesn't mark it), `-v` notes the files it scanned and how long it took, and `--usage` counts these answers
 apart. The index is a SQLite file at `$RQ_DB`

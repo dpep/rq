@@ -11,13 +11,14 @@ and aren't listed; see `git log` for those.
 
 ### Fixed
 
-- **A search from a directory outside git answers for that directory.** It
-  searched every indexed repo instead, so another checkout's `Widget` could
-  hide the one beside you, and a name nothing there defines answered other
-  repos' fuzzy near-matches at exit 0. It now answers from the directory's
-  live scan alone, as a path naming it already did, and misses with
-  `no_match` (exit 1). Pass `-a` to reach your indexed repos too; the
-  directory you're in still ranks first.
+- **From a directory outside git, rq searches it and the indexed repos
+  inside it.** It searched every indexed repo instead, so another checkout's
+  `Widget` could hide the one beside you, and a name nothing there defines
+  answered other repos' fuzzy near-matches at exit 0. Pass `-a` to search all
+  your indexed repos; the directory you're in still ranks first. A miss whose
+  live scan ran out of time answers `warming` (exit 2) rather than
+  `no_match`, and a search from a directory deleted under the shell is
+  `not_found` (exit 66).
 - **`-a` from outside git keeps both copies of a file two trees share.** A
   live-scanned directory holding a copy of an indexed repo's file showed only
   one of the two definitions; each is now listed with its own `root`.

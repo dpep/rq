@@ -2407,6 +2407,78 @@ fn an_untracked_dir_asked_from_is_the_whole_search() {
 }
 
 #[test]
+fn an_untracked_parent_searches_the_checkouts_inside_it() {
+    // A dir holding indexed checkouts is looking at them: the index answers
+    // for them, the live scan for the rest, and checkouts elsewhere need `-a`.
+    let (parent, db) = scratch("untracked-parent");
+    let elsewhere = Scratch::new("e2e-untracked-parent-other");
+    let repo = parent.join("repo");
+    fs::create_dir_all(repo.join("lib")).unwrap();
+    fs::write(
+        repo.join("lib/b.rb"),
+        "class Widget\nend\nclass Gizmo\nend\n",
+    )
+    .unwrap();
+    fs::write(parent.join("loose.rb"), "class Widget\nend\n").unwrap();
+    fs::write(elsewhere.join("s.rb"), "class Sprocket\nend\n").unwrap();
+    git_init_commit(&repo);
+    git_init_commit(&elsewhere);
+    rq(&db, &repo, &["--index"]);
+    rq(&db, &elsewhere, &["--index"]);
+    let no_time = [("RQ_FALLBACK_BUDGET_MS", "0")];
+
+    // found through the index even when the live scan reads nothing
+    let (code, out, _) = rq_full(&db, &parent, &["Gizmo", "--ndjson"], &no_time, None);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(top_file(&out), "lib/b.rb", "{out}");
+    assert!(out.contains("\"source\":\"index\""), "{out}");
+
+    // a scan cut short can't vouch for a miss
+    let (code, out, _) = rq_full(&db, &parent, &["Nosuch", "--json"], &no_time, None);
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(json(&out)["status"], "warming", "{out}");
+
+    // a checkout elsewhere is a miss here, and the miss says how to reach it
+    let (code, out, err) = rq_full(&db, &parent, &["Sprocket"], &[], None);
+    assert_eq!(code, 1, "{out}");
+    assert!(err.contains("-a"), "{err}");
+
+    // `-a` lists the indexed definition once, not again from the scan
+    let (code, out) = rq(&db, &parent, &["Widget", "-a", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.matches("b.rb").count(), 1, "{out}");
+    assert!(out.contains("loose.rb"), "{out}");
+}
+
+#[test]
+fn a_search_from_a_deleted_directory_is_not_found() {
+    let (dir, db) = scratch("deleted-cwd");
+    let gone = dir.join("gone");
+    fs::create_dir_all(&gone).unwrap();
+    let mut cmd = rq_cmd(&db, &dir);
+    let rq_bin = cmd.get_program().to_owned();
+    let mut sh = std::process::Command::new("sh");
+    for (k, v) in cmd.get_envs() {
+        match v {
+            Some(v) => sh.env(k, v),
+            None => sh.env_remove(k),
+        };
+    }
+    cmd = sh;
+    let out = cmd
+        .current_dir(&gone)
+        .args([
+            "-c",
+            "rmdir \"$PWD\" && exec \"$0\" Widget",
+            rq_bin.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run sh");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(66), "{err}");
+}
+
+#[test]
 fn limit_caps_the_number_of_results() {
     let (dir, db) = scratch("limit");
     // more definitions than the default cap, so `--limit 0` is distinguishable

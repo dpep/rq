@@ -4500,16 +4500,29 @@ and an exact match there skipped the live scan: `rq Widget` beside a `class Widg
 answered another checkout's, and a name nothing defines answered other repos' fuzzy
 near-matches at exit 0 instead of `no_match`. A PATH naming the same dir answered right.
 
-*The rule.* The tree asked from is the search, whether a PATH or the cwd names it: an
-untracked non-git dir is `Scope::Nothing` plus its live scan, so `Scope::All` is `-a`
-alone. Under `-a` the scan still runs unless one of its own tree's hits is an exact or
-prefix match; another checkout's can't stand in for it. Live hits carry `current_repo`,
-so the dir asked from ranks first.
+*The rule.* The tree asked from is the search, whether a PATH or the cwd names it. An
+untracked non-git dir is the indexed checkouts inside it (`Scope::Under`, searched through
+the index) plus a live scan of the rest, which leaves those checkouts out; holding none,
+it is `Scope::Nothing` plus the scan. `Scope::All` is `-a` alone, and prunes the scan the
+same way, so a definition there is listed once. Under `-a` the scan still runs unless one
+of its own tree's hits is an exact or prefix match; another checkout's can't stand in for
+it. Live hits carry `current_repo`, so the dir asked from ranks first.
+
+A scan stopped at its budget read part of the dir, so its miss is `warming` (exit 2) with
+a `hint` naming `rq --index` and `-a`, never `no_match`. A definitive miss from an
+untracked dir, when repos elsewhere are indexed, says `-a` reaches them. With no cwd
+(deleted under the shell) there is no tree to search: `not_found` (66), as a PATH that
+doesn't exist; `-a` still searches everything.
 
 *Considered.*
 - Keeping every repo as the default outside a checkout, with the scan always run and
   ranked first. Rejected: a rule with an exception, and a miss would still answer from
   unrelated repos. `-a` is one flag away.
+- The live scan alone, without the checkouts inside. Shipped first, and wrong: from
+  `~/code/lib/ruby`, holding indexed rails, `AbstractMysqlAdapter` was a miss once the
+  scan's 250 ms ran out before reaching it, where the index answers in milliseconds.
+  Measured from there (rails and discourse indexed, release build, warm): 270–320 ms
+  with or without `-a`, the scan's budget either way.
 
 *Not settled here.* The live scan is bounded by time (`RQ_FALLBACK_BUDGET_MS`, 250 ms),
 not by place: asked from `/` or `$HOME`, it reads whatever it reaches first.

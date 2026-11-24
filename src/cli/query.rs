@@ -390,6 +390,12 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     } = session;
     let root = place.as_ref().map(|h| h.root.as_path());
     let coverage = place.as_ref().and_then(|h| h.coverage);
+    // no cwd names no tree to search, as a PATH that doesn't exist
+    if place.is_none() && !all_repos {
+        let echo = args.batch.then_some(args.echo);
+        let why = "rq: the current directory no longer exists (`-a` searches every indexed repo)";
+        return report_query(out, Failure::NotFound, echo, format_args!("{why}")).into();
+    }
     // `-a` reads every checkout, so none may be one deleted from disk
     if all_repos {
         crate::index::prune_missing_checkouts(store);
@@ -412,9 +418,16 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
     let repo_span = crate::profile::span("setup: repo state");
     let checkout_here = |store: &Store| root.and_then(|r| checkout_at(store, r));
     let mut current = checkout_here(store);
+    // An untracked dir is looking at the checkouts inside it as well: the
+    // index answers for those, and its live scan leaves them out.
+    let under = match root {
+        Some(r) if !warming_ok && current.is_none() => checkouts_under(store, r),
+        _ => Vec::new(),
+    };
+    let under_ids: Vec<Checkout> = under.iter().map(|(_, c)| *c).collect();
     // Default: scope results to the tree asked from so a search never leaks
     // another tree's definitions; `--all-repos` searches everything.
-    let scope = |current| Scope::new(all_repos, current);
+    let scope = |current| Scope::new(all_repos, current, &under_ids);
     let ctx = crate::search::Context {
         active: crate::search::ActiveFiles::new(active_paths.clone()),
         anchor: anchor.as_ref().map(|a| a.for_query(query)),
@@ -804,7 +817,8 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         && coverage.is_none()
         && let (Some(root), Some(identity)) = (root, &identity)
     {
-        let tree = crate::index::LiveTree::new(root, identity.clone());
+        let skip = under.iter().map(|(r, _)| r.clone()).collect();
+        let tree = crate::index::LiveTree::new(root, identity.clone()).pruning(skip);
         let (tail, cost) = live_fallback(&tree, query, rank_limit, &ctx);
         hits = crate::search::merge(hits, tail.hits, reach || tail.reach, rank_limit, &ctx);
         total = total.max(hits.len());
@@ -866,7 +880,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         let here_id = current.map(|c| c.id);
         let elsewhere = match scope(current) {
             _ if incomplete => None,
-            Scope::Nothing => None,
+            Scope::Nothing | Scope::Under(_) => None,
             Scope::All => crate::search::scope_miss_owner(store, query, here_id, None, &ctx),
             Scope::Checkout(c) => {
                 crate::search::scope_miss_owner(store, query, here_id, Some(c), &ctx)
@@ -879,6 +893,15 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         // the one it runs in: name the others rather than calling it `warming`
         let incomplete_roots = match scope(current) {
             Scope::All if !incomplete => store.incomplete_roots().unwrap_or_default(),
+            Scope::Under(_) => {
+                let mut roots = store.incomplete_roots().unwrap_or_default();
+                roots.retain(|r| {
+                    under
+                        .iter()
+                        .any(|(u, _)| u.as_path() == std::path::Path::new(r))
+                });
+                roots
+            }
             _ => Vec::new(),
         };
         // how far this checkout's index got, as a provisional answer says;
@@ -895,7 +918,36 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
                 .flatten()
                 .and_then(|r| edits_unread(store, r, true, continuing))
         });
-        let verdict = if incomplete {
+        // A live scan stopped at its budget read only part of the dir: its
+        // miss is no more definitive than a partial index's. (A scan standing
+        // in for an index being built is `incomplete` already.)
+        let scan_cut = !warming_ok
+            && !interrupted
+            && incomplete_roots.is_empty()
+            && live_scan.as_ref().is_some_and(|c| c.cut);
+        let warming = warming.or_else(|| {
+            scan_cut.then(|| crate::search::Warming {
+                read: live_scan.as_ref().map_or(0, |c| c.files as i64),
+                of: None,
+                interrupted: true,
+                phase: None,
+                phase_secs: None,
+                hint: SCAN_CUT_HINT.to_string(),
+            })
+        });
+        let aside = if scan_cut {
+            Some(UntrackedMiss::ScanCut)
+        } else {
+            // from an untracked dir, indexed repos elsewhere are one flag away
+            let wider = !all_repos
+                && !warming_ok
+                && root.is_some()
+                && store
+                    .all_checkout_roots()
+                    .is_ok_and(|all| all.len() > under.len());
+            wider.then_some(UntrackedMiss::Elsewhere)
+        };
+        let verdict = if incomplete || scan_cut {
             Verdict::Warming
         } else {
             Verdict::Miss
@@ -909,6 +961,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
             edited,
             elsewhere.as_deref(),
             &incomplete_roots,
+            aside,
         );
         // Counted after the answer, and only here: whether this was a
         // definitive miss or a not-ready one is only known on this path, and
@@ -1498,6 +1551,7 @@ fn live_fallback(
     let cost = LiveCost {
         files,
         elapsed: start.elapsed(),
+        cut: std::time::Instant::now() >= deadline,
     };
     (found, cost)
 }
@@ -1506,6 +1560,20 @@ fn live_fallback(
 struct LiveCost {
     files: usize,
     elapsed: Duration,
+    /// stopped at its budget, so it may not have read the whole dir
+    cut: bool,
+}
+
+const SCAN_CUT_HINT: &str =
+    "`rq --index` reads this directory whole; `-a` searches every indexed repo";
+
+/// Why a miss from a dir rq doesn't track says more than "no matches".
+#[derive(Clone, Copy)]
+enum UntrackedMiss {
+    /// The live scan stopped at its budget.
+    ScanCut,
+    /// Indexed repos elsewhere weren't searched.
+    Elsewhere,
 }
 
 /// Under `-v`, say that a live scan ran and whether the answer came from it —
@@ -1524,7 +1592,7 @@ fn note_live_scan(root: &std::path::Path, cost: &LiveCost, answered: bool) {
     } else {
         "no answer from a live scan of"
     };
-    let cut = if cost.elapsed >= budget {
+    let cut = if cost.cut {
         " (stopped at the budget)"
     } else {
         ""
@@ -1610,6 +1678,7 @@ fn no_match_code(
     elsewhere: Option<&str>,
     // checkouts `-a` read that aren't fully indexed, so the miss isn't theirs
     incomplete_roots: &[String],
+    aside: Option<UntrackedMiss>,
 ) -> Outcome {
     let incomplete = verdict == Verdict::Warming;
     // a miss's reason, where structured callers can act on more than the verdict
@@ -1646,6 +1715,11 @@ fn no_match_code(
         Output::Text if interrupted => {
             eprintln!("rq: indexing interrupted — run again to finish")
         }
+        Output::Text if matches!(aside, Some(UntrackedMiss::ScanCut)) => {
+            eprintln!(
+                "rq: the live scan stopped at its budget — no match for {query:?} yet ({SCAN_CUT_HINT})"
+            )
+        }
         Output::Text if incomplete => {
             // a retry helps only while something is indexing
             let nothing = warming.is_some_and(|w| w.interrupted);
@@ -1679,6 +1753,9 @@ fn no_match_code(
             "no matches for {query:?} in what's indexed; these checkouts aren't fully indexed (a search in one indexes it):\n  {}",
             incomplete_roots.join("\n  ")
         ),
+        Output::Text if matches!(aside, Some(UntrackedMiss::Elsewhere)) => {
+            eprintln!("no matches for {query:?} here (`-a` searches every indexed repo)")
+        }
         Output::Text => eprintln!("no matches for {query:?}"),
     }
     verdict.into()
@@ -1709,22 +1786,25 @@ fn attach_confidence(hits: &mut [crate::search::Hit]) {
 
 /// The checkouts a search may answer from.
 #[derive(Clone, Copy)]
-enum Scope {
+enum Scope<'a> {
     /// `--all-repos`.
     All,
     Checkout(Checkout),
+    /// The indexed checkouts inside an untracked dir, beside its live scan.
+    Under(&'a [Checkout]),
     /// A checkout the index hasn't registered yet — its first query, before
-    /// the warm has written anything — or an untracked dir, whose live scan
-    /// is the search. Nothing indexed is in scope, not every repo.
+    /// the warm has written anything — or an untracked dir holding none, whose
+    /// live scan is the search. Nothing indexed is in scope, not every repo.
     Nothing,
 }
 
-impl Scope {
-    fn new(all_repos: bool, current: Option<Checkout>) -> Scope {
+impl<'a> Scope<'a> {
+    fn new(all_repos: bool, current: Option<Checkout>, under: &'a [Checkout]) -> Scope<'a> {
         match current {
             _ if all_repos => Scope::All,
             Some(c) => Scope::Checkout(c),
-            None => Scope::Nothing,
+            None if under.is_empty() => Scope::Nothing,
+            None => Scope::Under(under),
         }
     }
 
@@ -1739,6 +1819,20 @@ impl Scope {
         let only = match self {
             Scope::All => None,
             Scope::Checkout(c) => Some(c),
+            Scope::Under(checkouts) => {
+                let mut all = crate::search::Matches {
+                    hits: Vec::new(),
+                    total: 0,
+                    reach: false,
+                };
+                for &c in checkouts {
+                    let m = crate::search::search(store, query, None, Some(c), ctx, limit)?;
+                    all.total += m.total;
+                    all.reach |= m.reach;
+                    all.hits = crate::search::merge(all.hits, m.hits, all.reach, limit, ctx);
+                }
+                return Ok(all);
+            }
             Scope::Nothing => {
                 return Ok(crate::search::Matches {
                     hits: Vec::new(),
@@ -1749,6 +1843,17 @@ impl Scope {
         };
         crate::search::search(store, query, current.map(|c| c.id), only, ctx, limit)
     }
+}
+
+/// The indexed checkouts strictly inside `dir` that are still on disk.
+fn checkouts_under(store: &Store, dir: &std::path::Path) -> Vec<(PathBuf, Checkout)> {
+    let roots = store.all_checkout_roots().unwrap_or_default();
+    roots
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|r| r != dir && r.starts_with(dir) && r.is_dir())
+        .filter_map(|r| checkout_at(store, &r).map(|c| (r, c)))
+        .collect()
 }
 
 /// Set by the SIGINT handler during an interactive cold-start escalation. The
