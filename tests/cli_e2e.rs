@@ -3963,6 +3963,15 @@ fn a_miss_on_an_edited_complete_repo_says_how_far_its_index_got() {
     assert_eq!((&w["read"], &w["of"]), (&2.into(), &2.into()), "{out}");
     assert_eq!(w["interrupted"], true, "nothing is indexing: {out}");
     assert!(w["hint"].as_str().unwrap().contains("rq --index"), "{out}");
+    // text says an edit is unread, not "2 of 2 read", and not to retry what
+    // nothing will change
+    let (code, _, err) = rq_full(&db, &dir, &["added"], &NO_CHILD, None);
+    assert_eq!(code, 2);
+    assert!(err.contains("an edit isn't indexed"), "{err}");
+    assert!(
+        !err.contains("2 of 2") && !err.contains("run again"),
+        "{err}"
+    );
 }
 
 #[test]

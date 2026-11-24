@@ -878,15 +878,20 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
             Scope::All if !incomplete => store.incomplete_roots().unwrap_or_default(),
             _ => Vec::new(),
         };
-        // how far this checkout's index got, as a provisional answer says
-        let warming = incomplete
+        // how far this checkout's index got, as a provisional answer says;
+        // on a complete one, an edit it hasn't read
+        let continuing = warm_detach_enabled() && warming_ok;
+        let partial = incomplete
             .then_some(here.as_deref())
             .flatten()
-            .and_then(|r| {
-                let continuing = warm_detach_enabled() && warming_ok;
-                warming_state(store, r, true, continuing)
-                    .or_else(|| edits_unread(store, r, true, continuing))
-            });
+            .and_then(|r| warming_state(store, r, true, continuing));
+        let edited = incomplete && partial.is_none();
+        let warming = partial.or_else(|| {
+            edited
+                .then_some(here.as_deref())
+                .flatten()
+                .and_then(|r| edits_unread(store, r, true, continuing))
+        });
         let verdict = if incomplete {
             Verdict::Warming
         } else {
@@ -898,6 +903,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
             interrupted,
             verdict,
             warming.as_ref(),
+            edited,
             elsewhere.as_deref(),
             &incomplete_roots,
         );
@@ -1573,6 +1579,7 @@ fn apply_post_filters(
 /// stopped block), or `no_match` (definitive). Text keeps its human message.
 /// Exit 2 = indeterminate (index incomplete), 1 = a definitive miss — both
 /// non-zero, so `rq … && …` still reads as "found something".
+#[allow(clippy::too_many_arguments)]
 fn no_match_code(
     out: Output,
     query: &str,
@@ -1580,6 +1587,8 @@ fn no_match_code(
     // `Warming` when the index couldn't vouch for the miss
     verdict: Verdict,
     warming: Option<&crate::search::Warming>,
+    // the index is complete, but not of an edit since
+    edited: bool,
     // Where the unqualified name *does* live, when a scope was named and
     // nothing in it matched. "Not in that scope" and "no such name" are
     // different answers and the second is the less useful one.
@@ -1623,19 +1632,29 @@ fn no_match_code(
             eprintln!("rq: indexing interrupted — run again to finish")
         }
         Output::Text if incomplete => {
-            let (state, read) = match warming {
-                Some(w) if w.interrupted => (nothing_indexing(true), read_so_far(w)),
-                Some(w) => ("still indexing", read_so_far(w)),
-                None => ("still indexing", String::new()),
+            // a retry helps only while something is indexing
+            let nothing = warming.is_some_and(|w| w.interrupted);
+            let state = match (edited, nothing) {
+                (true, false) => "an edit isn't indexed yet".to_string(),
+                (true, true) => format!("an edit isn't indexed, and {}", nothing_indexing(true)),
+                (false, _) => {
+                    let state = if nothing {
+                        nothing_indexing(true)
+                    } else {
+                        "still indexing"
+                    };
+                    match warming {
+                        Some(w) => format!("{state} ({})", read_so_far(w)),
+                        None => state.to_string(),
+                    }
+                }
             };
-            let read = if read.is_empty() {
-                read
-            } else {
-                format!(" ({read})")
+            let next = match (nothing, edited) {
+                (true, true) => "`rq --index` reads it",
+                (true, false) => "`rq --index` finishes it",
+                (false, _) => "run again, or `rq --index` to finish",
             };
-            eprintln!(
-                "rq: {state}{read} — no match for {query:?} yet (run again, or `rq --index` to finish)"
-            )
+            eprintln!("rq: {state} — no match for {query:?} yet ({next})")
         }
         Output::Text if elsewhere.is_some() => eprintln!(
             "rq: nothing matching {query:?} in that scope — the name is defined elsewhere: {}",
