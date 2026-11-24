@@ -1219,11 +1219,19 @@ fn glob_positions(query: &str, name: &str) -> Option<Vec<usize>> {
 /// contiguity / start signals as the fuzzy scorer, but no gap penalty: the gaps
 /// are the `*`/`?` the user placed deliberately. `None` when it doesn't match,
 /// or when nothing literal matched (an all-wildcard query like `*`).
+///
+/// Matching is unanchored either way, so an edge `*` only steers ranking. The
+/// bonus for a name anchored at an edge goes to the start, or with a leading
+/// `*` ("something before": `*Error`) to the end. An unmarked end earns
+/// nothing: a pattern's tail is usually a word's prefix (`tes*lim`), not the
+/// name's end.
 pub(super) fn wildcard_score(query: &str, name: &str) -> Option<f64> {
     let positions = glob_positions(query, name)?;
-    if positions.is_empty() {
-        return None;
-    }
+    let (&first, &last) = (positions.first()?, positions.last()?);
+    let toks = compile_glob(query);
+    let open_start = matches!(toks.first(), Some(Glob::Star));
+    let open_end = !open_start || matches!(toks.last(), Some(Glob::Star));
+
     let chars: Vec<char> = name.chars().collect();
     let boundary = boundaries(&chars);
     let mut score = 0.0;
@@ -1233,12 +1241,16 @@ pub(super) fn wildcard_score(query: &str, name: &str) -> Option<f64> {
         if boundary[i] {
             score += 15.0;
         }
-        match prev {
-            Some(p) if p + 1 == i => score += 10.0, // contiguous literal run
-            None if i == 0 => score += 20.0,        // anchored at the very start
-            _ => {}
+        if prev.is_some_and(|p| p + 1 == i) {
+            score += 10.0; // contiguous literal run
         }
         prev = Some(i);
+    }
+    if first == 0 && !open_start {
+        score += 20.0;
+    }
+    if last + 1 == chars.len() && !open_end {
+        score += 20.0;
     }
     Some(score)
 }

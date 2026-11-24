@@ -109,3 +109,57 @@ fn a_weak_guess_does_not_beat_a_real_abbreviation() {
     ]);
     assert_eq!(first(&store, "cmlz"), "camelize");
 }
+
+fn names(store: &Store, query: &str) -> Vec<String> {
+    search::search(store, query, None, None, &Context::default(), 10)
+        .unwrap()
+        .iter()
+        .map(|h| h.name.clone())
+        .collect()
+}
+
+#[test]
+fn a_leading_star_prefers_the_name_that_ends_in_the_literal() {
+    // `*Error` asks for something before `Error`: `FooError` is the answer,
+    // `ErrorLog` merely contains it
+    let store = store_with(vec![
+        def("ErrorLog", Kind::Class, "lib/error_log.rb", 20),
+        def("FooError", Kind::Class, "lib/foo_error.rb", 20),
+    ]);
+    assert_eq!(first(&store, "*Error"), "FooError");
+}
+
+#[test]
+fn a_trailing_star_prefers_the_name_that_starts_with_the_literal() {
+    let store = store_with(vec![
+        def("PROC_INACTIVE", Kind::Class, "lib/proc.rb", 20),
+        def("Activity", Kind::Class, "lib/activity.rb", 20),
+        def("ActionThing", Kind::Class, "lib/action_thing.rb", 20),
+    ]);
+    let names = names(&store, "Act*");
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("PROC_INACTIVE"),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn an_inner_star_still_finds_the_name_it_spans() {
+    let store = store_with(vec![
+        def(
+            "WidgetProcessor",
+            Kind::Class,
+            "lib/widget_processor.rb",
+            20,
+        ),
+        def("Processor", Kind::Class, "lib/processor.rb", 20),
+    ]);
+    assert_eq!(first(&store, "Widget*proc"), "WidgetProcessor");
+
+    let store = store_with(vec![
+        def("latest_limit", Kind::Method, "lib/latest.rb", 5),
+        def("test_float_limits", Kind::Method, "lib/float.rb", 5),
+    ]);
+    assert_eq!(first(&store, "tes*lim"), "test_float_limits");
+}

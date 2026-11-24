@@ -27,6 +27,10 @@ and aren't listed; see `git log` for those.
   class only nested under a `Foo` path, no longer answers; and a class that
   inherits its constructor answers itself rather than a `Dev::Foo`'s
   constructor (`Topic.new` answers `app/models/topic.rb`).
+- **`'*Error'` ranks names ending in `Error` first.** A leading `*` gave a
+  name starting with the literal the same bonus as without it, so `ErrorLog`
+  outranked `FooError`. Which names a wildcard matches is unchanged: a
+  pattern still matches anywhere in the name.
 
 ## 0.61.2 — 2026-11-23
 
