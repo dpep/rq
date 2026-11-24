@@ -523,9 +523,11 @@ pub(crate) fn search(
     if let Some(owner) = owner
         && !owns_constructor(&m.hits, owner)
     {
-        let mut class = run(owner, false)?;
-        if let Some(hits) = constructor_class(&m.hits, class.hits, owner) {
+        // every hit too: only a class stands in, however far its name ranks
+        let mut class = search_query(store, owner, current, only, ctx, usize::MAX, false)?;
+        if let Some(mut hits) = constructor_class(&m.hits, class.hits, owner) {
             class.total = hits.len();
+            hits.truncate(limit);
             class.hits = hits;
             return Ok(class);
         }
@@ -544,32 +546,58 @@ pub(crate) fn search(
 /// Does a hit of `Foo.new` belong to the class `owner` names in full: its
 /// constructor, or a method literally named `new` (Rust's)?
 fn owns_constructor(hits: &[Hit], owner: &str) -> bool {
-    let owner = score::segments(owner);
+    let owner = scopes(owner);
     hits.iter().any(|h| {
         h.features
             .iter()
             .any(|f| matches!(f.name, "constructor" | "exact"))
-            && h.parent.as_deref().map(score::segments).as_ref() == Some(&owner)
+            && h.parent.as_deref().map(scopes).as_ref() == Some(&owner)
     })
 }
 
 /// Is `h` the type `owner` names in full, not one nested elsewhere that only
 /// ends in it?
 fn named_in_full(h: &Hit, owner: &str) -> bool {
-    let mut name = h.parent.as_deref().map(score::segments).unwrap_or_default();
-    name.push(h.name.to_ascii_lowercase());
-    name == score::segments(owner)
+    let mut name = h.parent.as_deref().map(scopes).unwrap_or_default();
+    name.push(&h.name);
+    name == scopes(owner)
+}
+
+/// A qualified name's scopes as written: a constant's capitals are part of
+/// its name, so `WebhookEvent` doesn't name `WebHookEvent` in full.
+fn scopes(s: &str) -> Vec<&str> {
+    s.split("::")
+        .flat_map(|p| p.split(['#', '.']))
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 /// The classes that answer `Foo.new` in place of `ctor`, its hits, from
-/// `class`, an owner search's: the class `owner` names in full, or short of
-/// one, any class ending in it when `ctor` found nothing.
+/// `class`, an owner search's. The class `owner` names in full outranks
+/// another class's constructor; short of a constructor, any class named
+/// `Foo` answers, ranked as the owner search ranked it. A test (generated,
+/// example) class never outranks a constructor outside them, as everywhere.
 fn constructor_class(ctor: &[Hit], mut class: Vec<Hit>, owner: &str) -> Option<Vec<Hit>> {
     constructor_owner(&mut class);
-    let named = class.iter().any(|h| named_in_full(h, owner));
-    class.retain(|h| !named || named_in_full(h, owner));
     let some = |hits: &[Hit]| hits.iter().any(|h| h.score > 0.0);
-    ((named || !some(ctor)) && some(&class)).then_some(class)
+    if some(ctor) {
+        class.retain(|h| named_in_full(h, owner));
+        let primary = |hits: &[Hit]| hits.iter().any(|h| h.score > 0.0 && !secondary(h));
+        if primary(ctor) && !primary(&class) {
+            return None;
+        }
+    }
+    some(&class).then_some(class)
+}
+
+/// Did `h` take the test, generated or example penalty?
+fn secondary(h: &Hit) -> bool {
+    h.features.iter().any(|f| {
+        matches!(
+            f.name,
+            "test_path" | "test_scope" | "generated" | "example_path"
+        )
+    })
 }
 
 /// Keep only exact class/struct matches from an owner search, flagged so
