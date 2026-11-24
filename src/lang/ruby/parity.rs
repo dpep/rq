@@ -296,8 +296,9 @@ fn prism_matches_tree_sitter_on_every_fixture_both_parse() {
         [
             "half_typed.rb",
             "left_open.rb",
+            "semantic_error.rb",
             "truncated.rb",
-            "unnamed_def.rb"
+            "unnamed_def.rb",
         ]
     );
     // a difference no fixture shows any more is no longer one to excuse

@@ -27,7 +27,7 @@ pub(super) fn extract(file: &str, source: &str) -> Vec<Symbol> {
             frame: Frame::fresh(false),
             stack: Vec::new(),
             flip: None,
-            broken: result.errors().next().is_some(),
+            broken: result.errors().next().is_some() && unclosed(&result.node()),
         };
         walk.visit(&result.node());
         walk.out
@@ -54,6 +54,52 @@ thread_local! {
 /// Hand `f` prism's parse of `source`.
 fn parse<R>(source: &str, f: impl FnOnce(&ruby_prism::ParseResult) -> R) -> R {
     OPTIONS.with(|options| f(&ruby_prism::parse_with_options(source.as_bytes(), options)))
+}
+
+/// Whether recovery left a construct open: a body with no closing `end`,
+/// `}` or `)`, or a stand-in for something missing. Such a gap shifts every
+/// `end` after it; an error that leaves the structure whole (an escape the
+/// encoding rejects, a keyword argument in an index assignment) doesn't.
+fn unclosed(root: &Node) -> bool {
+    struct Unclosed(bool);
+    fn missing(loc: &Location, closer: &[&str]) -> bool {
+        !closer.contains(&text(loc))
+    }
+    impl<'pr> Visit<'pr> for Unclosed {
+        fn visit_error_recovery_node(&mut self, _: &ruby_prism::ErrorRecoveryNode<'pr>) {
+            self.0 = true;
+        }
+        fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
+            self.0 |= missing(&node.end_keyword_loc(), &["end"]);
+            ruby_prism::visit_class_node(self, node);
+        }
+        fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
+            self.0 |= missing(&node.end_keyword_loc(), &["end"]);
+            ruby_prism::visit_module_node(self, node);
+        }
+        fn visit_singleton_class_node(&mut self, node: &ruby_prism::SingletonClassNode<'pr>) {
+            self.0 |= missing(&node.end_keyword_loc(), &["end"]);
+            ruby_prism::visit_singleton_class_node(self, node);
+        }
+        fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+            let endless = node.equal_loc().is_some();
+            let end = node.end_keyword_loc();
+            self.0 |= !endless && end.is_none_or(|end| missing(&end, &["end"]));
+            self.0 |= node.lparen_loc().is_some() && node.rparen_loc().is_none();
+            ruby_prism::visit_def_node(self, node);
+        }
+        fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+            self.0 |= missing(&node.closing_loc(), &["}", "end"]);
+            ruby_prism::visit_block_node(self, node);
+        }
+        fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+            self.0 |= missing(&node.closing_loc(), &["}", "end"]);
+            ruby_prism::visit_lambda_node(self, node);
+        }
+    }
+    let mut seen = Unclosed(false);
+    seen.visit(root);
+    seen.0
 }
 
 /// What a node's definitions inherit from where it sits.
@@ -114,8 +160,8 @@ fn marker(name: &[u8]) -> Option<Marker> {
 }
 
 struct Walk<'a> {
-    /// The parse has an error: a missing `end` can nest the defs after it
-    /// in a def's body, so bodies are walked too.
+    /// The parse lost the file's structure ([`unclosed`]): a missing `end`
+    /// can nest the defs after it in a def's body, so bodies are walked too.
     broken: bool,
     file: &'a str,
     /// The byte offset each line starts at.

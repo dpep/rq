@@ -505,6 +505,24 @@ end
     }
 
     #[test]
+    fn an_error_that_leaves_the_structure_whole_walks_no_def_body() {
+        let cases = [
+            // an escape invalid in the declared encoding
+            "# coding: US-ASCII\nclass T\n  R = /[\\x0-\\xff]/\n  def t\n    def inner; end\n  end\nend\n",
+            // a semantic error
+            "class T\n  def t\n    a[1, k: 2] = 3\n    def inner; end\n  end\nend\n",
+        ];
+        for src in cases {
+            let want: &[&str] = if src.contains("R =") {
+                &["T", "T#R", "T#t"]
+            } else {
+                &["T", "T#t"]
+            };
+            assert_eq!(names(src), want, "{src}");
+        }
+    }
+
+    #[test]
     fn a_def_left_open_mid_edit_hides_none_of_the_defs_after_it() {
         // (an unterminated string still swallows the rest of the file: it
         // leaves no defs to find)
