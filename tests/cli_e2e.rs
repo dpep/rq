@@ -1751,6 +1751,24 @@ fn index_refuses_a_path_that_is_not_a_directory() {
 }
 
 #[test]
+fn index_refuses_a_directory_it_cannot_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, db) = scratch("index-unreadable");
+    let locked = dir.join("locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("a.rb"), "class A\nend\n").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (code, out, err) = rq_both(&db, &dir, &["--index", "locked", "--json"]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(code, 66, "{out}");
+    assert_eq!(json(&out)["kind"], "not_found", "{out}");
+    assert!(err.contains("permission denied"), "{err}");
+    let (_, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert_eq!(json(&out), serde_json::json!([]), "{out}");
+}
+
+#[test]
 fn open_launches_the_top_hit() {
     // `rq --open` picks the top hit and execs the launcher. RQ_OPEN drives a
     // harmless command here.

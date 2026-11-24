@@ -208,7 +208,7 @@ retry:
 | `kind` | Exit | Meaning |
 | --- | --- | --- |
 | `usage` | 64 | The command line is wrong: an unknown or conflicting flag, a bad value, an empty query. Fix the command; it won't succeed on retry. |
-| `not_found` | 66 | A file or directory the command names doesn't exist (`--symbols`, a search's PATH). |
+| `not_found` | 66 | A file or directory the command names doesn't exist (`--symbols`, a search's PATH), or a directory `--index` names can't be read. |
 | `no_remote`, `launch` | 69 | Nothing to hand off to: `-w` on a repo with no git host, or an editor or browser that won't start. |
 | `internal` | 70 | rq couldn't render its own output — a bug. |
 | `database`, `index` | 74 | The index can't be opened, read or written. |

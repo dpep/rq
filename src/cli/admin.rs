@@ -11,16 +11,26 @@ pub(super) fn cmd_index(
     let explicit = path.is_some();
     let target = path.unwrap_or_else(|| PathBuf::from("."));
     let shown = target.display();
+    // a directory it can't list would index as empty, and say nothing
+    let unreadable = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => "permission denied",
+        _ => "no such file or directory",
+    };
     match target.metadata() {
-        Err(_) => {
-            let message = format_args!("rq --index: {shown}: no such file or directory");
+        Err(e) => {
+            let message = format_args!("rq --index: {shown}: {}", unreadable(e));
             return fail(out, Failure::NotFound, message);
         }
         Ok(m) if !m.is_dir() => {
             let message = format_args!("rq --index: {shown}: not a directory");
             return fail(out, Failure::Usage, message);
         }
-        Ok(_) => {}
+        Ok(_) => {
+            if let Err(e) = std::fs::read_dir(&target) {
+                let message = format_args!("rq --index: {shown}: {}", unreadable(e));
+                return fail(out, Failure::NotFound, message);
+            }
+        }
     }
     // The repo root even from a subdirectory: `--path` scopes a subset.
     let (root, _) = checkout_root(&target);

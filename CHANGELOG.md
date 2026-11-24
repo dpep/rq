@@ -40,7 +40,9 @@ and aren't listed; see `git log` for those.
   named `if` or `return`.
 - `rq --index` on a path that doesn't exist exits 66 `not_found`, as a search
   does, not 75 `busy` saying the checkout was dropped; on a file it exits 64
-  `usage` rather than registering the file as a checkout that stays warming.
+  `usage` rather than registering the file as a checkout that stays warming;
+  on a directory it can't read, 66 saying permission denied, rather than
+  exit 0 having indexed nothing.
 - A `warming` miss right after an edit to an indexed repo carries its
   `warming` object (`read`, `of`, `interrupted`, `hint`) like any other, rather
   than a bare status.
