@@ -376,7 +376,7 @@ lib/toolbar.rb:4  method widget · Toolbar
   Ruby `private` sections, Python `_underscore`, Go capitalization, TypeScript
   member modifiers and ESM `export`), and a function nested in another ranks
   below every same-named definition that isn't (`local`)
-- **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope. `.` and `#` both mean "inside", not class vs instance: `Topic.recover!` can answer an instance method (`singleton` tells them apart). `Foo.new` prefers the class's own constructor; when the class inherits one, it may answer the class itself or another `Foo`'s constructor (a nested `Dev::Foo`). A package or module scope is read off the file's path, so `hugolib.HugoSites`, `models.QuerySet` and `mpsc::Sender` work too
+- **qualifier** — a scoped query (`Foo::Bar`, `Foo#bar`, `Foo.bar`) keeps only the definitions inside that scope. `.` and `#` both mean "inside", not class vs instance: `Topic.recover!` can answer an instance method (`singleton` tells them apart). `Foo.new` answers the class's own constructor; when the class inherits one, the class itself answers. Another class's constructor (a nested `Dev::Foo#initialize`) answers only when no class outside tests is named `Foo` in full. A package or module scope is read off the file's path, so `hugolib.HugoSites`, `models.QuerySet` and `mpsc::Sender` work too
 - **path** — the query also matches the file's name
 - **current repo** — results are scoped to the checkout you're in by default,
   so each worktree answers from its own branch (`-a`/`--all-repos` to search

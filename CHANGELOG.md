@@ -21,6 +21,12 @@ and aren't listed; see `git log` for those.
 - **`-a` from outside git keeps both copies of a file two trees share.** A
   live-scanned directory holding a copy of an indexed repo's file showed only
   one of the two definitions; each is now listed with its own `root`.
+- **`Foo.new` answers Foo's constructor, or Foo.** A `new_*` method of
+  Foo's no longer hides its constructor (`TopicQuery.new` answered
+  `new_results`); a constructor of a sibling class in Foo's file, or of a
+  class only nested under a `Foo` path, no longer answers; and a class that
+  inherits its constructor answers itself rather than a `Dev::Foo`'s
+  constructor (`Topic.new` answers `app/models/topic.rb`).
 
 ## 0.61.2 — 2026-11-23
 

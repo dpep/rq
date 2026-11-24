@@ -564,7 +564,10 @@ why a result ranked where it did:
   plugin names via `LanguagePlugin::constructor` (Ruby `initialize`, Python
   `__init__`, JS/TS `constructor`); when `Foo` declares none (inherited or
   implicit — rq doesn't track inheritance), the class itself answers, flagged
-  `constructor_owner` at 0.75 confidence. The typo retry forgives up to two edits in
+  `constructor_owner` at 0.75 confidence. The constructor must be the owner's
+  own: its recorded parent ends in `Foo`, never a path holding it, and the
+  class the query names in full (outside tests) displaces the constructor of
+  one that only ends in it, a `Dev::Foo` (D71). The typo retry forgives up to two edits in
   the scope too (a `scope_typo` feature, typo-level confidence). A `.` query
   that no scope answers tries `.` as a one-char wildcard before any typo retry
 - **path** — query also matches the file's name (Layer 3)

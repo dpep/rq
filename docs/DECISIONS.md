@@ -4941,3 +4941,79 @@ names, foreign receivers and spaced paths. `make ruby-parity`: rails differs onl
 intended rules (64 interpolated, 38 foreign receiver, 5 unspellable, 2 symbol, 1 runtime
 scope, 1 operator), discourse likewise (34, 3, 5).
 `make recall BASE=main`: top 10 unchanged in all 6,873 queries; one source moves within it.
+
+## D71 — `Foo.new` is Foo's: its own constructor, or the class it names in full
+
+**Adopted**, 2026-11-23. Testers and hunters on complete indexes: discourse `TopicQuery.new`
+→ `new_results` though `TopicQuery#initialize` exists; rails `ConnectionPool.new` →
+`new_connection`; discourse `Topic.new` → `DiscourseDev::Topic#initialize`, never the
+model, which inherits its constructor; mastodon `Account.new` → `Account::Field#initialize`.
+Four causes, each fixed where it lives, none of them a ranking weight:
+
+- *The relevance gate dropped the constructor.* The scorer gives Foo's constructor the
+  literal `constructor` feature (1000), but the CLI's gate counted only `exact` and
+  `prefix` as strong, so beside any `new_*` method of Foo's (a `prefix`) it was cut. The
+  gate now counts `constructor` too. This was the whole of `TopicQuery.new`,
+  `PostCreator.new` and `ConnectionPool.new`.
+- *A path stood in for the owner.* `path_scope` reads scopes a language records no parent
+  for (a Go package, a Python module), and a constructor took that route: a sibling class's
+  `initialize` in `widget_fetcher.rb` answered `WidgetFetcher.new`, `Account::Field`'s in
+  `app/models/account/field.rb` answered `Account.new`. A constructor's owner is always its
+  recorded parent, so the path may hold the outer scopes but the innermost must be the
+  parent. Literal `new` (Rust's, a Ruby `def self.new`) keeps `path_scope`: a free `fn new`
+  in a module file is called as `module::new`.
+- *A class ending in Foo outranked Foo.* A qualifier matches a parent by its innermost
+  segments, so `Dev::Topic#initialize` answers `Topic.new` and the inherited-constructor
+  fallback (`constructor_owner`) never ran. Now, when no hit is the constructor (or a `new`)
+  of the class the query names in full, that class answers in place of other classes'
+  constructors. Names compare as written: `WebhookEvent` does not name `WebHookEvent`. A
+  test, generated or example class never displaces a constructor outside them, as the test
+  penalty says everywhere: without that, 18 more rails rows changed, test models
+  (`activerecord/test/models`' `Column`, `Engine`, `Entry`, `Event`, …) taking the call
+  from the real constructor. With
+  no constructor anywhere, any class named Foo answers, ranked by the owner search, as
+  before.
+- *The fallback cut its candidates at `--limit`.* The owner search ranked a module or a
+  prefix above the class and the window lost it; both searches behind a constructor call
+  now read every hit and cut after choosing.
+
+*Why not a ranking feature.* An "owner named in full" bonus would compare a class row
+against a constructor row, whose `extent` and `kind` describe different things (a class
+body is longer than any `initialize`), so its size would be set by that noise, and it would
+reach every qualified query, which the recall set barely asks in Ruby. D43 and D49 sized
+the unqualified version of this; a constructor call is the one place the question is
+"which class", and the answer is a precedence the scope gate already uses (a parent over a
+path, a scope's own directory over its subdirectories).
+
+*Screen.* `Name.new` for every class name in rails (5,266), discourse (7,823) and mastodon
+(1,744), top 1, against 0.61.2: 533 of 14,833 change. 66 were misses
+(`scope_not_found`) that now answer a class; 396 go from a method (another class's
+constructor, a `new_*`) to a class, and the rest are mostly a `NEW_*` constant or a
+`new*` field giving way to the class or its constructor (`Draft::NEW_TOPIC` → `class
+Draft`, `new_topic?` → `PostCreator#initialize`, `Address#initialize` → `class
+Customer`). Read every row:
+
+- The rest that move between two wrong answers are names that aren't a class's leaf alone:
+  modules and directories (`Discourse.new`, `Cache.new`, `MySQL.new`, `Support.new`,
+  `Testing.new`). Base answered some nested class's constructor through the path; now
+  that's gone, the typo retry answers, at typo confidence.
+- Six classes define both `def self.new` and `initialize` (`Relation`, `CollectionProxy`,
+  `TimeZone`, `Scope`, `RedisCacheStore`, `DeprecatedConstantProxy`). Both score 1000 and
+  `extent` picks one; base always showed `self.new` because the gate hid `initialize`.
+- Reopened builtins now answer their own `.new`: `Time.new`, `DateTime.new`, `Float.new`,
+  `File.new`, `Object.new` → the top-level core extension over `ActiveModel::Type::Time`
+  and the like. That is the reading D43 stops short of for a bare `Time`, but `Time.new`
+  asks for Ruby's `Time`.
+- Cross-language: a JS class with no `constructor` named in full (`Chat`, `Script`) takes
+  the call from a nested Ruby constructor. Neither is more canonical; D43 accepted the same.
+
+*Recall.* `make recall BASE=main`: sources unchanged (0 up, 0 down, 6,815 same), lost #1
+0, lost top 10 0. The top 10 changed in two hand-picked queries, both the fix:
+`Topic.new` (above) and rails `Base.new` (`new_tagged_logger` → the `Base#initialize`s of
+`ActionView`, `ActionMailer`, `ActionCable::Channel`). Six regress cases added
+(`TopicQuery.new`, `PostCreator.new`, `Topic.new`, `User.new`, `ConnectionPool.new`, and
+`Column.new` for the test-path rule): main 55 of 63, new 60 of 63, the three misses the
+existing ones.
+
+*Reverses if:* rq tracks inheritance, so an inherited constructor can be answered as the
+superclass's `initialize` rather than the class standing in for it.

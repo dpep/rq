@@ -56,3 +56,9 @@ hugo	RootConfig.BaseURL	^config/allconfig/allconfig.go:603 BaseURL$
 excalidraw	AppState.zenModeEnabled	^packages/excalidraw/types.ts:515 zenModeEnabled$
 django	Permission.codename	^django/contrib/auth/models.py:69 codename$
 django	AbstractUser.email	^django/contrib/auth/models.py:475 email$
+discourse	TopicQuery.new	^lib/topic_query.rb:144 initialize$
+discourse	PostCreator.new	^lib/post_creator.rb:65 initialize$
+discourse	Topic.new	^app/models/topic.rb:3 Topic$
+discourse	User.new	^app/models/user.rb:3 User$
+rails	ConnectionPool.new	^activerecord/lib/active_record/connection_adapters/abstract/connection_pool.rb:201 initialize$
+rails	Column.new	^activerecord/lib/active_record/connection_adapters/column.rb:20 initialize$
