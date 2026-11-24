@@ -4789,8 +4789,7 @@ over 6,879 queries, top 10 unchanged in all of them; the corpora indexed in 8 s,
 
 *Parity.* The walk keeps the Tree-sitter walk's shape — one frame per node carrying the
 access section, the class side and `module_function`, a bare marker flipping the frame
-it sits in — and reads a def's name from its source text (prism's own drops the `@` of
-`def ~@`). On every file prism parses cleanly the two must agree, row for row: the
+it sits in. On every file prism parses cleanly the two must agree, row for row: the
 fixture test enforces it, and `make ruby-parity DIR=<checkout>` checks a corpus. 0
 differences on rails (3,479 files, 56,954 symbols) and discourse (11,206 files, 60,248
 symbols), nor on rubocop, prism, mastodon, graphql, hexapdf, faker, dd-trace-rb, spoom,
@@ -4804,7 +4803,7 @@ constant.
 *Error tolerance.* A file mid-edit is normal for a tool that reindexes on save. Cutting
 real files short, Tree-sitter kept 5–14% of the definitions above the cut (an unclosed
 class became one flat error and its methods lost their parent); prism kept 99.7–100%.
-`fixtures/ruby/truncated.rb` pins the gain.
+`fixtures/ruby/truncated.rb` pins the gain. Other edits trade: see the second addendum.
 
 *Build.* `ruby-prism-sys` compiles its vendored C with `cc`, as `rusqlite` and the
 grammars already do; `bindgen` is optional and off, so `cargo install` needs neither
@@ -4857,3 +4856,38 @@ that branch only (Ruby's applies after it, when the branch runs); `module_functi
 `private def x` gives `x` a private singleton (Ruby: a public module copy, a private
 instance one); `private()` with empty parens doesn't flip the section (Ruby's does; no
 corpus spells it).
+
+### D70 addendum — what a file mid-edit costs, and names Ruby's way
+
+A pre-release hunt mutated 721 discourse files (a token cut, a line deleted, a keyword or
+opener inserted) and compared extraction by kind and name against the Tree-sitter oracle
+(`make ruby-parity` tallies this for every file with a syntax error). Prism's recovery
+traded: it lost 283 definitions in 42 files and gained 337 in 180, and in 12 files it
+emitted names that were spans of source. The walk now reads recovery for what it is:
+
+- **A half-typed name names nothing.** A bare `class` took the next line's whole `def`
+  as its name, hiding the def: a class or module is named only when its leaf is a
+  constant (a scope computed at runtime, `self.class::Foo`, files it under the enclosing
+  name), else its path is walked in place. No symbol of any kind is emitted with an empty
+  name or one holding whitespace or `:` (`target:` from recovery; also `alias :"a b" c`
+  and route-shaped `scope "/:id"`, 5 each in rails and discourse) — none a query spells.
+- **A `def` whose name is on a later line than `def` is no definition.** Its "name" is the
+  next word (`end`, `require`) and an unclosed body swallowed the rest of the file:
+  upload.rb with `private def` typed at the top kept 1 definition of 89. Its parts are
+  walked in place.
+- **In a file with a syntax error, def bodies are walked.** An opener left unclosed
+  shifts every `end` after it, landing the defs below in a def's body. Walking every body
+  of clean discourse would add 67 symbols in 11,206 files, so the noise is small.
+
+Together: 95 lost in 30 files, 829 gained in 178, no file losing more than before. An
+unterminated string still swallows the rest of its file; nothing sound recovers that.
+
+Two names follow Ruby rather than the source: `def ~@` and `def !@` are `~` and `!`
+(prism's name; `-@` and `+@` keep theirs). And prism parses with its encoding locked to
+UTF-8, the text rq read, whatever a magic comment declares — a `# encoding: shift_jis`
+comment had split identifiers mid-character.
+
+The parity test's rules gained the runtime scope, unspellable names and unary operator
+names. `make ruby-parity`: rails differs only by intended rules (64 interpolated, 5
+unspellable, 2 symbol, 1 runtime scope, 1 operator), discourse likewise (34, 5).
+`make recall BASE=main`: no source moved, top 10 unchanged in all 6,873 queries.

@@ -20,10 +20,14 @@ and aren't listed; see `git log` for those.
 
 - Ruby is parsed with prism, Ruby's own parser. Indexing a Ruby repo takes
   about a quarter of the CPU (rails 3.5 s → 0.6 s, discourse 9.6 s → 2.6 s),
-  and a file mid-edit keeps its definitions: the methods above an unclosed
-  `class` stay under it rather than dropping out. Valid forms the old parser
+  and a file mid-edit keeps more of its definitions: the methods above an
+  unclosed `class` stay under it rather than dropping out, and a block left
+  open or a `def` not yet named no longer hides the methods after it. An
+  unterminated string can still hide the rest of its file, and a half-typed
+  name defines nothing rather than a garbled one. Valid forms the old parser
   misread now come out right: a method named `self`, an uppercase setter
-  (`def Name=`), a constant or symbol in non-ASCII letters. A macro's literal
+  (`def Name=`), a constant or symbol in non-ASCII letters, and `def ~@`,
+  which Ruby names `~`. A macro's literal
   name reads as Ruby reads it: `attr_reader %q(x)` and `attr_reader :"x?"`
   define `x` and `x?`, and a name built by interpolation
   (`define_method("get_#{k}")`) defines nothing rather than `get_#{k}`.
