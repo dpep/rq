@@ -28,7 +28,7 @@ and aren't listed; see `git log` for those.
   misread now come out right: a method named `self`, an uppercase setter
   (`def Name=`), a constant or symbol in non-ASCII letters, `def ~@`, which
   Ruby names `~`, and `class Foo::\n  Bar`. `def obj.x` on some other object
-  is no longer filed as a class method. A macro's literal
+  is found by its name, no longer filed under the enclosing class. A macro's literal
   name reads as Ruby reads it: `attr_reader %q(x)` and `attr_reader :"x?"`
   define `x` and `x?`, and a name built by interpolation
   (`define_method("get_#{k}")`) defines nothing rather than `get_#{k}`.

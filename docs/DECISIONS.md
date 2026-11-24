@@ -4883,11 +4883,13 @@ emitted names that were spans of source. The walk now reads recovery for what it
   valid Ruby and read so.
 - **In a broken file, def bodies are walked.** An opener left unclosed shifts every
   `end` after it, landing the defs below in a def's body. Walking every body of clean
-  discourse would add 67 symbols in 11,206 files, so the noise is small. An access call
-  inside a walked body sets no section: it's the method's business at runtime. The cost:
-  a class-level `private` that a missing `end` pushed into a body is ignored too.
+  discourse would add 67 symbols in 11,206 files, so the noise is small. A marker in a
+  walked body sets the section within that body, since a missing `end` can push a
+  class's own `private` there; inside a block or lambda in a body, an access call is
+  runtime metaprogramming (`base.class_eval { private :x }`) and sets none. A class,
+  module or `class << self` nested in a body starts sections of its own.
 
-Together: 95 lost in 30 files, 827 gained in 177, no file losing more than before. An
+Together: 95 lost in 30 files, 828 gained in 177, no file losing more than before. An
 unterminated string still swallows the rest of its file; nothing sound recovers that.
 
 Two names follow Ruby rather than the source: `def ~@` and `def !@` are `~` and `!`
@@ -4895,12 +4897,14 @@ Two names follow Ruby rather than the source: `def ~@` and `def !@` are `~` and 
 UTF-8, the text rq read, whatever a magic comment declares — a `# encoding: shift_jis`
 comment had split identifiers mid-character. A constant path's name is its parts:
 Ruby allows whitespace around `::` (`class Foo::\n  Bar`), which had reached parent
-names. And `def obj.x` or `def (expr).x` defines `x` on that object alone, not on the
-enclosing class, so it defines nothing rq can place (rails 38 rows, discourse 14);
-only `self` and a constant receiver make a class method.
+names. And `def obj.x`, `def @ivar.x` or `def (expr).x` defines `x` on that object
+alone: it is a singleton method with no parent, not one of the enclosing class (rails 38
+rows, discourse 3), so `rq database_configuration` finds discourse's
+`def config.database_configuration`. Only `self` (parenthesized or not) and a constant
+receiver make a class method.
 
 The parity test's rules gained the runtime scope, unspellable names, unary operator
 names, foreign receivers and spaced paths. `make ruby-parity`: rails differs only by
 intended rules (64 interpolated, 38 foreign receiver, 5 unspellable, 2 symbol, 1 runtime
-scope, 1 operator), discourse likewise (34, 14, 5).
-`make recall BASE=main`: 1 source up, none down, top 10 unchanged in all 6,873 queries.
+scope, 1 operator), discourse likewise (34, 3, 5).
+`make recall BASE=main`: top 10 unchanged in all 6,873 queries; one source moves within it.
