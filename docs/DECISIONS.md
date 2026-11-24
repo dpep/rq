@@ -5028,6 +5028,34 @@ Customer`). Read every row:
 `Column.new` for the test-path rule): main 55 of 63, new 60 of 63, the three misses the
 existing ones.
 
+*Addendum, 2026-11-23: re-hunt.* Three faults, each a fix to the rule above, not a new
+one:
+
+- *A leftover counted as a constructor.* "Did the constructor search answer" was any hit
+  above zero, so a fuzzy match inside Foo's path or a nested owner's `new_*` kept the class
+  out: `Finder.new` answered a test method at 0.30, `Sidebar.new` a `NEW_*` constant. Only
+  a hit carrying `constructor` or `exact` (a literal `new`) counts now.
+- *The filters dropped the answer the swap left.* `--kind`, `--lang` and PATH apply after
+  the search, so `rq Topic.new lib/` and `rq -k method Topic.new` swapped
+  `DiscourseDev::Topic#initialize` for the class and then filtered the class out (exit 1).
+  The search reads the same filter (`Context::filter`) and a class it drops doesn't stand
+  in.
+- *`Foo::new` and `Foo#new` skipped the swap.* The scorer and the live scan already read
+  them as constructor calls; the indexed search returned before the swap unless the query
+  held a `.`. Every scope separator reaches it now; only `.` goes on to the wildcard retry.
+
+Lowercase `topic.new` still doesn't name `Topic` in full, since names compare as written;
+it answers the constructors, as before D71.
+
+Discourse screen against main (848afee): 21 of 7,823 `Name.new` change, all from the
+first fault: a nested owner's `new_*` method, field or constant gives way to the class
+(`ChangeDisplayName.new` → `Jobs::ChangeDisplayName`, `SpamScanner.new` →
+`DiscourseAi::AiModeration::SpamScanner`, plus `Finder`, `Sidebar`, `Support`). Five keep the
+same class at 0.75 (flagged `constructor_owner`) where it was a 0.9 prefix match, and
+same-named classes now read 0.38–0.42, the tie they are. `make recall BASE=main`: unchanged
+(0 up, 0 down, top 10 changed in 0 of 6,873, Rust `Owner::new` queries included); regress
+60 of 63 both.
+
 *Reverses if:* rq tracks inheritance, so an inherited constructor can be answered as the
 superclass's `initialize` rather than the class standing in for it.
 

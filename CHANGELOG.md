@@ -27,7 +27,8 @@ and aren't listed; see `git log` for those.
   `new_results`); a constructor of a sibling class in Foo's file, or of a
   class only nested under a `Foo` path, no longer answers; and a class that
   inherits its constructor answers itself rather than a `Dev::Foo`'s
-  constructor (`Topic.new` answers `app/models/topic.rb`).
+  constructor (`Topic.new` answers `app/models/topic.rb`). `Foo::new` and
+  `Foo#new` answer the same.
 - **`'*Error'` ranks names ending in `Error` first.** A leading `*` gave a
   name starting with the literal the same bonus as without it, so `ErrorLog`
   outranked `FooError`. Which names a wildcard matches is unchanged: a
