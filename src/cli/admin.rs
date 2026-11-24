@@ -11,7 +11,7 @@ pub(super) fn cmd_index(
     let explicit = path.is_some();
     let target = path.unwrap_or_else(|| PathBuf::from("."));
     let shown = target.display();
-    // a directory it can't list would index as empty, and say nothing
+    // a directory it can't list or descend would index as empty, and say nothing
     let unreadable = |e: std::io::Error| match e.kind() {
         std::io::ErrorKind::PermissionDenied => "permission denied",
         _ => "no such file or directory",
@@ -26,7 +26,9 @@ pub(super) fn cmd_index(
             return fail(out, Failure::Usage, message);
         }
         Ok(_) => {
-            if let Err(e) = std::fs::read_dir(&target) {
+            // listed, and descended: `.` stats only with search permission
+            let opened = std::fs::read_dir(&target).and_then(|_| target.join(".").metadata());
+            if let Err(e) = opened {
                 let message = format_args!("rq --index: {shown}: {}", unreadable(e));
                 return fail(out, Failure::NotFound, message);
             }
