@@ -24,6 +24,42 @@ fn in_checkout(only: Option<Checkout>) -> String {
     format!("AND {}", read_from(only.is_some(), 3))
 }
 
+/// The [`Walk`] statement over names: each key's rows by
+/// `(repository_id, name_lower)`. Every join is a `CROSS JOIN`, which SQLite
+/// takes in the order written: without `sqlite_stat1` (a fresh database) the
+/// planner otherwise loops over a checkout's files or a repo's symbols and
+/// probes the keys inside, once per row.
+fn named_sql(only: Option<Checkout>) -> String {
+    let joins = CANDIDATE_FROM
+        .strip_prefix("FROM ")
+        .unwrap_or(CANDIDATE_FROM)
+        .replace(" JOIN ", " CROSS JOIN ");
+    format!(
+        "SELECT {CANDIDATE_COLS}, j.key FROM json_each(?2) j CROSS JOIN {joins} \
+         WHERE s.repository_id = ?1 AND s.name_lower = j.value {}",
+        in_checkout(only)
+    )
+}
+
+/// The [`Walk`] statement over file paths: each path's primary definitions.
+/// [`CANDIDATE_FROM`]'s joins with the file ahead of its symbols, in a fixed
+/// order as in [`named_sql`].
+fn filed_sql(only: Option<Checkout>) -> String {
+    let kinds = (Kind::ALL.into_iter().filter(|&k| is_primary(k)))
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT {CANDIDATE_COLS}, j.key FROM json_each(?2) j \
+         CROSS JOIN files fi CROSS JOIN symbols s ON s.file_id = fi.id \
+         CROSS JOIN checkout_files cf ON cf.file_id = s.file_id \
+         CROSS JOIN checkouts co ON co.id = cf.checkout_id \
+         CROSS JOIN repositories r ON r.id = s.repository_id \
+         WHERE fi.repository_id = ?1 AND fi.path = j.value AND s.kind IN ({kinds}) {}",
+        in_checkout(only)
+    )
+}
+
 /// What the cap counts: rows in one checkout; across checkouts, definitions,
 /// which branches far enough apart hold in several versions each.
 struct Held {
@@ -542,12 +578,7 @@ impl Store {
         // One read transaction for the fetches, not one per name. Opened past
         // the scan, whose repair of a corrupt row is a write.
         let _read = self.conn.unchecked_transaction()?;
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {CANDIDATE_COLS}, j.key {CANDIDATE_FROM} \
-             JOIN json_each(?2) j ON s.name_lower = j.value \
-             WHERE s.repository_id = ?1 {}",
-            in_checkout(only)
-        ))?;
+        let mut stmt = self.conn.prepare_cached(&named_sql(only))?;
         let keyed: Vec<(i64, &str)> = keys
             .iter()
             .map(|(r, lower, _)| (*r, lower.as_str()))
@@ -626,16 +657,7 @@ impl Store {
             |sig| probe.screen_stem(sig),
             |path, _| probe.accepts_stem(path_stem(path)),
         )?;
-        let kinds = (Kind::ALL.into_iter().filter(|&k| is_primary(k)))
-            .map(|k| format!("'{k}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {CANDIDATE_COLS}, j.key {CANDIDATE_FROM} \
-             JOIN json_each(?2) j ON fi.path = j.value \
-             WHERE fi.repository_id = ?1 AND s.kind IN ({kinds}) {}",
-            in_checkout(only)
-        ))?;
+        let mut stmt = self.conn.prepare_cached(&filed_sql(only))?;
         // as in `named_candidates`
         let _read = self.conn.unchecked_transaction()?;
         let keyed: Vec<(i64, &str)> = files.iter().map(|(r, path)| (*r, path.as_str())).collect();
@@ -1050,6 +1072,47 @@ mod tests {
         assert_eq!(kept.len(), 2);
         assert!(kept.contains(&"Widget".to_string()), "{kept:?}");
         assert!(!kept.contains(&"w_x_i_x_d".to_string()), "{kept:?}");
+    }
+
+    #[test]
+    fn batched_fetches_seek_each_key_without_table_stats() {
+        // A fresh database has no sqlite_stat1, and a statement prepared then
+        // keeps its plan: scanning rows once per key there made recall take
+        // minutes. The keys must be the only scan, and the outer loop.
+        let store = Store::open_in_memory().unwrap();
+        let plan = |sql: &str| -> Vec<String> {
+            let mut stmt = store
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let rows = stmt
+                .query_map(params![1, "[]", 1], |r| r.get::<_, String>(3))
+                .unwrap();
+            rows.map(Result::unwrap).collect()
+        };
+        let keyed_first = |plan: &[String], seek: &str| {
+            let scans: Vec<&String> = plan.iter().filter(|l| l.starts_with("SCAN")).collect();
+            assert!(
+                scans.len() == 1 && scans[0].starts_with("SCAN j"),
+                "{plan:#?}"
+            );
+            let at = |p: &str| plan.iter().position(|l| l.contains(p));
+            assert!(at("SCAN j") < at(seek), "{plan:#?}");
+            for table in [" s ", " fi ", " cf "] {
+                assert!(
+                    at("SCAN j") < at(table),
+                    "{table} before the keys: {plan:#?}"
+                );
+            }
+        };
+        let scoped = Some(Checkout { id: 1, repo: 1 });
+        for only in [scoped, None] {
+            keyed_first(
+                &plan(&named_sql(only)),
+                "idx_symbols_repo_name (repository_id=? AND name_lower=?)",
+            );
+            keyed_first(&plan(&filed_sql(only)), "(repository_id=? AND path=?)");
+        }
     }
 
     #[test]
