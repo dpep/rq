@@ -27,6 +27,7 @@ pub(super) fn extract(file: &str, source: &str) -> Vec<Symbol> {
             frame: Frame::fresh(false),
             stack: Vec::new(),
             flip: None,
+            broken: result.errors().next().is_some(),
         };
         walk.visit(&result.node());
         walk.out
@@ -113,6 +114,9 @@ fn marker(name: &[u8]) -> Option<Marker> {
 }
 
 struct Walk<'a> {
+    /// The parse has an error: a missing `end` can nest the defs after it
+    /// in a def's body, so bodies are walked too.
+    broken: bool,
     file: &'a str,
     /// The byte offset each line starts at.
     lines: &'a [u32],
@@ -464,6 +468,9 @@ impl<'pr> Visit<'pr> for Walk<'_> {
         let singleton = own || self.frame.singleton;
         self.method(name, &node.location(), vis, singleton);
         // method bodies rarely hold further definitions; don't descend
+        if self.broken {
+            ruby_prism::visit_def_node(self, node);
+        }
     }
 
     /// `alias new old`, the keyword form of `alias_method`. A global-variable

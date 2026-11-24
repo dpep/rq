@@ -505,6 +505,27 @@ end
     }
 
     #[test]
+    fn a_def_left_open_mid_edit_hides_none_of_the_defs_after_it() {
+        // (an unterminated string still swallows the rest of the file: it
+        // leaves no defs to find)
+        let cases: [(&str, &[&str]); 2] = [
+            // an unclosed parameter list
+            (
+                "class Store\n  def open(\n  end\n\n  def close; end\n  def flush; end\nend\n",
+                &["Store", "Store#open", "Store#close", "Store#flush"],
+            ),
+            // a block opened and never closed
+            (
+                "class Store\n  def open\n    items.each do |i|\n  end\n\n  def close; end\nend\n",
+                &["Store", "Store#open", "Store#close"],
+            ),
+        ];
+        for (src, want) in cases {
+            assert_eq!(names(src), want, "{src}");
+        }
+    }
+
+    #[test]
     fn a_file_cut_off_mid_edit_keeps_what_is_above_the_cut() {
         let src = include_str!("../../tests/fixtures/ruby/truncated.rb");
         let got: Vec<_> = extract(src)

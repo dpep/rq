@@ -291,7 +291,15 @@ fn prism_matches_tree_sitter_on_every_fixture_both_parse() {
         seen.extend(diff.explained.iter().map(|(why, _)| *why));
     }
     // the fixtures written broken; any other is a typo in a fixture
-    assert_eq!(broken, ["half_typed.rb", "truncated.rb", "unnamed_def.rb"]);
+    assert_eq!(
+        broken,
+        [
+            "half_typed.rb",
+            "left_open.rb",
+            "truncated.rb",
+            "unnamed_def.rb"
+        ]
+    );
     // a difference no fixture shows any more is no longer one to excuse
     assert_eq!(
         seen.into_iter().collect::<Vec<_>>(),
