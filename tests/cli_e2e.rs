@@ -1733,6 +1733,24 @@ fn empty_status_points_at_the_real_index_flag() {
 }
 
 #[test]
+fn index_refuses_a_path_that_is_not_a_directory() {
+    let (dir, db) = scratch("index-not-dir");
+    let missing = dir.join("nowhere");
+    let missing = missing.to_str().unwrap();
+    let (code, out) = rq(&db, &dir, &["--index", missing, "--json"]);
+    assert_eq!(code, 66, "{out}");
+    assert_eq!(json(&out)["kind"], "not_found", "{out}");
+
+    fs::write(dir.join("a.rb"), "class A\nend\n").unwrap();
+    let (code, out) = rq(&db, &dir, &["--index", "a.rb", "--json"]);
+    assert_eq!(code, 64, "{out}");
+    assert_eq!(json(&out)["kind"], "usage", "{out}");
+    // and registers nothing
+    let (_, out) = rq(&db, &dir, &["--status", "--json"]);
+    assert_eq!(json(&out), serde_json::json!([]), "{out}");
+}
+
+#[test]
 fn open_launches_the_top_hit() {
     // `rq --open` picks the top hit and execs the launcher. RQ_OPEN drives a
     // harmless command here.

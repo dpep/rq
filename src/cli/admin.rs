@@ -10,6 +10,18 @@ pub(super) fn cmd_index(
 ) -> ExitCode {
     let explicit = path.is_some();
     let target = path.unwrap_or_else(|| PathBuf::from("."));
+    let shown = target.display();
+    match target.metadata() {
+        Err(_) => {
+            let message = format_args!("rq --index: {shown}: no such file or directory");
+            return fail(out, Failure::NotFound, message);
+        }
+        Ok(m) if !m.is_dir() => {
+            let message = format_args!("rq --index: {shown}: not a directory");
+            return fail(out, Failure::Usage, message);
+        }
+        Ok(_) => {}
+    }
     // The repo root even from a subdirectory: `--path` scopes a subset.
     let (root, _) = checkout_root(&target);
     // An explicit TARGET *inside* the repo scopes the index to that subtree — the

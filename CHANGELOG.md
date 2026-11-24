@@ -38,6 +38,9 @@ and aren't listed; see `git log` for those.
   (`&#128269;`) keeps its definitions; the parser lost the whole file. Code it
   can't fully read, such as Flow annotations, yields fewer junk definitions
   named `if` or `return`.
+- `rq --index` on a path that doesn't exist exits 66 `not_found`, as a search
+  does, not 75 `busy` saying the checkout was dropped; on a file it exits 64
+  `usage` rather than registering the file as a checkout that stays warming.
 - A commit landing while rq indexes no longer leaves the finished index
   without it for good: the index records the commit it read, so the next
   search sees HEAD moved and reads the change.
