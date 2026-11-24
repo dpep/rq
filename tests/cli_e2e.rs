@@ -3903,6 +3903,34 @@ fn a_batch_notices_an_edit_to_a_complete_repo() {
 }
 
 #[test]
+fn a_name_added_by_an_edit_is_never_a_definitive_miss() {
+    // A detached warm reads the edit while back-to-back searches ask: one that
+    // missed before the warm's commit landed called the name absent.
+    let (dir, db) = scratch("edit-no-false-miss");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    fs::write(dir.join("a.rb"), "class Widget\n  def added; end\nend\n").unwrap();
+
+    let detached = [("RQ_WARM_DETACH", "1")];
+    let mut codes = Vec::new();
+    for _ in 0..40 {
+        let (code, out, _) = rq_full(&db, &dir, &["added", "--json"], &detached, None);
+        codes.push(code);
+        if code == 0 {
+            assert_eq!(json(&out)[0]["name"], "added", "{out}");
+            break;
+        }
+    }
+    assert!(
+        !codes.contains(&1),
+        "a name on disk called absent: {codes:?}"
+    );
+    assert_eq!(codes.last(), Some(&0), "{codes:?}");
+}
+
+#[test]
 fn a_miss_on_an_edited_complete_repo_says_how_far_its_index_got() {
     let (dir, db) = scratch("edited-miss");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

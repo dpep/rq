@@ -762,6 +762,25 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
         hits = m.hits;
     }
 
+    // A miss on a complete repo is provisional while its worktree has moved
+    // since the index. Settled here, before a last search: asked after it, a
+    // warm's commit landing in between read as "nothing moved" and turned a
+    // name on disk into a definitive miss.
+    if moved.is_none()
+        && let Some(Staleness(r, head)) = &staleness
+        && shown(args, cwd.as_deref(), root, &hits).is_empty()
+    {
+        let still = worktree_moved(store, r, head.as_deref());
+        *moved = Some(still);
+        if still {
+            spawn_detached_warm(r);
+        } else if let Ok(m) = scope(current).search(store, query, current, &ctx, rank_limit) {
+            total = m.total;
+            reach = m.reach;
+            hits = m.hits;
+        }
+    }
+
     // A file gone from disk since its index (a branch switch deleted it) is
     // no answer. Only dropped from this one: revalidation never forgets on a
     // failed read, and the warm the switch sets off reconciles the index.
