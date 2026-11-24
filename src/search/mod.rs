@@ -859,7 +859,7 @@ pub(crate) struct LiveScan {
     pub reach: bool,
 }
 
-/// Merge two ranked lists, de-duplicating by location and name (keeping the
+/// Merge two ranked lists, de-duplicating by location (root and file) and name (keeping the
 /// higher score), then re-rank and truncate. Used to blend index and live-scan
 /// results, which were ranked apart. `reach` is whether reach split either
 /// one's candidates — their union's answer — and when it did, every reachable
@@ -872,9 +872,16 @@ pub(crate) fn merge(
     ctx: &Context,
 ) -> Vec<Hit> {
     use std::collections::HashMap;
-    let mut by_key: HashMap<(String, i64, String), Hit> = HashMap::new();
+    // `file` is root-relative: the same path in two checkouts is two hits
+    type Key = (Option<String>, String, i64, String);
+    let mut by_key: HashMap<Key, Hit> = HashMap::new();
     for hit in a.into_iter().chain(b) {
-        let key = (hit.file.clone(), hit.line, hit.name.clone());
+        let key = (
+            hit.root.clone(),
+            hit.file.clone(),
+            hit.line,
+            hit.name.clone(),
+        );
         match by_key.get(&key) {
             Some(existing) if existing.score >= hit.score => {}
             _ => {
@@ -1347,7 +1354,7 @@ mod tests {
             kind: "class".into(),
             language: "ruby".into(),
             file: "a.rb".into(),
-            root: None,
+            root: Some("/r".into()),
             line: 1,
             end_line: Some(1),
             parent: None,
@@ -1372,6 +1379,20 @@ mod tests {
         assert_eq!(merged.len(), 2, "the duplicate User is collapsed");
         assert_eq!(merged[0].name, "User");
         assert_eq!(merged[0].score, 500.0, "the higher-scored duplicate wins");
+
+        // the same path in two checkouts is two definitions (`-a` beside a live scan)
+        let elsewhere = Hit {
+            root: Some("/other".into()),
+            ..mk("User", 100.0)
+        };
+        let merged = merge(
+            vec![elsewhere],
+            vec![mk("User", 500.0)],
+            false,
+            10,
+            &Context::default(),
+        );
+        assert_eq!(merged.len(), 2, "kept apart by root");
     }
 
     #[test]

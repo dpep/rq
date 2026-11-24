@@ -18,6 +18,9 @@ and aren't listed; see `git log` for those.
   live scan alone, as a path naming it already did, and misses with
   `no_match` (exit 1). Pass `-a` to reach your indexed repos too; the
   directory you're in still ranks first.
+- **`-a` from outside git keeps both copies of a file two trees share.** A
+  live-scanned directory holding a copy of an indexed repo's file showed only
+  one of the two definitions; each is now listed with its own `root`.
 
 ## 0.61.2 — 2026-11-23
 
