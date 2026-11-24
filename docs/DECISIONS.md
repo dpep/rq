@@ -906,7 +906,7 @@ doesn't shrink the file, and later writes reuse the freed pages.
   cold rails index: 231 → 189 ms, overlapped with parsing). Every name query joins
   `repositories`, so the planner already seeks `(repository_id, name_lower)` once per
   repo, with or without planner stats. The one exception is the unscoped first-letter
-  net (`-a`), whose inner query has no join. Without the
+  net (`-a`, or a search outside any repo), whose inner query has no join. Without the
   index it needs a skip-scan plus a sort to keep its name order. Output stayed
   identical, but on the nine-repo index (7 interleaved reps) that net's recall got
   slower: `usr` +5 ms, `acn` +6, `sleect` +4 to +8, `tes*lim` +12 to +16. Those
@@ -4493,36 +4493,31 @@ so it's `not_found` (66) — it used to filter everything out and read as a defi
 
 *Reverses if* PATHs spanning checkouts turn out common enough to want each searched.
 
-### D66 addendum — the cwd says where to look, as a PATH does
+### D66 addendum — another checkout's match doesn't hide the cwd's own
 
-*The problem.* With no PATH, an untracked non-git cwd still searched every indexed repo,
-and an exact match there skipped the live scan: `rq Widget` beside a `class Widget`
-answered another checkout's, and a name nothing defines answered other repos' fuzzy
-near-matches at exit 0 instead of `no_match`. A PATH naming the same dir answered right.
+*The problem.* From an untracked non-git cwd (no PATH), rq searches every indexed repo
+and live-scans the dir, but an exact or prefix match in any repo skipped the scan:
+`rq Widget` beside a `class Widget` answered another checkout's, and the cwd's own was
+missing.
 
-*The rule.* The tree asked from is the search, whether a PATH or the cwd names it. An
-untracked non-git dir is the indexed checkouts inside it (`Scope::Under`, searched through
-the index) plus a live scan of the rest, which leaves those checkouts out; holding none,
-it is `Scope::Nothing` plus the scan. `Scope::All` is `-a` alone, and prunes the scan the
-same way, so a definition there is listed once. Under `-a` the scan still runs unless one
-of its own tree's hits is an exact or prefix match; another checkout's can't stand in for
-it. Live hits carry `current_repo`, so the dir asked from ranks first.
-
-A scan stopped at its budget read part of the dir, so its miss is `warming` (exit 2) with
-a `hint` naming `rq --index` and `-a`, never `no_match`. A definitive miss from an
-untracked dir, when repos elsewhere are indexed, says `-a` reaches them. With no cwd
-(deleted under the shell) there is no tree to search: `not_found` (66), as a PATH that
-doesn't exist; `-a` still searches everything.
+*The rule.* Only the cwd's own tree's exact or prefix hit makes its live scan unneeded;
+another checkout's can't stand in for it. Live hits carry `current_repo`, so the cwd's
+definition ranks first and other repos' follow. A scan stopped at its budget read part
+of the dir, so a miss it leaves is `warming` (exit 2) with a `hint` to `rq --index` the
+dir, never `no_match`. The scope is unchanged: every indexed repo, as before (a deleted
+cwd included). `merge` keys a hit by its absolute file (root joined to `file`), so a
+checkout inside the cwd that the scan reaches too is one row, and the same relative path
+in two checkouts is two.
 
 *Considered.*
-- Keeping every repo as the default outside a checkout, with the scan always run and
-  ranked first. Rejected: a rule with an exception, and a miss would still answer from
-  unrelated repos. `-a` is one flag away.
-- The live scan alone, without the checkouts inside. Shipped first, and wrong: from
-  `~/code/lib/ruby`, holding indexed rails, `AbstractMysqlAdapter` was a miss once the
-  scan's 250 ms ran out before reaching it, where the index answers in milliseconds.
-  Measured from there (rails and discourse indexed, release build, warm): 270–320 ms
-  with or without `-a`, the scan's budget either way.
+- The cwd's live scan alone (`Scope::Nothing`), then the indexed checkouts inside it plus
+  a scan pruned of them (`Scope::Under`). Rejected after three rounds of re-hunts, each
+  finding new faults in it: a scan cut at its budget missed rails from its parent dir;
+  several PATHs from that parent dropped every indexed hit (PATHs were normalized against
+  the untracked root while those hits are relative to their own checkouts); a
+  half-indexed checkout pruned from the scan read `no_match` while its first index ran;
+  `Topic.new` searched per checkout and merged flipped its top hit with `-l`. Too much
+  rule for the bug it fixed.
 
 *Not settled here.* The live scan is bounded by time (`RQ_FALLBACK_BUDGET_MS`, 250 ms),
 not by place: asked from `/` or `$HOME`, it reads whatever it reaches first.
@@ -5055,6 +5050,12 @@ same class at 0.75 (flagged `constructor_owner`) where it was a 0.9 prefix match
 same-named classes now read 0.38–0.42, the tie they are. `make recall BASE=main`: unchanged
 (0 up, 0 down, top 10 changed in 0 of 6,873, Rust `Owner::new` queries included); regress
 60 of 63 both.
+
+*Known gap.* The class-in-full choice is made within one result set. An untracked dir's
+live scan is ranked apart from the index and merged after (D59), so a `class Topic`
+beside you, standing in for `Topic.new` (`constructor_owner`), still loses to an indexed
+`DiscourseDev::Topic#initialize`: the scope gate keeps the hit whose parent matched. The
+same holds under `-a`. Fixing it means making the constructor choice over the merged set.
 
 *Reverses if:* rq tracks inheritance, so an inherited constructor can be answered as the
 superclass's `initialize` rather than the class standing in for it.

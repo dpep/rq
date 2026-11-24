@@ -11,17 +11,12 @@ and aren't listed; see `git log` for those.
 
 ### Fixed
 
-- **From a directory outside git, rq searches it and the indexed repos
-  inside it.** It searched every indexed repo instead, so another checkout's
-  `Widget` could hide the one beside you, and a name nothing there defines
-  answered other repos' fuzzy near-matches at exit 0. Pass `-a` to search all
-  your indexed repos; the directory you're in still ranks first. A miss whose
-  live scan ran out of time answers `warming` (exit 2) rather than
-  `no_match`, and a search from a directory deleted under the shell is
-  `not_found` (exit 66).
-- **`-a` from outside git keeps both copies of a file two trees share.** A
-  live-scanned directory holding a copy of an indexed repo's file showed only
-  one of the two definitions; each is now listed with its own `root`.
+- **Outside git, the current directory's own definitions rank first.** Another
+  repo's match no longer hides them: `rq Widget` beside a `class Widget`
+  could answer only another checkout's. A search whose scan of the directory
+  ran out of time is no longer reported as no match: it answers `warming`
+  (exit 2) with a hint to `rq --index` the directory. A file both indexed and
+  in the directory is listed once, and the same path in two repos twice.
 - **`Foo.new` answers Foo's constructor, or Foo.** A `new_*` method of
   Foo's no longer hides its constructor (`TopicQuery.new` answered
   `new_results`); a constructor of a sibling class in Foo's file, or of a

@@ -577,7 +577,7 @@ why a result ranked where it did:
   checkout). A search's PATHs that lie outside the cwd's checkout pick theirs
   instead — `rq X /other/repo/src` is `rq X src` asked from `/other/repo`,
   warmed like any first search there — and an untracked non-git dir a PATH
-  names, or asked from, is the whole search (the indexed checkouts inside it plus a live scan of the rest), not every repo, and within it the current checkout's rows still carry the boost
+  names is the whole search (its live scan), not every repo; asked from with no PATH, it searches every repo plus its live scan. Within it the current checkout's rows still carry the boost
   (the feature keeps its name, `current_repo`). Under `--all-repos`, a
   definition several checkouts hold — same repo, path, name, kind and parent,
   on whatever line — is one result, the current checkout's copy first, else
@@ -687,10 +687,10 @@ The index is **never assumed complete**.
   a live mark or warm lock. The same shape trekr reports (its DEC-320). A dir with no finished pass that this query
   isn't warming — untracked and non-git, or a git repo asked with `--no-wait` —
   gets a bounded in-memory live scan, merged with whatever the index offered
-  (for an untracked dir, the checkouts inside it, or every one under `-a`; the
-  scan leaves out the indexed checkouts inside it); only that tree's own exact
-  or prefix hit makes the scan unneeded, never another checkout's. A scan
-  stopped at its budget can't vouch for a miss: `warming`, not `no_match`. Each
+  (merged by absolute file, so one the index and the scan both reach is one
+  row); only that tree's own exact or prefix hit makes the scan unneeded,
+  never another checkout's. A scan stopped at its budget can't vouch for a
+  miss: `warming`, not `no_match`. Each
   result carries its `source` (`index` or `live`), so a blended answer says
   which parts were never persisted. In a git repo, where the scan stands in for
   an index rq is building, a live hit carries the checkout's `warming` and is

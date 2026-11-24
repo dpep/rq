@@ -2395,45 +2395,26 @@ fn a_path_in_an_untracked_dir_searches_only_that_dir() {
 }
 
 #[test]
-fn an_untracked_dir_asked_from_is_the_whole_search() {
-    // The cwd says where to look, as a PATH does: an untracked non-git dir
-    // answers from its live scan, and `-a` adds every indexed checkout.
+fn an_untracked_dirs_own_definition_ranks_first() {
+    // Outside a checkout rq searches every indexed repo plus a live scan of
+    // the dir; another checkout's exact match must not skip that scan.
     let (repo, db) = scratch("untracked-cwd-repo");
     let plain = Scratch::new("e2e-untracked-cwd");
     fs::create_dir_all(repo.join("lib")).unwrap();
-    fs::write(
-        repo.join("lib/b.rb"),
-        "class Widget\nend\ndef unique_name\nend\n",
-    )
-    .unwrap();
+    fs::write(repo.join("lib/b.rb"), "class Widget\nend\n").unwrap();
     fs::write(plain.join("z.rb"), "class Gadget\nend\nclass Widget\nend\n").unwrap();
     git_init_commit(&repo);
     rq(&db, &repo, &["--index"]);
 
-    let (code, out) = rq(&db, &plain, &["Widget", "--ndjson"]);
-    assert_eq!(code, 0, "{out}");
-    assert_eq!(top_file(&out), "z.rb", "{out}");
-    assert!(!out.contains("b.rb"), "leaked an indexed checkout: {out}");
-
-    let (code, out) = rq(&db, &plain, &["UniqueNameQ", "--json"]);
-    assert_eq!(
-        code, 1,
-        "another checkout's fuzzy near-match is no answer: {out}"
-    );
-    assert!(!out.contains("b.rb"), "{out}");
-
+    for args in [&["Widget", "--ndjson"][..], &["Widget", "-a", "--ndjson"]] {
+        let (code, out) = rq(&db, &plain, args);
+        assert_eq!(code, 0, "{args:?}: {out}");
+        assert_eq!(top_file(&out), "z.rb", "{args:?}: {out}");
+        assert!(out.contains("b.rb"), "{args:?}: {out}");
+    }
     let (code, out, _) = rq_full(&db, &plain, &["-J"], &NO_CHILD, Some("Widget\n"));
     assert_eq!(code, 0, "{out}");
-    assert!(
-        out.contains("z.rb") && !out.contains("b.rb"),
-        "batch: {out}"
-    );
-
-    // `-a` reaches the index too, and the dir asked from still ranks first
-    let (code, out) = rq(&db, &plain, &["Widget", "-a", "--ndjson"]);
-    assert_eq!(code, 0, "{out}");
-    assert_eq!(top_file(&out), "z.rb", "{out}");
-    assert!(out.contains("b.rb"), "-a searches every checkout: {out}");
+    assert_eq!(top_file(&out), "z.rb", "batch: {out}");
 
     // a non-git subdir of a checkout is that checkout
     let (code, out) = rq(&db, &repo.join("lib"), &["Widget", "--ndjson"]);
@@ -2442,75 +2423,83 @@ fn an_untracked_dir_asked_from_is_the_whole_search() {
 }
 
 #[test]
-fn an_untracked_parent_searches_the_checkouts_inside_it() {
-    // A dir holding indexed checkouts is looking at them: the index answers
-    // for them, the live scan for the rest, and checkouts elsewhere need `-a`.
+fn an_untracked_parent_of_checkouts_finds_their_definitions() {
     let (parent, db) = scratch("untracked-parent");
-    let elsewhere = Scratch::new("e2e-untracked-parent-other");
     let repo = parent.join("repo");
+    let seeded = parent.join("seeded");
     fs::create_dir_all(repo.join("lib")).unwrap();
+    fs::create_dir_all(seeded.join("a")).unwrap();
+    fs::create_dir_all(seeded.join("b")).unwrap();
+    fs::create_dir_all(parent.join("sub")).unwrap();
     fs::write(
         repo.join("lib/b.rb"),
         "class Widget\nend\nclass Gizmo\nend\n",
     )
     .unwrap();
-    fs::write(parent.join("loose.rb"), "class Widget\nend\n").unwrap();
-    fs::write(elsewhere.join("s.rb"), "class Sprocket\nend\n").unwrap();
+    fs::write(parent.join("sub/loose.rb"), "class Widget\nend\n").unwrap();
+    fs::write(seeded.join("a/x.rb"), "class Alpha\nend\n").unwrap();
+    fs::write(seeded.join("b/y.rb"), "class Beta\nend\n").unwrap();
     git_init_commit(&repo);
-    git_init_commit(&elsewhere);
+    git_init_commit(&seeded);
     rq(&db, &repo, &["--index"]);
-    rq(&db, &elsewhere, &["--index"]);
-    let no_time = [("RQ_FALLBACK_BUDGET_MS", "0")];
+    // half indexed: its first index is still to read `b/`
+    rq_full(&db, &seeded, &["--index", "--path", "a"], &NO_CHILD, None);
+    let no_time = [("RQ_FALLBACK_BUDGET_MS", "0"), NO_CHILD[0]];
 
-    // found through the index even when the live scan reads nothing
+    // the index answers even when the live scan reads nothing
     let (code, out, _) = rq_full(&db, &parent, &["Gizmo", "--ndjson"], &no_time, None);
     assert_eq!(code, 0, "{out}");
     assert_eq!(top_file(&out), "lib/b.rb", "{out}");
-    assert!(out.contains("\"source\":\"index\""), "{out}");
 
     // a scan cut short can't vouch for a miss
     let (code, out, _) = rq_full(&db, &parent, &["Nosuch", "--json"], &no_time, None);
     assert_eq!(code, 2, "{out}");
     assert_eq!(json(&out)["status"], "warming", "{out}");
 
-    // a checkout elsewhere is a miss here, and the miss says how to reach it
-    let (code, out, err) = rq_full(&db, &parent, &["Sprocket"], &[], None);
-    assert_eq!(code, 1, "{out}");
-    assert!(err.contains("-a"), "{err}");
+    // what the index hasn't read yet, the live scan finds
+    let (code, out, _) = rq_full(&db, &parent, &["Beta", "--ndjson"], &NO_CHILD, None);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("y.rb"), "{out}");
 
-    // `-a` lists the indexed definition once, not again from the scan
-    let (code, out) = rq(&db, &parent, &["Widget", "-a", "--ndjson"]);
+    // a definition the index and the scan both reach is listed once
+    let (code, out) = rq(&db, &parent, &["Widget", "--ndjson"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(out.matches("b.rb").count(), 1, "{out}");
     assert!(out.contains("loose.rb"), "{out}");
+
+    // PATHs whose shared dir is the parent search it, checkouts inside included
+    let (code, out) = rq(&db, &parent, &["Widget", "repo/lib", "sub", "--ndjson"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("b.rb") && out.contains("loose.rb"), "{out}");
 }
 
 #[test]
-fn a_search_from_a_deleted_directory_is_not_found() {
+fn a_search_from_a_deleted_directory_searches_the_index() {
     let (dir, db) = scratch("deleted-cwd");
+    let repo = dir.join("repo");
     let gone = dir.join("gone");
+    fs::create_dir_all(&repo).unwrap();
     fs::create_dir_all(&gone).unwrap();
-    let mut cmd = rq_cmd(&db, &dir);
-    let rq_bin = cmd.get_program().to_owned();
+    fs::write(repo.join("w.rb"), "class Widget\nend\n").unwrap();
+    git_init_commit(&repo);
+    rq(&db, &repo, &["--index"]);
+    let rq_cmd = rq_cmd(&db, &dir);
     let mut sh = std::process::Command::new("sh");
-    for (k, v) in cmd.get_envs() {
+    for (k, v) in rq_cmd.get_envs() {
         match v {
             Some(v) => sh.env(k, v),
             None => sh.env_remove(k),
         };
     }
-    cmd = sh;
-    let out = cmd
+    let rq_bin = rq_cmd.get_program().to_str().unwrap().to_owned();
+    let out = sh
         .current_dir(&gone)
-        .args([
-            "-c",
-            "rmdir \"$PWD\" && exec \"$0\" Widget",
-            rq_bin.to_str().unwrap(),
-        ])
+        .args(["-c", "rmdir \"$PWD\" && exec \"$0\" Widget", &rq_bin])
         .output()
         .expect("run sh");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(66), "{err}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("w.rb"), "{stdout}");
 }
 
 #[test]
