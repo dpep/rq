@@ -507,28 +507,69 @@ pub(crate) fn search(
     // `.` reads as a scope first (`Foo.bar`). When no scope answers, fall back
     // to its older meaning as a one-char wildcard (`find.controller`) — a
     // literal match — before guessing at typos.
-    let m = run(query, false)?;
-    if found(&m) {
-        return Ok(m);
-    }
+    let owner = match score::parse_qualified(query) {
+        (leaf, Some(owner)) if leaf.eq_ignore_ascii_case("new") => Some(owner),
+        _ => None,
+    };
+    // A constructor call keeps every hit, so the owner's own constructor
+    // isn't missed for ranking past `limit`.
+    let wide = if owner.is_some() { usize::MAX } else { limit };
+    let mut m = search_query(store, query, current, only, ctx, wide, false)?;
     // `Foo.new` where Foo declares no constructor (inherited, or implicit):
-    // answer with Foo itself — one hop from the real one — rather than letting
-    // the typo retry pick a similarly named class's constructor.
-    if let (leaf, Some(owner)) = score::parse_qualified(query)
-        && leaf.eq_ignore_ascii_case("new")
+    // answer with Foo itself — one hop from the real one — rather than with
+    // the constructor of a class that only ends in Foo (`Dev::Foo`), or the
+    // typo retry's pick of a similarly named class's. Short of a class named
+    // `Foo` in full, one ending in it answers only when nothing else did.
+    if let Some(owner) = owner
+        && !owns_constructor(&m.hits, owner)
     {
-        let mut m = run(owner, false)?;
-        constructor_owner(&mut m.hits);
-        m.total = m.hits.len();
-        if found(&m) {
-            return Ok(m);
+        let mut class = run(owner, false)?;
+        if let Some(hits) = constructor_class(&m.hits, class.hits, owner) {
+            class.total = hits.len();
+            class.hits = hits;
+            return Ok(class);
         }
+    }
+    if found(&m) {
+        m.hits.truncate(limit);
+        return Ok(m);
     }
     let glob = run(&query.replace('.', "?"), false)?;
     if found(&glob) {
         return Ok(glob);
     }
     run(query, true)
+}
+
+/// Does a hit of `Foo.new` belong to the class `owner` names in full: its
+/// constructor, or a method literally named `new` (Rust's)?
+fn owns_constructor(hits: &[Hit], owner: &str) -> bool {
+    let owner = score::segments(owner);
+    hits.iter().any(|h| {
+        h.features
+            .iter()
+            .any(|f| matches!(f.name, "constructor" | "exact"))
+            && h.parent.as_deref().map(score::segments).as_ref() == Some(&owner)
+    })
+}
+
+/// Is `h` the type `owner` names in full, not one nested elsewhere that only
+/// ends in it?
+fn named_in_full(h: &Hit, owner: &str) -> bool {
+    let mut name = h.parent.as_deref().map(score::segments).unwrap_or_default();
+    name.push(h.name.to_ascii_lowercase());
+    name == score::segments(owner)
+}
+
+/// The classes that answer `Foo.new` in place of `ctor`, its hits, from
+/// `class`, an owner search's: the class `owner` names in full, or short of
+/// one, any class ending in it when `ctor` found nothing.
+fn constructor_class(ctor: &[Hit], mut class: Vec<Hit>, owner: &str) -> Option<Vec<Hit>> {
+    constructor_owner(&mut class);
+    let named = class.iter().any(|h| named_in_full(h, owner));
+    class.retain(|h| !named || named_in_full(h, owner));
+    let some = |hits: &[Hit]| hits.iter().any(|h| h.score > 0.0);
+    ((named || !some(ctor)) && some(&class)).then_some(class)
 }
 
 /// Keep only exact class/struct matches from an owner search, flagged so
@@ -836,12 +877,12 @@ pub(crate) fn live_search(
     };
     let mut hits = rank(query);
     // `Foo.new` with no constructor in Foo: the class answers, as in `search`
-    if hits.is_empty()
-        && let (leaf, Some(owner)) = score::parse_qualified(query)
+    if let (leaf, Some(owner)) = score::parse_qualified(query)
         && leaf.eq_ignore_ascii_case("new")
+        && !owns_constructor(&hits, owner)
+        && let Some(class) = constructor_class(&hits, rank(owner), owner)
     {
-        hits = rank(owner);
-        constructor_owner(&mut hits);
+        hits = class;
     }
     sort_and_truncate(&mut hits, limit);
     LiveScan {
