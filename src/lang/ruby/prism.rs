@@ -230,7 +230,7 @@ impl Walk<'_> {
             self.visit(path);
             return body(self);
         };
-        let (leaf, parent) = leaf_and_parent(name, self.parent.as_deref());
+        let (leaf, parent) = leaf_and_parent(&name, self.parent.as_deref());
         let qualified = qualify(parent.as_deref(), leaf, "::");
         self.push(leaf, kind, at, parent, Visibility::Public, false);
         let outer = self.parent.replace(qualified);
@@ -256,7 +256,7 @@ impl Walk<'_> {
             if target.as_constant_target_node().is_some()
                 || target.as_constant_path_target_node().is_some()
             {
-                self.constant(text(&target.location()), at);
+                self.constant(&path_text(&target.location()), at);
             }
         }
     }
@@ -366,16 +366,27 @@ fn is_name(name: &str) -> bool {
 /// computed at runtime (`self.class::Foo`) can't be read, so the class is
 /// named by its leaf alone. None when the leaf isn't a constant: recovery
 /// from a half-typed name puts anything there.
-fn class_name<'pr>(node: &Node<'pr>) -> Option<&'pr str> {
+fn class_name<'pr>(node: &Node<'pr>) -> Option<Cow<'pr, str>> {
     if node.as_constant_read_node().is_some() {
-        return Some(text(&node.location()));
+        return Some(Cow::Borrowed(text(&node.location())));
     }
     let path = node.as_constant_path_node()?;
     path.name()?;
     if path.parent().is_none_or(|p| is_constant_path(&p)) {
-        Some(text(&node.location()))
+        Some(path_text(&node.location()))
     } else {
-        Some(text(&path.name_loc()))
+        Some(Cow::Borrowed(text(&path.name_loc())))
+    }
+}
+
+/// A constant path as written, less the whitespace Ruby allows around its
+/// `::` (`Foo::\n  Bar` is `Foo::Bar`).
+fn path_text<'pr>(loc: &Location<'pr>) -> Cow<'pr, str> {
+    let t = text(loc);
+    if t.contains(char::is_whitespace) {
+        Cow::Owned(t.chars().filter(|c| !c.is_whitespace()).collect())
+    } else {
+        Cow::Borrowed(t)
     }
 }
 
@@ -616,7 +627,7 @@ impl<'pr> Visit<'pr> for Walk<'_> {
     }
 
     fn visit_constant_path_write_node(&mut self, node: &ruby_prism::ConstantPathWriteNode<'pr>) {
-        self.constant(text(&node.target().location()), &node.location());
+        self.constant(&path_text(&node.target().location()), &node.location());
         ruby_prism::visit_constant_path_write_node(self, node);
     }
 
@@ -624,7 +635,7 @@ impl<'pr> Visit<'pr> for Walk<'_> {
         &mut self,
         node: &ruby_prism::ConstantPathOrWriteNode<'pr>,
     ) {
-        self.constant(text(&node.target().location()), &node.location());
+        self.constant(&path_text(&node.target().location()), &node.location());
         ruby_prism::visit_constant_path_or_write_node(self, node);
     }
 
@@ -632,7 +643,7 @@ impl<'pr> Visit<'pr> for Walk<'_> {
         &mut self,
         node: &ruby_prism::ConstantPathAndWriteNode<'pr>,
     ) {
-        self.constant(text(&node.target().location()), &node.location());
+        self.constant(&path_text(&node.target().location()), &node.location());
         ruby_prism::visit_constant_path_and_write_node(self, node);
     }
 
@@ -640,7 +651,7 @@ impl<'pr> Visit<'pr> for Walk<'_> {
         &mut self,
         node: &ruby_prism::ConstantPathOperatorWriteNode<'pr>,
     ) {
-        self.constant(text(&node.target().location()), &node.location());
+        self.constant(&path_text(&node.target().location()), &node.location());
         ruby_prism::visit_constant_path_operator_write_node(self, node);
     }
 

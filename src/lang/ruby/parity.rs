@@ -85,6 +85,9 @@ enum Intended {
     /// `def obj.x` defines `x` on that object, not on the enclosing class,
     /// whose singleton the oracle filed it under.
     ForeignReceiver,
+    /// `class A::\n  B` and `A:: B` name `B`: Ruby allows whitespace around
+    /// `::`, which the oracle kept in the name or didn't read past.
+    SpacedPath,
 }
 
 /// Whether the def at `row` names a receiver other than `self` or a constant:
@@ -117,7 +120,7 @@ fn symbol_spelled(text: &str, name: &str) -> bool {
 }
 
 impl Intended {
-    const ALL: [Intended; 9] = [
+    const ALL: [Intended; 10] = [
         Intended::NonAsciiConstant,
         Intended::StringContent,
         Intended::InterpolatedName,
@@ -127,6 +130,7 @@ impl Intended {
         Intended::RuntimeScope,
         Intended::OperatorName,
         Intended::ForeignReceiver,
+        Intended::SpacedPath,
     ];
 
     /// Why a row only prism extracted is right.
@@ -140,7 +144,14 @@ impl Intended {
             .skip(row.line as usize - 1)
             .take((row.end_line - row.line) as usize + 1)
             .collect();
-        (row.kind == Kind::Method.as_str() && symbol_spelled(&lines.join("\n"), &row.name))
+        let lines = lines.join("\n");
+        let squeezed: String = lines.chars().filter(|c| !c.is_whitespace()).collect();
+        let path = format!("::{}", row.name);
+        if row.kind == Kind::Constant.as_str() && squeezed.contains(&path) && !lines.contains(&path)
+        {
+            return Some(Intended::SpacedPath);
+        }
+        (row.kind == Kind::Method.as_str() && symbol_spelled(&lines, &row.name))
             .then_some(Intended::SymbolName)
     }
 
@@ -167,6 +178,9 @@ impl Intended {
         // `alias :"x y" z` kept its quotes
         let quoted = was.len() == is.len() + 2 && was[1..was.len() - 1] == *is;
         let unary = matches!((was, is), ("~@", "~") | ("!@", "!"));
+        if was.trim() == is && was != is {
+            return Some(Intended::SpacedPath);
+        }
         if oracle.kind != Kind::Method.as_str() {
             None
         } else if unary {

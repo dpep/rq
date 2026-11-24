@@ -509,6 +509,21 @@ end
     }
 
     #[test]
+    fn a_constant_path_spread_over_whitespace_names_its_parts() {
+        let src = "module M\n  class Foo::\n    Baz\n    def a; end\n  end\n  class Foo:: Bar; end\n  Foo::\n    LIMIT = 1\nend\n";
+        assert_eq!(
+            names(src),
+            [
+                "M",
+                "M::Foo#Baz",
+                "M::Foo::Baz#a",
+                "M::Foo#Bar",
+                "M::Foo#LIMIT"
+            ]
+        );
+    }
+
+    #[test]
     fn an_access_marker_in_a_walked_def_body_sets_no_section() {
         let src = "class A\n  def setup\n    private\n    attr_reader :leak\n    def inner; end\n  end\n\n  def later_public; end\n\n  def broken(\nend\n";
         let got = methods(src);
