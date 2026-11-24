@@ -38,6 +38,9 @@ and aren't listed; see `git log` for those.
   (`&#128269;`) keeps its definitions; the parser lost the whole file. Code it
   can't fully read, such as Flow annotations, yields fewer junk definitions
   named `if` or `return`.
+- A commit landing while rq indexes no longer leaves the finished index
+  without it for good: the index records the commit it read, so the next
+  search sees HEAD moved and reads the change.
 - A search on a repo still being indexed no longer settles on a partial match
   while the file defining the name sits unread. Before trusting one it reads
   the files that spell the name with separators (`rq AssertResponse` could

@@ -1061,6 +1061,9 @@ fn fill_checkout(
     // (cheap) work never eats the parse budget.
     // An empty result means nothing is tracked yet (a fresh/uncommitted repo), so
     // fall back to the filesystem walk, which sees untracked files.
+    // The commit the sweep reads, taken before it reads anything: one landing
+    // mid-pass then reads as HEAD moved, not as already indexed.
+    let head = head_state(root);
     let mut enum_span = crate::profile::span("index: enumerate");
     let listed = budget
         .and_then(|_| git_listed(root))
@@ -1344,8 +1347,8 @@ fn fill_checkout(
         }
         // record the commit the index now reflects, so a later search can detect
         // an unchanged committed tree and skip re-walking a large repo
-        if let Some(head) = head_state(root) {
-            let _ = store.set_indexed_head(checkout.id, &head);
+        if let Some(head) = &head {
+            let _ = store.set_indexed_head(checkout.id, head);
             // A full sweep leaves the index matching the disk, so the edits it
             // holds are exactly what's dirty now. Unchanged when it parsed
             // nothing, which is most sweeps of a clean repo — skip the status.
