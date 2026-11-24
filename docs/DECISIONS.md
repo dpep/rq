@@ -4871,23 +4871,36 @@ emitted names that were spans of source. The walk now reads recovery for what it
   name), else its path is walked in place. No symbol of any kind is emitted with an empty
   name or one holding whitespace or `:` (`target:` from recovery; also `alias :"a b" c`
   and route-shaped `scope "/:id"`, 5 each in rails and discourse) — none a query spells.
-- **A `def` whose name is on a later line than `def` is no definition.** Its "name" is the
-  next word (`end`, `require`) and an unclosed body swallowed the rest of the file:
-  upload.rb with `private def` typed at the top kept 1 definition of 89. Its parts are
-  walked in place.
-- **In a file with a syntax error, def bodies are walked.** An opener left unclosed
-  shifts every `end` after it, landing the defs below in a def's body. Walking every body
-  of clean discourse would add 67 symbols in 11,206 files, so the noise is small.
+- **A file is broken when recovery left a construct open**: a class, module, def or
+  block without its closer, or a stand-in for a missing piece. Any prism error is not
+  enough: an escape the declared encoding rejects, or a keyword argument in an index
+  assignment, leaves the structure whole (ruby's test_call.rb had gained 108 nested
+  defs when every error counted).
+- **In a broken file, a `def` whose name is on a later line than `def` is no
+  definition.** Its "name" is the next word (`end`, `require`) and its body swallowed
+  the rest of the file: upload.rb with `private def` typed at the top kept 1 definition
+  of 89. Its parts are walked in place. In a file that parses whole, `def\n  foo` is
+  valid Ruby and read so.
+- **In a broken file, def bodies are walked.** An opener left unclosed shifts every
+  `end` after it, landing the defs below in a def's body. Walking every body of clean
+  discourse would add 67 symbols in 11,206 files, so the noise is small. An access call
+  inside a walked body sets no section: it's the method's business at runtime. The cost:
+  a class-level `private` that a missing `end` pushed into a body is ignored too.
 
-Together: 95 lost in 30 files, 829 gained in 178, no file losing more than before. An
+Together: 95 lost in 30 files, 827 gained in 177, no file losing more than before. An
 unterminated string still swallows the rest of its file; nothing sound recovers that.
 
 Two names follow Ruby rather than the source: `def ~@` and `def !@` are `~` and `!`
 (prism's name; `-@` and `+@` keep theirs). And prism parses with its encoding locked to
 UTF-8, the text rq read, whatever a magic comment declares — a `# encoding: shift_jis`
-comment had split identifiers mid-character.
+comment had split identifiers mid-character. A constant path's name is its parts:
+Ruby allows whitespace around `::` (`class Foo::\n  Bar`), which had reached parent
+names. And `def obj.x` or `def (expr).x` defines `x` on that object alone, not on the
+enclosing class, so it defines nothing rq can place (rails 38 rows, discourse 14);
+only `self` and a constant receiver make a class method.
 
-The parity test's rules gained the runtime scope, unspellable names and unary operator
-names. `make ruby-parity`: rails differs only by intended rules (64 interpolated, 5
-unspellable, 2 symbol, 1 runtime scope, 1 operator), discourse likewise (34, 5).
-`make recall BASE=main`: no source moved, top 10 unchanged in all 6,873 queries.
+The parity test's rules gained the runtime scope, unspellable names, unary operator
+names, foreign receivers and spaced paths. `make ruby-parity`: rails differs only by
+intended rules (64 interpolated, 38 foreign receiver, 5 unspellable, 2 symbol, 1 runtime
+scope, 1 operator), discourse likewise (34, 14, 5).
+`make recall BASE=main`: 1 source up, none down, top 10 unchanged in all 6,873 queries.
