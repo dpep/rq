@@ -1117,7 +1117,8 @@ fn held_back_by<'a>(
     unread: &'a Unread,
 ) -> Option<&'a str> {
     let has = |name| top.features.iter().any(|f| f.name == name);
-    if has("exact") && has("case") {
+    // the class standing in for a constructor (`constructor_owner`) isn't it
+    if has("exact") && has("case") && !has("constructor_owner") {
         return None;
     }
     let literal = crate::search::is_literal(&top.features);
@@ -1131,21 +1132,20 @@ fn held_back_by<'a>(
         .or(unread.elsewhere.as_deref())
 }
 
+/// Whether a match can answer before the name's files are all read: an exact
+/// one in the capitals typed. Not a constructor call's: the class standing in
+/// for its constructor is one hop from the answer, which a reopening of the
+/// class in a file not read yet may hold.
+fn case_typed(query: &str) -> bool {
+    crate::search::literal_leaf(query).is_some_and(|l| l.to_lowercase() != l)
+}
+
 /// Whether a later poll could answer before this checkout completes, by
 /// [`held_back_by`]'s rule: nothing here is unread, another checkout may still
 /// commit an exact match, or — before the name's files are all read — an exact
 /// match in the capitals typed (`case_typed`) may be committed, or after it a
 /// literal match here could still reach the top. Otherwise only the end of the
 /// pass can answer.
-/// Whether a match can carry `case`, the one answer before the name's files are
-/// all read: an exact match, or for a constructor call its owner, in capitals
-/// typed.
-fn case_typed(query: &str) -> bool {
-    crate::index::query_names(query)
-        .iter()
-        .any(|n| n.to_lowercase() != *n)
-}
-
 fn may_settle_early(
     shown: &[crate::search::Hit],
     here: Option<&str>,
@@ -1839,11 +1839,11 @@ mod tests {
     }
 
     #[test]
-    fn a_name_or_constructor_owner_in_capitals_can_answer_early() {
+    fn only_a_name_in_capitals_can_answer_early() {
         use super::case_typed;
         assert!(case_typed("Gadget"));
         assert!(case_typed("Z::fetch_Widget"));
-        assert!(case_typed("Gadget.new"));
+        assert!(!case_typed("Gadget.new"));
         assert!(!case_typed("gadget"));
         assert!(!case_typed("gadget.new"));
         assert!(!case_typed("Gadget::fetch"));

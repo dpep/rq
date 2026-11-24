@@ -5181,6 +5181,31 @@ fn a_deeply_nested_file_does_not_take_the_index_down_with_it() {
 }
 
 #[test]
+fn a_partial_index_does_not_answer_a_constructor_call_with_its_class() {
+    // the class is one hop from the constructor, which a reopening may hold
+    let (dir, db) = scratch("partial-constructor");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(dir.join("app/gadget.rb"), "class Gadget\nend\n").unwrap();
+    fs::write(
+        dir.join("lib/init.rb"),
+        "class Gadget\n  def initialize; end\nend\n",
+    )
+    .unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index", "app"]);
+
+    let (code, out, _) = rq_full(&db, &dir, &["Gadget.new", "--json"], &NO_CHILD, None);
+    assert_eq!(code, 0, "{out}");
+    let top = &json(&out)[0];
+    assert_eq!(
+        (&top["name"], &top["file"]),
+        (&"initialize".into(), &"lib/init.rb".into()),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_cold_constructor_search_reads_the_owners_files() {
     // `Widget.new` runs `initialize`, which a file can define without the
     // text `new`: the warm must read it before another class's answers.
