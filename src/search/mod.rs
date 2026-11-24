@@ -972,7 +972,7 @@ pub(crate) struct LiveScan {
     pub reach: bool,
 }
 
-/// Merge two ranked lists, de-duplicating by location (root and file) and name (keeping the
+/// Merge two ranked lists, de-duplicating by absolute file, line and name (keeping the
 /// higher score), then re-rank and truncate. Used to blend index and live-scan
 /// results, which were ranked apart. `reach` is whether reach split either
 /// one's candidates — their union's answer — and when it did, every reachable
@@ -985,16 +985,16 @@ pub(crate) fn merge(
     ctx: &Context,
 ) -> Vec<Hit> {
     use std::collections::HashMap;
-    // `file` is root-relative: the same path in two checkouts is two hits
-    type Key = (Option<String>, String, i64, String);
-    let mut by_key: HashMap<Key, Hit> = HashMap::new();
+    // `file` is root-relative, so a file is its root joined to it: the same
+    // path in two checkouts is two hits, and a checkout a parent dir's live
+    // scan reaches is one
+    let mut by_key: HashMap<(std::path::PathBuf, i64, String), Hit> = HashMap::new();
     for hit in a.into_iter().chain(b) {
-        let key = (
-            hit.root.clone(),
-            hit.file.clone(),
-            hit.line,
-            hit.name.clone(),
-        );
+        let file = match &hit.root {
+            Some(root) => std::path::Path::new(root).join(&hit.file),
+            None => std::path::PathBuf::from(&hit.file),
+        };
+        let key = (file, hit.line, hit.name.clone());
         match by_key.get(&key) {
             Some(existing) if existing.score >= hit.score => {}
             _ => {
@@ -1506,6 +1506,18 @@ mod tests {
             &Context::default(),
         );
         assert_eq!(merged.len(), 2, "kept apart by root");
+
+        // a parent dir's live scan reaches a checkout inside it: one file, one hit
+        let inner = Hit {
+            root: Some("/r/repo".into()),
+            ..mk("User", 100.0)
+        };
+        let outer = Hit {
+            file: "repo/a.rb".into(),
+            ..mk("User", 500.0)
+        };
+        let merged = merge(vec![inner], vec![outer], false, 10, &Context::default());
+        assert_eq!(merged.len(), 1, "one file by its absolute path");
     }
 
     #[test]
