@@ -3903,6 +3903,23 @@ fn a_batch_notices_an_edit_to_a_complete_repo() {
 }
 
 #[test]
+fn a_miss_on_an_edited_complete_repo_says_how_far_its_index_got() {
+    let (dir, db) = scratch("edited-miss");
+    fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();
+    fs::write(dir.join("b.rb"), "class Gadget\nend\n").unwrap();
+    git_init_commit(&dir);
+    rq(&db, &dir, &["--index"]);
+    fs::write(dir.join("a.rb"), "class Widget\n  def added; end\nend\n").unwrap();
+
+    let (code, out, _) = rq_full(&db, &dir, &["added", "--json"], &NO_CHILD, None);
+    assert_eq!(code, 2, "{out}");
+    let w = &json(&out)["warming"];
+    assert_eq!((&w["read"], &w["of"]), (&2.into(), &2.into()), "{out}");
+    assert_eq!(w["interrupted"], true, "nothing is indexing: {out}");
+    assert!(w["hint"].as_str().unwrap().contains("rq --index"), "{out}");
+}
+
+#[test]
 fn batch_refuses_the_output_and_flags_it_cannot_frame() {
     let (dir, db) = scratch("batch-flags");
     fs::write(dir.join("a.rb"), "class Widget\nend\n").unwrap();

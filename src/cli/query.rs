@@ -864,6 +864,7 @@ pub(super) fn cmd_search(session: &mut Session, args: &SearchArgs) -> Outcome {
             .and_then(|r| {
                 let continuing = warm_detach_enabled() && warming_ok;
                 warming_state(store, r, true, continuing)
+                    .or_else(|| edits_unread(store, r, true, continuing))
             });
         let verdict = if incomplete {
             Verdict::Warming
@@ -1231,6 +1232,30 @@ fn warming_state(
         Some(c) => tree_span(store, root, c.id),
         None => crate::index::count_span_unheld(std::path::Path::new(root)).map(|s| s as i64),
     };
+    Some(warming_of(store, root, here, continuing, read, span))
+}
+
+/// The `warming` of a complete checkout a search still calls warming: edits
+/// since its index, which a warm has yet to read. It holds every file.
+fn edits_unread(
+    store: &Store,
+    root: &str,
+    here: bool,
+    continuing: bool,
+) -> Option<crate::search::Warming> {
+    let checkout = store.checkout(root).ok().flatten()?;
+    let read = store.checkout_file_count(checkout.id).unwrap_or(0);
+    Some(warming_of(store, root, here, continuing, read, Some(read)))
+}
+
+fn warming_of(
+    store: &Store,
+    root: &str,
+    here: bool,
+    continuing: bool,
+    read: i64,
+    span: Option<i64>,
+) -> crate::search::Warming {
     let interrupted = !continuing && !store.indexed_by_others(root);
     let index = index_command(root, here);
     let hint = if interrupted {
@@ -1242,14 +1267,14 @@ fn warming_state(
         )
     };
     let phase = store.pass_phase(root);
-    Some(crate::search::Warming {
+    crate::search::Warming {
         read,
         of: span.map(|s| s.max(read)),
         interrupted,
         phase: phase.map(|(p, _)| p),
         phase_secs: phase.map(|(_, since)| crate::store::phase_secs(since)),
         hint,
-    })
+    }
 }
 
 /// Files the tree at `root` spans: as the last pass recorded it, or counted
