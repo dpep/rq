@@ -1537,15 +1537,16 @@ fn note_live_scan(root: &std::path::Path, cost: &LiveCost, answered: bool) {
     );
 }
 
-/// A high-confidence name match: exact or prefix (not fuzzy/path-only).
+/// A high-confidence name match: exact, prefix, or the constructor `Foo.new`
+/// names (not fuzzy/path-only).
 fn strong(h: &crate::search::Hit) -> bool {
     h.features
         .iter()
-        .any(|f| matches!(f.name, "exact" | "prefix"))
+        .any(|f| matches!(f.name, "exact" | "prefix" | "constructor"))
 }
 
 /// The result-quality gates, in order:
-/// - relevance: when the query lands a real name match (exact or prefix), drop
+/// - relevance: when the query lands a real name match ([`strong`]), drop
 ///   the scattered fuzzy / path-only near-matches — they're noise next to a
 ///   solid hit, and rq favors fewer, better results. A purely-fuzzy query (no
 ///   exact/prefix anywhere) keeps its matches.

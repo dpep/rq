@@ -353,6 +353,31 @@ fn foo_dot_new_finds_the_constructor() {
 }
 
 #[test]
+fn foo_dot_new_ranks_the_constructor_above_new_prefixed_methods() {
+    // `new_items` and `new?` are prefix matches for `new`; the constructor is
+    // the exact answer and must survive the relevance gate beside them
+    let (dir, db) = scratch("constructor-vs-prefix");
+    fs::write(
+        dir.join("widget.rb"),
+        "class Widget\n  def initialize; end\n  def new_items; end\n  def new?; end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("gadget.py"),
+        "class Gadget:\n    def __init__(self):\n        pass\n    def new_items(self):\n        pass\n",
+    )
+    .unwrap();
+    rq(&db, &dir, &["--index"]);
+
+    for (q, ctor) in [("Widget.new", "initialize"), ("Gadget.new", "__init__")] {
+        let (code, out) = rq(&db, &dir, &[q, "--json"]);
+        assert_eq!(code, 0, "{q}: {out}");
+        let hits: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(hits[0]["name"], ctor, "{q}: {out}");
+    }
+}
+
+#[test]
 fn foo_dot_new_without_its_own_constructor_finds_the_class() {
     // Widget inherits `initialize`; rq doesn't track inheritance, so the class
     // is the answer — never a similarly named class's constructor.
